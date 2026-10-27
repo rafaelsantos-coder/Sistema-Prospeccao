@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="lead-hero">
+  <div class="lead-hero-main">
+    <span class="lead-avatar large">{{ lead.business_name[:2]|upper }}</span>
+    <div>
+      <div class="lead-title-row">
+        <h2>{{ lead.business_name }}</h2>
+        {% if lead.is_paid_traffic %}<span class="source-badge paid">Tráfego pago</span>{% endif %}
+        {% if lead.priority == 'ALTA' %}<span class="source-badge danger">Prioridade alta</span>{% endif %}
+      </div>
+      <p>{{ lead.segment }} · {{ lead.city }}{% if lead.neighborhood %}, {{ lead.neighborhood }}{% endif %}</p>
+      <div class="lead-meta-row">
+        <span>{{ lead.phone|phone_br }}</span><span>{{ lead.email or 'E-mail não informado' }}</span><span>{{ constants.sources.get(lead.source, lead.source) }}</span>
+      </div>
+    </div>
+  </div>
+  <div class="lead-score-card">
+    <span>Score Sulnet</span><strong>{{ '%.1f'|format(lead.score) }}</strong><em class="temperature temperature-{{ lead.temperature|lower }}">{{ constants.temperatures.get(lead.temperature, lead.temperature) }}</em>
+  </div>
+</div>
+
+<div class="lead-layout">
+  <section class="lead-main-column">
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">FUNIL</span><h3>Etapa atual</h3></div><span class="stage-badge stage-{{ lead.stage|lower }}">{{ constants.stages.get(lead.stage, lead.stage) }}</span></div>
+      <div class="pipeline-stepper">
+        {% for stage_key in pipeline %}
+          {% if stage_key not in ['PERDIDO'] %}
+          <div class="step {% if stage_key == lead.stage %}current{% elif loop.index0 < current_stage_index and lead.stage not in ['PERDIDO','NAO_CONTATAR'] %}done{% endif %}">
+            <i></i><span>{{ constants.stages.get(stage_key, stage_key) }}</span>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+      <form action="/leads/{{ lead.id }}/stage" method="post" class="inline-form stage-update-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select name="stage">{% for key, label in constants.stages.items() %}<option value="{{ key }}" {% if key == lead.stage %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+        <button class="button button-dark" type="submit">Atualizar etapa</button>
+      </form>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">NOVA INTERAÇÃO</span><h3>Registrar atividade</h3></div><span class="panel-note">CRM obrigatório</span></div>
+      <form action="/leads/{{ lead.id }}/activity" method="post" class="activity-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label class="field"><span>Tipo</span><select name="kind">{% for key, label in constants.activity_kinds.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+          <label class="field"><span>Status</span><select name="status"><option value="CONCLUIDA">Concluída</option><option value="PLANEJADA">Planejada</option></select></label>
+          <label class="field"><span>Canal</span><select name="channel"><option value="">Não se aplica</option>{% for key, label in constants.channels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+          <label class="field"><span>Agendar para</span><input type="datetime-local" name="scheduled_for"></label>
+          <label class="field field-span-2"><span>Resultado / observação</span><textarea name="description" rows="3" required placeholder="O que aconteceu e qual foi o próximo passo combinado?"></textarea></label>
+        </div>
+        <div class="form-actions"><button class="button button-primary" type="submit">Registrar atividade</button></div>
+      </form>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">HISTÓRICO</span><h3>Linha do tempo</h3></div></div>
+      <div class="timeline">
+        {% for activity in lead.activities %}
+        <div class="timeline-item">
+          <span class="timeline-marker"></span>
+          <div class="timeline-card">
+            <div class="timeline-head"><strong>{{ constants.activity_kinds.get(activity.kind, activity.kind) }}</strong><time>{{ activity.created_at|datetime_br }}</time></div>
+            <p>{{ activity.description or 'Sem observação.' }}</p>
+            <div class="timeline-meta"><span>{{ activity.user.name if activity.user else 'Sistema' }}</span><span class="soft-badge">{{ constants.activity_statuses.get(activity.status, activity.status) }}</span></div>
+          </div>
+        </div>
+        {% else %}
+        <div class="empty-state"><strong>Ainda não há atividades</strong><span>Registre a primeira interação para iniciar o histórico.</span></div>
+        {% endfor %}
+      </div>
+    </article>
+  </section>
+
+  <aside class="lead-side-column">
+    <article class="panel action-panel {% if lead.next_action_at and lead.next_action_at < now %}overdue{% endif %}">
+      <span class="eyebrow">PRÓXIMA AÇÃO</span>
+      <strong>{{ lead.next_action_at|datetime_br }}</strong>
+      <p>{% if lead.next_action_at and lead.next_action_at < now %}Prazo vencido. Priorize este contato.{% else %}Mantenha o combinado registrado no CRM.{% endif %}</p>
+    </article>
+
+    <article class="panel details-panel">
+      <div class="panel-header"><div><span class="eyebrow">OPORTUNIDADE</span><h3>Resumo comercial</h3></div></div>
+      <dl class="detail-list">
+        <div><dt>Responsável</dt><dd>{{ lead.assigned_user.name if lead.assigned_user else 'Sem responsável' }}</dd></div>
+        <div><dt>Unidade</dt><dd>{{ lead.branch.city if lead.branch else 'Não definida' }}</dd></div>
+        <div><dt>Equipe</dt><dd>{{ constants.teams.get(lead.team, lead.team) }}</dd></div>
+        <div><dt>MRR estimado</dt><dd>{{ lead.estimated_mrr|brl }}</dd></div>
+        <div><dt>Último contato</dt><dd>{{ lead.last_contact_at|datetime_br }}</dd></div>
+        <div><dt>Criado em</dt><dd>{{ lead.created_at|datetime_br }}</dd></div>
+      </dl>
+      {% if lead.potential %}<div class="potential-box"><strong>Sinais do score</strong><p>{{ lead.potential }}</p></div>{% endif %}
+      {% if lead.notes %}<div class="notes-box"><strong>Observações</strong><p>{{ lead.notes }}</p></div>{% endif %}
+    </article>
+
+    {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">DISTRIBUIÇÃO</span><h3>Responsável</h3></div></div>
+      <form action="/leads/{{ lead.id }}/assign" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Consultor</span><select name="assigned_user_id" required>{% for item in users %}<option value="{{ item.id }}" {% if lead.assigned_user_id == item.id %}selected{% endif %}>{{ item.name }} · {{ constants.teams.get(item.team, item.team) }}</option>{% endfor %}</select></label>
+        {% if current_user.role in ['ADMIN','GESTOR'] %}<label class="field"><span>Unidade</span><select name="branch_id">{% for branch in branches %}<option value="{{ branch.id }}" {% if lead.branch_id == branch.id %}selected{% endif %}>{{ branch.city }}</option>{% endfor %}</select></label>{% endif %}
+        <button class="button button-secondary full-width" type="submit">Atualizar responsável</button>
+      </form>
+      {% if lead.is_paid_traffic %}<div class="info-box compact"><strong>Fila protegida</strong><p>Leads de tráfego pago não entram na redistribuição automática.</p></div>{% endif %}
+    </article>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

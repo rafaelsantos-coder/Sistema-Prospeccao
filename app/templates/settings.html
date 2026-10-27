@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead">
+  <div>
+    <span class="eyebrow">ADMINISTRAÇÃO</span>
+    <h2>Estrutura, integrações e metas</h2>
+    <p>Visão operacional do ambiente interno da Sulnet.</p>
+  </div>
+</div>
+
+<div class="settings-grid">
+  <article class="panel panel-span-7">
+    <div class="panel-header"><div><span class="eyebrow">INTEGRAÇÕES</span><h3>Conectividade do sistema</h3></div><span class="environment-badge">{{ environment|upper }}</span></div>
+    <div class="integration-list">
+      <div class="integration-row"><div class="integration-logo">A</div><div><strong>Apify</strong><span>Busca de empresas no Google Maps</span></div><span class="connection-status {% if integrations.apify %}on{% endif %}">{% if integrations.apify %}Conectado{% else %}Pendente{% endif %}</span></div>
+      <div class="integration-row"><div class="integration-logo">W</div><div><strong>Evolution API</strong><span>Disparos e atendimento por WhatsApp</span></div><span class="connection-status {% if integrations.whatsapp %}on{% endif %}">{% if integrations.whatsapp %}Conectado{% else %}Pendente{% endif %}</span></div>
+      <div class="integration-row"><div class="integration-logo">R</div><div><strong>Resend</strong><span>Envio de e-mails comerciais</span></div><span class="connection-status {% if integrations.email %}on{% endif %}">{% if integrations.email %}Conectado{% else %}Pendente{% endif %}</span></div>
+      <div class="integration-row"><div class="integration-logo">L</div><div><strong>Motor legado</strong><span>Scripts originais do repositório</span></div><span class="connection-status {% if legacy_available %}on{% endif %}">{% if legacy_available %}Disponível{% else %}Modo compatível{% endif %}</span></div>
+    </div>
+    <div class="info-box"><strong>Segurança das chaves</strong><p>Tokens e credenciais são lidos por variáveis de ambiente. Nenhum segredo é exibido ou gravado pela interface.</p></div>
+  </article>
+
+  <article class="panel panel-span-5">
+    <div class="panel-header"><div><span class="eyebrow">LIMITES</span><h3>Envios de hoje</h3></div></div>
+    {% for channel, data in rate_status.channels.items() %}
+    <div class="capacity-row">
+      <div class="capacity-head"><span>{{ channel|upper }}</span><strong>{{ data.sent_today }}/{{ data.limit }}</strong></div>
+      <div class="progress-track"><span style="width: {{ (data.sent_today / data.limit * 100) if data.limit else 0 }}%"></span></div>
+      <small>{{ data.remaining }} restantes</small>
+    </div>
+    {% endfor %}
+  </article>
+
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">METAS DIÁRIAS</span><h3>Ritmo por frente comercial</h3></div></div>
+    <div class="settings-list">
+    {% for target in targets %}
+      <div><strong>{{ constants.teams.get(target.team, target.team) }}</strong><span>{{ target.metric|replace('_',' ')|title }}</span><em>{{ target.daily_target }}/dia</em></div>
+    {% endfor %}
+    </div>
+  </article>
+
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">UNIDADES</span><h3>Estrutura cadastrada</h3></div><span class="count-badge">{{ branches|length }}</span></div>
+    <div class="branch-grid">
+      {% for branch in branches %}<div><span>{{ branch.code }}</span><strong>{{ branch.city }}</strong><small>{{ branch.name }}</small></div>{% endfor %}
+    </div>
+  </article>
+
+  <article class="panel panel-span-12">
+    <div class="panel-header"><div><span class="eyebrow">USUÁRIOS</span><h3>Acessos do ambiente</h3></div><span class="count-badge">{{ users|length }}</span></div>
+    <div class="data-table-wrap">
+      <table class="data-table"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Unidade</th><th>Status</th></tr></thead><tbody>
+        {% for item in users %}<tr><td><strong>{{ item.name }}</strong></td><td>{{ item.email }}</td><td>{{ constants.roles.get(item.role, item.role) }}</td><td>{{ constants.teams.get(item.team, item.team) }}</td><td>{{ item.branch.city if item.branch else 'Todas' }}</td><td><span class="connection-status {% if item.active %}on{% endif %}">{% if item.active %}Ativo{% else %}Inativo{% endif %}</span></td></tr>{% endfor %}
+      </tbody></table>
+    </div>
+  </article>
+</div>
+{% endblock %}

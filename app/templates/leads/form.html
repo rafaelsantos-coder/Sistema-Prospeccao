@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">NOVA OPORTUNIDADE</span>
+    <h2>Cadastre o lead com contexto comercial</h2>
+    <p>O sistema calculará o score e programará a primeira ação automaticamente.</p>
+  </div>
+  <a href="/leads" class="button button-secondary">← Voltar ao CRM</a>
+</div>
+
+<form method="post" action="/leads/new" class="form-layout">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <section class="panel form-panel panel-span-8">
+    <div class="section-heading"><span>01</span><div><h3>Identificação</h3><p>Dados principais da empresa e do contato.</p></div></div>
+    <div class="form-grid">
+      <label class="field field-span-2"><span>Empresa *</span><input name="business_name" required placeholder="Razão social ou nome fantasia"></label>
+      <label class="field"><span>Nome do contato</span><input name="contact_name" placeholder="Pessoa responsável"></label>
+      <label class="field"><span>CNPJ</span><input name="cnpj" placeholder="00.000.000/0000-00"></label>
+      <label class="field"><span>Telefone / WhatsApp</span><input name="phone" placeholder="(55) 99999-9999"></label>
+      <label class="field"><span>E-mail</span><input type="email" name="email" placeholder="contato@empresa.com.br"></label>
+      <label class="field field-span-2"><span>Site</span><input type="url" name="website" placeholder="https://empresa.com.br"></label>
+      <label class="field"><span>Segmento</span><input name="segment" placeholder="Ex.: clínica, mercado, indústria"></label>
+      <label class="field"><span>Cidade</span><input name="city" value="Santa Rosa" required></label>
+      <label class="field"><span>Bairro</span><input name="neighborhood"></label>
+      <label class="field"><span>Endereço</span><input name="address"></label>
+    </div>
+
+    <div class="section-heading section-divider"><span>02</span><div><h3>Contexto comercial</h3><p>Origem, frente de trabalho e potencial da oportunidade.</p></div></div>
+    <div class="form-grid">
+      <label class="field"><span>Origem</span><select name="source">{% for key, label in constants.sources.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Canal de entrada</span><select name="origin_channel">{% for key, label in constants.channels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Etapa inicial</span><select name="stage">{% for key, label in constants.stages.items() %}{% if key not in ['GANHO','PERDIDO','NAO_CONTATAR'] %}<option value="{{ key }}">{{ label }}</option>{% endif %}{% endfor %}</select></label>
+      <label class="field"><span>Prioridade</span><select name="priority"><option value="NORMAL">Normal</option><option value="ALTA">Alta</option><option value="BAIXA">Baixa</option></select></label>
+      <label class="field"><span>MRR estimado</span><input name="estimated_mrr" inputmode="decimal" placeholder="0,00"></label>
+      {% if current_user.role in ['ADMIN','GESTOR'] %}
+      <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Sem unidade</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
+      {% endif %}
+      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+      <label class="field"><span>Responsável</span><select name="assigned_user_id"><option value="">Sem responsável</option>{% for item in users %}<option value="{{ item.id }}">{{ item.name }} · {{ constants.teams.get(item.team, item.team) }}</option>{% endfor %}</select></label>
+      {% endif %}
+      <label class="field field-span-2"><span>Observações</span><textarea name="notes" rows="4" placeholder="Necessidade, dor identificada, concorrente atual, prazo ou detalhes importantes"></textarea></label>
+      <label class="checkbox-card field-span-2"><input type="checkbox" name="do_not_contact" value="true"><div><strong>Não contatar</strong><span>Bloqueia campanhas e novas tentativas para este lead.</span></div></label>
+    </div>
+  </section>
+
+  <aside class="form-sidebar panel-span-4">
+    <div class="panel sticky-panel">
+      <span class="eyebrow">QUALIDADE DO CRM</span>
+      <h3>Antes de salvar</h3>
+      <ul class="check-list">
+        <li><span>1</span>Confirme telefone e cidade.</li>
+        <li><span>2</span>Escolha a equipe correta.</li>
+        <li><span>3</span>Preserve tráfego pago na origem.</li>
+        <li><span>4</span>Registre o contexto da oportunidade.</li>
+      </ul>
+      <div class="info-box"><strong>Primeira ação automática</strong><p>Loja e Digital recebem follow-up em até 2 horas. PAP e B2B atuam no mesmo dia ou na manhã seguinte.</p></div>
+      <button class="button button-primary button-large full-width" type="submit">Salvar e abrir lead</button>
+      <a href="/leads" class="button button-ghost full-width">Cancelar</a>
+    </div>
+  </aside>
+</form>
+{% endblock %}

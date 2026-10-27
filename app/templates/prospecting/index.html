@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">CAPTAÇÃO ATIVA</span>
+    <h2>Encontre empresas por segmento e cidade</h2>
+    <p>O Apify pesquisa no Google Maps; a Sulnet qualifica, organiza e distribui os novos leads.</p>
+  </div>
+  <span class="integration-banner {% if apify_configured %}connected{% else %}disconnected{% endif %}"><i></i>{% if apify_configured %}Apify conectado{% else %}Apify não configurado{% endif %}</span>
+</div>
+
+<div class="prospecting-layout">
+  <section class="panel prospecting-form-card">
+    <div class="section-heading"><span>01</span><div><h3>Nova busca</h3><p>Defina o mercado e a região que deseja prospectar.</p></div></div>
+    <form action="/prospecting" method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Segmento ou tipo de empresa</span><input name="segment" required placeholder="Ex.: clínicas odontológicas, mercados, hotéis"></label>
+      <label class="field"><span>Cidade</span><input name="city" required value="Santa Rosa" placeholder="Cidade e estado"></label>
+      <div class="form-grid">
+        <label class="field"><span>Quantidade</span><input type="number" name="limit" min="1" max="100" value="20"></label>
+        <label class="field"><span>Equipe de destino</span><select name="team"><option value="B2B">Corporativo B2B</option><option value="PAP">Porta a porta</option><option value="DIGITAL">Digital</option><option value="LOJA">Loja / Receptivo</option></select></label>
+        {% if current_user.role in ['ADMIN','GESTOR'] %}<label class="field field-span-2"><span>Unidade responsável</span><select name="branch_id"><option value="">Sem unidade definida</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>{% endif %}
+      </div>
+      {% if not apify_configured %}<div class="warning-box"><strong>Integração pendente</strong><p>Cadastre <code>APIFY_TOKEN</code> no ambiente antes de executar uma busca real. A solicitação poderá ser criada, mas ficará com status de falha até a configuração.</p></div>{% endif %}
+      <button type="submit" class="button button-primary button-large full-width">Iniciar busca de leads</button>
+    </form>
+  </section>
+
+  <aside class="prospecting-flow">
+    <span class="eyebrow">COMO FUNCIONA</span>
+    <div class="flow-step"><span>1</span><div><strong>Busca segmentada</strong><p>Empresas encontradas por nicho e cidade.</p></div></div>
+    <div class="flow-line"></div>
+    <div class="flow-step"><span>2</span><div><strong>Validação e deduplicação</strong><p>Telefone, e-mail e empresas já existentes são conferidos.</p></div></div>
+    <div class="flow-line"></div>
+    <div class="flow-step"><span>3</span><div><strong>Score Sulnet</strong><p>Cobertura, contato, segmento e sinais de intenção.</p></div></div>
+    <div class="flow-line"></div>
+    <div class="flow-step"><span>4</span><div><strong>Entrada no CRM</strong><p>Responsável e primeira ação programados.</p></div></div>
+  </aside>
+</div>
+
+<div class="panel table-panel top-space">
+  <div class="panel-header table-title"><div><span class="eyebrow">HISTÓRICO</span><h3>Buscas recentes</h3></div></div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Busca</th><th>Unidade / Equipe</th><th>Solicitada por</th><th>Encontrados</th><th>Importados</th><th>Status</th><th>Data</th></tr></thead>
+      <tbody>
+      {% for job in jobs %}
+        <tr>
+          <td><strong>{{ job.segment }}</strong><span class="table-subline">{{ job.city }} · limite {{ job.limit }}</span></td>
+          <td>{{ job.branch.city if job.branch else 'Não definida' }}<span class="table-subline">{{ constants.teams.get(job.team, job.team) }}</span></td>
+          <td>{{ job.created_by.name if job.created_by else 'Sistema' }}</td>
+          <td>{{ job.found_count }}</td><td>{{ job.imported_count }}</td>
+          <td><span class="job-status job-{{ job.status|lower }}">{{ job.status|replace('_',' ')|title }}</span>{% if job.error %}<span class="table-subline text-danger" title="{{ job.error }}">{{ job.error[:60] }}{% if job.error|length > 60 %}…{% endif %}</span>{% endif %}</td>
+          <td>{{ job.created_at|datetime_br }}</td>
+        </tr>
+      {% else %}<tr><td colspan="7"><div class="empty-state"><strong>Nenhuma busca executada</strong><span>Crie a primeira busca segmentada acima.</span></div></td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

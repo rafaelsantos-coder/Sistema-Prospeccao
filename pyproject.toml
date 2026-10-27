@@ -1,0 +1,18 @@
+[project]
+name = "sulnet-prospecta"
+version = "0.1.1"
+description = "CRM e prospecção automatizada para uso interno da Sulnet"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+exclude = ["data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]

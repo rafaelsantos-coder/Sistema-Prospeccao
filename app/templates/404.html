@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="not-found">
+  <span>404</span><h2>Página não encontrada</h2><p>O endereço acessado não existe ou você não possui acesso a ele.</p><a href="/dashboard" class="button button-primary">Voltar ao painel</a>
+</div>
+{% endblock %}
+{% block auth_content %}
+<div class="not-found full"><span>404</span><h2>Página não encontrada</h2><p>O endereço acessado não existe.</p><a href="/login" class="button button-primary">Ir para o acesso</a></div>
+{% endblock %}

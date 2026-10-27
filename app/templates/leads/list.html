@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">CRM COMERCIAL</span>
+    <h2>{{ pagination.total }} oportunidades acompanhadas</h2>
+    <p>Filtre, priorize e mantenha cada lead com uma próxima ação definida.</p>
+  </div>
+  <div class="page-actions">
+    <a href="/leads/export.csv" class="button button-secondary">↓ Exportar CSV</a>
+    <a href="/leads/new" class="button button-primary">＋ Cadastrar lead</a>
+  </div>
+</div>
+
+<form class="filter-bar" method="get" action="/leads">
+  <label class="search-box">
+    <span>⌕</span>
+    <input type="search" name="q" value="{{ filters.q }}" placeholder="Empresa, contato, telefone, e-mail ou CNPJ">
+  </label>
+  <select name="stage" aria-label="Etapa">
+    <option value="">Todas as etapas</option>
+    {% for key, label in constants.stages.items() %}<option value="{{ key }}" {% if filters.stage == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <select name="team" aria-label="Equipe">
+    <option value="">Todas as equipes</option>
+    {% for key, label in constants.teams.items() %}<option value="{{ key }}" {% if filters.team == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <select name="source" aria-label="Origem">
+    <option value="">Todas as origens</option>
+    {% for key, label in constants.sources.items() %}<option value="{{ key }}" {% if filters.source == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <select name="paid" aria-label="Tráfego pago">
+    <option value="">Todas as filas</option>
+    <option value="sim" {% if filters.paid == 'sim' %}selected{% endif %}>Somente tráfego pago</option>
+    <option value="nao" {% if filters.paid == 'nao' %}selected{% endif %}>Sem tráfego pago</option>
+  </select>
+  <button class="button button-dark" type="submit">Filtrar</button>
+</form>
+
+<div class="panel table-panel">
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Lead</th>
+          <th>Contato</th>
+          <th>Origem</th>
+          <th>Equipe / Responsável</th>
+          <th>Etapa</th>
+          <th>Score</th>
+          <th>Próxima ação</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for lead in leads %}
+        <tr class="clickable-row" data-href="/leads/{{ lead.id }}">
+          <td>
+            <div class="lead-cell">
+              <span class="lead-avatar">{{ lead.business_name[:2]|upper }}</span>
+              <div><strong>{{ lead.business_name }}</strong><span>{{ lead.segment }} · {{ lead.city }}</span></div>
+            </div>
+          </td>
+          <td><strong class="subtle-strong">{{ lead.contact_name or 'Não informado' }}</strong><span class="table-subline">{{ lead.phone|phone_br }}</span></td>
+          <td>
+            <span class="source-badge {% if lead.is_paid_traffic %}paid{% endif %}">{{ constants.sources.get(lead.source, lead.source) }}</span>
+          </td>
+          <td><strong class="subtle-strong">{{ constants.teams.get(lead.team, lead.team) }}</strong><span class="table-subline">{{ lead.assigned_user.name if lead.assigned_user else 'Sem responsável' }}</span></td>
+          <td><span class="stage-badge stage-{{ lead.stage|lower }}">{{ constants.stages.get(lead.stage, lead.stage) }}</span></td>
+          <td>
+            <div class="score-cell"><strong>{{ '%.1f'|format(lead.score) }}</strong><span class="temperature temperature-{{ lead.temperature|lower }}">{{ constants.temperatures.get(lead.temperature, lead.temperature) }}</span></div>
+          </td>
+          <td><strong class="subtle-strong">{{ lead.next_action_at|datetime_br }}</strong>{% if lead.priority == 'ALTA' %}<span class="table-subline text-danger">Prioridade alta</span>{% endif %}</td>
+          <td><a href="/leads/{{ lead.id }}" class="table-action" aria-label="Abrir lead">→</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8"><div class="empty-state"><strong>Nenhum lead encontrado</strong><span>Ajuste os filtros ou cadastre uma nova oportunidade.</span></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination-bar">
+    <span>Mostrando página {{ pagination.page }} de {{ pagination.pages }} · {{ pagination.total }} registros</span>
+    <div>
+      {% if pagination.page > 1 %}
+      <a class="page-button" href="/leads?page={{ pagination.page - 1 }}&q={{ filters.q }}&stage={{ filters.stage }}&team={{ filters.team }}&source={{ filters.source }}&paid={{ filters.paid }}">←</a>
+      {% endif %}
+      <span class="page-current">{{ pagination.page }}</span>
+      {% if pagination.page < pagination.pages %}
+      <a class="page-button" href="/leads?page={{ pagination.page + 1 }}&q={{ filters.q }}&stage={{ filters.stage }}&team={{ filters.team }}&source={{ filters.source }}&paid={{ filters.paid }}">→</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+from app.timeutils import utcnow
+
+
+class Branch(Base):
+    __tablename__ = "branches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    city: Mapped[str] = mapped_column(String(120), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    users: Mapped[list["User"]] = relationship(back_populates="branch")
+    leads: Mapped[list["Lead"]] = relationship(back_populates="branch")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    email: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(30), default="CONSULTOR", index=True)
+    team: Mapped[str] = mapped_column(String(30), default="LOJA", index=True)
+    branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    branch: Mapped[Branch | None] = relationship(back_populates="users")
+    assigned_leads: Mapped[list["Lead"]] = relationship(
+        foreign_keys="Lead.assigned_user_id", back_populates="assigned_user"
+    )
+
+
+class Lead(Base):
+    __tablename__ = "leads"
+    __table_args__ = (
+        Index("ix_leads_pipeline", "stage", "team", "branch_id"),
+        Index("ix_leads_followup", "next_action_at", "stage"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    business_name: Mapped[str] = mapped_column(String(180), index=True)
+    contact_name: Mapped[str] = mapped_column(String(150), default="")
+    cnpj: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
+    website: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    segment: Mapped[str] = mapped_column(String(120), default="Não informado", index=True)
+    city: Mapped[str] = mapped_column(String(120), default="Santa Rosa", index=True)
+    neighborhood: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(40), default="MANUAL", index=True)
+    origin_channel: Mapped[str] = mapped_column(String(40), default="WHATSAPP", index=True)
+    team: Mapped[str] = mapped_column(String(30), default="LOJA", index=True)
+    stage: Mapped[str] = mapped_column(String(40), default="NOVO", index=True)
+    score: Mapped[float] = mapped_column(Float, default=0)
+    legacy_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    temperature: Mapped[str] = mapped_column(String(20), default="FRIO", index=True)
+    priority: Mapped[str] = mapped_column(String(20), default="NORMAL", index=True)
+    potential: Mapped[str] = mapped_column(Text, default="")
+    estimated_mrr: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
+    notes: Mapped[str] = mapped_column(Text, default="")
+    is_paid_traffic: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    do_not_contact: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    lgpd_legal_basis: Mapped[str] = mapped_column(String(80), default="LEGITIMO_INTERESSE")
+    consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_contact_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True, index=True)
+    assigned_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    raw_data: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    branch: Mapped[Branch | None] = relationship(back_populates="leads")
+    assigned_user: Mapped[User | None] = relationship(
+        foreign_keys=[assigned_user_id], back_populates="assigned_leads"
+    )
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+    activities: Mapped[list["Activity"]] = relationship(
+        back_populates="lead", cascade="all, delete-orphan", order_by="desc(Activity.created_at)"
+    )
+
+
+class Activity(Base):
+    __tablename__ = "activities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(30), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="CONCLUIDA", index=True)
+    channel: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    lead: Mapped[Lead] = relationship(back_populates="activities")
+    user: Mapped[User | None] = relationship()
+
+
+class Target(Base):
+    __tablename__ = "targets"
+    __table_args__ = (UniqueConstraint("team", "metric", "branch_id", name="uq_target_scope"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team: Mapped[str] = mapped_column(String(30), index=True)
+    metric: Mapped[str] = mapped_column(String(30), index=True)
+    daily_target: Mapped[int] = mapped_column(Integer)
+    branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    branch: Mapped[Branch | None] = relationship()
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(180))
+    segment: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    team: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    channel: Mapped[str] = mapped_column(String(30), default="WHATSAPP")
+    status: Mapped[str] = mapped_column(String(30), default="RASCUNHO", index=True)
+    daily_limit: Mapped[int] = mapped_column(Integer, default=30)
+    sequence_json: Mapped[str] = mapped_column(Text, default="[]")
+    branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    branch: Mapped[Branch | None] = relationship()
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+    approved_by: Mapped[User | None] = relationship(foreign_keys=[approved_by_id])
+
+
+class ProspectingJob(Base):
+    __tablename__ = "prospecting_jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    segment: Mapped[str] = mapped_column(String(120))
+    city: Mapped[str] = mapped_column(String(120))
+    limit: Mapped[int] = mapped_column(Integer, default=20)
+    team: Mapped[str] = mapped_column(String(30), default="B2B")
+    status: Mapped[str] = mapped_column(String(30), default="PENDENTE", index=True)
+    found_count: Mapped[int] = mapped_column(Integer, default=0)
+    imported_count: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    created_by: Mapped[User | None] = relationship()
+    branch: Mapped[Branch | None] = relationship()
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    entity_type: Mapped[str] = mapped_column(String(60), index=True)
+    entity_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    user: Mapped[User | None] = relationship()

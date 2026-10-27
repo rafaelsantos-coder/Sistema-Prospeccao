@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead">
+  <div>
+    <span class="eyebrow">PAINEL DE GESTÃO</span>
+    <h2>O que precisa avançar hoje</h2>
+    <p>Prioridades, metas e oportunidades da operação em uma única visão.</p>
+  </div>
+  <div class="status-pills">
+    <span class="status-pill {% if integrations.apify %}ok{% else %}muted{% endif %}"><i></i> Apify</span>
+    <span class="status-pill {% if integrations.whatsapp %}ok{% else %}muted{% endif %}"><i></i> WhatsApp</span>
+    <span class="status-pill {% if integrations.email %}ok{% else %}muted{% endif %}"><i></i> E-mail</span>
+  </div>
+</div>
+
+<div class="metric-grid metric-grid-6">
+  <article class="metric-card featured">
+    <div class="metric-label"><span>Base de leads</span><span class="metric-icon">◎</span></div>
+    <strong>{{ metrics.total_leads }}</strong>
+    <small>{{ metrics.new_today }} novos hoje</small>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label"><span>Atividades hoje</span><span class="metric-icon">✓</span></div>
+    <strong>{{ metrics.activities_today }}</strong>
+    <small>registros concluídos</small>
+  </article>
+  <article class="metric-card {% if metrics.overdue %}attention{% endif %}">
+    <div class="metric-label"><span>Follow-ups vencidos</span><span class="metric-icon">!</span></div>
+    <strong>{{ metrics.overdue }}</strong>
+    <small>exigem ação imediata</small>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label"><span>Ganhos no mês</span><span class="metric-icon">↗</span></div>
+    <strong>{{ metrics.won_month }}</strong>
+    <small>{{ metrics.won_mrr|brl }} em MRR</small>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label"><span>Conversão</span><span class="metric-icon">%</span></div>
+    <strong>{{ metrics.conversion }}%</strong>
+    <small>sobre a base atual</small>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label"><span>Tráfego pago</span><span class="metric-icon">◆</span></div>
+    <strong>{{ metrics.paid_traffic }}</strong>
+    <small>fila preservada e separada</small>
+  </article>
+</div>
+
+<div class="dashboard-grid">
+  <article class="panel panel-span-8">
+    <div class="panel-header">
+      <div><span class="eyebrow">FUNIL COMERCIAL</span><h3>Oportunidades por etapa</h3></div>
+      <a href="/leads" class="text-link">Ver todos →</a>
+    </div>
+    <div class="pipeline-row">
+      {% set max_count = (metrics.pipeline | map(attribute='count') | max) or 1 %}
+      {% for item in metrics.pipeline %}
+      <a class="pipeline-item" href="/leads?stage={{ item.key }}">
+        <div class="pipeline-bar-track"><span style="width: {{ (item.count / max_count * 100) if max_count else 0 }}%"></span></div>
+        <strong>{{ item.count }}</strong>
+        <small>{{ item.label }}</small>
+      </a>
+      {% endfor %}
+    </div>
+  </article>
+
+  <article class="panel panel-span-4">
+    <div class="panel-header">
+      <div><span class="eyebrow">CANAIS</span><h3>Capacidade de envio</h3></div>
+    </div>
+    {% for channel, data in rate_status.channels.items() %}
+    <div class="capacity-row">
+      <div class="capacity-head"><span>{{ channel|upper }}</span><strong>{{ data.sent_today }}/{{ data.limit }}</strong></div>
+      <div class="progress-track"><span style="width: {{ (data.sent_today / data.limit * 100) if data.limit else 0 }}%"></span></div>
+      <small>{{ data.remaining }} envios disponíveis hoje</small>
+    </div>
+    {% endfor %}
+  </article>
+
+  <article class="panel panel-span-5">
+    <div class="panel-header">
+      <div><span class="eyebrow">RITMO DIÁRIO</span><h3>Metas por frente</h3></div>
+    </div>
+    <div class="target-list">
+      {% for target in metrics.targets %}
+      <div class="target-row">
+        <div class="target-head">
+          <div><strong>{{ target.team_label }}</strong><small>{{ target.metric|replace('_', ' ')|title }}</small></div>
+          <span>{{ target.done }}/{{ target.goal }}</span>
+        </div>
+        <div class="progress-track orange"><span style="width: {{ target.percent }}%"></span></div>
+      </div>
+      {% endfor %}
+    </div>
+  </article>
+
+  <article class="panel panel-span-7">
+    <div class="panel-header">
+      <div><span class="eyebrow">PRIORIDADE</span><h3>Leads que exigem ação</h3></div>
+      <a href="/leads" class="text-link">Abrir CRM →</a>
+    </div>
+    <div class="compact-table-wrap">
+      <table class="compact-table">
+        <thead><tr><th>Empresa</th><th>Equipe</th><th>Etapa</th><th>Próxima ação</th><th></th></tr></thead>
+        <tbody>
+          {% for lead in urgent_leads %}
+          <tr>
+            <td><strong>{{ lead.business_name }}</strong><span>{{ lead.city }}</span></td>
+            <td><span class="soft-badge">{{ constants.teams.get(lead.team, lead.team) }}</span></td>
+            <td>{{ constants.stages.get(lead.stage, lead.stage) }}</td>
+            <td class="{% if lead.next_action_at and lead.next_action_at < now %}text-danger{% endif %}">{{ lead.next_action_at|datetime_br }}</td>
+            <td><a href="/leads/{{ lead.id }}" class="table-action">→</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5"><div class="empty-inline">Nenhuma prioridade pendente.</div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="panel panel-span-12">
+    <div class="panel-header">
+      <div><span class="eyebrow">ATIVIDADE RECENTE</span><h3>Últimos movimentos da equipe</h3></div>
+    </div>
+    <div class="activity-strip">
+      {% for activity in recent_activities %}
+      <div class="activity-mini">
+        <span class="activity-dot"></span>
+        <div><strong>{{ activity.lead.business_name }}</strong><span>{{ constants.activity_kinds.get(activity.kind, activity.kind) }} · {{ activity.description }}</span></div>
+        <time>{{ activity.created_at|datetime_br }}</time>
+      </div>
+      {% else %}
+      <div class="empty-state small">Nenhuma atividade registrada.</div>
+      {% endfor %}
+    </div>
+  </article>
+</div>
+{% endblock %}

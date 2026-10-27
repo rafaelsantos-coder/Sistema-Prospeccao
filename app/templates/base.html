@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f36f21">
+  <title>{{ page_title or 'Sulnet Prospecta' }} · Sulnet Prospecta</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
+</head>
+<body class="{% if not current_user %}auth-body{% endif %}">
+{% if current_user %}
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-mark">S</span>
+      <div>
+        <strong>SULNET</strong>
+        <span>PROSPECTA</span>
+      </div>
+    </div>
+
+    <nav class="main-nav" aria-label="Navegação principal">
+      <a href="/dashboard" class="nav-item {% if active_nav == 'dashboard' %}active{% endif %}">
+        <span class="nav-icon">⌂</span><span>Visão geral</span>
+      </a>
+      <a href="/leads" class="nav-item {% if active_nav == 'leads' %}active{% endif %}">
+        <span class="nav-icon">◎</span><span>Leads e CRM</span>
+      </a>
+      <a href="/prospecting" class="nav-item {% if active_nav == 'prospecting' %}active{% endif %}">
+        <span class="nav-icon">⌁</span><span>Prospecção</span>
+      </a>
+      <a href="/campaigns" class="nav-item {% if active_nav == 'campaigns' %}active{% endif %}">
+        <span class="nav-icon">◈</span><span>Campanhas</span>
+      </a>
+      {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
+      <a href="/settings" class="nav-item {% if active_nav == 'settings' %}active{% endif %}">
+        <span class="nav-icon">⚙</span><span>Configurações</span>
+      </a>
+      {% endif %}
+    </nav>
+
+    <div class="sidebar-insight">
+      <span class="eyebrow">FOCO DO DIA</span>
+      <strong>Prospectar. Registrar. Avançar.</strong>
+      <p>Toda oportunidade deve ter responsável e próxima ação.</p>
+    </div>
+
+    <div class="sidebar-user">
+      <div class="avatar">{{ current_user.name[:1]|upper }}</div>
+      <div class="sidebar-user-copy">
+        <strong>{{ current_user.name }}</strong>
+        <span>{{ constants.roles.get(current_user.role, current_user.role) }} · {{ current_user.branch }}</span>
+      </div>
+      <a class="icon-button" href="/change-password" title="Alterar senha" aria-label="Alterar senha">⚿</a>
+      <form action="/logout" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="icon-button" title="Sair" aria-label="Sair">↗</button>
+      </form>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <header class="topbar">
+      <button class="mobile-menu" type="button" data-sidebar-toggle aria-label="Abrir menu">☰</button>
+      <div>
+        <span class="topbar-context">OPERAÇÃO COMERCIAL SULNET</span>
+        <h1>{{ page_title }}</h1>
+      </div>
+      <div class="topbar-actions">
+        <a href="/leads/new" class="button button-primary"><span>＋</span> Novo lead</a>
+      </div>
+    </header>
+
+    {% if flashes %}
+    <div class="flash-stack" aria-live="polite">
+      {% for item in flashes %}
+      <div class="flash flash-{{ item.category }}">
+        <span>{{ item.message }}</span>
+        <button type="button" data-dismiss-flash>×</button>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <section class="page-content">
+      {% block content %}{% endblock %}
+    </section>
+  </main>
+</div>
+{% else %}
+  {% block auth_content %}{% endblock %}
+{% endif %}
+<script src="{{ url_for('static', path='/js/app.js') }}" defer></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block auth_content %}
+<div class="auth-layout">
+  <section class="auth-brand-panel">
+    <div class="auth-brand">
+      <span class="brand-mark large">S</span>
+      <div><strong>SULNET</strong><span>PROSPECTA</span></div>
+    </div>
+    <div class="auth-message">
+      <span class="eyebrow light">PROSPECÇÃO COM INTELIGÊNCIA</span>
+      <h1>Mais oportunidades.<br>Mais disciplina.<br><em>Mais resultado.</em></h1>
+      <p>Centralize a prospecção, acompanhe cada próxima ação e transforme rotina comercial em crescimento previsível.</p>
+    </div>
+    <div class="auth-points">
+      <span>CRM obrigatório</span>
+      <span>Follow-up estruturado</span>
+      <span>Visão por unidade e equipe</span>
+    </div>
+  </section>
+  <section class="auth-form-panel">
+    <div class="login-card">
+      <div class="login-heading">
+        <span class="eyebrow">ACESSO INTERNO</span>
+        <h2>Bem-vindo de volta</h2>
+        <p>Entre com seu usuário Sulnet para continuar.</p>
+      </div>
+      {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
+      <form method="post" action="/login" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field">
+          <span>E-mail</span>
+          <input type="email" name="email" value="{{ email or '' }}" autocomplete="email" placeholder="nome@sulnet.com.br" required autofocus>
+        </label>
+        <label class="field">
+          <span>Senha</span>
+          <input type="password" name="password" autocomplete="current-password" placeholder="Sua senha" required>
+        </label>
+        <button type="submit" class="button button-primary button-large full-width">Entrar no sistema</button>
+      </form>
+      {% if show_demo_credentials %}
+      <div class="login-help">
+        <strong>Ambiente de desenvolvimento</strong>
+        <span>admin@sulnet.local · Sulnet@2026!</span>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}
