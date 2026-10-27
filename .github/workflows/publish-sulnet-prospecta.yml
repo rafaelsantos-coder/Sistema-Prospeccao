@@ -1,0 +1,48 @@
+name: Publish Sulnet Prospecta source
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  expand-source:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Expand and publish source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f .bootstrap/source.part-00 ]; then
+            echo "Source package already expanded."
+            exit 0
+          fi
+
+          cat .bootstrap/source.part-* > /tmp/sulnet-prospecta.tar.gz.b64
+          base64 --decode /tmp/sulnet-prospecta.tar.gz.b64 > /tmp/sulnet-prospecta.tar.gz
+          echo "0f82e3aa4eddf4648fc23f161030f9e76d71eafcab1f3d15ae01d5a8a7ebeba8  /tmp/sulnet-prospecta.tar.gz" | sha256sum -c -
+
+          tar -xzf /tmp/sulnet-prospecta.tar.gz -C .
+          rm -rf .bootstrap
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No source changes to publish."
+            exit 0
+          fi
+
+          git commit -m "feat: publish Sulnet Prospecta v0.1.1"
+          git push origin HEAD:main
