@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models import User, WhatsAppPresence
 from app.security import get_current_user, validate_csrf
 from app.services.audit import write_audit
+from app.services.conversation_engine import distribute_waiting_conversations
 from app.services.whatsapp_presence import (
     current_presence_state,
     heartbeat_whatsapp,
@@ -69,13 +70,18 @@ def whatsapp_presence_join(
     user = _current_user_or_401(request, db)
     validate_csrf(request, csrf_token)
     join_whatsapp(db, user)
+    distributed = distribute_waiting_conversations(db)
     write_audit(
         db,
         user=user,
         action="WHATSAPP_PRESENCE_ONLINE",
         entity_type="whatsapp_presence",
         entity_id=user.id,
-        payload={"team": user.team, "branch_id": user.branch_id},
+        payload={
+            "team": user.team,
+            "branch_id": user.branch_id,
+            "queued_conversations_distributed": distributed,
+        },
     )
     db.commit()
     return JSONResponse({"ok": True, **_state(db, user)})
