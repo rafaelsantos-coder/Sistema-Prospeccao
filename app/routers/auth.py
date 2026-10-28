@@ -42,7 +42,16 @@ def login(
     validate_csrf(request, csrf_token)
     user = db.scalar(select(User).where(User.email == email.strip().lower()))
     if not user or not user.active or not verify_password(password, user.password_hash):
-        write_audit(\n            db,\n            user=user if user and user.active else None,\n            action="LOGIN_FAILED",\n            entity_type="auth",\n            entity_id=user.id if user else None,\n            payload={"email": email.strip().lower(), "ip": request.client.host if request.client else None},\n        )\n        db.commit()\n        return render(
+        write_audit(
+            db,
+            user=user if user and user.active else None,
+            action="LOGIN_FAILED",
+            entity_type="auth",
+            entity_id=user.id if user else None,
+            payload={"email": email.strip().lower(), "ip": request.client.host if request.client else None},
+        )
+        db.commit()
+        return render(
             request,
             "login.html",
             page_title="Entrar",
@@ -50,7 +59,17 @@ def login(
             email=email,
             status_code=422,
         )
-    login_user(request, user)\n    write_audit(\n        db,\n        user=user,\n        action="LOGIN_SUCCESS",\n        entity_type="auth",\n        entity_id=user.id,\n        payload={"ip": request.client.host if request.client else None},\n    )\n    db.commit()\n    flash(request, f"Bem-vindo, {user.name.split()[0]}.")
+    login_user(request, user)
+    write_audit(
+        db,
+        user=user,
+        action="LOGIN_SUCCESS",
+        entity_type="auth",
+        entity_id=user.id,
+        payload={"ip": request.client.host if request.client else None},
+    )
+    db.commit()
+    flash(request, f"Bem-vindo, {user.name.split()[0]}.")
     destination = "/change-password" if user.must_change_password else "/dashboard"
     return RedirectResponse(destination, status_code=303)
 
@@ -107,7 +126,9 @@ def change_password(
             status_code=422,
         )
 
-    user.must_change_password = False\n    write_audit(db, user=user, action="PASSWORD_CHANGED", entity_type="user", entity_id=user.id)\n    db.commit()
+    user.must_change_password = False
+    write_audit(db, user=user, action="PASSWORD_CHANGED", entity_type="user", entity_id=user.id)
+    db.commit()
     flash(request, "Senha alterada com segurança.")
     return RedirectResponse("/dashboard", status_code=303)
 
