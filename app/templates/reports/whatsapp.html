@@ -128,10 +128,10 @@
   <section class="report-kpis">
     <article class="report-kpi"><span>Atendimentos</span><strong>{{ report.kpis.conversations }}</strong><small>{{ report.kpis.active }} ativos · {{ report.kpis.closed }} encerrados</small></article>
     <article class="report-kpi"><span>Mensagens</span><strong>{{ report.kpis.messages }}</strong><small>{{ report.kpis.inbound }} entrada · {{ report.kpis.outbound }} saída</small></article>
-    <article class="report-kpi emphasis"><span>1ª resposta média</span><strong>{{ format_duration(report.kpis.avg_first_response_seconds) }}</strong><small>Mediana {{ format_duration(report.kpis.median_first_response_seconds) }}</small></article>
-    <article class="report-kpi"><span>Tempo médio de resposta</span><strong>{{ format_duration(report.kpis.avg_reply_seconds) }}</strong><small>Entre fala do cliente e próxima resposta</small></article>
+    <article class="report-kpi emphasis"><span>TME · primeira resposta</span><strong>{{ format_duration(report.kpis.avg_first_response_seconds) }}</strong><small>Mediana {{ format_duration(report.kpis.median_first_response_seconds) }}</small></article>
+    <article class="report-kpi"><span>TMR · tempo de resposta</span><strong>{{ format_duration(report.kpis.avg_reply_seconds) }}</strong><small>Entre fala do cliente e próxima resposta</small></article>
     <article class="report-kpi"><span>TMA · ciclo total</span><strong>{{ format_duration(report.kpis.avg_close_seconds) }}</strong><small>Abertura até encerramento</small></article>
-    <article class="report-kpi"><span>TME · atribuição</span><strong>{{ format_duration(report.kpis.avg_assignment_seconds) }}</strong><small>Abertura até primeiro responsável</small></article>
+    <article class="report-kpi"><span>Tempo até atribuição</span><strong>{{ format_duration(report.kpis.avg_assignment_seconds) }}</strong><small>Abertura até primeiro responsável</small></article>
     <article class="report-kpi"><span>Pendentes de resposta</span><strong>{{ report.kpis.pending_unanswered }}</strong><small>Espera média {{ format_duration(report.kpis.avg_pending_wait_seconds) }}</small></article>
     <article class="report-kpi"><span>Leitura</span><strong>{{ '%.1f'|format(report.kpis.read_rate) }}%</strong><small>Entrega {{ '%.1f'|format(report.kpis.delivery_rate) }}%</small></article>
   </section>
@@ -297,10 +297,10 @@
 
   <section class="report-definitions">
     <strong>Definições dos indicadores</strong>
-    <span><b>1ª resposta:</b> primeira mensagem do cliente → primeira resposta humana.</span>
-    <span><b>Tempo médio de resposta:</b> início de cada turno do cliente → próxima resposta do operador.</span>
+    <span><b>TME:</b> primeira mensagem do cliente → primeira resposta humana.</span>
+    <span><b>TMR:</b> início de cada turno do cliente → próxima resposta do operador.</span>
     <span><b>TMA · ciclo total:</b> abertura da conversa → encerramento. Não representa tempo ativo de tela do operador.</span>
-    <span><b>TME · atribuição:</b> abertura da conversa → primeira atribuição a um responsável.</span>
+    <span><b>Tempo até atribuição:</b> abertura da conversa → primeira atribuição a um responsável.</span>
   </section>
 </div>
 {% endblock %}
