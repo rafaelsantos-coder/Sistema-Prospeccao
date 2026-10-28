@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from app.database import get_db
 from app.models import (
@@ -343,15 +343,19 @@ async def send_media(
         conversation.lead.do_not_contact
         or conversation.lead.stage == "NAO_CONTATAR"
     ):
-        flash(request, "Este contato esta bloqueado para novas mensagens.", "warning")
-        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+        return JSONResponse(
+            {"ok": False, "error": "Este contato esta bloqueado para novas mensagens."},
+            status_code=403,
+        )
 
     original_name = Path(media.filename or "arquivo").name
     extension = Path(original_name).suffix.lower()
     blocked = {".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1", ".sh", ".apk", ".dmg"}
     if extension in blocked:
-        flash(request, "Este tipo de arquivo nao e permitido.", "error")
-        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+        return JSONResponse(
+            {"ok": False, "error": "Este tipo de arquivo nao e permitido."},
+            status_code=400,
+        )
 
     raw = await media.read()
     mime_type = (media.content_type or "application/octet-stream").split(";")[0].strip()
@@ -365,8 +369,7 @@ async def send_media(
                 mime_type=mime_type,
             )
         except MediaProcessingError as exc:
-            flash(request, str(exc), "error")
-            return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     storage = MediaStorage()
     try:
@@ -383,8 +386,7 @@ async def send_media(
             expires_seconds=3600,
         )
     except MediaStorageError as exc:
-        flash(request, str(exc), "error")
-        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     clean_caption = caption.strip()
     service = ZApiService()
@@ -445,8 +447,7 @@ async def send_media(
             },
         )
         db.commit()
-        flash(request, str(exc), "error")
-        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
 
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
@@ -492,7 +493,14 @@ async def send_media(
         },
     )
     db.commit()
-    return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+    return JSONResponse(
+        {
+            "ok": True,
+            "message_id": sent.id,
+            "provider_message_id": provider_id,
+            "type": kind,
+        }
+    )
 
 
 @router.get("/conversations/messages/{message_id}/media")
