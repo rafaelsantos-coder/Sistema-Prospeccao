@@ -104,6 +104,16 @@ def _inbox_query(db: Session, user: User, *, q: str, view: str) -> list[Conversa
     return list(db.scalars(stmt))
 
 
+def _inbox_counts(db: Session, user: User) -> dict[str, int]:
+    scoped = list(db.scalars(apply_conversation_scope(select(Conversation), user)))
+    return {
+        "active": sum(1 for item in scoped if item.status in OPEN_CONVERSATION_STATUSES),
+        "unread": sum(1 for item in scoped if item.unread_count > 0),
+        "closed": sum(1 for item in scoped if item.status in CLOSED_CONVERSATION_STATUSES),
+        "queue": sum(1 for item in scoped if item.assigned_user_id is None),
+    }
+
+
 def _render_inbox(
     request: Request,
     db: Session,
@@ -140,14 +150,7 @@ def _render_inbox(
         if user.role in {"ADMIN", "GESTOR", "SUPERVISOR"}:
             users = _eligible_users(db, user, selected)
 
-    counts_base = apply_conversation_scope(select(Conversation), user)
-    scoped = list(db.scalars(counts_base))
-    counts = {
-        "active": sum(1 for item in scoped if item.status in OPEN_CONVERSATION_STATUSES),
-        "unread": sum(1 for item in scoped if item.unread_count > 0),
-        "closed": sum(1 for item in scoped if item.status in CLOSED_CONVERSATION_STATUSES),
-        "queue": sum(1 for item in scoped if item.assigned_user_id is None),
-    }
+    counts = _inbox_counts(db, user)
     return render(
         request,
         "conversations/inbox.html",
@@ -426,6 +429,39 @@ def update_conversation_status(
     )
     db.commit()
     return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+
+@router.get("/api/conversations/inbox")
+def conversation_inbox_api(
+    request: Request,
+    q: str = "",
+    view: str = "active",
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    conversations = _inbox_query(db, user, q=q, view=view)
+    return {
+        "counts": _inbox_counts(db, user),
+        "items": [
+            {
+                "id": item.id,
+                "name": (
+                    item.contact.business_name
+                    or item.contact.name
+                    or item.contact.phone
+                ),
+                "phone": item.contact.phone,
+                "preview": item.last_message_preview or "Conversa iniciada",
+                "owner": item.assigned_user.name if item.assigned_user else "Fila sem responsável",
+                "status": item.status,
+                "unread_count": int(item.unread_count or 0),
+                "last_message_at": item.last_message_at.isoformat() if item.last_message_at else None,
+            }
+            for item in conversations
+        ],
+    }
 
 
 @router.get("/api/conversations/{conversation_id}/messages")
