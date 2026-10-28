@@ -71,11 +71,11 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label class="field"><span>Nome da campanha</span><input name="name" required placeholder="Ex.: Clínicas de Santa Rosa — Fibra + Voz"></label>
       <label class="field"><span>Segmento</span><input name="segment" placeholder="Ex.: clínicas, mercados, indústrias"></label>
-      <label class="field"><span>Mensagem inicial</span><textarea name="message" rows="7" maxlength="4096" required placeholder="Olá, {{nome}}! Tudo bem?
+      <label class="field"><span>Mensagem inicial</span><textarea name="message" rows="7" maxlength="4096" required placeholder="Olá, {{ '{{nome}}' }}! Tudo bem?
 
-Aqui é da Sulnet. Estamos conversando com empresas de {{segmento}} em {{cidade}} e gostaria de entender como está a conectividade da {{empresa}}.
+Aqui é da Sulnet. Estamos conversando com empresas de {{ '{{segmento}}' }} em {{ '{{cidade}}' }} e gostaria de entender como está a conectividade da {{ '{{empresa}}' }}.
 
-Posso te fazer duas perguntas rápidas?"></textarea><small>Variáveis disponíveis: {{nome}}, {{empresa}}, {{cidade}}, {{segmento}}</small></label>
+Posso te fazer duas perguntas rápidas?"></textarea><small>Variáveis disponíveis: {{ '{{nome}}' }}, {{ '{{empresa}}' }}, {{ '{{cidade}}' }}, {{ '{{segmento}}' }}</small></label>
       <div class="form-grid">
         <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
         <label class="field"><span>Canal</span><select name="channel"><option value="WHATSAPP">WhatsApp</option><option value="EMAIL">E-mail</option></select></label>
