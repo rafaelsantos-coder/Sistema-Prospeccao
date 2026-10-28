@@ -13,8 +13,7 @@ from app.database import get_db
 from app.models import Activity, Lead
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
-from app.services.followups import next_followup_after
-from app.services.metrics import apply_user_scope
+from app.services.conversation_engine import (\n    ensure_contact,\n    ensure_open_conversation,\n    register_message,\n    store_received_payload,\n    update_message_statuses,\n)\nfrom app.services.followups import next_followup_after\nfrom app.services.metrics import apply_user_scope
 from app.services.scoring import normalize_phone
 from app.services.zapi import ZApiError, ZApiService
 from app.timeutils import utcnow
@@ -106,52 +105,92 @@ async def zapi_webhook(
         settings.zapi_instance_id,
     }:
         return {"ok": True, "ignored": "instance"}
-    if payload.get("fromMe") or payload.get("isGroup") or payload.get("isNewsletter"):
-        return {"ok": True, "ignored": "non_direct_inbound"}
+    if payload.get("isGroup") or payload.get("isNewsletter"):
+        return {"ok": True, "ignored": "non_direct"}
 
-    message = _extract_message(payload)
-    if not message:
-        return {"ok": True, "ignored": "status_or_unsupported"}
-    lead = _lead_by_phone(db, payload.get("phone") or payload.get("participantPhone"))
-    if not lead:
-        return {"ok": True, "matched": False}
-
-    now = utcnow()
-    lower_message = message.casefold()
-    opt_out = any(term in lower_message for term in OPT_OUT_TERMS)
-    provider_id = _provider_message_id(payload)
-    outcome = "RECEBIDA_ZAPI"
-    if provider_id:
-        outcome = f"{outcome}:{provider_id}"[:120]
-    db.add(
-        Activity(
-            lead_id=lead.id,
-            user_id=None,
-            kind="WHATSAPP",
-            status="CONCLUIDA",
-            channel="WHATSAPP",
-            outcome=outcome,
-            description=f"Mensagem recebida via Z-API: {message}",
-            completed_at=now,
+    if payload.get("type") == "MessageStatusCallback" or payload.get("ids"):
+        updated = update_message_statuses(db, payload)
+        write_audit(
+            db,
+            user=None,
+            action="ZAPI_MESSAGE_STATUS",
+            entity_type="integration",
+            entity_id="zapi",
+            payload={"status": payload.get("status"), "updated": updated},
         )
-    )
-    lead.last_contact_at = now
-    lead.next_action_at = None
-    if opt_out:
-        lead.do_not_contact = True
-        lead.stage = "NAO_CONTATAR"
-    elif lead.stage in {"NOVO", "TENTATIVA_CONTATO"}:
-        lead.stage = "CONTATO_REALIZADO"
-    write_audit(
-        db,
-        user=None,
-        action="ZAPI_MESSAGE_RECEIVED",
-        entity_type="lead",
-        entity_id=lead.id,
-        payload={"provider_message_id": provider_id, "opt_out": opt_out},
-    )
+        db.commit()
+        return {"ok": True, "status_updated": updated}
+
+    conversation, message, created = store_received_payload(db, payload)
+    if not conversation or not message:
+        db.commit()
+        return {"ok": True, "ignored": "unsupported_or_unmatched"}
+
+    opt_out = False
+    if created and message.direction == "INBOUND":
+        lower_message = (message.body or "").casefold()
+        opt_out = any(term in lower_message for term in OPT_OUT_TERMS)
+        lead = conversation.lead
+        if lead:
+            now = utcnow()
+            provider_id = message.provider_message_id or ""
+            outcome = "RECEBIDA_ZAPI"
+            if provider_id:
+                outcome = f"{outcome}:{provider_id}"[:120]
+            db.add(
+                Activity(
+                    lead_id=lead.id,
+                    user_id=None,
+                    kind="WHATSAPP",
+                    status="CONCLUIDA",
+                    channel="WHATSAPP",
+                    outcome=outcome,
+                    description=f"Mensagem recebida via Z-API: {message.body}",
+                    completed_at=now,
+                )
+            )
+            lead.last_contact_at = now
+            lead.next_action_at = None
+            if opt_out:
+                lead.do_not_contact = True
+                lead.stage = "NAO_CONTATAR"
+            elif lead.stage in {"NOVO", "TENTATIVA_CONTATO"}:
+                lead.stage = "CONTATO_REALIZADO"
+        if opt_out:
+            conversation.status = "BLOQUEADO"
+            conversation.closed_at = utcnow()
+        write_audit(
+            db,
+            user=None,
+            action="CONVERSATION_MESSAGE_RECEIVED",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={
+                "message_id": message.id,
+                "provider_message_id": message.provider_message_id,
+                "opt_out": opt_out,
+            },
+        )
+    elif created:
+        write_audit(
+            db,
+            user=None,
+            action="CONVERSATION_EXTERNAL_OUTBOUND_CAPTURED",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={
+                "message_id": message.id,
+                "provider_message_id": message.provider_message_id,
+            },
+        )
     db.commit()
-    return {"ok": True, "matched": True, "opt_out": opt_out}
+    return {
+        "ok": True,
+        "conversation_id": conversation.id,
+        "message_id": message.id,
+        "created": created,
+        "opt_out": opt_out,
+    }
 
 
 @router.post("/settings/zapi/configure-webhook")
@@ -240,14 +279,33 @@ def send_lead_whatsapp(
     if not lead.phone:
         flash(request, "O lead nao possui telefone cadastrado.", "warning")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    clean_message = message.strip()
     try:
-        result = ZApiService().send_text(phone=lead.phone, message=message)
+        result = ZApiService().send_text(phone=lead.phone, message=clean_message)
     except ZApiError as exc:
         flash(request, str(exc), "error")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
 
+    try:
+        contact = ensure_contact(db, lead.phone, lead=lead)
+    except ValueError:
+        flash(request, "Telefone invalido para o WhatsApp.", "error")
+        return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    conversation = ensure_open_conversation(db, contact, lead=lead, source=lead.source)
     now = utcnow()
     provider_id = _provider_message_id(result)
+    zaap_id = str(result.get("zaapId") or "").strip() or None
+    stored = register_message(
+        db,
+        conversation,
+        direction="OUTBOUND",
+        message_type="TEXT",
+        body=clean_message,
+        sender_user_id=user.id,
+        provider_message_id=provider_id or None,
+        provider_zaap_id=zaap_id,
+        status="SENT",
+    )
     outcome = "ENVIADA_ZAPI"
     if provider_id:
         outcome = f"{outcome}:{provider_id}"[:120]
@@ -259,7 +317,7 @@ def send_lead_whatsapp(
             status="CONCLUIDA",
             channel="WHATSAPP",
             outcome=outcome,
-            description=f"Mensagem enviada via Z-API: {message.strip()}",
+            description=f"Mensagem enviada via Z-API: {clean_message}",
             completed_at=now,
         )
     )
@@ -271,13 +329,13 @@ def send_lead_whatsapp(
         db,
         user=user,
         action="ZAPI_MESSAGE_SENT",
-        entity_type="lead",
-        entity_id=lead.id,
-        payload={"provider_message_id": provider_id},
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={"provider_message_id": provider_id, "message_id": stored.id},
     )
     db.commit()
-    flash(request, "Mensagem enviada e registrada no historico do lead.")
-    return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    flash(request, "Mensagem enviada e registrada na conversa.")
+    return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
 
 @router.get("/api/integrations/zapi/status")
