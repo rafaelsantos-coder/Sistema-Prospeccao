@@ -22,6 +22,7 @@ def normalize_database_url(value: str) -> str:
 class Settings:
     app_name: str = os.getenv("APP_NAME", "Sulnet Prospecta")
     app_env: str = os.getenv("APP_ENV", "development")
+    app_public_url: str = os.getenv("APP_PUBLIC_URL", "").rstrip("/")
     secret_key: str = os.getenv("SECRET_KEY", "dev-only-change-this-secret")
     database_url: str = normalize_database_url(
         os.getenv(
@@ -35,9 +36,11 @@ class Settings:
     bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "Sulnet@2026!")
     apify_token: str = os.getenv("APIFY_TOKEN", "")
     apify_actor_id: str = os.getenv("APIFY_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
-    evolution_base_url: str = os.getenv("EVOLUTION_BASE_URL", "")
-    evolution_api_key: str = os.getenv("EVOLUTION_API_KEY", "")
-    evolution_instance: str = os.getenv("EVOLUTION_INSTANCE", "")
+    zapi_base_url: str = os.getenv("ZAPI_BASE_URL", "https://api.z-api.io")
+    zapi_instance_id: str = os.getenv("ZAPI_INSTANCE_ID", "")
+    zapi_instance_token: str = os.getenv("ZAPI_INSTANCE_TOKEN", "")
+    zapi_client_token: str = os.getenv("ZAPI_CLIENT_TOKEN", "")
+    zapi_webhook_secret: str = os.getenv("ZAPI_WEBHOOK_SECRET", "")
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")
     resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "")
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "America/Sao_Paulo")
@@ -47,12 +50,18 @@ class Settings:
         return self.app_env.lower() == "production"
 
     @property
+    def zapi_webhook_url(self) -> str:
+        if not self.app_public_url or not self.zapi_webhook_secret:
+            return ""
+        return f"{self.app_public_url}/webhooks/zapi/{self.zapi_webhook_secret}"
+
+    @property
     def integrations(self) -> dict[str, bool]:
+        zapi_configured = bool(self.zapi_instance_id and self.zapi_instance_token)
         return {
             "apify": bool(self.apify_token),
-            "whatsapp": bool(
-                self.evolution_base_url and self.evolution_api_key and self.evolution_instance
-            ),
+            "zapi": zapi_configured,
+            "whatsapp": zapi_configured,
             "email": bool(self.resend_api_key and self.resend_from_email),
         }
 
@@ -72,5 +81,13 @@ def validate_production_settings() -> None:
         errors.append("BOOTSTRAP_ADMIN_PASSWORD deve ter ao menos 12 caracteres")
     if not settings.database_url.startswith("postgresql+psycopg://"):
         errors.append("DATABASE_URL deve apontar para PostgreSQL em produção")
+    zapi_values = [settings.zapi_instance_id, settings.zapi_instance_token]
+    if any(zapi_values) and not all(zapi_values):
+        errors.append("ZAPI_INSTANCE_ID e ZAPI_INSTANCE_TOKEN devem ser configurados juntos")
+    if all(zapi_values):
+        if not settings.app_public_url.startswith("https://"):
+            errors.append("APP_PUBLIC_URL deve usar HTTPS quando a Z-API estiver configurada")
+        if len(settings.zapi_webhook_secret) < 24:
+            errors.append("ZAPI_WEBHOOK_SECRET deve ter ao menos 24 caracteres")
     if errors:
         raise RuntimeError("Configuração de produção inválida: " + "; ".join(errors))
