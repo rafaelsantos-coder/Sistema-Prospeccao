@@ -149,6 +149,19 @@ def ensure_open_conversation(
             conversation.lead_id = lead.id
             conversation.branch_id = lead.branch_id
             conversation.team = lead.team
+        if not conversation.assigned_user_id:
+            owner = choose_assignee(db, contact, lead)
+            if owner:
+                conversation.assigned_user_id = owner.id
+                conversation.status = "ATRIBUIDO"
+                db.add(
+                    ConversationAssignment(
+                        conversation_id=conversation.id,
+                        user_id=owner.id,
+                        assigned_by_id=None,
+                        event="AUTO_ASSIGNED",
+                    )
+                )
         return conversation
 
     owner = choose_assignee(db, contact, lead)
@@ -310,6 +323,10 @@ def store_received_payload(db: Session, payload: dict[str, Any]) -> tuple[Conver
                 existing.status = str(payload["status"]).upper()
             return existing.conversation, existing, False
 
+    message_type, body, media_url, mime_type = payload_message_content(payload)
+    if not body and message_type == "UNKNOWN":
+        return None, None, False
+
     lead = find_lead_by_phone(db, normalized)
     sender_name = str(payload.get("senderName") or payload.get("chatName") or "").strip()
     contact = ensure_contact(
@@ -320,9 +337,6 @@ def store_received_payload(db: Session, payload: dict[str, Any]) -> tuple[Conver
         business_name=lead.business_name if lead else sender_name,
     )
     conversation = ensure_open_conversation(db, contact, lead=lead, source="WHATSAPP")
-    message_type, body, media_url, mime_type = payload_message_content(payload)
-    if not body and message_type == "UNKNOWN":
-        return conversation, None, False
 
     from_me = bool(payload.get("fromMe"))
     direction = "OUTBOUND" if from_me else "INBOUND"
