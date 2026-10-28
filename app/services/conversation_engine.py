@@ -214,6 +214,8 @@ def ensure_open_conversation(
     )
     db.add(conversation)
     db.flush()
+    if owner and lead and lead.assigned_user_id != owner.id:
+        lead.assigned_user_id = owner.id
     db.add(
         ConversationAssignment(
             conversation_id=conversation.id,
@@ -258,7 +260,7 @@ def distribute_waiting_conversations(
         conversation.assigned_user_id = owner.id
         if conversation.status in {"NOVO", "EM_FILA"}:
             conversation.status = "ATRIBUIDO"
-        if lead and not lead.assigned_user_id:
+        if lead and lead.assigned_user_id != owner.id:
             lead.assigned_user_id = owner.id
         db.add(
             ConversationAssignment(
