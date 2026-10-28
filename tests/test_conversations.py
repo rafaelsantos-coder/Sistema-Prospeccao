@@ -5,6 +5,8 @@ import re
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.models import Conversation, User
+from app.services.conversation_engine import conversation_visible_to_user
 from app.services.zapi import ZApiService
 
 
@@ -86,3 +88,13 @@ def test_inbox_requires_login():
         response = client.get("/conversations", follow_redirects=False)
         assert response.status_code == 303
         assert response.headers["location"] == "/login"
+
+
+def test_consultant_cannot_see_another_consultants_conversation():
+    owner = User(id=101, name="Consultor A", email="a@example.com", password_hash="x", role="CONSULTOR", team="B2B")
+    other = User(id=102, name="Consultor B", email="b@example.com", password_hash="x", role="CONSULTOR", team="B2B")
+    admin = User(id=1, name="Admin", email="admin@example.com", password_hash="x", role="ADMIN", team="LOJA")
+    conversation = Conversation(id=900, contact_id=1, assigned_user_id=owner.id, team="B2B", status="EM_ATENDIMENTO")
+    assert conversation_visible_to_user(conversation, owner) is True
+    assert conversation_visible_to_user(conversation, other) is False
+    assert conversation_visible_to_user(conversation, admin) is True
