@@ -15,6 +15,7 @@
       <div class="integration-row"><div class="integration-logo">A</div><div><strong>Apify</strong><span>Busca de empresas no Google Maps</span></div><span class="connection-status {% if integrations.apify %}on{% endif %}">{% if integrations.apify %}Conectado{% else %}Pendente{% endif %}</span></div>
       <div class="integration-row"><div class="integration-logo">Z</div><div><strong>Z-API</strong><span>Envio e recebimento de mensagens no WhatsApp</span></div><span class="connection-status {% if zapi_status.connected %}on{% endif %}">{% if zapi_status.connected %}Conectado{% elif zapi_status.configured %}Desconectado{% else %}Pendente{% endif %}</span></div>
       <div class="integration-row"><div class="integration-logo">R</div><div><strong>Resend</strong><span>Envio de e-mails comerciais</span></div><span class="connection-status {% if integrations.email %}on{% endif %}">{% if integrations.email %}Conectado{% else %}Pendente{% endif %}</span></div>
+      <div class="integration-row"><div class="integration-logo">AI</div><div><strong>OpenAI / SulIA</strong><span>Agente SDR em Shadow Mode</span></div><span class="connection-status {% if integrations.ai_sdr %}on{% endif %}">{% if integrations.ai_sdr %}Conectado{% elif integrations.openai %}Configurado{% else %}Pendente{% endif %}</span></div>
       <div class="integration-row"><div class="integration-logo">L</div><div><strong>Motor legado</strong><span>Scripts originais do repositório</span></div><span class="connection-status {% if legacy_available %}on{% endif %}">{% if legacy_available %}Disponível{% else %}Modo compatível{% endif %}</span></div>
     </div>
     {% if zapi_status.configured %}
@@ -117,7 +118,7 @@
           <div class="field field-span-2">
             <span>Usuários da fila</span>
             <div class="queue-create-user-grid">
-              {% for item in users %}
+              {% for item in human_users %}
               <label class="queue-create-user">
                 <input type="checkbox" name="member_user_ids" value="{{ item.id }}">
                 <span class="avatar">{{ item.name[:1]|upper }}</span>
