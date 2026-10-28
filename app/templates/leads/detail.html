@@ -98,6 +98,10 @@ Posso te explicar rapidamente as opções disponíveis?</textarea></label>
         <button class="button button-primary full-width" type="submit">Enviar pelo WhatsApp</button>
       </form>
       <div class="info-box compact"><strong>Envio controlado</strong><p>A mensagem será registrada no histórico e os próximos contatos serão interrompidos quando houver resposta.</p></div>
+      <form action="/leads/{{ lead.id }}/conversation" method="post" style="margin-top: 10px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-dark full-width" type="submit">Abrir no Inbox de Conversas</button>
+      </form>
       {% else %}
       <div class="info-box compact"><strong>Integração pendente</strong><p>A Z-API ainda não está disponível neste ambiente.</p></div>
       {% endif %}

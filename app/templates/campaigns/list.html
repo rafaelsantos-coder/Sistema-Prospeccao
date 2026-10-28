@@ -29,7 +29,7 @@
   <div class="panel-header table-title"><div><span class="eyebrow">CAMPANHAS</span><h3>Sequências cadastradas</h3></div></div>
   <div class="data-table-wrap">
     <table class="data-table">
-      <thead><tr><th>Campanha</th><th>Público</th><th>Canal</th><th>Limite</th><th>Unidade</th><th>Status</th><th>Ações</th></tr></thead>
+      <thead><tr><th>Campanha</th><th>Público</th><th>Canal</th><th>Limite</th><th>Fila</th><th>Unidade</th><th>Status</th><th>Ações</th></tr></thead>
       <tbody>
       {% for campaign in campaigns %}
         <tr>
@@ -37,20 +37,27 @@
           <td>{{ campaign.segment or 'Todos os segmentos' }}<span class="table-subline">{{ constants.teams.get(campaign.team, campaign.team) if campaign.team else 'Todas as equipes' }}</span></td>
           <td><span class="soft-badge">{{ constants.channels.get(campaign.channel, campaign.channel) }}</span></td>
           <td>{{ campaign.daily_limit }}/dia</td>
+          {% set cq = queue_counts.get(campaign.id, {}) %}
+          <td><strong>{{ cq.get('sent', 0) }}/{{ cq.get('total', 0) }}</strong><span class="table-subline">{{ cq.get('pending', 0) }} pendentes · {{ cq.get('failed', 0) }} falhas</span></td>
           <td>{{ campaign.branch.city if campaign.branch else 'Todas' }}</td>
           <td><span class="campaign-status status-{{ campaign.status|lower }}">{{ campaign.status|replace('_',' ')|title }}</span></td>
           <td>
             <div class="row-actions">
             {% if campaign.status == 'RASCUNHO' and current_user.role in ['ADMIN','GESTOR'] %}
               <form action="/campaigns/{{ campaign.id }}/approve" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="mini-button success">Aprovar</button></form>
-            {% elif campaign.status in ['APROVADA','ATIVA'] %}
+            {% elif campaign.status == 'APROVADA' %}
+              <form action="/campaigns/{{ campaign.id }}/enqueue" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="mini-button success">Preparar e iniciar</button></form>
+            {% elif campaign.status == 'ATIVA' %}
+              <form action="/campaigns/{{ campaign.id }}/enqueue" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="mini-button success">Adicionar novos leads</button></form>
               <form action="/campaigns/{{ campaign.id }}/pause" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="mini-button">Pausar</button></form>
+            {% elif campaign.status == 'PAUSADA' %}
+              <form action="/campaigns/{{ campaign.id }}/resume" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="mini-button success">Retomar</button></form>
             {% else %}<span class="muted-text">—</span>{% endif %}
             </div>
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="7"><div class="empty-state"><strong>Nenhuma campanha cadastrada</strong><span>Crie uma régua de contato para iniciar.</span></div></td></tr>
+        <tr><td colspan="8"><div class="empty-state"><strong>Nenhuma campanha cadastrada</strong><span>Crie uma régua de contato para iniciar.</span></div></td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -64,13 +71,18 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label class="field"><span>Nome da campanha</span><input name="name" required placeholder="Ex.: Clínicas de Santa Rosa — Fibra + Voz"></label>
       <label class="field"><span>Segmento</span><input name="segment" placeholder="Ex.: clínicas, mercados, indústrias"></label>
+      <label class="field"><span>Mensagem inicial</span><textarea name="message" rows="7" maxlength="4096" required placeholder="Olá, {{ '{{nome}}' }}! Tudo bem?
+
+Aqui é da Sulnet. Estamos conversando com empresas de {{ '{{segmento}}' }} em {{ '{{cidade}}' }} e gostaria de entender como está a conectividade da {{ '{{empresa}}' }}.
+
+Posso te fazer duas perguntas rápidas?"></textarea><small>Variáveis disponíveis: {{ '{{nome}}' }}, {{ '{{empresa}}' }}, {{ '{{cidade}}' }}, {{ '{{segmento}}' }}</small></label>
       <div class="form-grid">
         <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
         <label class="field"><span>Canal</span><select name="channel"><option value="WHATSAPP">WhatsApp</option><option value="EMAIL">E-mail</option></select></label>
         <label class="field"><span>Limite diário</span><input type="number" name="daily_limit" min="1" max="200" value="30"></label>
         {% if current_user.role in ['ADMIN','GESTOR'] %}<label class="field"><span>Unidade</span><select name="branch_id"><option value="">Todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>{% endif %}
       </div>
-      <div class="info-box"><strong>Fluxo seguro</strong><p>A campanha será criada como rascunho e só poderá avançar após aprovação de um gestor. O envio real permanece desativado nesta primeira versão.</p></div>
+      <div class="info-box"><strong>Fluxo seguro</strong><p>A campanha nasce como rascunho, exige aprovação gerencial e só então cria uma fila persistente. O worker envia um contato por vez, respeita bloqueios, limite diário e registra cada mensagem no Inbox.</p></div>
       <div class="modal-actions"><button type="button" class="button button-ghost" data-modal-close>Cancelar</button><button type="submit" class="button button-primary">Criar rascunho</button></div>
     </form>
   </div>

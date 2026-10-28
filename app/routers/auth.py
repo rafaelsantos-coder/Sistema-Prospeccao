@@ -7,6 +7,7 @@ from starlette.responses import RedirectResponse
 
 from app.database import get_db
 from app.models import User
+from app.services.audit import write_audit
 from app.security import (
     get_current_user,
     hash_password,
@@ -41,6 +42,15 @@ def login(
     validate_csrf(request, csrf_token)
     user = db.scalar(select(User).where(User.email == email.strip().lower()))
     if not user or not user.active or not verify_password(password, user.password_hash):
+        write_audit(
+            db,
+            user=user if user and user.active else None,
+            action="LOGIN_FAILED",
+            entity_type="auth",
+            entity_id=user.id if user else None,
+            payload={"email": email.strip().lower(), "ip": request.client.host if request.client else None},
+        )
+        db.commit()
         return render(
             request,
             "login.html",
@@ -50,6 +60,15 @@ def login(
             status_code=422,
         )
     login_user(request, user)
+    write_audit(
+        db,
+        user=user,
+        action="LOGIN_SUCCESS",
+        entity_type="auth",
+        entity_id=user.id,
+        payload={"ip": request.client.host if request.client else None},
+    )
+    db.commit()
     flash(request, f"Bem-vindo, {user.name.split()[0]}.")
     destination = "/change-password" if user.must_change_password else "/dashboard"
     return RedirectResponse(destination, status_code=303)
@@ -108,6 +127,7 @@ def change_password(
         )
 
     user.must_change_password = False
+    write_audit(db, user=user, action="PASSWORD_CHANGED", entity_type="user", entity_id=user.id)
     db.commit()
     flash(request, "Senha alterada com segurança.")
     return RedirectResponse("/dashboard", status_code=303)
@@ -117,7 +137,19 @@ def change_password(
 def logout(
     request: Request,
     csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
 ):
     validate_csrf(request, csrf_token)
+    user = get_current_user(request, db)
+    if user:
+        write_audit(
+            db,
+            user=user,
+            action="LOGOUT",
+            entity_type="auth",
+            entity_id=user.id,
+            payload={"ip": request.client.host if request.client else None},
+        )
+        db.commit()
     logout_user(request)
     return RedirectResponse("/login", status_code=303)
