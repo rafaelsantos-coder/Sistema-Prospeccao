@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models import Conversation, User
 from app.services.conversation_engine import conversation_visible_to_user
+from app.services.media_storage import MediaStorage
 from app.services.zapi import ZApiService
 
 
@@ -116,3 +117,88 @@ def test_realtime_inbox_api_lists_new_conversation():
         payload = state.json()
         assert payload["counts"]["active"] >= 1
         assert any(item["name"] == "Clínica Horizonte" for item in payload["items"])
+
+
+def test_send_image_from_inbox(monkeypatch):
+    monkeypatch.setattr(
+        MediaStorage,
+        "upload_bytes",
+        lambda self, **kwargs: ("s3://conversationmedia/test/foto.jpg", "foto.jpg"),
+    )
+    monkeypatch.setattr(
+        MediaStorage,
+        "presigned_download_url",
+        lambda self, value, **kwargs: "https://signed.example/foto.jpg",
+    )
+    monkeypatch.setattr(
+        ZApiService,
+        "send_image",
+        lambda self, *, phone, image_url, caption="": {
+            "messageId": "TEST-IMAGE-1",
+            "zaapId": "TEST-ZAAP-IMAGE-1",
+        },
+    )
+    with TestClient(app) as client:
+        _login(client)
+        lead = client.get("/leads/1")
+        token = _csrf(lead.text)
+        opened = client.post(
+            "/leads/1/conversation",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        location = opened.headers["location"]
+        inbox = client.get(location)
+        token = _csrf(inbox.text)
+        sent = client.post(
+            f"{location}/media",
+            data={"csrf_token": token, "caption": "Foto de teste"},
+            files={"media": ("foto.jpg", b"fake-jpeg", "image/jpeg")},
+        )
+        assert sent.status_code == 200
+        assert sent.json()["ok"] is True
+        page = client.get(location)
+        assert "Foto de teste" in page.text
+        assert "message-media-preview" in page.text
+
+
+def test_send_audio_from_inbox(monkeypatch):
+    monkeypatch.setattr(
+        MediaStorage,
+        "upload_bytes",
+        lambda self, **kwargs: ("s3://conversationmedia/test/audio.ogg", "audio.ogg"),
+    )
+    monkeypatch.setattr(
+        MediaStorage,
+        "presigned_download_url",
+        lambda self, value, **kwargs: "https://signed.example/audio.ogg",
+    )
+    monkeypatch.setattr(
+        ZApiService,
+        "send_audio",
+        lambda self, *, phone, audio_url: {
+            "messageId": "TEST-AUDIO-1",
+            "zaapId": "TEST-ZAAP-AUDIO-1",
+        },
+    )
+    with TestClient(app) as client:
+        _login(client)
+        lead = client.get("/leads/1")
+        token = _csrf(lead.text)
+        opened = client.post(
+            "/leads/1/conversation",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        location = opened.headers["location"]
+        inbox = client.get(location)
+        token = _csrf(inbox.text)
+        sent = client.post(
+            f"{location}/media",
+            data={"csrf_token": token, "caption": ""},
+            files={"media": ("audio.ogg", b"fake-ogg", "audio/ogg")},
+        )
+        assert sent.status_code == 200
+        assert sent.json()["type"] == "AUDIO"
+        page = client.get(location)
+        assert "message-audio-wrap" in page.text
