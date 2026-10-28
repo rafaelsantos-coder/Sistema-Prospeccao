@@ -7,10 +7,11 @@ from starlette.responses import RedirectResponse
 
 from app.config import settings
 from app.database import get_db
-from app.models import AuditLog, Branch, Target, User
+from app.models import AuditLog, Branch, ServiceQueue, ServiceQueueMember, Target, User
 from app.security import get_current_user, hash_password, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.legacy_adapter import legacy_modules_available, rate_status
+from app.services.queue_routing import queue_summary
 from app.services.zapi import ZApiError, ZApiService
 from app.web import render
 
@@ -28,6 +29,25 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     branches = list(db.scalars(select(Branch).order_by(Branch.city)))
     users = list(db.scalars(select(User).order_by(User.name)))
     targets = list(db.scalars(select(Target).order_by(Target.team)))
+    queues = list(
+        db.scalars(
+            select(ServiceQueue)
+            .options(
+                selectinload(ServiceQueue.branch),
+                selectinload(ServiceQueue.members).selectinload(ServiceQueueMember.user),
+            )
+            .order_by(ServiceQueue.name)
+        ).unique()
+    )
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            queues = [
+                item for item in queues
+                if item.branch_id in {None, user.branch_id}
+            ]
+        else:
+            queues = [item for item in queues if item.team == user.team]
+    queue_stats = {item.id: queue_summary(db, item) for item in queues}
     audit_logs = list(
         db.scalars(
             select(AuditLog)
@@ -61,6 +81,13 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         branches=branches,
         users=users,
         targets=targets,
+        queues=queues,
+        queue_stats=queue_stats,
+        routing_strategies={
+            "ROUND_ROBIN": "Carrossel / rodízio",
+            "LEAST_OPEN": "Menor número de atendimentos pendentes",
+            "MANUAL": "Somente distribuição manual",
+        },
         audit_logs=audit_logs,
         environment=settings.app_env,
     )
