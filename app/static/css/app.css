@@ -1546,3 +1546,74 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .queue-membership-badge,
   .queue-user-row form { grid-column: 2; justify-self: start; }
 }
+
+
+/* Conversation viewport layout */
+.page-content.conversation-page-content {
+  height: calc(100dvh - 86px);
+  max-width: none;
+  padding: 16px 24px;
+  overflow: hidden;
+}
+.conversation-page-content .inbox-shell {
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+}
+.conversation-page-content .inbox-list-panel,
+.conversation-page-content .chat-workspace,
+.conversation-page-content .chat-context-panel {
+  min-height: 0;
+}
+.conversation-page-content .conversation-list,
+.conversation-page-content .chat-stream,
+.conversation-page-content .chat-context-panel {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.conversation-page-content .conversation-list,
+.conversation-page-content .chat-context-panel {
+  overflow-y: auto;
+}
+.conversation-page-content .chat-compose,
+.conversation-page-content .chat-header {
+  flex: 0 0 auto;
+}
+.conversation-page-content .chat-context-panel {
+  height: 100%;
+}
+.conversation-page-content .conversation-list::-webkit-scrollbar,
+.conversation-page-content .chat-stream::-webkit-scrollbar,
+.conversation-page-content .chat-context-panel::-webkit-scrollbar {
+  width: 8px;
+}
+.conversation-page-content .conversation-list::-webkit-scrollbar-thumb,
+.conversation-page-content .chat-stream::-webkit-scrollbar-thumb,
+.conversation-page-content .chat-context-panel::-webkit-scrollbar-thumb {
+  background: #d8dde2;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.conversation-page-content .conversation-list,
+.conversation-page-content .chat-stream,
+.conversation-page-content .chat-context-panel {
+  scrollbar-width: thin;
+  scrollbar-color: #d8dde2 transparent;
+}
+
+@media (max-width: 760px) {
+  .page-content.conversation-page-content {
+    height: auto;
+    min-height: calc(100dvh - 86px);
+    padding: 14px;
+    overflow: visible;
+  }
+  .conversation-page-content .inbox-shell {
+    height: auto;
+    max-height: none;
+  }
+  .conversation-page-content .chat-context-panel {
+    height: auto;
+  }
+}
