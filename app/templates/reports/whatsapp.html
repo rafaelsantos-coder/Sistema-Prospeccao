@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="report-page">
+  <section class="report-hero">
+    <div>
+      <span class="eyebrow">INTELIGÊNCIA DE ATENDIMENTO</span>
+      <h2>Operação WhatsApp</h2>
+      <p>Consolidado de conversas, mensagens, tempos de resposta, produtividade e auditoria do canal.</p>
+    </div>
+    <div class="report-export-actions">
+      <a class="button button-secondary" href="/reports/whatsapp/export/report.pdf{% if query_string %}?{{ query_string }}{% endif %}">PDF gerencial</a>
+      <a class="button button-secondary" href="/reports/whatsapp/export/conversations.csv{% if query_string %}?{{ query_string }}{% endif %}">CSV conversas</a>
+      <a class="button button-secondary" href="/reports/whatsapp/export/messages.csv{% if query_string %}?{{ query_string }}{% endif %}">CSV mensagens</a>
+      <a class="button button-dark" href="/reports/whatsapp/export/audit.csv{% if query_string %}?{{ query_string }}{% endif %}">CSV auditoria</a>
+    </div>
+  </section>
+
+  <section class="report-filter-card">
+    <form method="get" action="/reports/whatsapp" class="report-filters">
+      <label class="field">
+        <span>De</span>
+        <input type="date" name="date_from" value="{{ filters.date_from }}">
+      </label>
+      <label class="field">
+        <span>Até</span>
+        <input type="date" name="date_to" value="{{ filters.date_to }}">
+      </label>
+      <label class="field report-search-wide">
+        <span>Buscar contato / empresa</span>
+        <input type="search" name="q" value="{{ filters.q }}" placeholder="Nome, empresa ou conteúdo">
+      </label>
+      <label class="field">
+        <span>Telefone do cliente</span>
+        <input type="search" name="phone" value="{{ filters.phone }}" placeholder="55 55 99999-9999">
+      </label>
+      <label class="field">
+        <span>Número WhatsApp do canal</span>
+        <select name="channel_phone">
+          <option value="">Todos</option>
+          {% for phone in report.connected_phones %}
+          <option value="{{ phone }}" {% if filters.channel_phone == phone %}selected{% endif %}>{{ phone|phone_br }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Operador</span>
+        <select name="operator_id">
+          <option value="">Todos</option>
+          {% for item in operators %}
+          <option value="{{ item.id }}" {% if filters.operator_id == item.id %}selected{% endif %}>{{ item.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Unidade</span>
+        <select name="branch_id">
+          <option value="">Todas</option>
+          {% for item in branches %}
+          <option value="{{ item.id }}" {% if filters.branch_id == item.id %}selected{% endif %}>{{ item.city }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Equipe</span>
+        <select name="team">
+          <option value="">Todas</option>
+          {% for key, label in constants.teams.items() %}
+          <option value="{{ key }}" {% if filters.team == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Status</span>
+        <select name="status">
+          <option value="">Todos</option>
+          {% for key, label in [
+            ('EM_FILA','Em fila'),
+            ('ATRIBUIDO','Atribuído'),
+            ('EM_ATENDIMENTO','Em atendimento'),
+            ('AGUARDANDO_CLIENTE','Aguardando cliente'),
+            ('AGUARDANDO_INTERNO','Aguardando interno'),
+            ('FOLLOW_UP','Follow-up'),
+            ('RESOLVIDO','Resolvido'),
+            ('ENCERRADO','Encerrado'),
+            ('BLOQUEADO','Bloqueado')
+          ] %}
+          <option value="{{ key }}" {% if filters.status == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Direção</span>
+        <select name="direction">
+          <option value="">Entrada e saída</option>
+          <option value="INBOUND" {% if filters.direction == 'INBOUND' %}selected{% endif %}>Entrada</option>
+          <option value="OUTBOUND" {% if filters.direction == 'OUTBOUND' %}selected{% endif %}>Saída</option>
+          <option value="INTERNAL" {% if filters.direction == 'INTERNAL' %}selected{% endif %}>Nota interna</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Tipo</span>
+        <select name="message_type">
+          <option value="">Todos os tipos</option>
+          {% for kind in ['TEXT','IMAGE','VIDEO','AUDIO','DOCUMENT','STICKER','LOCATION','CONTACT'] %}
+          <option value="{{ kind }}" {% if filters.message_type == kind %}selected{% endif %}>{{ kind }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="report-filter-actions">
+        <button class="button button-primary" type="submit">Aplicar filtros</button>
+        <a class="button button-secondary" href="/reports/whatsapp">Limpar</a>
+      </div>
+    </form>
+    <div class="report-quick-dates" data-report-dates>
+      <span>Períodos rápidos:</span>
+      <button type="button" data-days="0">Hoje</button>
+      <button type="button" data-days="6">7 dias</button>
+      <button type="button" data-days="29">30 dias</button>
+      <button type="button" data-month>Este mês</button>
+    </div>
+  </section>
+
+  {% if report.truncated %}
+  <div class="flash flash-warning">O resultado atingiu o limite operacional de 5.000 conversas. Refine os filtros para uma análise completa.</div>
+  {% endif %}
+
+  <section class="report-kpis">
+    <article class="report-kpi"><span>Atendimentos</span><strong>{{ report.kpis.conversations }}</strong><small>{{ report.kpis.active }} ativos · {{ report.kpis.closed }} encerrados</small></article>
+    <article class="report-kpi"><span>Mensagens</span><strong>{{ report.kpis.messages }}</strong><small>{{ report.kpis.inbound }} entrada · {{ report.kpis.outbound }} saída</small></article>
+    <article class="report-kpi emphasis"><span>TME · primeira resposta</span><strong>{{ format_duration(report.kpis.avg_first_response_seconds) }}</strong><small>Mediana {{ format_duration(report.kpis.median_first_response_seconds) }}</small></article>
+    <article class="report-kpi"><span>TMR · tempo de resposta</span><strong>{{ format_duration(report.kpis.avg_reply_seconds) }}</strong><small>Entre fala do cliente e próxima resposta</small></article>
+    <article class="report-kpi"><span>TMA · ciclo total</span><strong>{{ format_duration(report.kpis.avg_close_seconds) }}</strong><small>Abertura até encerramento</small></article>
+    <article class="report-kpi"><span>Tempo até atribuição</span><strong>{{ format_duration(report.kpis.avg_assignment_seconds) }}</strong><small>Abertura até primeiro responsável</small></article>
+    <article class="report-kpi"><span>Pendentes de resposta</span><strong>{{ report.kpis.pending_unanswered }}</strong><small>Espera média {{ format_duration(report.kpis.avg_pending_wait_seconds) }}</small></article>
+    <article class="report-kpi"><span>Leitura</span><strong>{{ '%.1f'|format(report.kpis.read_rate) }}%</strong><small>Entrega {{ '%.1f'|format(report.kpis.delivery_rate) }}%</small></article>
+  </section>
+
+  <div class="report-grid two">
+    <section class="report-panel">
+      <header>
+        <div><span class="eyebrow">SLA DE PRIMEIRA RESPOSTA</span><h3>Faixas de velocidade</h3></div>
+      </header>
+      {% set sla = report.kpis.first_reply_sla %}
+      {% set total_sla = sla.under_5m + sla.over_60m + (sla.under_60m - sla.under_15m) + (sla.under_15m - sla.under_5m) %}
+      <div class="sla-list">
+        {% set bands = [
+          ('Até 5 min', sla.under_5m),
+          ('5 a 15 min', sla.under_15m - sla.under_5m),
+          ('15 a 60 min', sla.under_60m - sla.under_15m),
+          ('Acima de 60 min', sla.over_60m)
+        ] %}
+        {% for label, value in bands %}
+        {% set pct = (value / total_sla * 100) if total_sla else 0 %}
+        <div class="sla-row">
+          <div><span>{{ label }}</span><strong>{{ value }}</strong></div>
+          <div class="sla-track"><i style="width: {{ '%.1f'|format(pct) }}%"></i></div>
+          <small>{{ '%.1f'|format(pct) }}%</small>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="metric-definition">
+        <strong>Como medimos:</strong> a primeira resposta começa na primeira mensagem do cliente e termina na primeira resposta humana registrada no chat.
+      </div>
+    </section>
+
+    <section class="report-panel">
+      <header>
+        <div><span class="eyebrow">VOLUME DIÁRIO</span><h3>Entrada, saída e novas conversas</h3></div>
+      </header>
+      <div class="report-daily-list">
+        {% for item in report.daily[-14:] %}
+        {% set peak = [item.inbound, item.outbound, item.conversations, 1]|max %}
+        <div class="daily-row">
+          <time>{{ item.date[8:10] }}/{{ item.date[5:7] }}</time>
+          <div class="daily-bars">
+            <span title="Entrada: {{ item.inbound }}"><i style="width: {{ (item.inbound / peak * 100)|round }}%"></i></span>
+            <span title="Saída: {{ item.outbound }}"><i style="width: {{ (item.outbound / peak * 100)|round }}%"></i></span>
+          </div>
+          <div class="daily-values"><b>{{ item.inbound }}</b><b>{{ item.outbound }}</b><small>+{{ item.conversations }} conv.</small></div>
+        </div>
+        {% else %}
+        <div class="report-empty">Sem movimentação no período selecionado.</div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <section class="report-panel">
+    <header class="report-panel-header">
+      <div><span class="eyebrow">PERFORMANCE</span><h3>Atendimento por operador</h3></div>
+      <span class="report-caption">A produtividade é atribuída ao operador que efetivamente enviou as respostas.</span>
+    </header>
+    <div class="table-wrap">
+      <table class="report-table">
+        <thead>
+          <tr><th>Operador</th><th>Conversas atendidas</th><th>Mensagens enviadas</th><th>1ªs respostas</th><th>Tempo 1ª resposta</th><th>Tempo resposta</th></tr>
+        </thead>
+        <tbody>
+          {% for item in report.operators %}
+          <tr>
+            <td><strong>{{ item.name }}</strong></td>
+            <td>{{ item.conversations }}</td>
+            <td>{{ item.outbound_messages }}</td>
+            <td>{{ item.first_response_count }}</td>
+            <td>{{ format_duration(item.avg_first_response_seconds) }}</td>
+            <td>{{ format_duration(item.avg_reply_seconds) }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="report-empty-cell">Nenhuma resposta de operador no período.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="report-panel">
+    <header class="report-panel-header">
+      <div><span class="eyebrow">ATENDIMENTOS</span><h3>Conversas e extratos</h3></div>
+      <span class="report-caption">{{ report.conversations|length }} conversa(s) no resultado</span>
+    </header>
+    <div class="table-wrap">
+      <table class="report-table conversations-report-table">
+        <thead>
+          <tr>
+            <th>Contato</th><th>Responsável</th><th>Status</th><th>Mensagens</th><th>1ª resposta</th><th>Resposta média</th><th>Aberta</th><th>Extrato</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in report.conversations %}
+          <tr>
+            <td>
+              <strong>{{ item.name }}</strong>
+              <small>{{ item.phone|phone_br }} · {{ item.branch }} · {{ item.team }}</small>
+            </td>
+            <td>{{ item.owner }}</td>
+            <td><span class="report-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
+            <td>{{ item.message_count }} <small>{{ item.inbound_count }}↓ · {{ item.outbound_count }}↑</small></td>
+            <td>{{ format_duration(item.first_response_seconds) }}</td>
+            <td>{{ format_duration(item.avg_reply_seconds) }}</td>
+            <td>{{ item.opened_at|datetime_br }}</td>
+            <td>
+              <div class="report-row-actions">
+                <a href="/conversations/{{ item.id }}" title="Abrir conversa">Chat</a>
+                <a href="/reports/whatsapp/conversations/{{ item.id }}.pdf" title="Exportar conversa completa em PDF">PDF</a>
+                <a href="/reports/whatsapp/conversations/{{ item.id }}.csv" title="Exportar conversa completa em CSV">CSV</a>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="8" class="report-empty-cell">Nenhuma conversa encontrada com estes filtros.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="report-grid two">
+    <section class="report-panel">
+      <header class="report-panel-header">
+        <div><span class="eyebrow">EXTRATO</span><h3>Últimas mensagens do período</h3></div>
+        <a class="report-inline-link" href="/reports/whatsapp/export/messages.csv{% if query_string %}?{{ query_string }}{% endif %}">Exportar tudo em CSV</a>
+      </header>
+      <div class="report-log-list">
+        {% for item in report.messages[:120] %}
+        <div class="report-message-log direction-{{ item.direction|lower }}">
+          <time>{{ item.created_at|datetime_br }}</time>
+          <span>{{ item.direction }}</span>
+          <strong>#{{ item.conversation_id }}</strong>
+          <p>{{ item.body or '[' ~ item.message_type ~ ']' }}</p>
+          <small>{{ item.message_type }} · {{ item.status }}{% if item.sender_user %} · {{ item.sender_user.name }}{% endif %}</small>
+        </div>
+        {% else %}
+        <div class="report-empty">Sem mensagens no período.</div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="report-panel">
+      <header class="report-panel-header">
+        <div><span class="eyebrow">AUDITORIA</span><h3>Logs operacionais do atendimento</h3></div>
+        <a class="report-inline-link" href="/reports/whatsapp/export/audit.csv{% if query_string %}?{{ query_string }}{% endif %}">Exportar logs</a>
+      </header>
+      <div class="report-log-list audit">
+        {% for item in report.audit_logs %}
+        <div class="report-audit-log">
+          <time>{{ item.created_at|datetime_br }}</time>
+          <strong>{{ item.action|replace('_',' ') }}</strong>
+          <p>Conversa #{{ item.entity_id }} · {{ item.user.name if item.user else 'Sistema' }}</p>
+        </div>
+        {% else %}
+        <div class="report-empty">Sem eventos de auditoria no período.</div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <section class="report-definitions">
+    <strong>Definições dos indicadores</strong>
+    <span><b>TME:</b> primeira mensagem do cliente → primeira resposta humana.</span>
+    <span><b>TMR:</b> início de cada turno do cliente → próxima resposta do operador.</span>
+    <span><b>TMA · ciclo total:</b> abertura da conversa → encerramento. Não representa tempo ativo de tela do operador.</span>
+    <span><b>Tempo até atribuição:</b> abertura da conversa → primeira atribuição a um responsável.</span>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const root = document.querySelector('[data-report-dates]');
+  if (!root) return;
+  const form = document.querySelector('.report-filters');
+  const from = form?.querySelector('[name="date_from"]');
+  const to = form?.querySelector('[name="date_to"]');
+  if (!form || !from || !to) return;
+
+  const iso = date => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + d;
+  };
+
+  root.querySelectorAll('[data-days]').forEach(button => {
+    button.addEventListener('click', () => {
+      const days = Number(button.dataset.days || 0);
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - days);
+      from.value = iso(start);
+      to.value = iso(end);
+      form.submit();
+    });
+  });
+
+  root.querySelector('[data-month]')?.addEventListener('click', () => {
+    const end = new Date();
+    const start = new Date(end.getFullYear(), end.getMonth(), 1);
+    from.value = iso(start);
+    to.value = iso(end);
+    form.submit();
+  });
+})();
+</script>
+{% endblock %}
