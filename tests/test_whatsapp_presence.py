@@ -211,6 +211,10 @@ def test_join_distributes_waiting_queue_to_online_group_member():
     with TestClient(app) as client:
         db = SessionLocal()
         try:
+            for presence in db.scalars(select(WhatsAppPresence)):
+                presence.status = "OFFLINE"
+                presence.last_left_at = utcnow()
+            db.flush()
             user = db.scalar(select(User).where(User.email == email))
             if not user:
                 user = User(
