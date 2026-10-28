@@ -1440,3 +1440,109 @@ button, a { -webkit-tap-highlight-color: transparent; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+
+/* Queue member controls and conversation transfer */
+.queue-create-user-grid,
+.queue-user-list {
+  display: grid;
+  gap: 8px;
+}
+.queue-create-user-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.queue-create-user {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px 32px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafbfc;
+  cursor: pointer;
+}
+.queue-create-user:has(input:checked) {
+  border-color: rgba(243,111,33,.38);
+  background: var(--orange-soft);
+}
+.queue-create-user input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--orange);
+}
+.queue-create-user strong,
+.queue-user-copy strong {
+  display: block;
+  color: var(--ink);
+  font-size: 9px;
+}
+.queue-create-user small,
+.queue-user-copy small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 7px;
+  line-height: 1.35;
+}
+.queue-user-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0,1fr) auto auto;
+  gap: 9px;
+  align-items: center;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafbfc;
+}
+.queue-user-row.is-member {
+  border-color: rgba(22,134,92,.22);
+  background: #f7fcf9;
+}
+.queue-user-copy {
+  min-width: 0;
+}
+.queue-membership-badge {
+  display: inline-flex;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #edf0f3;
+  color: #68717a;
+  font-size: 7px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.queue-membership-badge.active {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.mini-button.queue-remove {
+  border-color: rgba(200,70,70,.2);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.conversation-transfer-section {
+  background: linear-gradient(180deg,#fff,#fffaf6);
+}
+.conversation-transfer-button {
+  border-color: rgba(243,111,33,.32);
+  color: #c95d1c;
+  background: #fff8f3;
+}
+.conversation-transfer-button:hover {
+  border-color: rgba(243,111,33,.5);
+  background: var(--orange-soft);
+}
+.transfer-help {
+  display: block;
+  color: var(--muted);
+  font-size: 7px;
+  line-height: 1.4;
+}
+@media (max-width: 760px) {
+  .queue-create-user-grid { grid-template-columns: 1fr; }
+  .queue-user-row { grid-template-columns: 34px minmax(0,1fr); }
+  .queue-membership-badge,
+  .queue-user-row form { grid-column: 2; justify-self: start; }
+}

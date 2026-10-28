@@ -114,7 +114,19 @@
           <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
           <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Corporativo / todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
           <label class="field field-span-2"><span>Estratégia de distribuição</span><select name="routing_strategy">{% for key, label in routing_strategies.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
-          <label class="field field-span-2"><span>Usuários da fila</span><select name="member_user_ids" multiple size="6">{% for item in users %}<option value="{{ item.id }}">{{ item.name }} · {{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</option>{% endfor %}</select><small>Use Ctrl/Cmd para selecionar vários usuários.</small></label>
+          <div class="field field-span-2">
+            <span>Usuários da fila</span>
+            <div class="queue-create-user-grid">
+              {% for item in users %}
+              <label class="queue-create-user">
+                <input type="checkbox" name="member_user_ids" value="{{ item.id }}">
+                <span class="avatar">{{ item.name[:1]|upper }}</span>
+                <span><strong>{{ item.name }}</strong><small>{{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</small></span>
+              </label>
+              {% endfor %}
+            </div>
+            <small>Marque os usuários que já devem entrar na fila. Depois você poderá adicionar ou remover individualmente.</small>
+          </div>
           <label class="queue-check"><input type="checkbox" name="is_default_inbound" value="true"><span>Usar como fila padrão para novas mensagens espontâneas desta equipe/unidade</span></label>
         </div>
         <button class="button button-primary" type="submit">Criar fila</button>

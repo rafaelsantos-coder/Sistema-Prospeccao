@@ -78,23 +78,36 @@ def _eligible_users(db: Session, user: User, conversation: Conversation | None =
         return []
     stmt = select(User).where(
         User.active.is_(True),
+        User.role == "CONSULTOR",
         User.id.in_(online_ids),
     ).order_by(User.name)
     users = list(db.scalars(stmt))
+
     if conversation:
         service_queue = queue_for_conversation(db, conversation.id)
         if service_queue:
             member_ids = set(queue_member_user_ids(db, service_queue.id))
             users = [item for item in users if item.id in member_ids]
+        elif conversation.team:
+            users = [item for item in users if item.team == conversation.team]
+
     if user.role == "SUPERVISOR":
         if user.branch_id:
             users = [item for item in users if item.branch_id == user.branch_id]
         else:
             users = [item for item in users if item.team == user.team]
+    elif user.role == "CONSULTOR":
+        users = [item for item in users if item.team == user.team]
+        if user.branch_id:
+            users = [item for item in users if item.branch_id == user.branch_id]
+
     if conversation and conversation.branch_id:
         same_branch = [item for item in users if item.branch_id == conversation.branch_id]
         if same_branch:
             users = same_branch
+
+    if conversation and conversation.assigned_user_id:
+        users = [item for item in users if item.id != conversation.assigned_user_id]
     return users
 
 
@@ -173,8 +186,7 @@ def _render_inbox(
                 .limit(1000)
             )
         )
-        if user.role in {"ADMIN", "GESTOR", "SUPERVISOR"}:
-            users = _eligible_users(db, user, selected)
+        users = _eligible_users(db, user, selected)
 
     counts = _inbox_counts(db, user)
     return render(
@@ -612,7 +624,7 @@ def assign_conversation(
     if redirect:
         return redirect
     validate_csrf(request, csrf_token)
-    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR")
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -642,7 +654,9 @@ def assign_conversation(
         payload={"from_user_id": previous, "to_user_id": target.id},
     )
     db.commit()
-    flash(request, f"Conversa atribuida para {target.name}.")
+    flash(request, f"Conversa transferida para {target.name}.")
+    if user.role == "CONSULTOR":
+        return RedirectResponse("/conversations?view=active", status_code=303)
     return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
 
