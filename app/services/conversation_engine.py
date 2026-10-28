@@ -227,6 +227,53 @@ def ensure_open_conversation(
     return conversation
 
 
+def distribute_waiting_conversations(
+    db: Session,
+    *,
+    limit: int = 100,
+) -> int:
+    queued = list(
+        db.scalars(
+            select(Conversation)
+            .where(
+                Conversation.assigned_user_id.is_(None),
+                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            )
+            .order_by(
+                Conversation.opened_at.asc(),
+                Conversation.id.asc(),
+            )
+            .limit(max(1, min(limit, 500)))
+        )
+    )
+    assigned_count = 0
+    for conversation in queued:
+        contact = db.get(Contact, conversation.contact_id)
+        if not contact:
+            continue
+        lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
+        owner = choose_assignee(db, contact, lead)
+        if not owner:
+            continue
+        conversation.assigned_user_id = owner.id
+        if conversation.status in {"NOVO", "EM_FILA"}:
+            conversation.status = "ATRIBUIDO"
+        if lead and not lead.assigned_user_id:
+            lead.assigned_user_id = owner.id
+        db.add(
+            ConversationAssignment(
+                conversation_id=conversation.id,
+                user_id=owner.id,
+                assigned_by_id=None,
+                event="AUTO_ASSIGNED_QUEUE",
+            )
+        )
+        mark_whatsapp_assignment(db, owner.id)
+        assigned_count += 1
+    db.flush()
+    return assigned_count
+
+
 def apply_conversation_scope(stmt, user: User):
     if user.role in {"ADMIN", "GESTOR"}:
         return stmt
