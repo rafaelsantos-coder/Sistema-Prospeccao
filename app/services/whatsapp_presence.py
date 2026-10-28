@@ -58,7 +58,6 @@ def join_whatsapp(db: Session, user: User) -> WhatsAppPresence:
         row.joined_at = now
     row.status = "ONLINE"
     row.last_heartbeat_at = now
-    row.last_left_at = None
     db.flush()
     return row
 
