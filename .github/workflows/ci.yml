@@ -19,7 +19,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Instalar dependencias
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
       - name: Compilar modulos
         run: python -m compileall -q app
       - name: Executar testes
