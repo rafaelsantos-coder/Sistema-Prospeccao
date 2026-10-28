@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import Contact, User, WhatsAppPresence
+from app.models import Contact, Conversation, User, WhatsAppPresence
 from app.security import hash_password
 from app.services.conversation_engine import choose_assignee
 from app.services.whatsapp_presence import (
@@ -203,3 +203,102 @@ def test_logout_turns_presence_offline():
             assert row.status == "OFFLINE"
         finally:
             db.close()
+
+
+def test_join_distributes_waiting_queue_to_online_group_member():
+    password = "SenhaFila@2026"
+    email = "fila-b2b@sulnet.local"
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            user = db.scalar(select(User).where(User.email == email))
+            if not user:
+                user = User(
+                    name="Operador Fila B2B",
+                    email=email,
+                    password_hash=hash_password(password),
+                    role="CONSULTOR",
+                    team="B2B",
+                    active=True,
+                    must_change_password=False,
+                )
+                db.add(user)
+                db.flush()
+
+            contact = Contact(
+                phone="5555990000099",
+                name="Cliente da Fila",
+                business_name="Empresa da Fila",
+            )
+            db.add(contact)
+            db.flush()
+            conversation = Conversation(
+                contact_id=contact.id,
+                assigned_user_id=None,
+                team="B2B",
+                status="EM_FILA",
+                opened_at=utcnow(),
+            )
+            db.add(conversation)
+            db.commit()
+            conversation_id = conversation.id
+            user_id = user.id
+        finally:
+            db.close()
+
+        token = _login(client, email, password)
+        joined = client.post(
+            "/api/whatsapp-presence/join",
+            data={"csrf_token": token},
+        )
+        assert joined.status_code == 200
+        assert joined.json()["online"] is True
+
+        db = SessionLocal()
+        try:
+            conversation = db.get(Conversation, conversation_id)
+            assert conversation is not None
+            assert conversation.assigned_user_id == user_id
+            assert conversation.status == "ATRIBUIDO"
+        finally:
+            db.close()
+
+
+def test_consultant_inbox_api_stops_after_leaving_whatsapp():
+    password = "SenhaAPI@2026"
+    email = "api-presenca@sulnet.local"
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            user = db.scalar(select(User).where(User.email == email))
+            if not user:
+                user = User(
+                    name="Consultor API",
+                    email=email,
+                    password_hash=hash_password(password),
+                    role="CONSULTOR",
+                    team="B2B",
+                    active=True,
+                    must_change_password=False,
+                )
+                db.add(user)
+                db.commit()
+        finally:
+            db.close()
+
+        token = _login(client, email, password)
+        client.post(
+            "/api/whatsapp-presence/join",
+            data={"csrf_token": token},
+        )
+        online = client.get("/api/conversations/inbox")
+        assert online.status_code == 200
+
+        left = client.post(
+            "/api/whatsapp-presence/leave",
+            data={"csrf_token": token},
+        )
+        assert left.status_code == 200
+
+        offline = client.get("/api/conversations/inbox")
+        assert offline.status_code == 403
