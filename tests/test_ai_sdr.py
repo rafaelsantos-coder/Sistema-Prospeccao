@@ -45,15 +45,15 @@ def _login_admin(client: TestClient) -> None:
     assert response.status_code == 303
 
 
-def _create_bound_digital_queue(db):
+def _create_bound_digital_queue(db, suffix: str):
     agent = db.scalar(
         select(AIAgentProfile).where(AIAgentProfile.slug == "sulia-sdr-digital")
     )
     assert agent is not None
 
     queue = ServiceQueue(
-        name="Fila Digital IA Teste",
-        code="DIGITAL-AI-PHASE1-TEST",
+        name=f"Fila Digital IA Teste {suffix}",
+        code=f"DIGITAL-AI-{suffix}",
         team="DIGITAL",
         routing_strategy="ROUND_ROBIN",
         active=True,
@@ -72,7 +72,7 @@ def _create_bound_digital_queue(db):
 
     user = User(
         name="Consultor Digital Shadow",
-        email="shadow-consultor@sulnet.local",
+        email=f"shadow-consultor-{suffix.lower()}@sulnet.local",
         password_hash=hash_password("SenhaShadow@2026"),
         role="CONSULTOR",
         team="DIGITAL",
@@ -120,7 +120,7 @@ def test_inbound_message_creates_shadow_job_and_keeps_human_routing():
     with TestClient(app):
         db = SessionLocal()
         try:
-            _agent, queue, human = _create_bound_digital_queue(db)
+            _agent, queue, human = _create_bound_digital_queue(db, "ENQUEUE")
             from app.models import LeadQueuePreference, Lead
             lead = Lead(
                 business_name="Cliente IA Shadow",
@@ -201,7 +201,7 @@ def test_shadow_job_stores_decision_without_sending(monkeypatch):
     with TestClient(app):
         db = SessionLocal()
         try:
-            agent, queue, _human = _create_bound_digital_queue(db)
+            agent, queue, _human = _create_bound_digital_queue(db, "PROCESS")
             from app.models import Lead, LeadQueuePreference
             lead = Lead(
                 business_name="Cliente Shadow Execução",
