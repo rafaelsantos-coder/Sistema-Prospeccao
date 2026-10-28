@@ -331,6 +331,13 @@ def send_lead_whatsapp(
     if not lead.phone:
         flash(request, "O lead nao possui telefone cadastrado.", "warning")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
+        flash(
+            request,
+            "Entre no WhatsApp antes de enviar uma mensagem individual.",
+            "warning",
+        )
+        return RedirectResponse(f"/leads/{lead.id}", status_code=303)
     service_queue = get_queue(db, queue_id)
     allowed_queue_ids = {item.id for item in available_queues_for_user(db, user)}
     if not service_queue or service_queue.id not in allowed_queue_ids:
