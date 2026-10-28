@@ -96,6 +96,8 @@ def render(
         "active_nav": active_nav,
         "csrf_token": csrf_token(request),
         "show_demo_credentials": not settings.is_production,
+        "integrations": settings.integrations,
+        "whatsapp_provider": "Z-API",
         "flashes": consume_flashes(request),
         "constants": {
             "roles": ROLES,
