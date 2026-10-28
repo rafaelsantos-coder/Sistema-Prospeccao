@@ -64,6 +64,11 @@ def list_campaigns(request: Request, db: Session = Depends(get_db)):
         queue_counts=queue_counts,
         service_queues=service_queues,
         campaign_queues=campaign_queues,
+        routing_strategies={
+            "ROUND_ROBIN": "Carrossel / rodízio",
+            "LEAST_OPEN": "Menor número de atendimentos pendentes",
+            "MANUAL": "Somente distribuição manual",
+        },
     )
 
 
