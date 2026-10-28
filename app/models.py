@@ -465,3 +465,73 @@ class LeadQueuePreference(Base):
 
     lead: Mapped[Lead] = relationship()
     queue: Mapped[ServiceQueue] = relationship()
+
+
+class CampaignDispatch(Base):
+    __tablename__ = "campaign_dispatches"
+    __table_args__ = (
+        Index("ix_campaign_dispatches_status_next", "status", "next_send_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        index=True,
+    )
+    queue_id: Mapped[int] = mapped_column(
+        ForeignKey("service_queues.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), default="RASCUNHO", index=True)
+    interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    daily_limit: Mapped[int] = mapped_column(Integer, default=100)
+    next_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    import_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    campaign: Mapped[Campaign] = relationship()
+    queue: Mapped[ServiceQueue] = relationship()
+    created_by: Mapped[User | None] = relationship()
+
+
+class CampaignDispatchRecipient(Base):
+    __tablename__ = "campaign_dispatch_recipients"
+    __table_args__ = (
+        UniqueConstraint("dispatch_id", "phone", name="uq_campaign_dispatch_recipient_phone"),
+        Index("ix_campaign_dispatch_recipients_queue", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dispatch_id: Mapped[int] = mapped_column(
+        ForeignKey("campaign_dispatches.id", ondelete="CASCADE"),
+        index=True,
+    )
+    lead_id: Mapped[int | None] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id"),
+        nullable=True,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(180), default="")
+    phone: Mapped[str] = mapped_column(String(30), index=True)
+    message_body: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="PENDENTE", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    dispatch: Mapped[CampaignDispatch] = relationship()
+    lead: Mapped[Lead | None] = relationship()
+    conversation: Mapped[Conversation | None] = relationship()
