@@ -107,6 +107,7 @@ def create_queue(
     branch_id: str = Form(""),
     routing_strategy: str = Form("ROUND_ROBIN"),
     is_default_inbound: bool = Form(False),
+    member_user_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -209,7 +210,6 @@ def update_queue(
     routing_strategy: str = Form("ROUND_ROBIN"),
     is_default_inbound: bool = Form(False),
     active: bool = Form(False),
-    member_user_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
