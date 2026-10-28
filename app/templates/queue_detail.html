@@ -74,7 +74,20 @@
   </article>
 
   <aside class="panel panel-span-5">
-    <div class="panel-header"><div><span class="eyebrow">COMO SERÁ DISTRIBUÍDO</span><h3>{{ routing_strategies.get(queue.routing_strategy, queue.routing_strategy) }}</h3></div></div>
+    <div class="panel-header"><div><span class="eyebrow">AUTOMAÇÃO IA</span><h3>{% if ai_binding and ai_binding.active %}{{ ai_binding.agent.name }}{% else %}Sem agente ativo{% endif %}</h3></div></div>
+    {% if ai_binding and ai_binding.active %}
+    <div class="ai-queue-summary">
+      <div><span>Modo da fila</span><strong>{{ ai_binding.handling_mode|replace('_',' ') }}</strong></div>
+      <div><span>Execução</span><strong>{{ ai_binding.agent.execution_mode }}</strong></div>
+      <div><span>Fallback humano</span><strong>{{ 'Sim' if ai_binding.fallback_to_human else 'Não' }}</strong></div>
+    </div>
+    <div class="info-box compact"><strong>Fase 1 protegida</strong><p>Em Shadow Mode o SulIA analisa as respostas em paralelo, mas não envia mensagens nem tira a conversa do fluxo humano atual.</p></div>
+    {% else %}
+    <div class="empty-state small"><strong>IA não vinculada</strong><span>Configure em IA & Agentes para analisar os retornos desta fila.</span></div>
+    {% endif %}
+    {% if current_user.role in ['ADMIN','GESTOR'] %}<a class="button button-secondary full-width" href="/ai">Abrir IA & Agentes</a>{% endif %}
+
+    <div class="panel-header top-space"><div><span class="eyebrow">COMO SERÁ DISTRIBUÍDO</span><h3>{{ routing_strategies.get(queue.routing_strategy, queue.routing_strategy) }}</h3></div></div>
     {% if queue.routing_strategy == 'ROUND_ROBIN' %}
     <div class="info-box"><strong>Carrossel / rodízio</strong><p>Entre os membros online, o sistema entrega a próxima conversa para quem está há mais tempo sem receber uma nova atribuição nesta fila. Em empate, considera prioridade e quantidade de atendimentos abertos.</p></div>
     {% elif queue.routing_strategy == 'LEAST_OPEN' %}

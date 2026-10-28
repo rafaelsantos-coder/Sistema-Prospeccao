@@ -535,3 +535,184 @@ class CampaignDispatchRecipient(Base):
     dispatch: Mapped[CampaignDispatch] = relationship()
     lead: Mapped[Lead | None] = relationship()
     conversation: Mapped[Conversation | None] = relationship()
+
+
+class AIAgentProfile(Base):
+    __tablename__ = "ai_agent_profiles"
+    __table_args__ = (
+        Index("ix_ai_agent_profiles_active", "active", "execution_mode"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(120), default="SulIA SDR")
+    slug: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    role_type: Mapped[str] = mapped_column(String(30), default="SDR", index=True)
+    execution_mode: Mapped[str] = mapped_column(String(30), default="SHADOW", index=True)
+    model: Mapped[str] = mapped_column(String(80), default="gpt-6-luna")
+    reasoning_effort: Mapped[str] = mapped_column(String(20), default="low")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    public_name: Mapped[str] = mapped_column(String(120), default="Sulnet")
+    business_goal: Mapped[str] = mapped_column(
+        Text,
+        default=(
+            "Atuar como SDR da Sulnet: entender a necessidade, qualificar a oportunidade, "
+            "tratar dúvidas comerciais e recomendar handoff para um vendedor quando houver intenção real."
+        ),
+    )
+    system_prompt: Mapped[str] = mapped_column(Text, default="")
+    qualification_handoff_score: Mapped[int] = mapped_column(Integer, default=70)
+    max_history_messages: Mapped[int] = mapped_column(Integer, default=24)
+    max_knowledge_chars: Mapped[int] = mapped_column(Integer, default=12000)
+    tools_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+
+
+class AIQueueBinding(Base):
+    __tablename__ = "ai_queue_bindings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    queue_id: Mapped[int] = mapped_column(
+        ForeignKey("service_queues.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    agent_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_agent_profiles.id", ondelete="CASCADE"),
+        index=True,
+    )
+    handling_mode: Mapped[str] = mapped_column(String(30), default="AI_FIRST", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    fallback_to_human: Mapped[bool] = mapped_column(Boolean, default=True)
+    handoff_score_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    queue: Mapped[ServiceQueue] = relationship()
+    agent: Mapped[AIAgentProfile] = relationship()
+
+
+class AIKnowledgeItem(Base):
+    __tablename__ = "ai_knowledge_items"
+    __table_args__ = (
+        Index("ix_ai_knowledge_agent_active", "agent_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_agent_profiles.id", ondelete="CASCADE"),
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(180), index=True)
+    category: Mapped[str] = mapped_column(String(80), default="GERAL", index=True)
+    content: Mapped[str] = mapped_column(Text)
+    tags: Mapped[str] = mapped_column(String(500), default="")
+    source_type: Mapped[str] = mapped_column(String(40), default="MANUAL")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    agent: Mapped[AIAgentProfile] = relationship()
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+
+
+class AIJob(Base):
+    __tablename__ = "ai_jobs"
+    __table_args__ = (
+        Index("ix_ai_jobs_worker", "status", "available_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("ai_agent_profiles.id"), index=True)
+    queue_id: Mapped[int] = mapped_column(ForeignKey("service_queues.id"), index=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), default="PENDENTE", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    agent: Mapped[AIAgentProfile] = relationship()
+    queue: Mapped[ServiceQueue] = relationship()
+    conversation: Mapped[Conversation] = relationship()
+    message: Mapped[Message] = relationship()
+
+
+class AIRun(Base):
+    __tablename__ = "ai_runs"
+    __table_args__ = (
+        Index("ix_ai_runs_conversation_created", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("ai_jobs.id", ondelete="CASCADE"), index=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("ai_agent_profiles.id"), index=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), index=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), index=True)
+    execution_mode: Mapped[str] = mapped_column(String(30), default="SHADOW", index=True)
+    model: Mapped[str] = mapped_column(String(80), default="")
+    status: Mapped[str] = mapped_column(String(30), default="PROCESSANDO", index=True)
+    intent: Mapped[str] = mapped_column(String(60), default="UNKNOWN", index=True)
+    qualification_score: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    temperature: Mapped[str] = mapped_column(String(20), default="FRIO", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    handoff_recommended: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    handoff_reason: Mapped[str] = mapped_column(Text, default="")
+    reply_text: Mapped[str] = mapped_column(Text, default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    input_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    output_json: Mapped[str] = mapped_column(Text, default="{}")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    job: Mapped[AIJob] = relationship()
+    agent: Mapped[AIAgentProfile] = relationship()
+    conversation: Mapped[Conversation] = relationship()
+    message: Mapped[Message] = relationship()
+
+
+class AIConversationState(Base):
+    __tablename__ = "ai_conversation_states"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    agent_id: Mapped[int] = mapped_column(ForeignKey("ai_agent_profiles.id"), index=True)
+    state: Mapped[str] = mapped_column(String(30), default="AI_ACTIVE", index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    qualification_score: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    temperature: Mapped[str] = mapped_column(String(20), default="FRIO", index=True)
+    last_intent: Mapped[str] = mapped_column(String(60), default="UNKNOWN")
+    last_run_id: Mapped[int | None] = mapped_column(ForeignKey("ai_runs.id"), nullable=True)
+    handoff_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    conversation: Mapped[Conversation] = relationship()
+    agent: Mapped[AIAgentProfile] = relationship()
+    last_run: Mapped[AIRun | None] = relationship(foreign_keys=[last_run_id])

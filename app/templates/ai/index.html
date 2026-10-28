@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">INTELIGÊNCIA COMERCIAL</span>
+    <h2>SulIA SDR</h2>
+    <p>Agente comercial em Shadow Mode: analisa respostas, qualifica oportunidades e sugere o próximo passo sem enviar mensagens automaticamente.</p>
+  </div>
+  <div class="ai-phase-badge">
+    <span class="connection-status {% if openai_configured and ai_sdr_enabled %}on{% endif %}">
+      {% if openai_configured and ai_sdr_enabled %}OpenAI conectado{% elif not openai_configured %}OpenAI pendente{% else %}IA desativada{% endif %}
+    </span>
+    <strong>Fase 1 · Shadow</strong>
+  </div>
+</div>
+
+{% if not openai_configured %}
+<div class="warning-box ai-config-warning">
+  <strong>Falta configurar a chave da OpenAI</strong>
+  <p>A estrutura do SulIA está pronta, mas o worker não chamará o modelo enquanto <code>OPENAI_API_KEY</code> não estiver definida no Railway. Nenhuma chave é exibida ou armazenada nesta tela.</p>
+</div>
+{% endif %}
+
+{% if not autonomous_enabled %}
+<div class="info-box ai-safety-banner">
+  <strong>Autonomia bloqueada por segurança</strong>
+  <p>Mesmo que alguém tente selecionar Aprovação ou Autônomo, o backend força Shadow Mode enquanto <code>AI_AUTONOMOUS_ENABLED=false</code>. Nesta fase, a IA não envia mensagens e não altera o CRM real.</p>
+</div>
+{% endif %}
+
+{% for agent in agents %}
+{% set am = metrics.get(agent.id, {}) %}
+<section class="ai-agent-hero panel">
+  <div class="ai-agent-identity">
+    <div class="ai-agent-avatar">IA</div>
+    <div>
+      <span class="eyebrow">{{ agent.role_type }}</span>
+      <h3>{{ agent.name }}</h3>
+      <p>{{ agent.business_goal }}</p>
+    </div>
+  </div>
+  <div class="ai-agent-kpis">
+    <div><span>Análises</span><strong>{{ am.get('runs', 0) }}</strong></div>
+    <div><span>Handoffs sugeridos</span><strong>{{ am.get('handoffs', 0) }}</strong></div>
+    <div><span>Jobs pendentes</span><strong>{{ am.get('pending', 0) }}</strong></div>
+    <div><span>Conhecimentos ativos</span><strong>{{ knowledge_counts.get(agent.id, 0) }}</strong></div>
+  </div>
+</section>
+
+<div class="settings-grid top-space">
+  <article class="panel panel-span-7">
+    <div class="panel-header">
+      <div><span class="eyebrow">AGENTE</span><h3>Configuração do {{ agent.name }}</h3></div>
+      <span class="dispatch-status status-{{ 'ativo' if agent.active else 'cancelado' }}">{{ 'Ativo' if agent.active else 'Inativo' }}</span>
+    </div>
+    <form action="/ai/agents/{{ agent.id }}" method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field"><span>Nome interno</span><input name="name" value="{{ agent.name }}" required></label>
+        <label class="field"><span>Nome público</span><input name="public_name" value="{{ agent.public_name }}" required></label>
+        <label class="field"><span>Modelo</span>
+          <select name="model">
+            <option value="gpt-6-luna" {% if agent.model == 'gpt-6-luna' %}selected{% endif %}>GPT-6 Luna · alto volume / menor custo</option>
+            <option value="gpt-6.1-terra" {% if agent.model == 'gpt-6.1-terra' %}selected{% endif %}>GPT-6.1 Terra · mais capacidade</option>
+            <option value="gpt-6.1-sol" {% if agent.model == 'gpt-6.1-sol' %}selected{% endif %}>GPT-6.1 Sol · casos complexos</option>
+          </select>
+        </label>
+        <label class="field"><span>Raciocínio</span>
+          <select name="reasoning_effort">
+            {% for effort in ['none','low','medium','high'] %}
+            <option value="{{ effort }}" {% if agent.reasoning_effort == effort %}selected{% endif %}>{{ effort|upper }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="field"><span>Modo de execução</span>
+          <select name="execution_mode">
+            {% for key, label in execution_modes.items() %}
+            <option value="{{ key }}" {% if agent.execution_mode == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <small>Fase 1 força Shadow Mode no backend.</small>
+        </label>
+        <label class="field"><span>Score para recomendar handoff</span><input name="qualification_handoff_score" type="number" min="0" max="100" value="{{ agent.qualification_handoff_score }}"></label>
+        <label class="field"><span>Mensagens de histórico</span><input name="max_history_messages" type="number" min="4" max="80" value="{{ agent.max_history_messages }}"></label>
+        <label class="queue-check"><input type="checkbox" name="active" value="true" {% if agent.active %}checked{% endif %}><span>Agente ativo</span></label>
+        <label class="field field-span-2"><span>Objetivo comercial</span><textarea name="business_goal" rows="3">{{ agent.business_goal }}</textarea></label>
+        <label class="field field-span-2"><span>Instruções personalizadas</span><textarea name="system_prompt" rows="8" placeholder="Deixe vazio para usar o padrão seguro do SulIA SDR.">{{ agent.system_prompt }}</textarea><small>Use este campo para ajustar tom, processo e regras específicas. Produtos, preços e políticas devem ficar na Base de Conhecimento.</small></label>
+      </div>
+      <button class="button button-primary" type="submit">Salvar agente</button>
+    </form>
+  </article>
+
+  <aside class="panel panel-span-5">
+    <div class="panel-header"><div><span class="eyebrow">ARQUITETURA</span><h3>O que acontece no Shadow Mode</h3></div></div>
+    <div class="queue-flow ai-flow">
+      <div><span>1</span><p>Cliente responde pelo WhatsApp e a mensagem é salva no PostgreSQL.</p></div>
+      <i></i>
+      <div><span>2</span><p>Se a fila estiver ligada ao SulIA, um job de análise é criado.</p></div>
+      <i></i>
+      <div><span>3</span><p>O worker lê CRM, histórico e Base de Conhecimento.</p></div>
+      <i></i>
+      <div><span>4</span><p>A IA gera resposta sugerida, score, intenção e recomendação de handoff.</p></div>
+      <i></i>
+      <div><span>5</span><p>Nada é enviado ao cliente nesta fase. O resultado fica disponível para avaliação.</p></div>
+    </div>
+  </aside>
+</div>
+{% endfor %}
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">FILAS</span><h3>Onde o SulIA atua</h3></div>
+    <span class="panel-note">AI First em Shadow mantém a distribuição humana atual e analisa em paralelo.</span>
+  </div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Fila</th><th>Equipe</th><th>Agente</th><th>Modo</th><th>Fallback</th><th>Status</th><th>Ação</th></tr></thead>
+      <tbody>
+      {% for binding in bindings %}
+        <tr>
+          <td><strong>{{ binding.queue.name }}</strong><span class="table-subline">{{ binding.queue.code }}</span></td>
+          <td>{{ constants.teams.get(binding.queue.team, binding.queue.team) }}</td>
+          <td>{{ binding.agent.name }}</td>
+          <td><span class="ai-mode-badge">{{ handling_modes.get(binding.handling_mode, binding.handling_mode) }}</span></td>
+          <td>{{ 'Humano' if binding.fallback_to_human else 'Sem fallback' }}</td>
+          <td><span class="connection-status {% if binding.active %}on{% endif %}">{{ 'Ativo' if binding.active else 'Pausado' }}</span></td>
+          <td>
+            <form action="/ai/queues/{{ binding.queue_id }}/toggle" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button button-ghost" type="submit">{{ 'Pausar IA' if binding.active else 'Ativar IA' }}</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7"><div class="empty-state"><strong>Nenhuma fila ligada à IA</strong><span>Vincule uma fila abaixo para iniciar o Shadow Mode.</span></div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if agents %}
+  <div class="queue-create-box">
+    <div class="panel-header"><div><span class="eyebrow">VINCULAR FILA</span><h3>Configurar atuação do agente</h3></div></div>
+    <form action="/ai/queues/bind" method="post" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Fila</span><select name="queue_id" required><option value="">Selecione</option>{% for queue in queues %}<option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Agente</span><select name="agent_id" required>{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Modo da fila</span><select name="handling_mode">{% for key, label in handling_modes.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+      <label class="queue-check"><input type="checkbox" name="fallback_to_human" value="true" checked><span>Usar humano como fallback</span></label>
+      <div class="field field-span-2"><button class="button button-primary" type="submit">Salvar vínculo da fila</button></div>
+    </form>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">BASE DE CONHECIMENTO</span><h3>Treinamento operacional do agente</h3></div>
+    <span class="count-badge">{{ knowledge|length }}</span>
+  </div>
+  {% if agents %}
+  <form action="/ai/knowledge" method="post" class="ai-knowledge-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field"><span>Agente</span><select name="agent_id">{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Categoria</span><input name="category" placeholder="PLANOS, REGRAS, OBJEÇÕES..." value="GERAL"></label>
+      <label class="field field-span-2"><span>Título</span><input name="title" required placeholder="Ex.: Plano empresarial 800 Mega"></label>
+      <label class="field field-span-2"><span>Tags</span><input name="tags" placeholder="internet, empresarial, preço, santa rosa"></label>
+      <label class="field field-span-2"><span>Conteúdo</span><textarea name="content" rows="5" required placeholder="Cadastre aqui a informação oficial que o agente pode usar."></textarea></label>
+    </div>
+    <button class="button button-primary" type="submit">Adicionar conhecimento</button>
+  </form>
+  {% endif %}
+
+  <div class="ai-knowledge-grid top-space">
+    {% for item in knowledge %}
+    <article class="ai-knowledge-card {% if not item.active %}inactive{% endif %}">
+      <div>
+        <span class="eyebrow">{{ item.category }}</span>
+        <h4>{{ item.title }}</h4>
+        <p>{{ item.content }}</p>
+        {% if item.tags %}<small>{{ item.tags }}</small>{% endif %}
+      </div>
+      <form action="/ai/knowledge/{{ item.id }}/toggle" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="mini-button {% if item.active %}queue-remove{% else %}success{% endif %}" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button>
+      </form>
+    </article>
+    {% else %}
+    <div class="empty-state"><strong>Base vazia</strong><span>Adicione regras, planos, produtos e objeções para treinar o SulIA.</span></div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">SHADOW LOG</span><h3>Análises recentes</h3></div>
+    <span class="panel-note">Essas respostas não foram enviadas ao cliente.</span>
+  </div>
+  <div class="data-table-wrap">
+    <table class="data-table ai-run-table">
+      <thead><tr><th>Data</th><th>Conversa</th><th>Intenção</th><th>Score</th><th>Temperatura</th><th>Handoff</th><th>Resposta sugerida</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for run in recent_runs %}
+        <tr>
+          <td>{{ run.created_at|datetime_br }}</td>
+          <td><a href="/conversations/{{ run.conversation_id }}">#{{ run.conversation_id }}</a></td>
+          <td><strong>{{ run.intent|replace('_',' ') }}</strong></td>
+          <td>{{ run.qualification_score }}/100</td>
+          <td>{{ constants.temperatures.get(run.temperature, run.temperature) }}</td>
+          <td>{% if run.handoff_recommended %}<span class="soft-badge">Recomendado</span>{% else %}—{% endif %}</td>
+          <td><span class="ai-reply-preview">{{ run.reply_text or '—' }}</span></td>
+          <td><span class="dispatch-status status-{{ 'enviado' if run.status == 'CONCLUIDO' else 'falhou' }}">{{ run.status }}</span></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="8"><div class="empty-state"><strong>Nenhuma análise ainda</strong><span>Quando uma mensagem entrar em uma fila vinculada, o Shadow Mode aparecerá aqui.</span></div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

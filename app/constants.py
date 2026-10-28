@@ -5,6 +5,7 @@ ROLES = {
     "GESTOR": "Gestor",
     "SUPERVISOR": "Supervisor",
     "CONSULTOR": "Consultor",
+    "AI_SDR": "Agente IA · SDR",
 }
 
 TEAMS = {

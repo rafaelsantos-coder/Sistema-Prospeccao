@@ -546,6 +546,13 @@ def store_received_payload(db: Session, payload: dict[str, Any]) -> tuple[Conver
             payload_json=json.dumps(payload, ensure_ascii=False, default=str),
         )
     )
+    if not from_me:
+        from app.services.ai_sdr import enqueue_ai_job
+        enqueue_ai_job(
+            db,
+            conversation=conversation,
+            message=message,
+        )
     return conversation, message, True
 
 
