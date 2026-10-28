@@ -47,7 +47,7 @@ def enqueue_campaign(db: Session, campaign: Campaign, *, max_leads: int = 1000) 
     stmt = select(Lead).where(
         Lead.phone.is_not(None),
         Lead.do_not_contact.is_(False),
-        Lead.stage.not_in({"NAO_CONTATAR", "PERDIDO", "GANHO"}),
+        ~Lead.stage.in_({"NAO_CONTATAR", "PERDIDO", "GANHO"}),
     )
     if campaign.branch_id:
         stmt = stmt.where(Lead.branch_id == campaign.branch_id)
@@ -131,7 +131,6 @@ def claim_next_recipient(db: Session) -> CampaignRecipient | None:
     )
     if recipient:
         recipient.status = "ENVIANDO"
-        recipient.attempts = int(recipient.attempts or 0) + 1
         db.flush()
     return recipient
 
@@ -155,6 +154,7 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         recipient.error = "Lead bloqueado, encerrado ou sem telefone."
         return "skipped"
 
+    recipient.attempts = int(recipient.attempts or 0) + 1
     try:
         result = ZApiService().send_text(phone=lead.phone, message=recipient.message_body)
     except ZApiError as exc:
