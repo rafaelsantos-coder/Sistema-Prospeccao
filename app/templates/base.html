@@ -40,6 +40,11 @@
         <span class="nav-icon">➤</span><span>Disparos</span>
       </a>
       {% endif %}
+      {% if current_user.role in ['ADMIN', 'GESTOR'] %}
+      <a href="/ai" class="nav-item {% if active_nav == 'ai' %}active{% endif %}">
+        <span class="nav-icon">✦</span><span>IA & Agentes</span>
+      </a>
+      {% endif %}
       <a href="/reports/whatsapp" class="nav-item {% if active_nav == 'reports' %}active{% endif %}">
         <span class="nav-icon">▥</span><span>Relatórios</span>
       </a>
