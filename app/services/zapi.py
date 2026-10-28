@@ -118,27 +118,22 @@ class ZApiService:
         clean_url = webhook_url.strip()
         if not clean_url.startswith("https://"):
             raise ZApiError("O webhook da Z-API precisa usar HTTPS.")
-        results: dict[str, Any] = {}
-        endpoints = {
-            "received": "update-webhook-received",
-            "message_status": "update-webhook-message-status",
-        }
         try:
             with httpx.Client(timeout=20.0) as client:
-                for key, endpoint in endpoints.items():
-                    response = client.put(
-                        self._url(endpoint),
-                        headers=self._headers(json_request=True),
-                        json={"value": clean_url},
-                    )
-                    if response.status_code >= 400:
-                        raise ZApiError(
-                            f"Falha ao configurar webhook {key}: {self._safe_error(response)}"
-                        )
-                    try:
-                        results[key] = response.json()
-                    except ValueError:
-                        results[key] = {"ok": True}
+                response = client.put(
+                    self._url("update-every-webhooks"),
+                    headers=self._headers(json_request=True),
+                    json={"value": clean_url, "notifySentByMe": True},
+                )
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel configurar os webhooks da Z-API.") from exc
-        return results
+        if response.status_code >= 400:
+            raise ZApiError(
+                f"Falha ao configurar webhooks: {self._safe_error(response)}"
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"ok": True}
+        return {"all": payload, "notify_sent_by_me": True}
+
