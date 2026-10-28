@@ -90,6 +90,7 @@
       {% elif integrations.whatsapp %}
       <form action="/leads/{{ lead.id }}/whatsapp" method="post" class="stack-form compact">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Fila que receberá a resposta</span><select name="queue_id" required><option value="">Selecione a fila</option>{% for queue in service_queues %}<option value="{{ queue.id }}" {% if preferred_queue and preferred_queue.id == queue.id %}selected{% endif %}>{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select><small>Quando o cliente responder, a conversa será distribuída somente entre os usuários online desta fila.</small></label>
         <label class="field"><span>Mensagem</span><textarea name="message" rows="6" maxlength="4096" required>Olá{% if lead.contact_name %}, {{ lead.contact_name }}{% endif %}! Tudo bem?
 
 Aqui é da Sulnet. Estamos entrando em contato para apresentar soluções de internet e conectividade para empresas de {{ lead.city }}.
