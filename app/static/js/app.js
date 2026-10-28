@@ -115,7 +115,7 @@
     };
 
     const heartbeat = async () => {
-      if (!online || document.visibilityState === 'hidden') return;
+      if (!online) return;
       try {
         await postPresence('heartbeat');
       } catch (_) {}
