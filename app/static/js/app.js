@@ -51,6 +51,30 @@
     });
   });
 
+  const transferModal = document.getElementById('lead-transfer-modal');
+  const transferForm = document.querySelector('[data-lead-transfer-form]');
+  const transferLeadName = document.querySelector('[data-transfer-lead-name]');
+  const transferAvatar = document.querySelector('[data-transfer-avatar]');
+  const transferSeller = document.querySelector('[data-transfer-seller]');
+  document.querySelectorAll('[data-lead-transfer]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!transferModal || !transferForm) return;
+      const leadId = button.dataset.leadId || '';
+      const leadName = button.dataset.leadName || 'Lead';
+      const currentOwner = button.dataset.currentOwner || '';
+      transferForm.action = '/leads/' + encodeURIComponent(leadId) + '/assign';
+      if (transferLeadName) transferLeadName.textContent = leadName;
+      if (transferAvatar) {
+        const words = leadName.trim().split(/\s+/).filter(Boolean);
+        transferAvatar.textContent = ((words[0]?.[0] || 'L') + (words[1]?.[0] || '')).toUpperCase();
+      }
+      if (transferSeller) transferSeller.value = currentOwner;
+      transferModal.classList.add('open');
+      transferModal.setAttribute('aria-hidden', 'false');
+      window.setTimeout(() => transferSeller?.focus(), 40);
+    });
+  });
+
 
   const presenceRoot = document.querySelector('[data-whatsapp-presence]');
   if (presenceRoot) {
