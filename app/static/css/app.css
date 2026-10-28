@@ -1390,3 +1390,53 @@ button, a { -webkit-tap-highlight-color: transparent; }
 @media (max-width: 540px) {
   .queue-overview-grid { grid-template-columns: 1fr; }
 }
+
+
+/* CRM lead transfer */
+.lead-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+.mini-button.transfer {
+  border-color: rgba(243,111,33,.24);
+  color: #c95d1c;
+  background: #fff8f3;
+}
+.mini-button.transfer:hover {
+  border-color: rgba(243,111,33,.45);
+  background: var(--orange-soft);
+}
+.lead-transfer-modal-card {
+  width: min(480px, 100%);
+}
+.lead-transfer-summary {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-2);
+}
+.lead-transfer-summary > div {
+  min-width: 0;
+}
+.lead-transfer-summary small {
+  display: block;
+  color: var(--muted);
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.lead-transfer-summary strong {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
