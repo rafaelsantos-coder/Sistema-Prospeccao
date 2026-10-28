@@ -29,16 +29,17 @@
   <div class="panel-header table-title"><div><span class="eyebrow">CAMPANHAS</span><h3>Sequências cadastradas</h3></div></div>
   <div class="data-table-wrap">
     <table class="data-table">
-      <thead><tr><th>Campanha</th><th>Público</th><th>Canal</th><th>Limite</th><th>Fila</th><th>Unidade</th><th>Status</th><th>Ações</th></tr></thead>
+      <thead><tr><th>Campanha</th><th>Público</th><th>Canal</th><th>Fila de retorno</th><th>Envios</th><th>Unidade</th><th>Status</th><th>Ações</th></tr></thead>
       <tbody>
       {% for campaign in campaigns %}
         <tr>
           <td><strong>{{ campaign.name }}</strong><span class="table-subline">Criada por {{ campaign.created_by.name if campaign.created_by else 'Sistema' }}</span></td>
           <td>{{ campaign.segment or 'Todos os segmentos' }}<span class="table-subline">{{ constants.teams.get(campaign.team, campaign.team) if campaign.team else 'Todas as equipes' }}</span></td>
           <td><span class="soft-badge">{{ constants.channels.get(campaign.channel, campaign.channel) }}</span></td>
-          <td>{{ campaign.daily_limit }}/dia</td>
+          {% set service_queue = campaign_queues.get(campaign.id) %}
+          <td>{% if service_queue %}<strong>{{ service_queue.name }}</strong><span class="table-subline">{{ routing_strategies.get(service_queue.routing_strategy, service_queue.routing_strategy) if routing_strategies is defined else service_queue.routing_strategy }}</span>{% else %}<span class="text-danger">Não definida</span>{% endif %}</td>
           {% set cq = queue_counts.get(campaign.id, {}) %}
-          <td><strong>{{ cq.get('sent', 0) }}/{{ cq.get('total', 0) }}</strong><span class="table-subline">{{ cq.get('pending', 0) }} pendentes · {{ cq.get('failed', 0) }} falhas</span></td>
+          <td><strong>{{ cq.get('sent', 0) }}/{{ cq.get('total', 0) }}</strong><span class="table-subline">{{ campaign.daily_limit }}/dia · {{ cq.get('pending', 0) }} pendentes</span></td>
           <td>{{ campaign.branch.city if campaign.branch else 'Todas' }}</td>
           <td><span class="campaign-status status-{{ campaign.status|lower }}">{{ campaign.status|replace('_',' ')|title }}</span></td>
           <td>
@@ -79,10 +80,11 @@ Posso te fazer duas perguntas rápidas?"></textarea><small>Variáveis disponíve
       <div class="form-grid">
         <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
         <label class="field"><span>Canal</span><select name="channel"><option value="WHATSAPP">WhatsApp</option><option value="EMAIL">E-mail</option></select></label>
+        <label class="field"><span>Fila que receberá as respostas</span><select name="queue_id" required><option value="">Selecione a fila</option>{% for queue in service_queues %}<option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select></label>
         <label class="field"><span>Limite diário</span><input type="number" name="daily_limit" min="1" max="200" value="30"></label>
         {% if current_user.role in ['ADMIN','GESTOR'] %}<label class="field"><span>Unidade</span><select name="branch_id"><option value="">Todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>{% endif %}
       </div>
-      <div class="info-box"><strong>Fluxo seguro</strong><p>A campanha nasce como rascunho, exige aprovação gerencial e só então cria uma fila persistente. O worker envia um contato por vez, respeita bloqueios, limite diário e registra cada mensagem no Inbox.</p></div>
+      <div class="info-box"><strong>Fluxo seguro</strong><p>A campanha nasce como rascunho e fica vinculada à fila escolhida. Cada conversa enviada guarda essa fila; quando o cliente responder, a distribuição acontece somente entre os usuários online daquela fila, conforme a estratégia configurada.</p></div>
       <div class="modal-actions"><button type="button" class="button button-ghost" data-modal-close>Cancelar</button><button type="submit" class="button button-primary">Criar rascunho</button></div>
     </form>
   </div>
