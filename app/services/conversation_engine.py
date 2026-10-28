@@ -16,6 +16,7 @@ from app.models import (
     User,
 )
 from app.services.scoring import normalize_phone
+from app.services.whatsapp_presence import mark_whatsapp_assignment, online_user_ids, presence_for_users
 from app.timeutils import utcnow
 
 
@@ -78,7 +79,12 @@ def ensure_contact(
     return contact
 
 
-def _sticky_owner(db: Session, contact: Contact) -> User | None:
+def _sticky_owner(
+    db: Session,
+    contact: Contact,
+    *,
+    online_ids: set[int] | None = None,
+) -> User | None:
     previous = db.scalar(
         select(Conversation)
         .where(
@@ -90,21 +96,39 @@ def _sticky_owner(db: Session, contact: Contact) -> User | None:
     )
     if not previous or not previous.assigned_user_id:
         return None
+    if online_ids is not None and previous.assigned_user_id not in online_ids:
+        return None
     user = db.get(User, previous.assigned_user_id)
     return user if user and user.active else None
 
 
+def _presence_timestamp(value) -> float:
+    if not value:
+        return 0.0
+    if value.tzinfo is None:
+        from datetime import timezone
+        value = value.replace(tzinfo=timezone.utc)
+    return value.timestamp()
+
+
 def choose_assignee(db: Session, contact: Contact, lead: Lead | None) -> User | None:
-    if lead and lead.assigned_user_id:
+    online_ids = set(online_user_ids(db))
+    if not online_ids:
+        return None
+
+    if lead and lead.assigned_user_id and lead.assigned_user_id in online_ids:
         assigned = db.get(User, lead.assigned_user_id)
         if assigned and assigned.active:
             return assigned
 
-    sticky = _sticky_owner(db, contact)
+    sticky = _sticky_owner(db, contact, online_ids=online_ids)
     if sticky:
         return sticky
 
-    stmt = select(User).where(User.active.is_(True), User.role == "CONSULTOR")
+    stmt = select(User).where(
+        User.active.is_(True),
+        User.id.in_(online_ids),
+    )
     if lead and lead.team:
         stmt = stmt.where(User.team == lead.team)
     candidates = list(db.scalars(stmt.order_by(User.id)))
@@ -115,7 +139,8 @@ def choose_assignee(db: Session, contact: Contact, lead: Lead | None) -> User | 
     if not candidates:
         return None
 
-    load: list[tuple[int, int, User]] = []
+    presences = presence_for_users(db, [item.id for item in candidates])
+    ranked: list[tuple[float, int, int, User]] = []
     for candidate in candidates:
         open_count = db.scalar(
             select(func.count(Conversation.id)).where(
@@ -123,9 +148,20 @@ def choose_assignee(db: Session, contact: Contact, lead: Lead | None) -> User | 
                 Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
             )
         ) or 0
-        load.append((int(open_count), candidate.id, candidate))
-    load.sort(key=lambda item: (item[0], item[1]))
-    return load[0][2]
+        presence = presences.get(candidate.id)
+        last_assigned = _presence_timestamp(
+            presence.last_assigned_at if presence else None
+        )
+        ranked.append(
+            (
+                last_assigned,
+                int(open_count),
+                candidate.id,
+                candidate,
+            )
+        )
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return ranked[0][3]
 
 
 def ensure_open_conversation(
@@ -162,6 +198,7 @@ def ensure_open_conversation(
                         event="AUTO_ASSIGNED",
                     )
                 )
+                mark_whatsapp_assignment(db, owner.id)
         return conversation
 
     owner = choose_assignee(db, contact, lead)
@@ -185,6 +222,8 @@ def ensure_open_conversation(
             event="AUTO_ASSIGNED" if owner else "QUEUED",
         )
     )
+    if owner:
+        mark_whatsapp_assignment(db, owner.id)
     return conversation
 
 
