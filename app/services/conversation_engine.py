@@ -125,12 +125,12 @@ def choose_assignee(db: Session, contact: Contact, lead: Lead | None) -> User | 
     if sticky:
         return sticky
 
+    target_team = lead.team if lead and lead.team else "B2B"
     stmt = select(User).where(
         User.active.is_(True),
         User.id.in_(online_ids),
+        User.team == target_team,
     )
-    if lead and lead.team:
-        stmt = stmt.where(User.team == lead.team)
     candidates = list(db.scalars(stmt.order_by(User.id)))
     if lead and lead.branch_id:
         branch_candidates = [u for u in candidates if u.branch_id == lead.branch_id]
