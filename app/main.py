@@ -12,7 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings, validate_production_settings
 from app.database import Base, SessionLocal, engine
-from app.routers import api, auth, campaigns, conversations, dashboard, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, zapi
+from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, zapi
 from app.services.seed import seed_database
 from app.services.zapi import ZApiError, ZApiService
 from app.web import render
@@ -69,7 +69,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.8.0",
+    version="0.9.0",
     docs_url="/api/docs" if not settings.is_production else None,
     redoc_url=None,
     lifespan=lifespan,
@@ -88,6 +88,7 @@ static_dir = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 app.include_router(auth.router)
+app.include_router(ai_agents.router)
 app.include_router(dashboard.router)
 app.include_router(leads.router)
 app.include_router(campaigns.router)
