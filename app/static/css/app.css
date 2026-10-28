@@ -1144,3 +1144,102 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .report-kpis { grid-template-columns: 1fr; }
   .report-quick-dates { flex-wrap: wrap; }
 }
+
+
+/* WhatsApp operator presence */
+.whatsapp-presence-control {
+  min-width: 285px;
+  min-height: 44px;
+  padding: 6px 7px 6px 10px;
+  display: grid;
+  grid-template-columns: 10px minmax(0,1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #e2e6e9;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(30,38,45,.04);
+}
+.whatsapp-presence-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #aeb6bd;
+  box-shadow: 0 0 0 3px rgba(174,182,189,.14);
+}
+.whatsapp-presence-control.online {
+  border-color: #cde8dc;
+  background: #f7fcf9;
+}
+.whatsapp-presence-control.online .whatsapp-presence-dot {
+  background: #1fa56f;
+  box-shadow: 0 0 0 3px rgba(31,165,111,.13);
+}
+.whatsapp-presence-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.whatsapp-presence-copy strong {
+  color: #303840;
+  font-size: 9px;
+  line-height: 1.2;
+}
+.whatsapp-presence-copy small {
+  max-width: 145px;
+  overflow: hidden;
+  color: #8e979f;
+  font-size: 7px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.whatsapp-presence-button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #1f252b;
+  color: #fff;
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 800;
+  white-space: nowrap;
+  transition: .15s ease;
+}
+.whatsapp-presence-button:hover {
+  transform: translateY(-1px);
+  background: #11161a;
+}
+.whatsapp-presence-button:disabled {
+  cursor: wait;
+  opacity: .65;
+  transform: none;
+}
+.whatsapp-presence-button.danger {
+  background: #fff;
+  color: #a54b3a;
+  box-shadow: inset 0 0 0 1px #eccfc7;
+}
+.whatsapp-presence-button.danger:hover {
+  background: #fff7f5;
+}
+@media (max-width: 980px) {
+  .whatsapp-presence-control { min-width: 220px; }
+  .whatsapp-presence-copy small { display: none; }
+}
+@media (max-width: 680px) {
+  .topbar-actions { gap: 5px; }
+  .whatsapp-presence-control {
+    min-width: auto;
+    grid-template-columns: 8px auto;
+    padding: 6px 7px;
+  }
+  .whatsapp-presence-copy { display: none; }
+  .whatsapp-presence-button {
+    max-width: 92px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
