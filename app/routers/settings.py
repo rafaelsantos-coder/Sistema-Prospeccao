@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models import Branch, Target, User
 from app.security import get_current_user
 from app.services.legacy_adapter import legacy_modules_available, rate_status
+from app.services.zapi import ZApiError, ZApiService
 from app.web import render
 
 
@@ -26,6 +27,18 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     branches = list(db.scalars(select(Branch).order_by(Branch.city)))
     users = list(db.scalars(select(User).order_by(User.name)))
     targets = list(db.scalars(select(Target).order_by(Target.team)))
+    zapi_status = {
+        "configured": settings.integrations["zapi"],
+        "connected": False,
+        "smartphone_connected": False,
+        "error": None,
+        "webhook_ready": bool(settings.zapi_webhook_url),
+    }
+    if settings.integrations["zapi"]:
+        try:
+            zapi_status.update(ZApiService().status())
+        except ZApiError as exc:
+            zapi_status["error"] = str(exc)
     return render(
         request,
         "settings.html",
@@ -33,6 +46,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         active_nav="settings",
         page_title="Configurações",
         integrations=settings.integrations,
+        zapi_status=zapi_status,
         legacy_available=legacy_modules_available(),
         rate_status=rate_status(),
         branches=branches,
