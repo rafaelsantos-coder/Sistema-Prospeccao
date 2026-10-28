@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="inbox-shell" data-inbox {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
+<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
   <aside class="inbox-list-panel">
     <div class="inbox-list-head">
       <div>
@@ -17,15 +17,15 @@
     </form>
 
     <div class="inbox-tabs">
-      <a href="/conversations?view=active" class="{% if view == 'active' %}active{% endif %}">Ativas <b>{{ counts.active }}</b></a>
-      <a href="/conversations?view=unread" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b>{{ counts.unread }}</b></a>
+      <a href="/conversations?view=active" class="{% if view == 'active' %}active{% endif %}">Ativas <b id="count-active">{{ counts.active }}</b></a>
+      <a href="/conversations?view=unread" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
       {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
-      <a href="/conversations?view=queue" class="{% if view == 'queue' %}active{% endif %}">Fila <b>{{ counts.queue }}</b></a>
+      <a href="/conversations?view=queue" class="{% if view == 'queue' %}active{% endif %}">Fila <b id="count-queue">{{ counts.queue }}</b></a>
       {% endif %}
-      <a href="/conversations?view=closed" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b>{{ counts.closed }}</b></a>
+      <a href="/conversations?view=closed" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
     </div>
 
-    <div class="conversation-list">
+    <div class="conversation-list" id="conversation-list">
       {% for item in conversations %}
       <a class="conversation-row {% if conversation and item.id == conversation.id %}selected{% endif %}" href="/conversations/{{ item.id }}?view={{ view }}{% if query %}&q={{ query|urlencode }}{% endif %}">
         <div class="conversation-avatar">{{ (item.contact.business_name or item.contact.name or 'C')[:2]|upper }}</div>
@@ -224,15 +224,123 @@
 {% endblock %}
 
 {% block scripts %}
-{% if conversation %}
 <script>
 (() => {
   const root = document.querySelector('[data-inbox]');
+  const list = document.getElementById('conversation-list');
+  if (!root || !list) return;
+
+  const conversationId = Number(root.dataset.conversationId || 0);
+  const view = root.dataset.view || 'active';
+  const query = root.dataset.query || '';
+  let inboxSignature = '';
+
+  const statusLabel = value => (value || '').replaceAll('_', ' ');
+  const statusClass = value => 'status-' + (value || '').toLowerCase();
+  const initials = value => {
+    const clean = (value || 'C').trim();
+    const parts = clean.split(/\s+/).filter(Boolean);
+    return ((parts[0]?.[0] || 'C') + (parts[1]?.[0] || '')).toUpperCase();
+  };
+  const formatTime = iso => {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleString('pt-BR', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+  };
+
+  const updateCounts = counts => {
+    for (const key of ['active','unread','queue','closed']) {
+      const el = document.getElementById('count-' + key);
+      if (el && counts && key in counts) el.textContent = counts[key];
+    }
+  };
+
+  const renderInbox = data => {
+    updateCounts(data.counts || {});
+    const items = data.items || [];
+    list.replaceChildren();
+
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'inbox-empty-list';
+      const strong = document.createElement('strong');
+      strong.textContent = 'Nenhuma conversa nesta visão';
+      const span = document.createElement('span');
+      span.textContent = 'As respostas do WhatsApp aparecerão aqui automaticamente.';
+      empty.append(strong, span);
+      list.append(empty);
+      return;
+    }
+
+    for (const item of items) {
+      const row = document.createElement('a');
+      row.className = 'conversation-row' + (Number(item.id) === conversationId ? ' selected' : '');
+      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '');
+
+      const avatar = document.createElement('div');
+      avatar.className = 'conversation-avatar';
+      avatar.textContent = initials(item.name);
+
+      const copy = document.createElement('div');
+      copy.className = 'conversation-row-copy';
+
+      const top = document.createElement('div');
+      top.className = 'conversation-row-top';
+      const strong = document.createElement('strong');
+      strong.textContent = item.name || item.phone || 'Contato WhatsApp';
+      const time = document.createElement('time');
+      time.textContent = formatTime(item.last_message_at);
+      top.append(strong, time);
+
+      const preview = document.createElement('div');
+      preview.className = 'conversation-preview';
+      preview.textContent = item.preview || 'Conversa iniciada';
+
+      const meta = document.createElement('div');
+      meta.className = 'conversation-row-meta';
+      const owner = document.createElement('span');
+      owner.textContent = item.owner || 'Fila sem responsável';
+      const status = document.createElement('span');
+      status.className = 'conversation-status ' + statusClass(item.status);
+      status.textContent = statusLabel(item.status);
+      meta.append(owner, status);
+
+      copy.append(top, preview, meta);
+      row.append(avatar, copy);
+
+      if (Number(item.unread_count || 0) > 0) {
+        const badge = document.createElement('span');
+        badge.className = 'unread-badge';
+        badge.textContent = item.unread_count;
+        row.append(badge);
+      }
+      list.append(row);
+    }
+  };
+
+  const pollInbox = async () => {
+    try {
+      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query);
+      const response = await fetch(url, {headers:{'Accept':'application/json'}, credentials:'same-origin'});
+      if (!response.ok) return;
+      const data = await response.json();
+      const signature = JSON.stringify(data);
+      if (signature !== inboxSignature) {
+        inboxSignature = signature;
+        renderInbox(data);
+      }
+    } catch (_) {}
+  };
+
+  pollInbox();
+  window.setInterval(pollInbox, 2500);
+
   const stream = document.getElementById('chat-stream');
+  if (!conversationId || !stream) return;
+
   const input = document.querySelector('[data-chat-input]');
   const form = document.querySelector('.chat-send-form');
-  if (!root || !stream) return;
-  const conversationId = root.dataset.conversationId;
   let lastId = 0;
   stream.querySelectorAll('[data-message-id]').forEach(el => {
     lastId = Math.max(lastId, Number(el.dataset.messageId || 0));
@@ -271,15 +379,18 @@
     sender.className = 'message-sender';
     sender.textContent = item.sender;
     bubble.append(sender);
+
     if (item.type !== 'TEXT') {
       const type = document.createElement('span');
       type.className = 'message-type';
       type.textContent = item.type;
       bubble.append(type);
     }
+
     const p = document.createElement('p');
     p.textContent = item.body;
     bubble.append(p);
+
     if (item.media_url && /^https?:\/\//.test(item.media_url)) {
       const a = document.createElement('a');
       a.className = 'message-media-link';
@@ -289,6 +400,7 @@
       a.textContent = 'Abrir mídia / arquivo ↗';
       bubble.append(a);
     }
+
     const foot = document.createElement('div');
     foot.className = 'message-foot';
     const time = document.createElement('time');
@@ -306,7 +418,7 @@
     stream.append(line);
   };
 
-  const poll = async () => {
+  const pollMessages = async () => {
     try {
       const response = await fetch('/api/conversations/' + conversationId + '/messages?after_id=' + lastId, {
         headers: {'Accept': 'application/json'},
@@ -320,10 +432,13 @@
         lastId = Math.max(lastId, Number(item.id || 0));
         received = true;
       }
-      if (received) scrollBottom();
+      if (received) {
+        scrollBottom();
+        pollInbox();
+      }
     } catch (_) {}
   };
-  window.setInterval(poll, 2500);
+  window.setInterval(pollMessages, 2500);
 
   if (form && input) {
     input.addEventListener('keydown', event => {
@@ -335,5 +450,4 @@
   }
 })();
 </script>
-{% endif %}
 {% endblock %}

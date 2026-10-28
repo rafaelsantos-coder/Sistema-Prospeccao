@@ -98,3 +98,21 @@ def test_consultant_cannot_see_another_consultants_conversation():
     assert conversation_visible_to_user(conversation, owner) is True
     assert conversation_visible_to_user(conversation, other) is False
     assert conversation_visible_to_user(conversation, admin) is True
+
+
+def test_realtime_inbox_api_lists_new_conversation():
+    with TestClient(app) as client:
+        _login(client)
+        lead = client.get("/leads/1")
+        token = _csrf(lead.text)
+        opened = client.post(
+            "/leads/1/conversation",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        assert opened.status_code == 303
+        state = client.get("/api/conversations/inbox?view=active")
+        assert state.status_code == 200
+        payload = state.json()
+        assert payload["counts"]["active"] >= 1
+        assert any(item["name"] == "Clínica Horizonte" for item in payload["items"])
