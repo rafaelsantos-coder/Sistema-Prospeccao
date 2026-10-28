@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import secrets
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -8,7 +9,18 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.constants import DEFAULT_TARGETS
-from app.models import Activity, Branch, Campaign, Lead, Target, User
+from app.models import (
+    Activity,
+    AIAgentProfile,
+    AIKnowledgeItem,
+    AIQueueBinding,
+    Branch,
+    Campaign,
+    Lead,
+    ServiceQueue,
+    Target,
+    User,
+)
 from app.security import hash_password
 from app.services.followups import initial_next_action
 from app.services.scoring import calculate_sulnet_score
@@ -49,6 +61,112 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         )
         db.add(admin)
         db.flush()
+
+    ai_user = db.scalar(select(User).where(User.email == "sulia.sdr@system.local"))
+    if not ai_user:
+        ai_user = User(
+            name="SulIA SDR",
+            email="sulia.sdr@system.local",
+            password_hash=hash_password(secrets.token_urlsafe(48)),
+            role="AI_SDR",
+            team="DIGITAL",
+            branch_id=None,
+            active=True,
+            must_change_password=False,
+        )
+        db.add(ai_user)
+        db.flush()
+
+    ai_agent = db.scalar(
+        select(AIAgentProfile).where(AIAgentProfile.user_id == ai_user.id)
+    )
+    if not ai_agent:
+        ai_agent = AIAgentProfile(
+            user_id=ai_user.id,
+            name="SulIA SDR Digital",
+            slug="sulia-sdr-digital",
+            role_type="SDR",
+            execution_mode="SHADOW",
+            model="gpt-6-luna",
+            reasoning_effort="low",
+            active=True,
+            public_name="Sulnet",
+            qualification_handoff_score=70,
+            max_history_messages=24,
+            max_knowledge_chars=12000,
+            created_by_id=admin.id,
+        )
+        db.add(ai_agent)
+        db.flush()
+
+    if not db.scalar(
+        select(AIKnowledgeItem.id).where(AIKnowledgeItem.agent_id == ai_agent.id).limit(1)
+    ):
+        db.add_all(
+            [
+                AIKnowledgeItem(
+                    agent_id=ai_agent.id,
+                    title="Objetivo do SulIA SDR",
+                    category="PROCESSO",
+                    tags="sdr,qualificacao,handoff",
+                    content=(
+                        "O SulIA atua no topo do funil comercial. Deve entender a necessidade, "
+                        "identificar dores e sinais de intenção, qualificar o prospect e recomendar "
+                        "transferência para um vendedor humano quando houver intenção real de proposta, "
+                        "contratação ou negociação."
+                    ),
+                    created_by_id=admin.id,
+                ),
+                AIKnowledgeItem(
+                    agent_id=ai_agent.id,
+                    title="Regras comerciais seguras",
+                    category="REGRAS",
+                    tags="preco,cobertura,promocao,seguranca",
+                    content=(
+                        "Nunca inventar preço, promoção, cobertura, prazo de instalação, desconto ou "
+                        "condição comercial. Se a informação não estiver na base de conhecimento, informar "
+                        "que um consultor da Sulnet confirmará. Pedido de desconto, proposta ou contratação "
+                        "deve gerar recomendação de handoff."
+                    ),
+                    created_by_id=admin.id,
+                ),
+                AIKnowledgeItem(
+                    agent_id=ai_agent.id,
+                    title="Dados mínimos de qualificação",
+                    category="QUALIFICACAO",
+                    tags="provedor,velocidade,preco,dor,decisor,prazo",
+                    content=(
+                        "Quando fizer sentido na conversa, buscar de forma natural: provedor atual, "
+                        "velocidade atual, valor aproximado, principais dores, uso da conexão, produto de "
+                        "interesse, se a pessoa participa da decisão e prazo para mudança. Fazer uma pergunta "
+                        "por vez e não transformar a conversa em interrogatório."
+                    ),
+                    created_by_id=admin.id,
+                ),
+            ]
+        )
+
+    digital_queue = db.scalar(
+        select(ServiceQueue)
+        .where(
+            ServiceQueue.team == "DIGITAL",
+            ServiceQueue.active.is_(True),
+        )
+        .order_by(ServiceQueue.id.asc())
+        .limit(1)
+    )
+    if digital_queue and not db.scalar(
+        select(AIQueueBinding.id).where(AIQueueBinding.queue_id == digital_queue.id)
+    ):
+        db.add(
+            AIQueueBinding(
+                queue_id=digital_queue.id,
+                agent_id=ai_agent.id,
+                handling_mode="AI_FIRST",
+                active=True,
+                fallback_to_human=True,
+            )
+        )
 
     for team, metric, goal in DEFAULT_TARGETS:
         exists = db.scalar(
