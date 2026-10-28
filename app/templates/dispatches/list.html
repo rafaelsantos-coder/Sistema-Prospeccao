@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">EXECUÇÃO DE CAMPANHAS</span>
+    <h2>Disparos WhatsApp</h2>
+    <p>Escolha a campanha, a fila de retorno, o intervalo e importe um CSV com nome e telefone.</p>
+  </div>
+  <a class="button button-secondary" href="/dispatches/sample.csv">Baixar modelo CSV</a>
+</div>
+
+<div class="dispatch-layout">
+  <section class="panel dispatch-create-panel">
+    <div class="panel-header">
+      <div>
+        <span class="eyebrow">NOVO DISPARO</span>
+        <h3>Preparar lista de envio</h3>
+      </div>
+      <span class="panel-note">O envio só inicia depois da sua confirmação.</span>
+    </div>
+
+    <form action="/dispatches" method="post" enctype="multipart/form-data" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <div class="form-grid">
+        <label class="field field-span-2">
+          <span>Campanha</span>
+          <select name="campaign_id" required>
+            <option value="">Selecione a campanha</option>
+            {% for campaign in campaigns %}
+            <option value="{{ campaign.id }}">{{ campaign.name }} · {{ campaign.status|replace('_',' ') }}</option>
+            {% endfor %}
+          </select>
+          <small>A mensagem usada será a abordagem cadastrada na campanha.</small>
+        </label>
+
+        <label class="field field-span-2">
+          <span>Fila que receberá as respostas</span>
+          <select name="queue_id" required>
+            <option value="">Selecione a fila</option>
+            {% for queue in service_queues %}
+            <option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>
+            {% endfor %}
+          </select>
+          <small>Quando o cliente responder, a conversa entra nesta fila e segue o carrossel/regra configurada.</small>
+        </label>
+
+        <label class="field">
+          <span>Intervalo entre mensagens</span>
+          <div class="input-with-suffix">
+            <input type="number" name="interval_seconds" min="5" max="3600" value="30" required>
+            <b>seg</b>
+          </div>
+          <small>Mínimo operacional: 5 segundos.</small>
+        </label>
+
+        <label class="field">
+          <span>Limite diário</span>
+          <input type="number" name="daily_limit" min="1" max="5000" value="100" required>
+          <small>Ao atingir o limite, o envio retoma no dia seguinte.</small>
+        </label>
+
+        <label class="field field-span-2">
+          <span>Arquivo CSV</span>
+          <input type="file" name="csv_file" accept=".csv,text/csv" required data-dispatch-csv>
+          <small>Colunas aceitas: nome + telefone. Também reconhece celular, whatsapp, phone, cliente e empresa.</small>
+        </label>
+      </div>
+
+      <div class="dispatch-flow-note">
+        <span>1</span><p>Importa e valida os contatos.</p>
+        <i>→</i>
+        <span>2</span><p>Você revisa o total e o tempo estimado.</p>
+        <i>→</i>
+        <span>3</span><p>Inicia o disparo pelo Z-API.</p>
+        <i>→</i>
+        <span>4</span><p>Respostas caem na fila escolhida.</p>
+      </div>
+
+      <button class="button button-primary full-width" type="submit">Importar CSV e preparar disparo</button>
+    </form>
+  </section>
+
+  <aside class="panel dispatch-guidance-panel">
+    <span class="eyebrow">COMO FUNCIONA</span>
+    <h3>A campanha define a mensagem. O disparo define a execução.</h3>
+    <div class="dispatch-guidance-list">
+      <div><b>Campanha</b><span>Texto e abordagem que será enviada.</span></div>
+      <div><b>Fila</b><span>Destino de todas as respostas daquele disparo.</span></div>
+      <div><b>Intervalo</b><span>Tempo mínimo entre um envio e o próximo.</span></div>
+      <div><b>CSV</b><span>Lista sequencial de nome e telefone.</span></div>
+      <div><b>Z-API</b><span>Canal responsável pelo envio real das mensagens.</span></div>
+    </div>
+    <div class="info-box">
+      <strong>Retorno preservado</strong>
+      <p>Se o disparo usar a fila Digital, cada conversa criada fica marcada como Digital. Quando houver resposta, somente os membros online daquela fila entram na distribuição.</p>
+    </div>
+  </aside>
+</div>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">HISTÓRICO</span><h3>Disparos preparados e executados</h3></div>
+    <span class="count-badge">{{ dispatches|length }}</span>
+  </div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Disparo</th>
+          <th>Campanha</th>
+          <th>Fila</th>
+          <th>Intervalo</th>
+          <th>Progresso</th>
+          <th>Status</th>
+          <th>Criado por</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in dispatches %}
+        {% set dc = counts.get(item.id, {}) %}
+        {% set total = dc.get('total', 0) %}
+        {% set sent = dc.get('sent', 0) %}
+        {% set pct = (sent / total * 100) if total else 0 %}
+        <tr>
+          <td><strong>#{{ item.id }}</strong><span class="table-subline">{{ item.created_at|datetime_br }}</span></td>
+          <td><strong>{{ item.campaign.name }}</strong></td>
+          <td>{{ item.queue.name }}<span class="table-subline">{{ item.queue.code }}</span></td>
+          <td>{{ item.interval_seconds }}s<span class="table-subline">{{ item.daily_limit }}/dia</span></td>
+          <td>
+            <strong>{{ sent }}/{{ total }}</strong>
+            <div class="dispatch-mini-progress"><i style="width: {{ '%.1f'|format(pct) }}%"></i></div>
+            <span class="table-subline">{{ dc.get('pending', 0) }} pendentes · {{ dc.get('failed', 0) }} falhas</span>
+          </td>
+          <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
+          <td>{{ item.created_by.name if item.created_by else 'Sistema' }}</td>
+          <td><a class="button button-ghost" href="/dispatches/{{ item.id }}">Abrir</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8"><div class="empty-state"><strong>Nenhum disparo criado</strong><span>Importe seu primeiro CSV acima.</span></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
