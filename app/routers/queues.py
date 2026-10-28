@@ -61,6 +61,26 @@ def _scoped_users(db: Session, queue: ServiceQueue | None = None) -> list[User]:
     return users
 
 
+def _queue_manage_allowed(actor: User, queue: ServiceQueue) -> bool:
+    if actor.role in {"ADMIN", "GESTOR"}:
+        return True
+    if actor.role != "SUPERVISOR":
+        return False
+    if actor.branch_id:
+        return queue.branch_id in {None, actor.branch_id}
+    return queue.team == actor.team
+
+
+def _member_manage_allowed(actor: User, queue: ServiceQueue, target: User) -> bool:
+    if not _queue_manage_allowed(actor, queue):
+        return False
+    if actor.role in {"ADMIN", "GESTOR"}:
+        return True
+    if actor.branch_id:
+        return target.branch_id == actor.branch_id
+    return target.team == actor.team
+
+
 def _unset_other_defaults(db: Session, queue: ServiceQueue) -> None:
     if not queue.is_default_inbound:
         return
@@ -87,7 +107,6 @@ def create_queue(
     branch_id: str = Form(""),
     routing_strategy: str = Form("ROUND_ROBIN"),
     is_default_inbound: bool = Form(False),
-    member_user_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -199,6 +218,8 @@ def update_queue(
     validate_csrf(request, csrf_token)
     require_roles(actor, "ADMIN", "GESTOR")
     queue = _queue_or_404(db, queue_id)
+    if not _queue_manage_allowed(actor, queue):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     strategy = routing_strategy.strip().upper()
     if strategy not in ROUTING_STRATEGIES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
@@ -209,15 +230,6 @@ def update_queue(
     queue.routing_strategy = strategy
     queue.is_default_inbound = is_default_inbound
     queue.active = active
-
-    selected = set(member_user_ids)
-    existing = {item.user_id: item for item in queue.members}
-    for user_id, member in existing.items():
-        member.active = user_id in selected
-    for user_id in sorted(selected - set(existing)):
-        user = db.get(User, user_id)
-        if user and user.active:
-            db.add(ServiceQueueMember(queue_id=queue.id, user_id=user.id, active=True))
 
     _unset_other_defaults(db, queue)
     write_audit(
@@ -231,9 +243,103 @@ def update_queue(
             "routing_strategy": queue.routing_strategy,
             "active": queue.active,
             "default_inbound": queue.is_default_inbound,
-            "members": sorted(selected),
+            "members_managed_separately": True,
         },
     )
     db.commit()
     flash(request, "Configuração da fila atualizada.")
+    return RedirectResponse(f"/settings/queues/{queue.id}", status_code=303)
+
+
+@router.post("/{queue_id}/members/{user_id}/add")
+def add_queue_member(
+    queue_id: int,
+    user_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+
+    queue = _queue_or_404(db, queue_id)
+    target = db.get(User, user_id)
+    if not target or not target.active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not _member_manage_allowed(actor, queue, target):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    member = db.scalar(
+        select(ServiceQueueMember).where(
+            ServiceQueueMember.queue_id == queue.id,
+            ServiceQueueMember.user_id == target.id,
+        )
+    )
+    if member:
+        member.active = True
+    else:
+        member = ServiceQueueMember(
+            queue_id=queue.id,
+            user_id=target.id,
+            active=True,
+        )
+        db.add(member)
+
+    write_audit(
+        db,
+        user=actor,
+        action="SERVICE_QUEUE_MEMBER_ADDED",
+        entity_type="service_queue",
+        entity_id=queue.id,
+        payload={"user_id": target.id, "user_name": target.name},
+    )
+    db.commit()
+    flash(request, f"{target.name} foi adicionado à fila {queue.name}.")
+    return RedirectResponse(f"/settings/queues/{queue.id}", status_code=303)
+
+
+@router.post("/{queue_id}/members/{user_id}/remove")
+def remove_queue_member(
+    queue_id: int,
+    user_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+
+    queue = _queue_or_404(db, queue_id)
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not _member_manage_allowed(actor, queue, target):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    member = db.scalar(
+        select(ServiceQueueMember).where(
+            ServiceQueueMember.queue_id == queue.id,
+            ServiceQueueMember.user_id == target.id,
+        )
+    )
+    if member:
+        member.active = False
+
+    write_audit(
+        db,
+        user=actor,
+        action="SERVICE_QUEUE_MEMBER_REMOVED",
+        entity_type="service_queue",
+        entity_id=queue.id,
+        payload={"user_id": target.id, "user_name": target.name},
+    )
+    db.commit()
+    flash(
+        request,
+        f"{target.name} foi removido da fila. Conversas já atribuídas permanecem com o atendente até serem transferidas.",
+    )
     return RedirectResponse(f"/settings/queues/{queue.id}", status_code=303)
