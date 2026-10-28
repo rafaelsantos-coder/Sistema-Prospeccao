@@ -31,6 +31,14 @@ LIGHT = colors.HexColor("#F4F6F8")
 BORDER = colors.HexColor("#DFE4E8")
 
 
+def _pdf_safe(value: object) -> str:
+    return str(value if value is not None else "").encode("cp1252", "replace").decode("cp1252")
+
+
+def _html(value: object) -> str:
+    return escape(_pdf_safe(value))
+
+
 def _dt(value) -> str:
     local = utc_to_local(value)
     return local.strftime("%d/%m/%Y %H:%M") if local else "—"
@@ -133,7 +141,7 @@ def build_management_report_pdf(snapshot: dict[str, Any], period_label: str) -> 
     story = [
         Paragraph("Relatório gerencial · WhatsApp", styles["title"]),
         Paragraph(
-            f"Período: {escape(period_label)} · Dados respeitam o escopo de acesso do usuário que exportou.",
+            f"Período: {_html(period_label)} · Dados respeitam o escopo de acesso do usuário que exportou.",
             styles["subtitle"],
         ),
     ]
@@ -150,8 +158,8 @@ def build_management_report_pdf(snapshot: dict[str, Any], period_label: str) -> 
         ("Leitura", f'{kpis["read_rate"]:.1f}%'),
     ]
     kpi_table = Table(
-        [[Paragraph(escape(label), styles["center"]) for label, _ in cards],
-         [Paragraph(escape(value), styles["center"]) for _, value in cards]],
+        [[Paragraph(_html(label), styles["center"]) for label, _ in cards],
+         [Paragraph(_html(value), styles["center"]) for _, value in cards]],
         colWidths=[33 * mm] * len(cards),
     )
     kpi_table.setStyle(TableStyle([
@@ -177,7 +185,7 @@ def build_management_report_pdf(snapshot: dict[str, Any], period_label: str) -> 
     if len(operator_rows) == 1:
         operator_rows.append(["Sem dados no período", "—", "—", "—", "—"])
     operator_table = Table(
-        [[Paragraph(escape(str(value)), styles["small"]) for value in row] for row in operator_rows],
+        [[Paragraph(_html(value), styles["small"]) for value in row] for row in operator_rows],
         colWidths=[66 * mm, 26 * mm, 28 * mm, 38 * mm, 38 * mm],
         repeatRows=1,
     )
@@ -207,7 +215,7 @@ def build_management_report_pdf(snapshot: dict[str, Any], period_label: str) -> 
     if len(conversation_rows) == 1:
         conversation_rows.append(["Sem conversas", "—", "—", "—", "—", "—", "—", "—"])
     conversation_table = Table(
-        [[Paragraph(escape(str(value)), styles["small"]) for value in row] for row in conversation_rows],
+        [[Paragraph(_html(value), styles["small"]) for value in row] for row in conversation_rows],
         colWidths=[45 * mm, 29 * mm, 42 * mm, 28 * mm, 15 * mm, 28 * mm, 28 * mm, 31 * mm],
         repeatRows=1,
     )
@@ -246,10 +254,10 @@ def build_conversation_pdf(conversation, metrics: dict[str, Any]) -> bytes:
     story = [
         Paragraph(f"Extrato de conversa · #{conversation.id}", styles["title"]),
         Paragraph(
-            f"<b>Contato:</b> {escape(contact_name)} &nbsp;&nbsp; "
-            f"<b>Telefone:</b> {escape(phone_br(conversation.contact.phone))}<br/>"
-            f"<b>Responsável:</b> {escape(conversation.assigned_user.name if conversation.assigned_user else 'Fila sem responsável')} &nbsp;&nbsp; "
-            f"<b>Status:</b> {escape(conversation.status.replace('_', ' '))}<br/>"
+            f"<b>Contato:</b> {_html(contact_name)} &nbsp;&nbsp; "
+            f"<b>Telefone:</b> {_html(phone_br(conversation.contact.phone))}<br/>"
+            f"<b>Responsável:</b> {_html(conversation.assigned_user.name if conversation.assigned_user else 'Fila sem responsável')} &nbsp;&nbsp; "
+            f"<b>Status:</b> {_html(conversation.status.replace('_', ' '))}<br/>"
             f"<b>Aberta:</b> {_dt(conversation.opened_at)} &nbsp;&nbsp; "
             f"<b>Encerrada:</b> {_dt(conversation.closed_at)}",
             styles["subtitle"],
@@ -263,7 +271,7 @@ def build_conversation_pdf(conversation, metrics: dict[str, Any]) -> bytes:
         ["Tempo até encerramento", format_duration(metrics.get("close_seconds"))],
     ]
     metric_table = Table(
-        [[Paragraph(escape(a), styles["small"]), Paragraph(escape(b), styles["small"])] for a, b in metric_data],
+        [[Paragraph(_html(a), styles["small"]), Paragraph(_html(b), styles["small"])] for a, b in metric_data],
         colWidths=[50 * mm, 50 * mm],
     )
     metric_table.setStyle(TableStyle([
@@ -283,12 +291,12 @@ def build_conversation_pdf(conversation, metrics: dict[str, Any]) -> bytes:
             who = message.sender_user.name if message.sender_user else "Sulnet"
         media = ""
         if message.media_url:
-            media = f"<br/><font color='#6F7881'>Anexo: {escape(message.message_type)} · {escape(message.mime_type or 'arquivo')}</font>"
-        body = escape(message.body or f"[{message.message_type}]").replace("\n", "<br/>")
+            media = f"<br/><font color='#6F7881'>Anexo: {_html(message.message_type)} · {_html(message.mime_type or 'arquivo')}</font>"
+        body = _html(message.body or f"[{message.message_type}]").replace("\n", "<br/>")
         card = Table(
             [[
                 Paragraph(
-                    f"{escape(who)} · {_dt(message.created_at)} · {escape(message.status)}",
+                    f"{_html(who)} · {_dt(message.created_at)} · {_html(message.status)}",
                     styles["message_meta"],
                 )
             ], [
