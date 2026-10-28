@@ -5,6 +5,7 @@ import io
 import math
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from sqlalchemy import func, or_, select
@@ -128,6 +129,17 @@ def list_leads(
     if user.role == "SUPERVISOR" and user.branch_id:
         sellers_stmt = sellers_stmt.where(User.branch_id == user.branch_id)
     sellers = list(db.scalars(sellers_stmt))
+    current_list_url = "/leads?" + urlencode(
+        {
+            "page": page,
+            "q": q,
+            "stage": stage,
+            "team": team,
+            "source": source,
+            "paid": paid,
+            **({"branch": branch} if branch else {}),
+        }
+    )
     return render(
         request,
         "leads/list.html",
@@ -137,6 +149,7 @@ def list_leads(
         leads=leads,
         branches=branches,
         sellers=sellers,
+        current_list_url=current_list_url,
         filters={"q": q, "stage": stage, "team": team, "source": source, "branch": branch, "paid": paid},
         pagination={"page": page, "pages": pages, "total": total},
     )
