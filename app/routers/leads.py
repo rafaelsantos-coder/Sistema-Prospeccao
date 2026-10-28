@@ -121,6 +121,13 @@ def list_leads(
     leads = list(db.scalars(stmt))
 
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
+    sellers_stmt = select(User).where(
+        User.active.is_(True),
+        User.role == "CONSULTOR",
+    ).order_by(User.name)
+    if user.role == "SUPERVISOR" and user.branch_id:
+        sellers_stmt = sellers_stmt.where(User.branch_id == user.branch_id)
+    sellers = list(db.scalars(sellers_stmt))
     return render(
         request,
         "leads/list.html",
@@ -129,6 +136,7 @@ def list_leads(
         page_title="Leads e oportunidades",
         leads=leads,
         branches=branches,
+        sellers=sellers,
         filters={"q": q, "stage": stage, "team": team, "source": source, "branch": branch, "paid": paid},
         pagination={"page": page, "pages": pages, "total": total},
     )
@@ -404,6 +412,7 @@ def assign_lead(
     csrf_token: str = Form(...),
     assigned_user_id: int = Form(...),
     branch_id: int | None = Form(None),
+    return_to: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user, redirect = _current_user_or_redirect(request, db)
@@ -414,17 +423,43 @@ def assign_lead(
     lead = _scoped_lead(db, user, lead_id)
     if not lead:
         return RedirectResponse("/leads", status_code=303)
-    lead.assigned_user_id = assigned_user_id
+
+    target = db.scalar(
+        select(User).where(
+            User.id == assigned_user_id,
+            User.active.is_(True),
+            User.role == "CONSULTOR",
+        )
+    )
+    if not target:
+        flash(request, "Vendedor inválido ou inativo.", "warning")
+        return RedirectResponse("/leads", status_code=303)
+    if user.role == "SUPERVISOR" and user.branch_id and target.branch_id != user.branch_id:
+        flash(request, "Você só pode transferir leads para vendedores da sua unidade.", "warning")
+        return RedirectResponse("/leads", status_code=303)
+
+    previous_user_id = lead.assigned_user_id
+    lead.assigned_user_id = target.id
     if branch_id and user.role in {"ADMIN", "GESTOR"}:
         lead.branch_id = branch_id
+
     write_audit(
         db,
         user=user,
-        action="LEAD_ASSIGNED",
+        action="LEAD_TRANSFERRED",
         entity_type="lead",
         entity_id=lead.id,
-        payload={"assigned_user_id": assigned_user_id, "branch_id": lead.branch_id},
+        payload={
+            "from_user_id": previous_user_id,
+            "to_user_id": target.id,
+            "to_user_name": target.name,
+            "branch_id": lead.branch_id,
+        },
     )
     db.commit()
-    flash(request, "Responsável atualizado.")
-    return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    flash(request, f"Lead transferida para {target.name}.")
+
+    destination = return_to.strip()
+    if not destination.startswith("/leads"):
+        destination = f"/leads/{lead.id}"
+    return RedirectResponse(destination, status_code=303)
