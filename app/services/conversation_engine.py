@@ -314,7 +314,9 @@ def distribute_waiting_conversations(
             select(Conversation)
             .where(
                 Conversation.assigned_user_id.is_(None),
-                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                Conversation.status.in_(
+                    OPEN_CONVERSATION_STATUSES - {"AGUARDANDO_CLIENTE"}
+                ),
             )
             .order_by(
                 Conversation.opened_at.asc(),
