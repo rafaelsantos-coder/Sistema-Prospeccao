@@ -80,7 +80,7 @@ Posso te fazer duas perguntas rápidas?"></textarea><small>Variáveis disponíve
       <div class="form-grid">
         <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
         <label class="field"><span>Canal</span><select name="channel"><option value="WHATSAPP">WhatsApp</option><option value="EMAIL">E-mail</option></select></label>
-        <label class="field"><span>Fila que receberá as respostas</span><select name="queue_id" required><option value="">Selecione a fila</option>{% for queue in service_queues %}<option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select></label>
+        <label class="field"><span>Fila que receberá as respostas</span><select name="queue_id"><option value="">Selecione a fila (obrigatória no WhatsApp)</option>{% for queue in service_queues %}<option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select></label>
         <label class="field"><span>Limite diário</span><input type="number" name="daily_limit" min="1" max="200" value="30"></label>
         {% if current_user.role in ['ADMIN','GESTOR'] %}<label class="field"><span>Unidade</span><select name="branch_id"><option value="">Todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>{% endif %}
       </div>
