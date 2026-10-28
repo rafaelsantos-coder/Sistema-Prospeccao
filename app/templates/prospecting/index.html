@@ -19,6 +19,7 @@
       <div class="form-grid">
         <label class="field"><span>Quantidade</span><input type="number" name="limit" min="1" max="100" value="20"></label>
         <label class="field"><span>Equipe de destino</span><select name="team"><option value="B2B">Corporativo B2B</option><option value="PAP">Porta a porta</option><option value="DIGITAL">Digital</option><option value="LOJA">Loja / Receptivo</option></select></label>
+        <label class="field field-span-2"><span>Fila para os futuros retornos</span><select name="queue_id"><option value="">Definir depois</option>{% for queue in service_queues %}<option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select><small>Os leads encontrados ficarão associados a esta fila; quando houver disparo e resposta, o atendimento respeitará a configuração dela.</small></label>
         {% if current_user.role in ['ADMIN','GESTOR'] %}<label class="field field-span-2"><span>Unidade responsável</span><select name="branch_id"><option value="">Sem unidade definida</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>{% endif %}
       </div>
       {% if not apify_configured %}<div class="warning-box"><strong>Integração pendente</strong><p>Cadastre <code>APIFY_TOKEN</code> no ambiente antes de executar uma busca real. A solicitação poderá ser criada, mas ficará com status de falha até a configuração.</p></div>{% endif %}
@@ -42,18 +43,20 @@
   <div class="panel-header table-title"><div><span class="eyebrow">HISTÓRICO</span><h3>Buscas recentes</h3></div></div>
   <div class="data-table-wrap">
     <table class="data-table">
-      <thead><tr><th>Busca</th><th>Unidade / Equipe</th><th>Solicitada por</th><th>Encontrados</th><th>Importados</th><th>Status</th><th>Data</th></tr></thead>
+      <thead><tr><th>Busca</th><th>Unidade / Equipe</th><th>Fila de retorno</th><th>Solicitada por</th><th>Encontrados</th><th>Importados</th><th>Status</th><th>Data</th></tr></thead>
       <tbody>
       {% for job in jobs %}
         <tr>
           <td><strong>{{ job.segment }}</strong><span class="table-subline">{{ job.city }} · limite {{ job.limit }}</span></td>
           <td>{{ job.branch.city if job.branch else 'Não definida' }}<span class="table-subline">{{ constants.teams.get(job.team, job.team) }}</span></td>
+          {% set jq = job_queues.get(job.id) %}
+          <td>{% if jq %}<strong>{{ jq.name }}</strong><span class="table-subline">{{ jq.code }}</span>{% else %}<span class="muted-text">Definir depois</span>{% endif %}</td>
           <td>{{ job.created_by.name if job.created_by else 'Sistema' }}</td>
           <td>{{ job.found_count }}</td><td>{{ job.imported_count }}</td>
           <td><span class="job-status job-{{ job.status|lower }}">{{ job.status|replace('_',' ')|title }}</span>{% if job.error %}<span class="table-subline text-danger" title="{{ job.error }}">{{ job.error[:60] }}{% if job.error|length > 60 %}…{% endif %}</span>{% endif %}</td>
           <td>{{ job.created_at|datetime_br }}</td>
         </tr>
-      {% else %}<tr><td colspan="7"><div class="empty-state"><strong>Nenhuma busca executada</strong><span>Crie a primeira busca segmentada acima.</span></div></td></tr>{% endfor %}
+      {% else %}<tr><td colspan="8"><div class="empty-state"><strong>Nenhuma busca executada</strong><span>Crie a primeira busca segmentada acima.</span></div></td></tr>{% endfor %}
       </tbody>
     </table>
   </div>
