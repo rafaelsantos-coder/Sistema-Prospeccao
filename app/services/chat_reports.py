@@ -173,6 +173,20 @@ def _message_metrics(messages: list[Message]) -> dict[str, Any]:
     }
 
 
+def conversation_metrics(conversation: Conversation) -> dict[str, Any]:
+    metrics = _message_metrics(conversation.messages)
+    metrics.update(
+        {
+            "message_count": len(conversation.messages),
+            "inbound_count": sum(1 for item in conversation.messages if item.direction == "INBOUND"),
+            "outbound_count": sum(1 for item in conversation.messages if item.direction == "OUTBOUND"),
+            "internal_count": sum(1 for item in conversation.messages if item.direction == "INTERNAL"),
+            "close_seconds": duration_seconds(conversation.opened_at, conversation.closed_at),
+        }
+    )
+    return metrics
+
+
 def _first_assignment(conversation: Conversation) -> datetime | None:
     assignments = [
         item for item in conversation.assignments
