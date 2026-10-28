@@ -314,11 +314,12 @@ def send_message(
 
 def _media_kind(filename: str, mime_type: str) -> str:
     clean_mime = (mime_type or "").split(";")[0].strip().lower()
-    if clean_mime.startswith("image/"):
+    extension = Path(filename or "").suffix.lower()
+    if clean_mime.startswith("image/") or extension in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
         return "IMAGE"
-    if clean_mime.startswith("video/"):
+    if clean_mime.startswith("video/") or extension in {".mp4", ".mov", ".m4v", ".3gp"}:
         return "VIDEO"
-    if clean_mime.startswith("audio/"):
+    if clean_mime.startswith("audio/") or extension in {".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".amr"}:
         return "AUDIO"
     return "DOCUMENT"
 
