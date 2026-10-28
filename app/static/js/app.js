@@ -55,6 +55,7 @@
   const presenceRoot = document.querySelector('[data-whatsapp-presence]');
   if (presenceRoot) {
     const csrf = presenceRoot.dataset.csrf || '';
+    const role = presenceRoot.dataset.role || '';
     const toggle = presenceRoot.querySelector('[data-whatsapp-toggle]');
     const dot = presenceRoot.querySelector('[data-whatsapp-dot]');
     const label = presenceRoot.querySelector('[data-whatsapp-label]');
@@ -78,6 +79,9 @@
       if (toggle) {
         toggle.textContent = online ? 'Sair do WhatsApp' : 'Entrar no WhatsApp';
         toggle.classList.toggle('danger', online);
+      }
+      if (!online && role === 'CONSULTOR' && window.location.pathname.startsWith('/conversations')) {
+        window.location.replace('/dashboard');
       }
     };
 
