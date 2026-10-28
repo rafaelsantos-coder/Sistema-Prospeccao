@@ -75,12 +75,54 @@
     </div>
   </article>
 
+  {% if current_user.role in ['ADMIN','GESTOR'] %}
+  <article class="panel panel-span-12">
+    <div class="panel-header"><div><span class="eyebrow">EQUIPE DO INBOX</span><h3>Novo usuário</h3></div><span class="panel-note">Senha provisória · troca obrigatória no primeiro acesso</span></div>
+    <form action="/settings/users" method="post" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Nome</span><input name="name" required placeholder="Nome completo"></label>
+      <label class="field"><span>E-mail</span><input name="email" type="email" required placeholder="nome@sulnet.com.br"></label>
+      <label class="field"><span>Senha provisória</span><input name="password" type="password" minlength="10" required autocomplete="new-password"></label>
+      <label class="field"><span>Perfil</span><select name="role" required>
+        <option value="CONSULTOR">Consultor</option>
+        <option value="SUPERVISOR">Supervisor</option>
+        {% if current_user.role == 'ADMIN' %}<option value="GESTOR">Gestor</option><option value="ADMIN">Administrador</option>{% endif %}
+      </select></label>
+      <label class="field"><span>Equipe</span><select name="team" required>{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Todas / corporativo</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
+      <div class="field field-span-2"><button class="button button-primary" type="submit">Criar usuário e liberar acesso</button></div>
+    </form>
+  </article>
+  {% endif %}
+
   <article class="panel panel-span-12">
     <div class="panel-header"><div><span class="eyebrow">USUÁRIOS</span><h3>Acessos do ambiente</h3></div><span class="count-badge">{{ users|length }}</span></div>
     <div class="data-table-wrap">
-      <table class="data-table"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Unidade</th><th>Status</th></tr></thead><tbody>
-        {% for item in users %}<tr><td><strong>{{ item.name }}</strong></td><td>{{ item.email }}</td><td>{{ constants.roles.get(item.role, item.role) }}</td><td>{{ constants.teams.get(item.team, item.team) }}</td><td>{{ item.branch.city if item.branch else 'Todas' }}</td><td><span class="connection-status {% if item.active %}on{% endif %}">{% if item.active %}Ativo{% else %}Inativo{% endif %}</span></td></tr>{% endfor %}
+      <table class="data-table"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Unidade</th><th>Status</th>{% if current_user.role in ['ADMIN','GESTOR'] %}<th>Ação</th>{% endif %}</tr></thead><tbody>
+        {% for item in users %}<tr><td><strong>{{ item.name }}</strong></td><td>{{ item.email }}</td><td>{{ constants.roles.get(item.role, item.role) }}</td><td>{{ constants.teams.get(item.team, item.team) }}</td><td>{{ item.branch.city if item.branch else 'Todas' }}</td><td><span class="connection-status {% if item.active %}on{% endif %}">{% if item.active %}Ativo{% else %}Inativo{% endif %}</span></td>{% if current_user.role in ['ADMIN','GESTOR'] %}<td>{% if item.id != current_user.id %}<form action="/settings/users/{{ item.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-ghost" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button></form>{% else %}<span class="panel-note">Você</span>{% endif %}</td>{% endif %}</tr>{% endfor %}
       </tbody></table>
+    </div>
+  </article>
+
+  <article class="panel panel-span-12">
+    <div class="panel-header"><div><span class="eyebrow">AUDITORIA</span><h3>Eventos recentes do sistema</h3></div><span class="count-badge">{{ audit_logs|length }}</span></div>
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Entidade</th><th>ID</th></tr></thead>
+        <tbody>
+          {% for log in audit_logs %}
+          <tr>
+            <td>{{ log.created_at|datetime_br }}</td>
+            <td>{{ log.user.name if log.user else 'Sistema' }}</td>
+            <td><strong>{{ log.action }}</strong></td>
+            <td>{{ log.entity_type }}</td>
+            <td>{{ log.entity_id or '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">Nenhum evento registrado.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
   </article>
 </div>
