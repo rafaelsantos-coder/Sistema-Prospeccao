@@ -70,7 +70,7 @@ def whatsapp_presence_join(
     user = _current_user_or_401(request, db)
     validate_csrf(request, csrf_token)
     join_whatsapp(db, user)
-    distributed = distribute_waiting_conversations(db)
+    distributed = distribute_waiting_conversations(db, limit=500)
     write_audit(
         db,
         user=user,
