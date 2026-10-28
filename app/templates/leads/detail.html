@@ -81,6 +81,28 @@
       <p>{% if lead.next_action_at and lead.next_action_at < now %}Prazo vencido. Priorize este contato.{% else %}Mantenha o combinado registrado no CRM.{% endif %}</p>
     </article>
 
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">WHATSAPP</span><h3>Contato individual</h3></div><span class="connection-status {% if integrations.whatsapp %}on{% endif %}">{{ whatsapp_provider }}</span></div>
+      {% if lead.do_not_contact or lead.stage == 'NAO_CONTATAR' %}
+      <div class="info-box compact"><strong>Contato bloqueado</strong><p>Este lead solicitou não receber novas mensagens.</p></div>
+      {% elif not lead.phone %}
+      <div class="info-box compact"><strong>Telefone ausente</strong><p>Cadastre um número válido antes de enviar.</p></div>
+      {% elif integrations.whatsapp %}
+      <form action="/leads/{{ lead.id }}/whatsapp" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Mensagem</span><textarea name="message" rows="6" maxlength="4096" required>Olá{% if lead.contact_name %}, {{ lead.contact_name }}{% endif %}! Tudo bem?
+
+Aqui é da Sulnet. Estamos entrando em contato para apresentar soluções de internet e conectividade para empresas de {{ lead.city }}.
+
+Posso te explicar rapidamente as opções disponíveis?</textarea></label>
+        <button class="button button-primary full-width" type="submit">Enviar pelo WhatsApp</button>
+      </form>
+      <div class="info-box compact"><strong>Envio controlado</strong><p>A mensagem será registrada no histórico e os próximos contatos serão interrompidos quando houver resposta.</p></div>
+      {% else %}
+      <div class="info-box compact"><strong>Integração pendente</strong><p>A Z-API ainda não está disponível neste ambiente.</p></div>
+      {% endif %}
+    </article>
+
     <article class="panel details-panel">
       <div class="panel-header"><div><span class="eyebrow">OPORTUNIDADE</span><h3>Resumo comercial</h3></div></div>
       <dl class="detail-list">
