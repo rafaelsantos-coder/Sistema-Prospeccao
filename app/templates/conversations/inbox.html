@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="inbox-shell" data-inbox {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
+  <aside class="inbox-list-panel">
+    <div class="inbox-list-head">
+      <div>
+        <span class="eyebrow">WHATSAPP COMERCIAL</span>
+        <h2>Caixa de entrada</h2>
+      </div>
+      <span class="inbox-live"><i></i> Z-API</span>
+    </div>
+
+    <form class="inbox-search" action="/conversations" method="get">
+      <input type="hidden" name="view" value="{{ view }}">
+      <span>⌕</span>
+      <input name="q" value="{{ query }}" placeholder="Buscar empresa, pessoa ou telefone">
+    </form>
+
+    <div class="inbox-tabs">
+      <a href="/conversations?view=active" class="{% if view == 'active' %}active{% endif %}">Ativas <b>{{ counts.active }}</b></a>
+      <a href="/conversations?view=unread" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b>{{ counts.unread }}</b></a>
+      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+      <a href="/conversations?view=queue" class="{% if view == 'queue' %}active{% endif %}">Fila <b>{{ counts.queue }}</b></a>
+      {% endif %}
+      <a href="/conversations?view=closed" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b>{{ counts.closed }}</b></a>
+    </div>
+
+    <div class="conversation-list">
+      {% for item in conversations %}
+      <a class="conversation-row {% if conversation and item.id == conversation.id %}selected{% endif %}" href="/conversations/{{ item.id }}?view={{ view }}{% if query %}&q={{ query|urlencode }}{% endif %}">
+        <div class="conversation-avatar">{{ (item.contact.business_name or item.contact.name or 'C')[:2]|upper }}</div>
+        <div class="conversation-row-copy">
+          <div class="conversation-row-top">
+            <strong>{{ item.contact.business_name or item.contact.name or item.contact.phone|phone_br }}</strong>
+            <time>{{ item.last_message_at|datetime_br }}</time>
+          </div>
+          <div class="conversation-preview">{{ item.last_message_preview or 'Conversa iniciada' }}</div>
+          <div class="conversation-row-meta">
+            <span>{{ item.assigned_user.name if item.assigned_user else 'Fila sem responsável' }}</span>
+            <span class="conversation-status status-{{ item.status|lower }}">{{ item.status.replace('_',' ') }}</span>
+          </div>
+        </div>
+        {% if item.unread_count %}<span class="unread-badge">{{ item.unread_count }}</span>{% endif %}
+      </a>
+      {% else %}
+      <div class="inbox-empty-list">
+        <strong>Nenhuma conversa nesta visão</strong>
+        <span>As respostas do WhatsApp aparecerão aqui automaticamente.</span>
+      </div>
+      {% endfor %}
+    </div>
+  </aside>
+
+  <section class="chat-workspace">
+    {% if conversation %}
+    <header class="chat-header">
+      <div class="chat-contact">
+        <div class="conversation-avatar large">{{ (conversation.contact.business_name or conversation.contact.name or 'C')[:2]|upper }}</div>
+        <div>
+          <h3>{{ conversation.contact.business_name or conversation.contact.name or conversation.contact.phone|phone_br }}</h3>
+          <span>{{ conversation.contact.phone|phone_br }}{% if conversation.lead %} · {{ conversation.lead.city }} · {{ conversation.lead.segment }}{% endif %}</span>
+        </div>
+      </div>
+      <div class="chat-header-actions">
+        <span class="conversation-status status-{{ conversation.status|lower }}">{{ conversation.status.replace('_',' ') }}</span>
+        <form action="/conversations/{{ conversation.id }}/status" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if conversation.status in closed_statuses %}
+          <input type="hidden" name="conversation_status" value="EM_ATENDIMENTO">
+          <button class="button button-secondary" type="submit">Reabrir</button>
+          {% else %}
+          <input type="hidden" name="conversation_status" value="ENCERRADO">
+          <button class="button button-secondary" type="submit">Encerrar</button>
+          {% endif %}
+        </form>
+      </div>
+    </header>
+
+    <div class="chat-stream" id="chat-stream">
+      <div class="chat-day-separator"><span>Histórico permanente</span></div>
+      {% for item in messages %}
+        {% if item.direction == 'INTERNAL' %}
+        <div class="message-note" data-message-id="{{ item.id }}">
+          <div><strong>Nota interna · {{ item.sender_user.name if item.sender_user else 'Sistema' }}</strong><p>{{ item.body }}</p></div>
+          <time>{{ item.created_at|datetime_br }}</time>
+        </div>
+        {% else %}
+        <div class="message-line {{ 'outbound' if item.direction == 'OUTBOUND' else 'inbound' }}" data-message-id="{{ item.id }}">
+          <div class="message-bubble">
+            <div class="message-sender">{{ item.sender_user.name if item.sender_user else ('Cliente' if item.direction == 'INBOUND' else 'Sulnet') }}</div>
+            {% if item.message_type != 'TEXT' %}<span class="message-type">{{ item.message_type }}</span>{% endif %}
+            <p>{{ item.body }}</p>
+            {% if item.media_url %}<a class="message-media-link" href="{{ item.media_url }}" target="_blank" rel="noopener">Abrir mídia / arquivo ↗</a>{% endif %}
+            <div class="message-foot">
+              <time>{{ item.created_at|datetime_br }}</time>
+              {% if item.direction == 'OUTBOUND' %}<span class="message-status-ticks" title="{{ item.status }}">{{ '✓✓' if item.status in ['RECEIVED','READ','PLAYED'] else '✓' }}</span>{% endif %}
+            </div>
+          </div>
+        </div>
+        {% endif %}
+      {% else %}
+      <div class="chat-zero" id="chat-zero">
+        <span>◌</span>
+        <strong>Conversa aberta</strong>
+        <p>Envie a primeira mensagem. Toda interação ficará registrada neste histórico.</p>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if conversation.status not in closed_statuses %}
+    <div class="chat-compose">
+      <form action="/conversations/{{ conversation.id }}/send" method="post" class="chat-send-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <textarea name="message" maxlength="4096" required placeholder="Digite uma mensagem para o cliente..." data-chat-input></textarea>
+        <div class="compose-bottom">
+          <span class="compose-hint">Enter envia · Shift+Enter quebra linha</span>
+          <button class="button button-primary" type="submit">Enviar <span>➤</span></button>
+        </div>
+      </form>
+      <details class="internal-note-composer">
+        <summary>＋ Nota interna</summary>
+        <form action="/conversations/{{ conversation.id }}/note" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <textarea name="note" rows="2" required placeholder="Visível somente para a equipe Sulnet"></textarea>
+          <button class="button button-dark" type="submit">Salvar nota</button>
+        </form>
+      </details>
+    </div>
+    {% else %}
+    <div class="chat-closed-banner">Esta conversa está encerrada. Reabra para enviar novas mensagens.</div>
+    {% endif %}
+    {% else %}
+    <div class="chat-no-selection">
+      <div class="chat-no-selection-icon">◌</div>
+      <h2>Inbox Sulnet Prospecta</h2>
+      <p>Selecione uma conversa ou aguarde uma nova resposta da prospecção.</p>
+      <div class="chat-no-selection-features">
+        <span>Histórico permanente</span><span>Distribuição por vendedor</span><span>Status de entrega e leitura</span>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
+  <aside class="chat-context-panel">
+    {% if conversation %}
+    <div class="context-section">
+      <span class="eyebrow">CLIENTE / CRM</span>
+      <h3>{{ conversation.contact.business_name or conversation.contact.name or 'Contato WhatsApp' }}</h3>
+      <div class="context-phone">{{ conversation.contact.phone|phone_br }}</div>
+    </div>
+
+    {% if conversation.lead %}
+    <div class="context-section">
+      <div class="context-title">Oportunidade</div>
+      <dl class="context-list">
+        <div><dt>Etapa CRM</dt><dd><span class="stage-badge stage-{{ conversation.lead.stage|lower }}">{{ constants.stages.get(conversation.lead.stage, conversation.lead.stage) }}</span></dd></div>
+        <div><dt>Score</dt><dd>{{ '%.1f'|format(conversation.lead.score) }} · {{ constants.temperatures.get(conversation.lead.temperature, conversation.lead.temperature) }}</dd></div>
+        <div><dt>Segmento</dt><dd>{{ conversation.lead.segment }}</dd></div>
+        <div><dt>Cidade</dt><dd>{{ conversation.lead.city }}</dd></div>
+        <div><dt>Origem</dt><dd>{{ constants.sources.get(conversation.lead.source, conversation.lead.source) }}</dd></div>
+        <div><dt>Último contato</dt><dd>{{ conversation.lead.last_contact_at|datetime_br }}</dd></div>
+      </dl>
+      <a href="/leads/{{ conversation.lead.id }}" class="button button-secondary full-width">Abrir CRM completo</a>
+    </div>
+    {% else %}
+    <div class="context-section">
+      <div class="info-box compact"><strong>Contato espontâneo</strong><p>Este número ainda não está vinculado a um lead do CRM. O histórico já está preservado.</p></div>
+    </div>
+    {% endif %}
+
+    <div class="context-section">
+      <div class="context-title">Atendimento</div>
+      <dl class="context-list">
+        <div><dt>Responsável</dt><dd>{{ conversation.assigned_user.name if conversation.assigned_user else 'Sem responsável' }}</dd></div>
+        <div><dt>Equipe</dt><dd>{{ constants.teams.get(conversation.team, conversation.team) }}</dd></div>
+        <div><dt>Unidade</dt><dd>{{ conversation.branch.city if conversation.branch else 'Não definida' }}</dd></div>
+        <div><dt>Iniciada</dt><dd>{{ conversation.opened_at|datetime_br }}</dd></div>
+      </dl>
+      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] and users %}
+      <form action="/conversations/{{ conversation.id }}/assign" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Transferir / atribuir</span>
+          <select name="assigned_user_id">
+            {% for item in users %}
+            <option value="{{ item.id }}" {% if conversation.assigned_user_id == item.id %}selected{% endif %}>{{ item.name }} · {{ constants.teams.get(item.team, item.team) }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="button button-secondary full-width" type="submit">Atualizar responsável</button>
+      </form>
+      {% endif %}
+    </div>
+
+    <div class="context-section">
+      <div class="context-title">Fluxo da conversa</div>
+      <form action="/conversations/{{ conversation.id }}/status" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Status operacional</span>
+          <select name="conversation_status">
+            {% for key, label in [
+              ('EM_ATENDIMENTO','Em atendimento'),
+              ('AGUARDANDO_CLIENTE','Aguardando cliente'),
+              ('AGUARDANDO_INTERNO','Aguardando interno'),
+              ('FOLLOW_UP','Follow-up'),
+              ('RESOLVIDO','Resolvido'),
+              ('ENCERRADO','Encerrado')
+            ] %}
+            <option value="{{ key }}" {% if conversation.status == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="button button-dark full-width" type="submit">Atualizar status</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="context-placeholder">
+      <span class="eyebrow">CONTEXTO</span>
+      <strong>CRM integrado ao chat</strong>
+      <p>Os dados comerciais, proprietário e histórico aparecem aqui ao selecionar uma conversa.</p>
+    </div>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if conversation %}
+<script>
+(() => {
+  const root = document.querySelector('[data-inbox]');
+  const stream = document.getElementById('chat-stream');
+  const input = document.querySelector('[data-chat-input]');
+  const form = document.querySelector('.chat-send-form');
+  if (!root || !stream) return;
+  const conversationId = root.dataset.conversationId;
+  let lastId = 0;
+  stream.querySelectorAll('[data-message-id]').forEach(el => {
+    lastId = Math.max(lastId, Number(el.dataset.messageId || 0));
+  });
+
+  const scrollBottom = () => { stream.scrollTop = stream.scrollHeight; };
+  scrollBottom();
+
+  const appendMessage = item => {
+    if (document.querySelector('[data-message-id="' + item.id + '"]')) return;
+    document.getElementById('chat-zero')?.remove();
+
+    if (item.direction === 'INTERNAL') {
+      const note = document.createElement('div');
+      note.className = 'message-note';
+      note.dataset.messageId = item.id;
+      const wrap = document.createElement('div');
+      const strong = document.createElement('strong');
+      strong.textContent = 'Nota interna · ' + item.sender;
+      const p = document.createElement('p');
+      p.textContent = item.body;
+      const time = document.createElement('time');
+      time.textContent = new Date(item.created_at).toLocaleString('pt-BR');
+      wrap.append(strong, p);
+      note.append(wrap, time);
+      stream.append(note);
+      return;
+    }
+
+    const line = document.createElement('div');
+    line.className = 'message-line ' + (item.direction === 'OUTBOUND' ? 'outbound' : 'inbound');
+    line.dataset.messageId = item.id;
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble';
+    const sender = document.createElement('div');
+    sender.className = 'message-sender';
+    sender.textContent = item.sender;
+    bubble.append(sender);
+    if (item.type !== 'TEXT') {
+      const type = document.createElement('span');
+      type.className = 'message-type';
+      type.textContent = item.type;
+      bubble.append(type);
+    }
+    const p = document.createElement('p');
+    p.textContent = item.body;
+    bubble.append(p);
+    if (item.media_url && /^https?:\/\//.test(item.media_url)) {
+      const a = document.createElement('a');
+      a.className = 'message-media-link';
+      a.href = item.media_url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = 'Abrir mídia / arquivo ↗';
+      bubble.append(a);
+    }
+    const foot = document.createElement('div');
+    foot.className = 'message-foot';
+    const time = document.createElement('time');
+    time.textContent = new Date(item.created_at).toLocaleString('pt-BR');
+    foot.append(time);
+    if (item.direction === 'OUTBOUND') {
+      const ticks = document.createElement('span');
+      ticks.className = 'message-status-ticks';
+      ticks.textContent = ['RECEIVED','READ','PLAYED'].includes(item.status) ? '✓✓' : '✓';
+      ticks.title = item.status;
+      foot.append(ticks);
+    }
+    bubble.append(foot);
+    line.append(bubble);
+    stream.append(line);
+  };
+
+  const poll = async () => {
+    try {
+      const response = await fetch('/api/conversations/' + conversationId + '/messages?after_id=' + lastId, {
+        headers: {'Accept': 'application/json'},
+        credentials: 'same-origin'
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      let received = false;
+      for (const item of data.items || []) {
+        appendMessage(item);
+        lastId = Math.max(lastId, Number(item.id || 0));
+        received = true;
+      }
+      if (received) scrollBottom();
+    } catch (_) {}
+  };
+  window.setInterval(poll, 2500);
+
+  if (form && input) {
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        if (input.value.trim()) form.requestSubmit();
+      }
+    });
+  }
+})();
+</script>
+{% endif %}
+{% endblock %}
