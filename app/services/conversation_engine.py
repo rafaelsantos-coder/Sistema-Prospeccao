@@ -1,0 +1,411 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
+
+from app.models import (
+    Contact,
+    Conversation,
+    ConversationAssignment,
+    Lead,
+    Message,
+    MessageEvent,
+    User,
+)
+from app.services.scoring import normalize_phone
+from app.timeutils import utcnow
+
+
+OPEN_CONVERSATION_STATUSES = {
+    "NOVO",
+    "EM_FILA",
+    "ATRIBUIDO",
+    "EM_ATENDIMENTO",
+    "AGUARDANDO_CLIENTE",
+    "AGUARDANDO_INTERNO",
+    "FOLLOW_UP",
+}
+CLOSED_CONVERSATION_STATUSES = {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+
+
+def find_lead_by_phone(db: Session, phone: str | None) -> Lead | None:
+    normalized = normalize_phone(phone)
+    if not normalized:
+        return None
+    lead = db.scalar(select(Lead).where(Lead.phone == normalized))
+    if lead:
+        return lead
+    suffix = normalized[-10:]
+    return db.scalar(select(Lead).where(Lead.phone.endswith(suffix)).limit(1))
+
+
+def ensure_contact(
+    db: Session,
+    phone: str | None,
+    *,
+    lead: Lead | None = None,
+    name: str | None = None,
+    business_name: str | None = None,
+    email: str | None = None,
+) -> Contact:
+    normalized = normalize_phone(phone)
+    if not normalized:
+        raise ValueError("Telefone invalido para criar contato de conversa.")
+    contact = db.scalar(select(Contact).where(Contact.phone == normalized))
+    if not contact:
+        contact = Contact(
+            phone=normalized,
+            lead_id=lead.id if lead else None,
+            name=(name or (lead.contact_name if lead else "") or "").strip(),
+            business_name=(business_name or (lead.business_name if lead else "") or "").strip(),
+            email=(email or (lead.email if lead else None)),
+        )
+        db.add(contact)
+        db.flush()
+    else:
+        if lead and not contact.lead_id:
+            contact.lead_id = lead.id
+        if name and not contact.name:
+            contact.name = name.strip()
+        if business_name and not contact.business_name:
+            contact.business_name = business_name.strip()
+        if email and not contact.email:
+            contact.email = email
+    contact.last_seen_at = utcnow()
+    return contact
+
+
+def _sticky_owner(db: Session, contact: Contact) -> User | None:
+    previous = db.scalar(
+        select(Conversation)
+        .where(
+            Conversation.contact_id == contact.id,
+            Conversation.assigned_user_id.is_not(None),
+        )
+        .order_by(Conversation.updated_at.desc())
+        .limit(1)
+    )
+    if not previous or not previous.assigned_user_id:
+        return None
+    user = db.get(User, previous.assigned_user_id)
+    return user if user and user.active else None
+
+
+def choose_assignee(db: Session, contact: Contact, lead: Lead | None) -> User | None:
+    if lead and lead.assigned_user_id:
+        assigned = db.get(User, lead.assigned_user_id)
+        if assigned and assigned.active:
+            return assigned
+
+    sticky = _sticky_owner(db, contact)
+    if sticky:
+        return sticky
+
+    stmt = select(User).where(User.active.is_(True), User.role == "CONSULTOR")
+    if lead and lead.team:
+        stmt = stmt.where(User.team == lead.team)
+    candidates = list(db.scalars(stmt.order_by(User.id)))
+    if lead and lead.branch_id:
+        branch_candidates = [u for u in candidates if u.branch_id == lead.branch_id]
+        if branch_candidates:
+            candidates = branch_candidates
+    if not candidates:
+        return None
+
+    load: list[tuple[int, int, User]] = []
+    for candidate in candidates:
+        open_count = db.scalar(
+            select(func.count(Conversation.id)).where(
+                Conversation.assigned_user_id == candidate.id,
+                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            )
+        ) or 0
+        load.append((int(open_count), candidate.id, candidate))
+    load.sort(key=lambda item: (item[0], item[1]))
+    return load[0][2]
+
+
+def ensure_open_conversation(
+    db: Session,
+    contact: Contact,
+    *,
+    lead: Lead | None = None,
+    source: str = "WHATSAPP",
+) -> Conversation:
+    conversation = db.scalar(
+        select(Conversation)
+        .where(
+            Conversation.contact_id == contact.id,
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+        )
+        .order_by(Conversation.updated_at.desc())
+        .limit(1)
+    )
+    if conversation:
+        if lead and not conversation.lead_id:
+            conversation.lead_id = lead.id
+            conversation.branch_id = lead.branch_id
+            conversation.team = lead.team
+        return conversation
+
+    owner = choose_assignee(db, contact, lead)
+    conversation = Conversation(
+        contact_id=contact.id,
+        lead_id=lead.id if lead else contact.lead_id,
+        assigned_user_id=owner.id if owner else None,
+        branch_id=lead.branch_id if lead else None,
+        team=lead.team if lead else "B2B",
+        source=source,
+        status="ATRIBUIDO" if owner else "EM_FILA",
+        opened_at=utcnow(),
+    )
+    db.add(conversation)
+    db.flush()
+    db.add(
+        ConversationAssignment(
+            conversation_id=conversation.id,
+            user_id=owner.id if owner else None,
+            assigned_by_id=None,
+            event="AUTO_ASSIGNED" if owner else "QUEUED",
+        )
+    )
+    return conversation
+
+
+def apply_conversation_scope(stmt, user: User):
+    if user.role in {"ADMIN", "GESTOR"}:
+        return stmt
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            return stmt.where(Conversation.branch_id == user.branch_id)
+        return stmt.where(Conversation.team == user.team)
+    return stmt.where(Conversation.assigned_user_id == user.id)
+
+
+def conversation_visible_to_user(conversation: Conversation, user: User) -> bool:
+    if user.role in {"ADMIN", "GESTOR"}:
+        return True
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            return conversation.branch_id == user.branch_id
+        return conversation.team == user.team
+    return conversation.assigned_user_id == user.id
+
+
+def payload_message_content(payload: dict[str, Any]) -> tuple[str, str, str | None, str | None]:
+    text = payload.get("text")
+    if isinstance(text, dict) and text.get("message"):
+        return "TEXT", str(text["message"]).strip(), None, None
+
+    image = payload.get("image")
+    if isinstance(image, dict):
+        return (
+            "IMAGE",
+            str(image.get("caption") or "[Imagem]").strip(),
+            image.get("imageUrl"),
+            image.get("mimeType"),
+        )
+
+    audio = payload.get("audio")
+    if isinstance(audio, dict):
+        return "AUDIO", "[Audio]", audio.get("audioUrl"), audio.get("mimeType")
+
+    video = payload.get("video")
+    if isinstance(video, dict):
+        return (
+            "VIDEO",
+            str(video.get("caption") or "[Video]").strip(),
+            video.get("videoUrl"),
+            video.get("mimeType"),
+        )
+
+    document = payload.get("document")
+    if isinstance(document, dict):
+        label = document.get("fileName") or document.get("title") or "[Documento]"
+        return "DOCUMENT", str(label).strip(), document.get("documentUrl"), document.get("mimeType")
+
+    sticker = payload.get("sticker")
+    if isinstance(sticker, dict):
+        return "STICKER", "[Sticker]", sticker.get("stickerUrl"), sticker.get("mimeType")
+
+    location = payload.get("location")
+    if isinstance(location, dict):
+        body = location.get("name") or location.get("address") or "[Localizacao]"
+        return "LOCATION", str(body).strip(), location.get("url"), None
+
+    contact = payload.get("contact")
+    if isinstance(contact, dict):
+        return "CONTACT", str(contact.get("displayName") or "[Contato]").strip(), None, None
+
+    reaction = payload.get("reaction")
+    if isinstance(reaction, dict):
+        return "REACTION", str(reaction.get("value") or "[Reacao]"), None, None
+
+    return "UNKNOWN", "", None, None
+
+
+def _preview(body: str, message_type: str) -> str:
+    value = (body or f"[{message_type}]").replace("\n", " ").strip()
+    return value[:240]
+
+
+def register_message(
+    db: Session,
+    conversation: Conversation,
+    *,
+    direction: str,
+    message_type: str,
+    body: str,
+    sender_user_id: int | None = None,
+    media_url: str | None = None,
+    mime_type: str | None = None,
+    provider_message_id: str | None = None,
+    provider_zaap_id: str | None = None,
+    status: str = "PENDING",
+    increment_unread: bool = False,
+) -> Message:
+    now = utcnow()
+    message = Message(
+        conversation_id=conversation.id,
+        contact_id=conversation.contact_id,
+        sender_user_id=sender_user_id,
+        direction=direction,
+        message_type=message_type,
+        body=body,
+        media_url=media_url,
+        mime_type=mime_type,
+        provider_message_id=provider_message_id,
+        provider_zaap_id=provider_zaap_id,
+        status=status,
+        sent_at=now if direction == "OUTBOUND" else None,
+    )
+    db.add(message)
+    conversation.last_message_at = now
+    conversation.last_message_preview = _preview(body, message_type)
+    if increment_unread:
+        conversation.unread_count = int(conversation.unread_count or 0) + 1
+    if direction == "INBOUND" and conversation.status in {"NOVO", "EM_FILA", "ATRIBUIDO", "AGUARDANDO_CLIENTE"}:
+        conversation.status = "EM_ATENDIMENTO"
+    elif direction == "OUTBOUND" and conversation.status not in CLOSED_CONVERSATION_STATUSES:
+        conversation.status = "AGUARDANDO_CLIENTE"
+    return message
+
+
+def store_received_payload(db: Session, payload: dict[str, Any]) -> tuple[Conversation | None, Message | None, bool]:
+    if payload.get("isGroup") or payload.get("isNewsletter") or payload.get("isStatusReply"):
+        return None, None, False
+    phone = payload.get("phone") or payload.get("participantPhone")
+    normalized = normalize_phone(phone)
+    if not normalized:
+        return None, None, False
+
+    provider_id = str(payload.get("messageId") or payload.get("id") or "").strip() or None
+    if provider_id:
+        existing = db.scalar(select(Message).where(Message.provider_message_id == provider_id))
+        if existing:
+            if payload.get("status"):
+                existing.status = str(payload["status"]).upper()
+            return existing.conversation, existing, False
+
+    lead = find_lead_by_phone(db, normalized)
+    sender_name = str(payload.get("senderName") or payload.get("chatName") or "").strip()
+    contact = ensure_contact(
+        db,
+        normalized,
+        lead=lead,
+        name=sender_name if not lead else None,
+        business_name=lead.business_name if lead else sender_name,
+    )
+    conversation = ensure_open_conversation(db, contact, lead=lead, source="WHATSAPP")
+    message_type, body, media_url, mime_type = payload_message_content(payload)
+    if not body and message_type == "UNKNOWN":
+        return conversation, None, False
+
+    from_me = bool(payload.get("fromMe"))
+    direction = "OUTBOUND" if from_me else "INBOUND"
+    message = register_message(
+        db,
+        conversation,
+        direction=direction,
+        message_type=message_type,
+        body=body,
+        media_url=media_url,
+        mime_type=mime_type,
+        provider_message_id=provider_id,
+        status=str(payload.get("status") or ("SENT" if from_me else "RECEIVED")).upper(),
+        increment_unread=not from_me,
+    )
+    db.flush()
+    db.add(
+        MessageEvent(
+            message_id=message.id,
+            provider_message_id=provider_id,
+            event_type="RECEIVED_CALLBACK",
+            status=message.status,
+            payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+        )
+    )
+    return conversation, message, True
+
+
+def update_message_statuses(db: Session, payload: dict[str, Any]) -> int:
+    status_value = str(payload.get("status") or "").upper().strip()
+    ids = payload.get("ids") or []
+    if isinstance(ids, str):
+        ids = [ids]
+    if not ids:
+        single = payload.get("messageId") or payload.get("id")
+        if single:
+            ids = [single]
+    ids = [str(item) for item in ids if item]
+    if not ids:
+        return 0
+
+    now = utcnow()
+    messages = list(
+        db.scalars(
+            select(Message).where(
+                or_(
+                    Message.provider_message_id.in_(ids),
+                    Message.provider_zaap_id.in_(ids),
+                )
+            )
+        )
+    )
+    for message in messages:
+        if status_value:
+            message.status = status_value
+        if status_value == "RECEIVED":
+            message.delivered_at = message.delivered_at or now
+        if status_value in {"READ", "PLAYED"}:
+            message.delivered_at = message.delivered_at or now
+            message.read_at = message.read_at or now
+        db.add(
+            MessageEvent(
+                message_id=message.id,
+                provider_message_id=message.provider_message_id,
+                event_type="STATUS",
+                status=status_value or None,
+                payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+            )
+        )
+    if not messages:
+        for item in ids:
+            db.add(
+                MessageEvent(
+                    message_id=None,
+                    provider_message_id=item,
+                    event_type="STATUS_UNMATCHED",
+                    status=status_value or None,
+                    payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+                )
+            )
+    return len(messages)
+
+
+def mark_conversation_read(db: Session, conversation: Conversation) -> None:
+    conversation.unread_count = 0
+    db.flush()
