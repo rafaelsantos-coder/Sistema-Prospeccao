@@ -189,3 +189,116 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     user: Mapped[User | None] = relationship()
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    phone: Mapped[str] = mapped_column(String(30), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(150), default="")
+    business_name: Mapped[str] = mapped_column(String(180), default="")
+    email: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
+    lead_id: Mapped[int | None] = mapped_column(ForeignKey("leads.id"), nullable=True, index=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    lead: Mapped[Lead | None] = relationship()
+    conversations: Mapped[list["Conversation"]] = relationship(back_populates="contact")
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+    __table_args__ = (
+        Index("ix_conversations_inbox", "assigned_user_id", "status", "last_message_at"),
+        Index("ix_conversations_branch_team", "branch_id", "team", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[int | None] = mapped_column(ForeignKey("leads.id"), nullable=True, index=True)
+    assigned_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True, index=True)
+    team: Mapped[str] = mapped_column(String(30), default="B2B", index=True)
+    source: Mapped[str] = mapped_column(String(40), default="WHATSAPP", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="NOVO", index=True)
+    unread_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_message_preview: Mapped[str] = mapped_column(String(240), default="")
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    contact: Mapped[Contact] = relationship(back_populates="conversations")
+    lead: Mapped[Lead | None] = relationship()
+    assigned_user: Mapped[User | None] = relationship(foreign_keys=[assigned_user_id])
+    branch: Mapped[Branch | None] = relationship()
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="Message.created_at",
+    )
+    assignments: Mapped[list["ConversationAssignment"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="ConversationAssignment.created_at",
+    )
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_messages_conversation_created", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    sender_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    direction: Mapped[str] = mapped_column(String(20), index=True)
+    message_type: Mapped[str] = mapped_column(String(30), default="TEXT", index=True)
+    body: Mapped[str] = mapped_column(Text, default="")
+    media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(180), nullable=True, unique=True, index=True)
+    provider_zaap_id: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="PENDING", index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")
+    contact: Mapped[Contact] = relationship()
+    sender_user: Mapped[User | None] = relationship()
+
+
+class MessageEvent(Base):
+    __tablename__ = "message_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), nullable=True, index=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(60), default="STATUS", index=True)
+    status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    message: Mapped[Message | None] = relationship()
+
+
+class ConversationAssignment(Base):
+    __tablename__ = "conversation_assignments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    assigned_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    event: Mapped[str] = mapped_column(String(40), default="ASSIGNED", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="assignments")
+    user: Mapped[User | None] = relationship(foreign_keys=[user_id])
+    assigned_by: Mapped[User | None] = relationship(foreign_keys=[assigned_by_id])
