@@ -1,0 +1,67 @@
+name: Fix lead datetime comparison
+
+on:
+  push:
+    paths:
+      - .github/workflows/fix-lead-datetime.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Corrigir comparacao de datas no detalhe do lead
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/routers/leads.py")
+          text = path.read_text(encoding="utf-8")
+
+          if "from datetime import datetime, timezone" not in text:
+              text = text.replace(
+                  "from datetime import datetime\n",
+                  "from datetime import datetime, timezone\n",
+                  1,
+              )
+
+          marker = '@router.get("/{lead_id}")'
+          head, sep, tail = text.partition(marker)
+          if not sep:
+              raise SystemExit("Rota de detalhe do lead nao encontrada")
+
+          users_line = "    users = list(db.scalars(select(User).where(User.active.is_(True)).order_by(User.name)))\n"
+          if "comparison_now = utcnow()" not in tail:
+              replacement = (
+                  users_line
+                  + "    comparison_now = utcnow()\n"
+                  + "    if lead.next_action_at and lead.next_action_at.tzinfo is not None:\n"
+                  + "        comparison_now = comparison_now.replace(tzinfo=timezone.utc)\n"
+              )
+              if users_line not in tail:
+                  raise SystemExit("Ponto de insercao nao encontrado")
+              tail = tail.replace(users_line, replacement, 1)
+
+          tail = tail.replace("        now=utcnow(),\n", "        now=comparison_now,\n", 1)
+          path.write_text(head + sep + tail, encoding="utf-8")
+          PY
+
+          python -m compileall -q app
+
+      - name: Publicar correcao
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/routers/leads.py
+          if git diff --cached --quiet; then
+            echo "Nenhuma alteracao necessaria."
+            exit 0
+          fi
+          git commit -m "fix: normaliza fuso horario no detalhe do lead"
+          git push
