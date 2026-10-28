@@ -13,7 +13,15 @@ from app.database import get_db
 from app.models import Activity, Lead
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
-from app.services.conversation_engine import (\n    ensure_contact,\n    ensure_open_conversation,\n    register_message,\n    store_received_payload,\n    update_message_statuses,\n)\nfrom app.services.followups import next_followup_after\nfrom app.services.metrics import apply_user_scope
+from app.services.conversation_engine import (
+    ensure_contact,
+    ensure_open_conversation,
+    register_message,
+    store_received_payload,
+    update_message_statuses,
+)
+from app.services.followups import next_followup_after
+from app.services.metrics import apply_user_scope
 from app.services.scoring import normalize_phone
 from app.services.zapi import ZApiError, ZApiService
 from app.timeutils import utcnow
