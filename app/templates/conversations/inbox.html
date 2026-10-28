@@ -133,8 +133,8 @@
         <div class="compose-bottom">
           <div class="compose-left">
             <div class="compose-tools">
-              <button class="compose-tool-button" type="button" data-attach-button title="Anexar foto, vídeo, áudio ou documento">⌕<span>Anexar</span></button>
-              <button class="compose-tool-button" type="button" data-record-button title="Gravar áudio">●<span>Áudio</span></button>
+              <button class="compose-tool-button" type="button" data-attach-button title="Anexar foto, vídeo, áudio ou documento">📎<span>Anexar</span></button>
+              <button class="compose-tool-button" type="button" data-record-button title="Gravar áudio">🎙<span>Áudio</span></button>
               <span class="recording-status" data-recording-status hidden></span>
             </div>
             <span class="compose-hint">Enter envia · Shift+Enter quebra linha</span>
@@ -627,15 +627,25 @@
       const response = await fetch('/conversations/' + conversationId + '/media', {
         method: 'POST',
         body: formData,
-        credentials: 'same-origin'
+        credentials: 'same-origin',
+        headers: {'Accept': 'application/json'}
       });
-      if (!response.ok) throw new Error('Falha no envio');
-      window.location.href = '/conversations/' + conversationId;
-    } catch (_) {
-      alert('Não foi possível enviar o anexo. Tente novamente.');
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || 'Não foi possível enviar o anexo.');
+      }
+      clearMediaPreview();
       if (mediaSend) {
         mediaSend.disabled = false;
-        mediaSend.textContent = 'Enviar anexo ➤';
+        mediaSend.innerHTML = 'Enviar anexo <span>➤</span>';
+      }
+      await pollMessages();
+      await pollInbox();
+    } catch (error) {
+      alert(error?.message || 'Não foi possível enviar o anexo. Tente novamente.');
+      if (mediaSend) {
+        mediaSend.disabled = false;
+        mediaSend.innerHTML = 'Enviar anexo <span>➤</span>';
       }
     }
   };
@@ -666,7 +676,7 @@
     const seconds = Math.floor((Date.now() - recorderStartedAt) / 1000);
     const min = String(Math.floor(seconds / 60)).padStart(2, '0');
     const sec = String(seconds % 60).padStart(2, '0');
-    recordingStatus.textContent = 'Gravando ' + min + ':' + sec + ' · clique para enviar';
+    recordingStatus.textContent = 'Gravando ' + min + ':' + sec + ' · clique para parar';
     if (seconds >= 300 && recorder?.state === 'recording') recorder.stop();
   };
 
