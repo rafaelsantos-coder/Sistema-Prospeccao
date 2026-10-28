@@ -302,3 +302,29 @@ class ConversationAssignment(Base):
     conversation: Mapped[Conversation] = relationship(back_populates="assignments")
     user: Mapped[User | None] = relationship(foreign_keys=[user_id])
     assigned_by: Mapped[User | None] = relationship(foreign_keys=[assigned_by_id])
+
+
+class CampaignRecipient(Base):
+    __tablename__ = "campaign_recipients"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "lead_id", name="uq_campaign_recipient"),
+        Index("ix_campaign_recipients_queue", "status", "scheduled_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="PENDENTE", index=True)
+    message_body: Mapped[str] = mapped_column(Text, default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    campaign: Mapped[Campaign] = relationship()
+    lead: Mapped[Lead] = relationship()
+    conversation: Mapped[Conversation | None] = relationship()
