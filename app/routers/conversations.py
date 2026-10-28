@@ -243,6 +243,9 @@ def start_lead_conversation(
     except ValueError:
         flash(request, "O telefone do lead nao e valido para WhatsApp.", "error")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    if user.role == "CONSULTOR" and is_user_whatsapp_online(db, user.id):
+        lead.assigned_user_id = user.id
+        db.flush()
     conversation = ensure_open_conversation(db, contact, lead=lead, source=lead.source)
     if (
         not conversation.assigned_user_id
