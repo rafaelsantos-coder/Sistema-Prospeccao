@@ -10,7 +10,7 @@ from starlette.responses import RedirectResponse
 
 from app.config import settings
 from app.database import SessionLocal, get_db
-from app.models import Activity, Lead, Message
+from app.models import Activity, ConversationAssignment, Lead, Message
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.conversation_engine import (
@@ -23,7 +23,14 @@ from app.services.conversation_engine import (
 from app.services.followups import next_followup_after
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
+from app.services.queue_routing import (
+    available_queues_for_user,
+    get_queue,
+    is_queue_member,
+    set_lead_queue_preference,
+)
 from app.services.scoring import normalize_phone
+from app.services.whatsapp_presence import is_user_whatsapp_online
 from app.services.zapi import ZApiError, ZApiService
 from app.timeutils import utcnow
 from app.web import flash
@@ -306,6 +313,7 @@ def send_lead_whatsapp(
     request: Request,
     csrf_token: str = Form(...),
     message: str = Form(...),
+    queue_id: int = Form(...),
     db: Session = Depends(get_db),
 ):
     user, redirect = _current_user_or_redirect(request, db)
@@ -323,6 +331,11 @@ def send_lead_whatsapp(
     if not lead.phone:
         flash(request, "O lead nao possui telefone cadastrado.", "warning")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    service_queue = get_queue(db, queue_id)
+    allowed_queue_ids = {item.id for item in available_queues_for_user(db, user)}
+    if not service_queue or service_queue.id not in allowed_queue_ids:
+        flash(request, "Selecione uma fila de atendimento válida para este envio.", "warning")
+        return RedirectResponse(f"/leads/{lead.id}", status_code=303)
     clean_message = message.strip()
     try:
         result = ZApiService().send_text(phone=lead.phone, message=clean_message)
@@ -335,7 +348,38 @@ def send_lead_whatsapp(
     except ValueError:
         flash(request, "Telefone invalido para o WhatsApp.", "error")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
-    conversation = ensure_open_conversation(db, contact, lead=lead, source=lead.source)
+    set_lead_queue_preference(
+        db,
+        lead.id,
+        service_queue.id,
+        source="MANUAL_SEND",
+    )
+    conversation = ensure_open_conversation(
+        db,
+        contact,
+        lead=lead,
+        source=lead.source,
+        queue_id=service_queue.id,
+        queue_origin="MANUAL_SEND",
+        assign_if_unowned=False,
+    )
+    if (
+        user.role == "CONSULTOR"
+        and conversation.assigned_user_id is None
+        and is_user_whatsapp_online(db, user.id)
+        and is_queue_member(db, service_queue.id, user.id)
+    ):
+        conversation.assigned_user_id = user.id
+        conversation.status = "ATRIBUIDO"
+        lead.assigned_user_id = user.id
+        db.add(
+            ConversationAssignment(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                assigned_by_id=user.id,
+                event="CLAIMED_QUEUE",
+            )
+        )
     now = utcnow()
     provider_id = _provider_message_id(result)
     zaap_id = str(result.get("zaapId") or "").strip() or None
@@ -375,7 +419,11 @@ def send_lead_whatsapp(
         action="ZAPI_MESSAGE_SENT",
         entity_type="conversation",
         entity_id=conversation.id,
-        payload={"provider_message_id": provider_id, "message_id": stored.id},
+        payload={
+            "provider_message_id": provider_id,
+            "message_id": stored.id,
+            "queue_id": service_queue.id,
+        },
     )
     db.commit()
     flash(request, "Mensagem enviada e registrada na conversa.")
