@@ -77,15 +77,14 @@ def test_create_queue_from_settings():
 
         response = client.post(
             "/settings/queues",
-            data=[
-                ("csrf_token", token),
-                ("name", "Digital Teste Config"),
-                ("code", "DIGITAL-TESTE-CONFIG"),
-                ("team", "DIGITAL"),
-                ("routing_strategy", "ROUND_ROBIN"),
-                ("member_user_ids", str(ids[0])),
-                ("member_user_ids", str(ids[1])),
-            ],
+            data={
+                "csrf_token": token,
+                "name": "Digital Teste Config",
+                "code": "DIGITAL-TESTE-CONFIG",
+                "team": "DIGITAL",
+                "routing_strategy": "ROUND_ROBIN",
+                "member_user_ids": [str(ids[0]), str(ids[1])],
+            },
             follow_redirects=False,
         )
         assert response.status_code == 303
