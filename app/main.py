@@ -12,8 +12,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings, validate_production_settings
 from app.database import Base, SessionLocal, engine
-from app.routers import api, auth, campaigns, dashboard, leads, prospecting, settings as settings_router
+from app.routers import api, auth, campaigns, dashboard, leads, prospecting, settings as settings_router, zapi
 from app.services.seed import seed_database
+from app.services.zapi import ZApiError, ZApiService
 from app.web import render
 
 
@@ -44,16 +45,31 @@ async def initialize_database(max_attempts: int = 12) -> None:
             await asyncio.sleep(delay)
 
 
+async def configure_zapi_webhooks() -> None:
+    if not settings.integrations["zapi"] or not settings.zapi_webhook_url:
+        return
+    try:
+        await asyncio.to_thread(
+            ZApiService().configure_webhooks,
+            settings.zapi_webhook_url,
+        )
+    except ZApiError as exc:
+        LOG.warning("Z-API configurada, mas o webhook nao foi atualizado: %s", exc)
+    else:
+        LOG.info("Webhooks da Z-API configurados com sucesso.")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_production_settings()
     await initialize_database()
+    await configure_zapi_webhooks()
     yield
 
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.1",
+    version="0.2.0",
     docs_url="/api/docs" if not settings.is_production else None,
     redoc_url=None,
     lifespan=lifespan,
@@ -77,6 +93,7 @@ app.include_router(leads.router)
 app.include_router(campaigns.router)
 app.include_router(prospecting.router)
 app.include_router(settings_router.router)
+app.include_router(zapi.router)
 app.include_router(api.router)
 
 
