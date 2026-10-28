@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import Activity, Campaign, CampaignRecipient, Lead
 from app.services.audit import write_audit
 from app.services.conversation_engine import ensure_contact, ensure_open_conversation, register_message
+from app.services.queue_routing import queue_for_campaign
 from app.services.zapi import ZApiError, ZApiService
 from app.timeutils import local_day_start_utc, utcnow
 
@@ -166,8 +167,22 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
             recipient.scheduled_at = utcnow() + timedelta(minutes=5 * recipient.attempts)
         return "failed"
 
+    service_queue = queue_for_campaign(db, campaign.id)
+    if not service_queue:
+        recipient.status = "FALHOU"
+        recipient.error = "Campanha sem fila de atendimento configurada."
+        return "failed"
+
     contact = ensure_contact(db, lead.phone, lead=lead)
-    conversation = ensure_open_conversation(db, contact, lead=lead, source=f"CAMPANHA:{campaign.id}")
+    conversation = ensure_open_conversation(
+        db,
+        contact,
+        lead=lead,
+        source=f"CAMPANHA:{campaign.id}",
+        queue_id=service_queue.id,
+        queue_origin="CAMPAIGN",
+        assign_if_unowned=False,
+    )
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
     message = register_message(
@@ -213,6 +228,7 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
             "lead_id": lead.id,
             "conversation_id": conversation.id,
             "provider_message_id": provider_id,
+            "queue_id": service_queue.id,
         },
     )
     return "sent"
