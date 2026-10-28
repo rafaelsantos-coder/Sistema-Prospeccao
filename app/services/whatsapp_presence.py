@@ -19,7 +19,7 @@ def _naive_utc(value: datetime | None) -> datetime | None:
 
 
 def presence_cutoff() -> datetime:
-    timeout = max(20, int(settings.whatsapp_presence_timeout_seconds or 45))
+    timeout = max(20, int(settings.whatsapp_presence_timeout_seconds or 90))
     return utcnow() - timedelta(seconds=timeout)
 
 
