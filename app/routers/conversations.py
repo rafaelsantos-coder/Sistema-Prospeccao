@@ -534,6 +534,8 @@ def conversation_media(
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
+        return RedirectResponse("/dashboard", status_code=303)
     message = db.get(Message, message_id)
     if not message or not message.media_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -684,6 +686,11 @@ def conversation_inbox_api(
     user = get_current_user(request, db)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Entre no WhatsApp para acessar o canal.",
+        )
     conversations = _inbox_query(db, user, q=q, view=view)
     return {
         "counts": _inbox_counts(db, user),
@@ -716,7 +723,12 @@ def conversation_messages_api(
 ):
     user = get_current_user(request, db)
     if not user:
-        return {"error": "unauthorized"}
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Entre no WhatsApp para acessar o canal.",
+        )
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation or not conversation_visible_to_user(conversation, user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
