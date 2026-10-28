@@ -1,5 +1,6 @@
 name: Fix lead datetime comparison
 
+# A segunda gravacao dispara o workflow depois que ele ja existe na branch principal.
 on:
   push:
     paths:
