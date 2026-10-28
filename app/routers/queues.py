@@ -10,6 +10,7 @@ from starlette.responses import RedirectResponse
 from app.database import get_db
 from app.models import Branch, ServiceQueue, ServiceQueueMember, User
 from app.security import get_current_user, require_roles, validate_csrf
+from app.services.ai_sdr import queue_ai_binding
 from app.services.audit import write_audit
 from app.services.queue_routing import queue_summary
 from app.web import flash, render
@@ -179,7 +180,7 @@ def queue_detail(
             return RedirectResponse("/settings", status_code=303)
         if not actor.branch_id and queue.team != actor.team:
             return RedirectResponse("/settings", status_code=303)
-    users = _scoped_users(db, queue)
+    users = [item for item in _scoped_users(db, queue) if item.role != "AI_SDR"]
     if actor.role == "SUPERVISOR":
         if actor.branch_id:
             users = [item for item in users if item.branch_id == actor.branch_id]
@@ -200,6 +201,7 @@ def queue_detail(
         member_ids=member_ids,
         branches=branches,
         queue_stats=queue_summary(db, queue),
+        ai_binding=queue_ai_binding(db, queue.id),
         routing_strategies=ROUTING_STRATEGIES,
     )
 
