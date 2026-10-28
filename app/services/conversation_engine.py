@@ -300,8 +300,11 @@ def register_message(
     conversation.last_message_preview = _preview(body, message_type)
     if increment_unread:
         conversation.unread_count = int(conversation.unread_count or 0) + 1
-    if direction == "INBOUND" and conversation.status in {"NOVO", "EM_FILA", "ATRIBUIDO", "AGUARDANDO_CLIENTE"}:
-        conversation.status = "EM_ATENDIMENTO"
+    if direction == "INBOUND":
+        if not conversation.assigned_user_id:
+            conversation.status = "EM_FILA"
+        elif conversation.status in {"NOVO", "EM_FILA", "ATRIBUIDO", "AGUARDANDO_CLIENTE"}:
+            conversation.status = "EM_ATENDIMENTO"
     elif direction == "OUTBOUND" and conversation.status not in CLOSED_CONVERSATION_STATUSES:
         conversation.status = "AGUARDANDO_CLIENTE"
     return message
