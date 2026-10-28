@@ -43,6 +43,13 @@ class Settings:
     zapi_webhook_secret: str = os.getenv("ZAPI_WEBHOOK_SECRET", "")
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")
     resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "")
+    media_s3_endpoint: str = os.getenv("MEDIA_S3_ENDPOINT", "")
+    media_s3_bucket: str = os.getenv("MEDIA_S3_BUCKET", "")
+    media_s3_region: str = os.getenv("MEDIA_S3_REGION", "auto")
+    media_s3_access_key_id: str = os.getenv("MEDIA_S3_ACCESS_KEY_ID", "")
+    media_s3_secret_access_key: str = os.getenv("MEDIA_S3_SECRET_ACCESS_KEY", "")
+    media_s3_url_style: str = os.getenv("MEDIA_S3_URL_STYLE", "virtual-host")
+    media_max_upload_mb: int = int(os.getenv("MEDIA_MAX_UPLOAD_MB", "50"))
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "America/Sao_Paulo")
 
     @property

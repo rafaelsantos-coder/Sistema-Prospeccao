@@ -89,8 +89,26 @@
           <div class="message-bubble">
             <div class="message-sender">{{ item.sender_user.name if item.sender_user else ('Cliente' if item.direction == 'INBOUND' else 'Sulnet') }}</div>
             {% if item.message_type != 'TEXT' %}<span class="message-type">{{ item.message_type }}</span>{% endif %}
-            <p>{{ item.body }}</p>
-            {% if item.media_url %}<a class="message-media-link" href="{{ item.media_url }}" target="_blank" rel="noopener">Abrir mídia / arquivo ↗</a>{% endif %}
+            {% if item.media_url and item.message_type == 'IMAGE' %}
+              <a class="message-media-preview image" href="/conversations/messages/{{ item.id }}/media" target="_blank" rel="noopener">
+                <img src="/conversations/messages/{{ item.id }}/media" alt="{{ item.body or 'Imagem' }}" loading="lazy">
+              </a>
+              {% if item.body and item.body != '[Imagem]' %}<p>{{ item.body }}</p>{% endif %}
+            {% elif item.media_url and item.message_type == 'VIDEO' %}
+              <video class="message-video" controls preload="metadata" src="/conversations/messages/{{ item.id }}/media"></video>
+              {% if item.body and item.body != '[Video]' %}<p>{{ item.body }}</p>{% endif %}
+            {% elif item.media_url and item.message_type == 'AUDIO' %}
+              <div class="message-audio-wrap"><span class="message-audio-icon">◉</span><audio controls preload="metadata" src="/conversations/messages/{{ item.id }}/media"></audio></div>
+            {% elif item.media_url and item.message_type == 'DOCUMENT' %}
+              <a class="message-document" href="/conversations/messages/{{ item.id }}/media" target="_blank" rel="noopener">
+                <span class="message-document-icon">▤</span>
+                <span><strong>{{ item.body or 'Documento' }}</strong><small>{{ item.mime_type or 'Arquivo' }}</small></span>
+                <b>↗</b>
+              </a>
+            {% else %}
+              <p>{{ item.body }}</p>
+              {% if item.media_url %}<a class="message-media-link" href="/conversations/messages/{{ item.id }}/media" target="_blank" rel="noopener">Abrir mídia / arquivo ↗</a>{% endif %}
+            {% endif %}
             <div class="message-foot">
               <time>{{ item.created_at|datetime_br }}</time>
               {% if item.direction == 'OUTBOUND' %}<span class="message-status-ticks" title="{{ item.status }}">{{ '✓✓' if item.status in ['RECEIVED','READ','PLAYED'] else '✓' }}</span>{% endif %}
@@ -113,10 +131,36 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <textarea name="message" maxlength="4096" required placeholder="Digite uma mensagem para o cliente..." data-chat-input></textarea>
         <div class="compose-bottom">
-          <span class="compose-hint">Enter envia · Shift+Enter quebra linha</span>
+          <div class="compose-left">
+            <div class="compose-tools">
+              <button class="compose-tool-button" type="button" data-attach-button title="Anexar foto, vídeo, áudio ou documento">📎<span>Anexar</span></button>
+              <button class="compose-tool-button" type="button" data-record-button title="Gravar áudio">🎙<span>Áudio</span></button>
+              <span class="recording-status" data-recording-status hidden></span>
+            </div>
+            <span class="compose-hint">Enter envia · Shift+Enter quebra linha</span>
+          </div>
           <button class="button button-primary" type="submit">Enviar <span>➤</span></button>
         </div>
       </form>
+
+      <form action="/conversations/{{ conversation.id }}/media" method="post" enctype="multipart/form-data" class="media-upload-form" data-media-form hidden>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="file" name="media" data-media-input hidden accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.rtf,.odt,.ods,.odp,.zip">
+        <div class="media-upload-preview">
+          <div class="media-preview-visual" data-media-visual>▤</div>
+          <div class="media-preview-copy">
+            <strong data-media-name>Arquivo</strong>
+            <span data-media-meta></span>
+            <input name="caption" maxlength="1024" placeholder="Adicionar legenda (opcional)" data-media-caption>
+          </div>
+          <button class="media-remove-button" type="button" data-media-cancel title="Remover anexo">×</button>
+        </div>
+        <div class="media-upload-actions">
+          <span>Fotos, vídeos, áudios e documentos · até 50 MB</span>
+          <button class="button button-primary" type="submit" data-media-send>Enviar anexo <span>➤</span></button>
+        </div>
+      </form>
+
       <details class="internal-note-composer">
         <summary>＋ Nota interna</summary>
         <form action="/conversations/{{ conversation.id }}/note" method="post">
@@ -387,18 +431,80 @@
       bubble.append(type);
     }
 
-    const p = document.createElement('p');
-    p.textContent = item.body;
-    bubble.append(p);
-
-    if (item.media_url && /^https?:\/\//.test(item.media_url)) {
+    const safeMedia = item.media_url && item.media_url.startsWith('/') ? item.media_url : null;
+    if (safeMedia && item.type === 'IMAGE') {
       const a = document.createElement('a');
-      a.className = 'message-media-link';
-      a.href = item.media_url;
+      a.className = 'message-media-preview image';
+      a.href = safeMedia;
       a.target = '_blank';
       a.rel = 'noopener';
-      a.textContent = 'Abrir mídia / arquivo ↗';
+      const img = document.createElement('img');
+      img.src = safeMedia;
+      img.alt = item.body || 'Imagem';
+      img.loading = 'lazy';
+      a.append(img);
       bubble.append(a);
+      if (item.body && item.body !== '[Imagem]') {
+        const p = document.createElement('p');
+        p.textContent = item.body;
+        bubble.append(p);
+      }
+    } else if (safeMedia && item.type === 'VIDEO') {
+      const video = document.createElement('video');
+      video.className = 'message-video';
+      video.controls = true;
+      video.preload = 'metadata';
+      video.src = safeMedia;
+      bubble.append(video);
+      if (item.body && item.body !== '[Video]') {
+        const p = document.createElement('p');
+        p.textContent = item.body;
+        bubble.append(p);
+      }
+    } else if (safeMedia && item.type === 'AUDIO') {
+      const wrap = document.createElement('div');
+      wrap.className = 'message-audio-wrap';
+      const icon = document.createElement('span');
+      icon.className = 'message-audio-icon';
+      icon.textContent = '◉';
+      const audio = document.createElement('audio');
+      audio.controls = true;
+      audio.preload = 'metadata';
+      audio.src = safeMedia;
+      wrap.append(icon, audio);
+      bubble.append(wrap);
+    } else if (safeMedia && item.type === 'DOCUMENT') {
+      const a = document.createElement('a');
+      a.className = 'message-document';
+      a.href = safeMedia;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      const icon = document.createElement('span');
+      icon.className = 'message-document-icon';
+      icon.textContent = '▤';
+      const copy = document.createElement('span');
+      const strong = document.createElement('strong');
+      strong.textContent = item.body || 'Documento';
+      const small = document.createElement('small');
+      small.textContent = item.mime_type || 'Arquivo';
+      copy.append(strong, small);
+      const open = document.createElement('b');
+      open.textContent = '↗';
+      a.append(icon, copy, open);
+      bubble.append(a);
+    } else {
+      const p = document.createElement('p');
+      p.textContent = item.body;
+      bubble.append(p);
+      if (safeMedia) {
+        const a = document.createElement('a');
+        a.className = 'message-media-link';
+        a.href = safeMedia;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = 'Abrir mídia / arquivo ↗';
+        bubble.append(a);
+      }
     }
 
     const foot = document.createElement('div');
@@ -439,6 +545,192 @@
     } catch (_) {}
   };
   window.setInterval(pollMessages, 2500);
+
+  const attachButton = document.querySelector('[data-attach-button]');
+  const recordButton = document.querySelector('[data-record-button]');
+  const recordingStatus = document.querySelector('[data-recording-status]');
+  const mediaForm = document.querySelector('[data-media-form]');
+  const mediaInput = document.querySelector('[data-media-input]');
+  const mediaName = document.querySelector('[data-media-name]');
+  const mediaMeta = document.querySelector('[data-media-meta]');
+  const mediaVisual = document.querySelector('[data-media-visual]');
+  const mediaCaption = document.querySelector('[data-media-caption]');
+  const mediaCancel = document.querySelector('[data-media-cancel]');
+  const mediaSend = document.querySelector('[data-media-send]');
+  let selectedMediaFile = null;
+  let mediaObjectUrl = null;
+  let recorder = null;
+  let recorderStream = null;
+  let recorderChunks = [];
+  let recorderStartedAt = 0;
+  let recorderTimer = null;
+
+  const formatBytes = bytes => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  };
+
+  const clearMediaPreview = () => {
+    selectedMediaFile = null;
+    if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
+    mediaObjectUrl = null;
+    if (mediaInput) mediaInput.value = '';
+    if (mediaCaption) mediaCaption.value = '';
+    if (mediaForm) mediaForm.hidden = true;
+    if (mediaVisual) {
+      mediaVisual.replaceChildren();
+      mediaVisual.textContent = '▤';
+    }
+  };
+
+  const showMediaPreview = file => {
+    if (!file || !mediaForm) return;
+    selectedMediaFile = file;
+    mediaForm.hidden = false;
+    if (mediaName) mediaName.textContent = file.name || 'Arquivo';
+    if (mediaMeta) mediaMeta.textContent = (file.type || 'arquivo') + ' · ' + formatBytes(file.size || 0);
+    if (mediaVisual) {
+      mediaVisual.replaceChildren();
+      if (file.type && file.type.startsWith('image/')) {
+        mediaObjectUrl = URL.createObjectURL(file);
+        const img = document.createElement('img');
+        img.src = mediaObjectUrl;
+        img.alt = 'Pré-visualização';
+        mediaVisual.append(img);
+      } else if (file.type && file.type.startsWith('video/')) {
+        mediaVisual.textContent = '▶';
+      } else if (file.type && file.type.startsWith('audio/')) {
+        mediaVisual.textContent = '◉';
+      } else {
+        mediaVisual.textContent = '▤';
+      }
+    }
+  };
+
+  const uploadMedia = async file => {
+    if (!file || !mediaForm) return;
+    const maxBytes = 50 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      alert('O arquivo excede o limite de 50 MB.');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('csrf_token', mediaForm.querySelector('[name="csrf_token"]').value);
+    formData.append('media', file, file.name || 'arquivo');
+    formData.append('caption', mediaCaption?.value || '');
+    if (mediaSend) {
+      mediaSend.disabled = true;
+      mediaSend.textContent = 'Enviando...';
+    }
+    try {
+      const response = await fetch('/conversations/' + conversationId + '/media', {
+        method: 'POST',
+        body: formData,
+        credentials: 'same-origin',
+        headers: {'Accept': 'application/json'}
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || 'Não foi possível enviar o anexo.');
+      }
+      clearMediaPreview();
+      if (mediaSend) {
+        mediaSend.disabled = false;
+        mediaSend.innerHTML = 'Enviar anexo <span>➤</span>';
+      }
+      await pollMessages();
+      await pollInbox();
+    } catch (error) {
+      alert(error?.message || 'Não foi possível enviar o anexo. Tente novamente.');
+      if (mediaSend) {
+        mediaSend.disabled = false;
+        mediaSend.innerHTML = 'Enviar anexo <span>➤</span>';
+      }
+    }
+  };
+
+  attachButton?.addEventListener('click', () => mediaInput?.click());
+  mediaInput?.addEventListener('change', () => {
+    const file = mediaInput.files?.[0];
+    if (file) showMediaPreview(file);
+  });
+  mediaCancel?.addEventListener('click', clearMediaPreview);
+  mediaForm?.addEventListener('submit', event => {
+    event.preventDefault();
+    if (selectedMediaFile) uploadMedia(selectedMediaFile);
+  });
+
+  const stopRecorderTracks = () => {
+    recorderStream?.getTracks().forEach(track => track.stop());
+    recorderStream = null;
+  };
+
+  const stopRecordingTimer = () => {
+    if (recorderTimer) window.clearInterval(recorderTimer);
+    recorderTimer = null;
+  };
+
+  const updateRecordingClock = () => {
+    if (!recordingStatus || !recorderStartedAt) return;
+    const seconds = Math.floor((Date.now() - recorderStartedAt) / 1000);
+    const min = String(Math.floor(seconds / 60)).padStart(2, '0');
+    const sec = String(seconds % 60).padStart(2, '0');
+    recordingStatus.textContent = 'Gravando ' + min + ':' + sec + ' · clique para parar';
+    if (seconds >= 300 && recorder?.state === 'recording') recorder.stop();
+  };
+
+  const beginRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      alert('Seu navegador não permite gravação de áudio nesta página.');
+      return;
+    }
+    try {
+      recorderStream = await navigator.mediaDevices.getUserMedia({audio: true});
+      const candidates = ['audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
+      const mimeType = candidates.find(value => MediaRecorder.isTypeSupported(value)) || '';
+      recorderChunks = [];
+      recorder = mimeType
+        ? new MediaRecorder(recorderStream, {mimeType})
+        : new MediaRecorder(recorderStream);
+      recorder.ondataavailable = event => {
+        if (event.data && event.data.size) recorderChunks.push(event.data);
+      };
+      recorder.onstop = async () => {
+        stopRecordingTimer();
+        stopRecorderTracks();
+        recordButton?.classList.remove('recording');
+        if (recordButton) recordButton.querySelector('span').textContent = 'Áudio';
+        if (recordingStatus) recordingStatus.hidden = true;
+        const type = recorder.mimeType || mimeType || 'audio/webm';
+        const extension = type.includes('ogg') ? 'ogg' : type.includes('mp4') ? 'm4a' : 'webm';
+        const blob = new Blob(recorderChunks, {type});
+        const file = new File([blob], 'audio-' + Date.now() + '.' + extension, {type});
+        showMediaPreview(file);
+        if (mediaCaption) mediaCaption.placeholder = 'Áudio pronto para enviar';
+      };
+      recorder.start(250);
+      recorderStartedAt = Date.now();
+      recordButton?.classList.add('recording');
+      if (recordButton) recordButton.querySelector('span').textContent = 'Parar';
+      if (recordingStatus) {
+        recordingStatus.hidden = false;
+        updateRecordingClock();
+      }
+      recorderTimer = window.setInterval(updateRecordingClock, 1000);
+    } catch (_) {
+      stopRecorderTracks();
+      alert('Não foi possível acessar o microfone. Verifique a permissão do navegador.');
+    }
+  };
+
+  recordButton?.addEventListener('click', () => {
+    if (recorder?.state === 'recording') {
+      recorder.stop();
+    } else {
+      beginRecording();
+    }
+  });
 
   if (form && input) {
     input.addEventListener('keydown', event => {

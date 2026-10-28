@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from app.database import get_db
 from app.models import (
@@ -27,6 +29,8 @@ from app.services.conversation_engine import (
     mark_conversation_read,
     register_message,
 )
+from app.services.media_processing import MediaProcessingError, normalize_audio
+from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
 from app.services.zapi import ZApiError, ZApiService
 from app.timeutils import utcnow
@@ -308,6 +312,224 @@ def send_message(
     return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
 
+def _media_kind(filename: str, mime_type: str) -> str:
+    clean_mime = (mime_type or "").split(";")[0].strip().lower()
+    extension = Path(filename or "").suffix.lower()
+    if clean_mime.startswith("image/") or extension in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        return "IMAGE"
+    if clean_mime.startswith("video/") or extension in {".mp4", ".mov", ".m4v", ".3gp"}:
+        return "VIDEO"
+    if clean_mime.startswith("audio/") or extension in {".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".amr"}:
+        return "AUDIO"
+    return "DOCUMENT"
+
+
+@router.post("/conversations/{conversation_id}/media")
+async def send_media(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    media: UploadFile = File(...),
+    caption: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if conversation.lead and (
+        conversation.lead.do_not_contact
+        or conversation.lead.stage == "NAO_CONTATAR"
+    ):
+        return JSONResponse(
+            {"ok": False, "error": "Este contato esta bloqueado para novas mensagens."},
+            status_code=403,
+        )
+
+    original_name = Path(media.filename or "arquivo").name
+    extension = Path(original_name).suffix.lower()
+    blocked = {".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1", ".sh", ".apk", ".dmg"}
+    if extension in blocked:
+        return JSONResponse(
+            {"ok": False, "error": "Este tipo de arquivo nao e permitido."},
+            status_code=400,
+        )
+
+    raw = await media.read()
+    mime_type = (media.content_type or "application/octet-stream").split(";")[0].strip()
+    kind = _media_kind(original_name, mime_type)
+
+    if kind == "AUDIO":
+        try:
+            raw, original_name, mime_type = normalize_audio(
+                raw,
+                filename=original_name,
+                mime_type=mime_type,
+            )
+        except MediaProcessingError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    storage = MediaStorage()
+    try:
+        storage_uri, safe_name = storage.upload_bytes(
+            data=raw,
+            conversation_id=conversation.id,
+            filename=original_name,
+            mime_type=mime_type,
+            direction="OUTBOUND",
+        )
+        delivery_url = storage.presigned_download_url(
+            storage_uri,
+            filename=safe_name,
+            expires_seconds=3600,
+        )
+    except MediaStorageError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    clean_caption = caption.strip()
+    service = ZApiService()
+    try:
+        if kind == "IMAGE":
+            result = service.send_image(
+                phone=conversation.contact.phone,
+                image_url=delivery_url,
+                caption=clean_caption,
+            )
+            body = clean_caption or "[Imagem]"
+        elif kind == "VIDEO":
+            result = service.send_video(
+                phone=conversation.contact.phone,
+                video_url=delivery_url,
+                caption=clean_caption,
+            )
+            body = clean_caption or "[Video]"
+        elif kind == "AUDIO":
+            result = service.send_audio(
+                phone=conversation.contact.phone,
+                audio_url=delivery_url,
+            )
+            body = "[Audio]"
+        else:
+            document_extension = Path(safe_name).suffix.lstrip(".") or "bin"
+            result = service.send_document(
+                phone=conversation.contact.phone,
+                document_url=delivery_url,
+                extension=document_extension,
+                file_name=safe_name,
+                caption=clean_caption,
+            )
+            body = safe_name
+    except ZApiError as exc:
+        failed = register_message(
+            db,
+            conversation,
+            direction="OUTBOUND",
+            message_type=kind,
+            body=clean_caption or safe_name,
+            sender_user_id=user.id,
+            media_url=storage_uri,
+            mime_type=mime_type,
+            status="FAILED",
+        )
+        write_audit(
+            db,
+            user=user,
+            action="CONVERSATION_MEDIA_FAILED",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={
+                "message_id": failed.id,
+                "type": kind,
+                "file_name": safe_name,
+                "size_bytes": len(raw),
+            },
+        )
+        db.commit()
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+
+    provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
+    zaap_id = str(result.get("zaapId") or "").strip() or None
+    sent = register_message(
+        db,
+        conversation,
+        direction="OUTBOUND",
+        message_type=kind,
+        body=body,
+        sender_user_id=user.id,
+        media_url=storage_uri,
+        mime_type=mime_type,
+        provider_message_id=provider_id,
+        provider_zaap_id=zaap_id,
+        status="SENT",
+    )
+    if conversation.lead:
+        conversation.lead.last_contact_at = utcnow()
+        db.add(
+            Activity(
+                lead_id=conversation.lead.id,
+                user_id=user.id,
+                kind="WHATSAPP",
+                status="CONCLUIDA",
+                channel="WHATSAPP",
+                outcome=f"CHAT_MEDIA_ZAPI:{provider_id or zaap_id or sent.id}"[:120],
+                description=f"{kind} enviado pelo Inbox: {safe_name}",
+                completed_at=utcnow(),
+            )
+        )
+    write_audit(
+        db,
+        user=user,
+        action="CONVERSATION_MEDIA_SENT",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={
+            "message_id": sent.id,
+            "provider_message_id": provider_id,
+            "type": kind,
+            "file_name": safe_name,
+            "size_bytes": len(raw),
+        },
+    )
+    db.commit()
+    return JSONResponse(
+        {
+            "ok": True,
+            "message_id": sent.id,
+            "provider_message_id": provider_id,
+            "type": kind,
+        }
+    )
+
+
+@router.get("/conversations/messages/{message_id}/media")
+def conversation_media(
+    message_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    message = db.get(Message, message_id)
+    if not message or not message.media_url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    conversation = _get_conversation(db, user, message.conversation_id)
+    if not conversation or not conversation_visible_to_user(conversation, user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        url = MediaStorage().presigned_download_url(
+            message.media_url,
+            filename=message.body if message.message_type == "DOCUMENT" else None,
+            expires_seconds=900,
+        )
+    except MediaStorageError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return RedirectResponse(url, status_code=307)
+
+
 @router.post("/conversations/{conversation_id}/note")
 def add_internal_note(
     conversation_id: int,
@@ -499,7 +721,7 @@ def conversation_messages_api(
                 "direction": item.direction,
                 "type": item.message_type,
                 "body": item.body,
-                "media_url": item.media_url,
+                "media_url": f"/conversations/messages/{item.id}/media" if item.media_url else None,
                 "mime_type": item.mime_type,
                 "status": item.status,
                 "sender": item.sender_user.name if item.sender_user else ("Cliente" if item.direction == "INBOUND" else "Sulnet"),

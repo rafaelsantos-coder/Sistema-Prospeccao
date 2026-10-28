@@ -114,6 +114,111 @@ class ZApiService:
             raise ZApiError("A Z-API retornou uma resposta inesperada.")
         return payload
 
+    def _send_media(
+        self,
+        *,
+        endpoint: str,
+        phone: str,
+        media_field: str,
+        media_url: str,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_phone = self.normalize_phone(phone)
+        clean_url = media_url.strip()
+        if not clean_url:
+            raise ZApiError("A midia nao pode ficar vazia.")
+        payload: dict[str, Any] = {
+            "phone": normalized_phone,
+            media_field: clean_url,
+        }
+        if extra:
+            payload.update({key: value for key, value in extra.items() if value not in {None, ""}})
+        try:
+            with httpx.Client(timeout=90.0) as client:
+                response = client.post(
+                    self._url(endpoint),
+                    headers=self._headers(json_request=True),
+                    json=payload,
+                )
+        except httpx.HTTPError as exc:
+            raise ZApiError("Nao foi possivel enviar a midia pela Z-API.") from exc
+        if response.status_code >= 400:
+            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}")
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise ZApiError("A Z-API retornou uma resposta inesperada.") from exc
+        if not isinstance(result, dict):
+            raise ZApiError("A Z-API retornou uma resposta inesperada.")
+        return result
+
+    def send_image(
+        self,
+        *,
+        phone: str,
+        image_url: str,
+        caption: str = "",
+    ) -> dict[str, Any]:
+        return self._send_media(
+            endpoint="send-image",
+            phone=phone,
+            media_field="image",
+            media_url=image_url,
+            extra={"caption": caption.strip(), "viewOnce": False},
+        )
+
+    def send_video(
+        self,
+        *,
+        phone: str,
+        video_url: str,
+        caption: str = "",
+    ) -> dict[str, Any]:
+        return self._send_media(
+            endpoint="send-video",
+            phone=phone,
+            media_field="video",
+            media_url=video_url,
+            extra={"caption": caption.strip(), "viewOnce": False},
+        )
+
+    def send_audio(
+        self,
+        *,
+        phone: str,
+        audio_url: str,
+    ) -> dict[str, Any]:
+        return self._send_media(
+            endpoint="send-audio",
+            phone=phone,
+            media_field="audio",
+            media_url=audio_url,
+            extra={"viewOnce": False, "waveform": True},
+        )
+
+    def send_document(
+        self,
+        *,
+        phone: str,
+        document_url: str,
+        extension: str,
+        file_name: str,
+        caption: str = "",
+    ) -> dict[str, Any]:
+        clean_extension = re.sub(r"[^a-zA-Z0-9]", "", extension or "").lower()
+        if not clean_extension or len(clean_extension) > 12:
+            raise ZApiError("Extensao de documento invalida.")
+        return self._send_media(
+            endpoint=f"send-document/{clean_extension}",
+            phone=phone,
+            media_field="document",
+            media_url=document_url,
+            extra={
+                "fileName": file_name.strip() or f"arquivo.{clean_extension}",
+                "caption": caption.strip(),
+            },
+        )
+
     def configure_webhooks(self, webhook_url: str) -> dict[str, Any]:
         clean_url = webhook_url.strip()
         if not clean_url.startswith("https://"):
