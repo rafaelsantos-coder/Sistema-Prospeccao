@@ -96,7 +96,7 @@
     </div>
     {% endif %}
 
-    <section class="page-content">
+    <section class="page-content {% block page_content_class %}{% endblock %}">
       {% block content %}{% endblock %}
     </section>
   </main>

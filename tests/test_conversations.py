@@ -47,6 +47,7 @@ def test_open_conversation_from_lead():
         inbox = client.get(response.headers["location"])
         assert inbox.status_code == 200
         assert "Caixa de entrada" in inbox.text
+        assert "conversation-page-content" in inbox.text
         assert "Clínica Horizonte" in inbox.text
 
 
