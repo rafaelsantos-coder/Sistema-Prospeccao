@@ -32,6 +32,7 @@ from app.services.conversation_engine import (
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
+from app.services.queue_routing import queue_for_conversation, queue_member_user_ids
 from app.services.whatsapp_presence import is_user_whatsapp_online, online_user_ids
 from app.services.zapi import ZApiError, ZApiService
 from app.timeutils import utcnow
@@ -80,6 +81,11 @@ def _eligible_users(db: Session, user: User, conversation: Conversation | None =
         User.id.in_(online_ids),
     ).order_by(User.name)
     users = list(db.scalars(stmt))
+    if conversation:
+        service_queue = queue_for_conversation(db, conversation.id)
+        if service_queue:
+            member_ids = set(queue_member_user_ids(db, service_queue.id))
+            users = [item for item in users if item.id in member_ids]
     if user.role == "SUPERVISOR":
         if user.branch_id:
             users = [item for item in users if item.branch_id == user.branch_id]
@@ -152,7 +158,9 @@ def _render_inbox(
 
     messages: list[Message] = []
     users: list[User] = []
+    selected_queue = None
     if selected:
+        selected_queue = queue_for_conversation(db, selected.id)
         if selected.unread_count:
             mark_conversation_read(db, selected)
             db.commit()
@@ -179,6 +187,7 @@ def _render_inbox(
         conversation=selected,
         messages=messages,
         users=users,
+        selected_queue=selected_queue,
         counts=counts,
         query=q,
         view=view,
