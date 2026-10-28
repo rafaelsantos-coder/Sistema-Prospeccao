@@ -3,14 +3,14 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
 from app.config import settings
-from app.database import get_db
-from app.models import Activity, Lead
+from app.database import SessionLocal, get_db
+from app.models import Activity, Lead, Message
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.conversation_engine import (
@@ -21,6 +21,7 @@ from app.services.conversation_engine import (
     update_message_statuses,
 )
 from app.services.followups import next_followup_after
+from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
 from app.services.scoring import normalize_phone
 from app.services.zapi import ZApiError, ZApiService
@@ -93,10 +94,39 @@ def _provider_message_id(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _archive_message_media(message_id: int) -> None:
+    db = SessionLocal()
+    try:
+        message = db.get(Message, message_id)
+        if not message or not message.media_url:
+            return
+        if not message.media_url.startswith(("http://", "https://")):
+            return
+        if message.message_type not in {"IMAGE", "VIDEO", "AUDIO", "DOCUMENT"}:
+            return
+        filename = message.body if message.message_type == "DOCUMENT" else None
+        try:
+            archived_uri, _ = MediaStorage().archive_remote(
+                url=message.media_url,
+                conversation_id=message.conversation_id,
+                filename=filename,
+                mime_type=message.mime_type,
+                direction=message.direction,
+            )
+        except MediaStorageError:
+            return
+        if archived_uri != message.media_url:
+            message.media_url = archived_uri
+            db.commit()
+    finally:
+        db.close()
+
+
 @router.post("/webhooks/zapi/{webhook_secret}")
 async def zapi_webhook(
     webhook_secret: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     expected = settings.zapi_webhook_secret
@@ -192,6 +222,12 @@ async def zapi_webhook(
             },
         )
     db.commit()
+    if (
+        created
+        and message.media_url
+        and message.message_type in {"IMAGE", "VIDEO", "AUDIO", "DOCUMENT"}
+    ):
+        background_tasks.add_task(_archive_message_media, message.id)
     return {
         "ok": True,
         "conversation_id": conversation.id,
