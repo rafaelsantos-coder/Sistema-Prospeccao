@@ -540,7 +540,7 @@ class CampaignDispatchRecipient(Base):
 class AIAgentProfile(Base):
     __tablename__ = "ai_agent_profiles"
     __table_args__ = (
-        Index("ix_ai_agent_profiles_active", "active", "execution_mode"),
+        Index("ix_ai_agent_profiles_active_mode", "active", "execution_mode"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
