@@ -43,6 +43,10 @@ class Settings:
     zapi_webhook_secret: str = os.getenv("ZAPI_WEBHOOK_SECRET", "")
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")
     resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "")
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    ai_sdr_enabled: bool = os.getenv("AI_SDR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
     media_s3_endpoint: str = os.getenv("MEDIA_S3_ENDPOINT", "")
     media_s3_bucket: str = os.getenv("MEDIA_S3_BUCKET", "")
     media_s3_region: str = os.getenv("MEDIA_S3_REGION", "auto")
@@ -71,6 +75,8 @@ class Settings:
             "zapi": zapi_configured,
             "whatsapp": zapi_configured,
             "email": bool(self.resend_api_key and self.resend_from_email),
+            "openai": bool(self.openai_api_key),
+            "ai_sdr": bool(self.ai_sdr_enabled and self.openai_api_key),
         }
 
 
