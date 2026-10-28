@@ -169,6 +169,8 @@ def test_inbound_message_creates_shadow_job_and_keeps_human_routing():
             assert job is not None
             assert job.queue_id == queue.id
             assert job.status == "PENDENTE"
+            job.status = "IGNORADO"
+            db.commit()
         finally:
             db.close()
 
@@ -201,6 +203,9 @@ def test_shadow_job_stores_decision_without_sending(monkeypatch):
     with TestClient(app):
         db = SessionLocal()
         try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
             agent, queue, _human = _create_bound_digital_queue(db, "PROCESS")
             from app.models import Lead, LeadQueuePreference
             lead = Lead(
