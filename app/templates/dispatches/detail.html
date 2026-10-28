@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">DISPARO WHATSAPP</span>
+    <h2>#{{ dispatch.id }} · {{ dispatch.campaign.name }}</h2>
+    <p>Fila {{ dispatch.queue.name }} · intervalo de {{ dispatch.interval_seconds }}s · {{ dispatch.daily_limit }} mensagens/dia.</p>
+  </div>
+  <div class="page-actions">
+    <a class="button button-secondary" href="/dispatches">Voltar</a>
+    {% if dispatch.status in ['RASCUNHO','PAUSADO'] and counts.pending %}
+    <form action="/dispatches/{{ dispatch.id }}/start" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-primary" type="submit">{{ 'Retomar disparo' if dispatch.status == 'PAUSADO' else 'Iniciar disparo' }}</button>
+    </form>
+    {% endif %}
+    {% if dispatch.status == 'ATIVO' %}
+    <form action="/dispatches/{{ dispatch.id }}/pause" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-secondary" type="submit">Pausar</button>
+    </form>
+    {% endif %}
+    {% if dispatch.status not in ['CONCLUIDO','CANCELADO'] %}
+    <form action="/dispatches/{{ dispatch.id }}/cancel" method="post" onsubmit="return confirm('Cancelar os contatos ainda pendentes deste disparo?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-ghost" type="submit">Cancelar</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% set total = counts.total %}
+{% set sent = counts.sent %}
+{% set progress = (sent / total * 100) if total else 0 %}
+<div class="metric-grid dispatch-metric-grid">
+  <article class="metric-card"><span>Total importado</span><strong>{{ total }}</strong><small>{{ import_summary.get('duplicates', 0) }} duplicados · {{ import_summary.get('invalid', 0) }} inválidos</small></article>
+  <article class="metric-card"><span>Enviados</span><strong>{{ sent }}</strong><small>{{ '%.1f'|format(progress) }}% concluído</small></article>
+  <article class="metric-card"><span>Pendentes</span><strong>{{ counts.pending }}</strong><small>{{ counts.failed }} falhas · {{ counts.skipped }} ignorados</small></article>
+  <article class="metric-card"><span>Intervalo</span><strong>{{ dispatch.interval_seconds }}s</strong><small>entre cada mensagem</small></article>
+  <article class="metric-card"><span>Tempo estimado</span><strong>{{ estimated_duration }}</strong><small>para a lista completa, sem pausas diárias</small></article>
+  <article class="metric-card"><span>Status</span><strong class="dispatch-status-text">{{ dispatch.status|replace('_',' ') }}</strong><small>{% if dispatch.started_at %}iniciado {{ dispatch.started_at|datetime_br }}{% else %}aguardando início{% endif %}</small></article>
+</div>
+
+<section class="panel dispatch-progress-panel">
+  <div class="dispatch-progress-head">
+    <div><span class="eyebrow">PROGRESSO</span><h3>{{ sent }} de {{ total }} mensagens enviadas</h3></div>
+    <strong>{{ '%.1f'|format(progress) }}%</strong>
+  </div>
+  <div class="dispatch-progress-track"><i style="width: {{ '%.1f'|format(progress) }}%"></i></div>
+</section>
+
+<div class="settings-grid top-space">
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">CONFIGURAÇÃO</span><h3>Origem do disparo</h3></div></div>
+    <dl class="detail-list">
+      <div><dt>Campanha</dt><dd>{{ dispatch.campaign.name }}</dd></div>
+      <div><dt>Fila de retorno</dt><dd>{{ dispatch.queue.name }} · {{ dispatch.queue.code }}</dd></div>
+      <div><dt>Estratégia da fila</dt><dd>{{ dispatch.queue.routing_strategy|replace('_',' ') }}</dd></div>
+      <div><dt>Intervalo</dt><dd>{{ dispatch.interval_seconds }} segundos</dd></div>
+      <div><dt>Limite diário</dt><dd>{{ dispatch.daily_limit }}</dd></div>
+      <div><dt>Criado por</dt><dd>{{ dispatch.created_by.name if dispatch.created_by else 'Sistema' }}</dd></div>
+    </dl>
+  </article>
+
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">IMPORTAÇÃO CSV</span><h3>Validação da lista</h3></div></div>
+    <dl class="detail-list">
+      <div><dt>Válidos</dt><dd>{{ import_summary.get('valid', total) }}</dd></div>
+      <div><dt>Importados</dt><dd>{{ import_summary.get('imported', total) }}</dd></div>
+      <div><dt>Duplicados</dt><dd>{{ import_summary.get('duplicates', 0) }}</dd></div>
+      <div><dt>Inválidos</dt><dd>{{ import_summary.get('invalid', 0) }}</dd></div>
+      <div><dt>Bloqueados / não contatar</dt><dd>{{ import_summary.get('blocked', 0) }}</dd></div>
+      <div><dt>Coluna nome</dt><dd>{{ 'Sim' if import_summary.get('has_name_column') else 'Não' }}</dd></div>
+    </dl>
+  </article>
+</div>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">DESTINATÁRIOS</span><h3>Sequência do disparo</h3></div>
+    <span class="panel-note">Exibindo até 500 registros.</span>
+  </div>
+  <div class="data-table-wrap">
+    <table class="data-table dispatch-recipient-table">
+      <thead><tr><th>#</th><th>Nome</th><th>Telefone</th><th>Status</th><th>Mensagem</th><th>Enviado em</th><th>Erro</th></tr></thead>
+      <tbody>
+        {% for item in recipients %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td><strong>{{ item.name }}</strong>{% if item.lead_id %}<span class="table-subline">Lead #{{ item.lead_id }}</span>{% endif %}</td>
+          <td>{{ item.phone|phone_br }}</td>
+          <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
+          <td><span class="dispatch-message-preview">{{ item.message_body }}</span></td>
+          <td>{{ item.sent_at|datetime_br if item.sent_at else '—' }}</td>
+          <td>{% if item.error %}<span class="text-danger">{{ item.error }}</span>{% else %}—{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7"><div class="empty-state">Nenhum destinatário.</div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
