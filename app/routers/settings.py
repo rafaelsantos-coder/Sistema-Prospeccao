@@ -27,7 +27,16 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse("/dashboard", status_code=303)
     branches = list(db.scalars(select(Branch).order_by(Branch.city)))
     users = list(db.scalars(select(User).order_by(User.name)))
-    targets = list(db.scalars(select(Target).order_by(Target.team)))\n    audit_logs = list(\n        db.scalars(\n            select(AuditLog)\n            .options(selectinload(AuditLog.user))\n            .order_by(AuditLog.created_at.desc())\n            .limit(50)\n        )\n    )\n    zapi_status = {
+    targets = list(db.scalars(select(Target).order_by(Target.team)))
+    audit_logs = list(
+        db.scalars(
+            select(AuditLog)
+            .options(selectinload(AuditLog.user))
+            .order_by(AuditLog.created_at.desc())
+            .limit(50)
+        )
+    )
+    zapi_status = {
         "configured": settings.integrations["zapi"],
         "connected": False,
         "smartphone_connected": False,
