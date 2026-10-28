@@ -133,6 +133,6 @@ def current_presence_state(db: Session, user: User) -> dict[str, object]:
         ),
         "timeout_seconds": max(
             20,
-            int(settings.whatsapp_presence_timeout_seconds or 45),
+            int(settings.whatsapp_presence_timeout_seconds or 90),
         ),
     }
