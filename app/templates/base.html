@@ -38,9 +38,6 @@
       <a href="/reports/whatsapp" class="nav-item {% if active_nav == 'reports' %}active{% endif %}">
         <span class="nav-icon">▥</span><span>Relatórios</span>
       </a>
-      <a href="/reports/whatsapp" class="nav-item {% if active_nav == 'reports' %}active{% endif %}">
-        <span class="nav-icon">▥</span><span>Relatórios</span>
-      </a>
       {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
       <a href="/settings" class="nav-item {% if active_nav == 'settings' %}active{% endif %}">
         <span class="nav-icon">⚙</span><span>Configurações</span>
@@ -76,6 +73,14 @@
         <h1>{{ page_title }}</h1>
       </div>
       <div class="topbar-actions">
+        <div class="whatsapp-presence-control" data-whatsapp-presence data-csrf="{{ csrf_token }}">
+          <span class="whatsapp-presence-dot" data-whatsapp-dot></span>
+          <div class="whatsapp-presence-copy">
+            <strong data-whatsapp-label>WhatsApp offline</strong>
+            <small data-whatsapp-detail>{{ constants.teams.get(current_user.team, current_user.team) }} · fora da distribuição</small>
+          </div>
+          <button class="whatsapp-presence-button" type="button" data-whatsapp-toggle>Entrar no WhatsApp</button>
+        </div>
         <a href="/leads/new" class="button button-primary"><span>＋</span> Novo lead</a>
       </div>
     </header>
