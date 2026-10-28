@@ -35,6 +35,11 @@
       <a href="/campaigns" class="nav-item {% if active_nav == 'campaigns' %}active{% endif %}">
         <span class="nav-icon">◈</span><span>Campanhas</span>
       </a>
+      {% if current_user.role in ['ADMIN', 'GESTOR'] %}
+      <a href="/dispatches" class="nav-item {% if active_nav == 'dispatches' %}active{% endif %}">
+        <span class="nav-icon">➤</span><span>Disparos</span>
+      </a>
+      {% endif %}
       <a href="/reports/whatsapp" class="nav-item {% if active_nav == 'reports' %}active{% endif %}">
         <span class="nav-icon">▥</span><span>Relatórios</span>
       </a>
