@@ -18,6 +18,7 @@ from app.models import (
     User,
 )
 from app.security import get_current_user, require_roles, validate_csrf
+from app.services.ai_sdr import latest_run_for_conversation
 from app.services.audit import write_audit
 from app.services.conversation_engine import (
     CLOSED_CONVERSATION_STATUSES,
@@ -172,8 +173,10 @@ def _render_inbox(
     messages: list[Message] = []
     users: list[User] = []
     selected_queue = None
+    latest_ai_run = None
     if selected:
         selected_queue = queue_for_conversation(db, selected.id)
+        latest_ai_run = latest_run_for_conversation(db, selected.id)
         if selected.unread_count:
             mark_conversation_read(db, selected)
             db.commit()
@@ -200,6 +203,7 @@ def _render_inbox(
         messages=messages,
         users=users,
         selected_queue=selected_queue,
+        latest_ai_run=latest_ai_run,
         counts=counts,
         query=q,
         view=view,
