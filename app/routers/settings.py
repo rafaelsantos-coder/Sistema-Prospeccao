@@ -28,6 +28,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse("/dashboard", status_code=303)
     branches = list(db.scalars(select(Branch).order_by(Branch.city)))
     users = list(db.scalars(select(User).order_by(User.name)))
+    human_users = [item for item in users if item.role != "AI_SDR"]
     targets = list(db.scalars(select(Target).order_by(Target.team)))
     queues = list(
         db.scalars(
@@ -80,6 +81,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         rate_status=rate_status(),
         branches=branches,
         users=users,
+        human_users=human_users,
         targets=targets,
         queues=queues,
         queue_stats=queue_stats,
