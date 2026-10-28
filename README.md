@@ -13,6 +13,9 @@ Aplicação web interna para centralizar prospecção, CRM, follow-ups, campanha
 - Tráfego pago separado e protegido da redistribuição automática.
 - Histórico de atividades e trilha de auditoria.
 - Busca por segmento/cidade via Apify, quando configurado.
+- Envio individual de WhatsApp e recebimento de respostas via Z-API.
+- Webhooks da Z-API para respostas e mudanças de status.
+- Bloqueio automático de novos contatos quando o lead solicitar descadastro.
 - Campanhas em rascunho, com aprovação gerencial e limites por canal.
 - Importação do `prospects.db` criado pelo software original.
 - Exportação de leads em CSV.
@@ -37,7 +40,6 @@ Ambiente de demonstração:
 - Senha: `Sulnet@2026!`
 
 A senha demonstrativa deve ser substituída antes de qualquer publicação.
-
 
 ## Publicação no Railway
 
@@ -76,13 +78,25 @@ A importação deduplica por telefone e e-mail e converte os estados antigos par
 
 ## Variáveis de integração
 
-Preencha no `.env`:
+Preencha no `.env` ou no Railway:
 
 - `APIFY_TOKEN`
-- `EVOLUTION_BASE_URL`, `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE`
+- `ZAPI_BASE_URL`, `ZAPI_INSTANCE_ID`, `ZAPI_INSTANCE_TOKEN`
+- `ZAPI_CLIENT_TOKEN` quando o token de segurança da conta estiver ativado
+- `APP_PUBLIC_URL` e `ZAPI_WEBHOOK_SECRET` para os webhooks
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`
 
 As chaves não são exibidas pela interface. Em produção, use PostgreSQL, HTTPS e um segredo de sessão forte.
+
+## Fluxo da Z-API
+
+- O painel de Configurações consulta o status da instância.
+- Administradores e gestores podem enviar uma mensagem interna de teste.
+- O detalhe do lead permite envio individual e registra a interação no CRM.
+- Respostas recebidas são vinculadas ao lead pelo telefone.
+- Ao receber uma resposta, a próxima ação automática é interrompida.
+- Pedidos de descadastro alteram o lead para `Não contatar`.
+- Disparos em massa permanecem bloqueados até homologação comercial e jurídica.
 
 ## Subir com Docker
 
@@ -92,9 +106,9 @@ cp .env.example .env
 POSTGRES_PASSWORD='senha-forte' docker compose up -d --build
 ```
 
-## Decisões desta primeira versão
+## Decisões desta versão
 
-1. Nenhum disparo real é ativado automaticamente. Campanhas exigem aprovação gerencial e a integração de envio será habilitada após homologação.
+1. Campanhas em massa continuam desativadas. O WhatsApp está liberado apenas para testes internos e mensagens individuais registradas no CRM.
 2. A busca do Apify roda em tarefa de segundo plano simples. A fase seguinte deve usar uma fila persistente, como Redis/RQ ou Celery.
 3. O banco local é SQLite para desenvolvimento; o `docker-compose.yml` usa PostgreSQL para o ambiente interno.
 4. O login é próprio do MVP. A evolução recomendada é integrar SSO/Google Workspace ou Microsoft Entra ID.
