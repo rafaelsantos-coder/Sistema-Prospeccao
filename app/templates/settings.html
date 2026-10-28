@@ -13,10 +13,17 @@
     <div class="panel-header"><div><span class="eyebrow">INTEGRAÇÕES</span><h3>Conectividade do sistema</h3></div><span class="environment-badge">{{ environment|upper }}</span></div>
     <div class="integration-list">
       <div class="integration-row"><div class="integration-logo">A</div><div><strong>Apify</strong><span>Busca de empresas no Google Maps</span></div><span class="connection-status {% if integrations.apify %}on{% endif %}">{% if integrations.apify %}Conectado{% else %}Pendente{% endif %}</span></div>
-      <div class="integration-row"><div class="integration-logo">W</div><div><strong>Evolution API</strong><span>Disparos e atendimento por WhatsApp</span></div><span class="connection-status {% if integrations.whatsapp %}on{% endif %}">{% if integrations.whatsapp %}Conectado{% else %}Pendente{% endif %}</span></div>
+      <div class="integration-row"><div class="integration-logo">Z</div><div><strong>Z-API</strong><span>Envio e recebimento de mensagens no WhatsApp</span></div><span class="connection-status {% if zapi_status.connected %}on{% endif %}">{% if zapi_status.connected %}Conectado{% elif zapi_status.configured %}Desconectado{% else %}Pendente{% endif %}</span></div>
       <div class="integration-row"><div class="integration-logo">R</div><div><strong>Resend</strong><span>Envio de e-mails comerciais</span></div><span class="connection-status {% if integrations.email %}on{% endif %}">{% if integrations.email %}Conectado{% else %}Pendente{% endif %}</span></div>
       <div class="integration-row"><div class="integration-logo">L</div><div><strong>Motor legado</strong><span>Scripts originais do repositório</span></div><span class="connection-status {% if legacy_available %}on{% endif %}">{% if legacy_available %}Disponível{% else %}Modo compatível{% endif %}</span></div>
     </div>
+    {% if zapi_status.configured %}
+    <div class="info-box compact">
+      <strong>Status do WhatsApp</strong>
+      <p>{% if zapi_status.connected %}Instância conectada{% else %}Instância sem conexão{% endif %} · {% if zapi_status.smartphone_connected %}celular online{% else %}celular não confirmado{% endif %} · {% if zapi_status.webhook_ready %}webhook preparado{% else %}webhook pendente{% endif %}.</p>
+      {% if zapi_status.error %}<p>{{ zapi_status.error }}</p>{% endif %}
+    </div>
+    {% endif %}
     <div class="info-box"><strong>Segurança das chaves</strong><p>Tokens e credenciais são lidos por variáveis de ambiente. Nenhum segredo é exibido ou gravado pela interface.</p></div>
   </article>
 
@@ -30,6 +37,27 @@
     </div>
     {% endfor %}
   </article>
+
+  {% if current_user.role in ['ADMIN', 'GESTOR'] %}
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">Z-API</span><h3>Homologação do WhatsApp</h3></div></div>
+    {% if integrations.zapi %}
+    <form action="/settings/zapi/test" method="post" class="stack-form compact">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Número interno para teste</span><input name="phone" required placeholder="5555999999999" inputmode="numeric"></label>
+      <label class="field"><span>Mensagem</span><textarea name="message" rows="4" maxlength="4096" required>Teste de integração do Sulnet Prospecta com a Z-API.</textarea></label>
+      <button class="button button-primary full-width" type="submit">Enviar mensagem de teste</button>
+    </form>
+    <form action="/settings/zapi/configure-webhook" method="post" class="stack-form compact" style="margin-top: 12px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-secondary full-width" type="submit">Registrar webhooks novamente</button>
+    </form>
+    <div class="info-box compact"><strong>Fase piloto</strong><p>Os envios em massa continuam bloqueados. Nesta etapa, o sistema permite somente testes internos e mensagens individuais registradas no CRM.</p></div>
+    {% else %}
+    <div class="empty-state"><strong>Z-API ainda não configurada</strong><span>Cadastre as credenciais no Railway para liberar a homologação.</span></div>
+    {% endif %}
+  </article>
+  {% endif %}
 
   <article class="panel panel-span-6">
     <div class="panel-header"><div><span class="eyebrow">METAS DIÁRIAS</span><h3>Ritmo por frente comercial</h3></div></div>
