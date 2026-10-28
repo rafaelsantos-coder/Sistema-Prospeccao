@@ -1548,6 +1548,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 
 
+
 /* Conversation viewport layout */
 .page-content.conversation-page-content {
   height: calc(100dvh - 86px);
@@ -1561,13 +1562,47 @@ button, a { -webkit-tap-highlight-color: transparent; }
   max-height: 100%;
 }
 .conversation-page-content .inbox-list-panel,
-.conversation-page-content .chat-workspace,
 .conversation-page-content .chat-context-panel {
   min-height: 0;
+  height: 100%;
+}
+.conversation-page-content .chat-workspace {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.conversation-page-content .chat-header {
+  flex: 0 0 auto;
+}
+.conversation-page-content .chat-stream {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.conversation-page-content .chat-compose,
+.conversation-page-content .chat-closed-banner {
+  flex: 0 0 auto;
+}
+.conversation-page-content .chat-compose {
+  position: relative;
+  z-index: 2;
+  max-height: 44%;
+  overflow-y: auto;
+}
+.conversation-page-content .chat-send-form textarea {
+  min-height: 62px;
+  max-height: 118px;
+  resize: vertical;
 }
 .conversation-page-content .conversation-list,
 .conversation-page-content .chat-stream,
-.conversation-page-content .chat-context-panel {
+.conversation-page-content .chat-context-panel,
+.conversation-page-content .chat-compose {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -1575,21 +1610,16 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .conversation-page-content .chat-context-panel {
   overflow-y: auto;
 }
-.conversation-page-content .chat-compose,
-.conversation-page-content .chat-header {
-  flex: 0 0 auto;
-}
-.conversation-page-content .chat-context-panel {
-  height: 100%;
-}
 .conversation-page-content .conversation-list::-webkit-scrollbar,
 .conversation-page-content .chat-stream::-webkit-scrollbar,
-.conversation-page-content .chat-context-panel::-webkit-scrollbar {
+.conversation-page-content .chat-context-panel::-webkit-scrollbar,
+.conversation-page-content .chat-compose::-webkit-scrollbar {
   width: 8px;
 }
 .conversation-page-content .conversation-list::-webkit-scrollbar-thumb,
 .conversation-page-content .chat-stream::-webkit-scrollbar-thumb,
-.conversation-page-content .chat-context-panel::-webkit-scrollbar-thumb {
+.conversation-page-content .chat-context-panel::-webkit-scrollbar-thumb,
+.conversation-page-content .chat-compose::-webkit-scrollbar-thumb {
   background: #d8dde2;
   border-radius: 999px;
   border: 2px solid transparent;
@@ -1597,7 +1627,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 .conversation-page-content .conversation-list,
 .conversation-page-content .chat-stream,
-.conversation-page-content .chat-context-panel {
+.conversation-page-content .chat-context-panel,
+.conversation-page-content .chat-compose {
   scrollbar-width: thin;
   scrollbar-color: #d8dde2 transparent;
 }
@@ -1612,6 +1643,19 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .conversation-page-content .inbox-shell {
     height: auto;
     max-height: none;
+  }
+  .conversation-page-content .chat-workspace {
+    height: auto;
+    min-height: 650px;
+    overflow: visible;
+  }
+  .conversation-page-content .chat-stream {
+    flex: 0 0 auto;
+    max-height: 58dvh;
+  }
+  .conversation-page-content .chat-compose {
+    max-height: none;
+    overflow: visible;
   }
   .conversation-page-content .chat-context-panel {
     height: auto;
