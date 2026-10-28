@@ -8,6 +8,7 @@ from starlette.responses import RedirectResponse
 from app.database import get_db
 from app.models import User
 from app.services.audit import write_audit
+from app.services.whatsapp_presence import leave_whatsapp
 from app.security import (
     get_current_user,
     hash_password,
@@ -60,6 +61,7 @@ def login(
             status_code=422,
         )
     login_user(request, user)
+    leave_whatsapp(db, user)
     write_audit(
         db,
         user=user,
@@ -142,6 +144,7 @@ def logout(
     validate_csrf(request, csrf_token)
     user = get_current_user(request, db)
     if user:
+        leave_whatsapp(db, user)
         write_audit(
             db,
             user=user,
