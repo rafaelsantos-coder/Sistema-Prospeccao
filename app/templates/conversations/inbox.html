@@ -224,6 +224,27 @@
       </dl>
     </div>
 
+    {% if latest_ai_run %}
+    <div class="context-section ai-shadow-context">
+      <div class="context-title">SulIA SDR · Shadow</div>
+      <div class="ai-shadow-head">
+        <span class="ai-shadow-score">{{ latest_ai_run.qualification_score }}/100</span>
+        <div><strong>{{ latest_ai_run.intent|replace('_',' ') }}</strong><small>{{ constants.temperatures.get(latest_ai_run.temperature, latest_ai_run.temperature) }} · confiança {{ '%.0f'|format(latest_ai_run.confidence * 100) }}%</small></div>
+      </div>
+      <div class="ai-shadow-suggestion">
+        <span>Resposta sugerida</span>
+        <p>{{ latest_ai_run.reply_text }}</p>
+      </div>
+      {% if latest_ai_run.handoff_recommended %}
+      <div class="warning-box compact"><strong>Handoff recomendado</strong><p>{{ latest_ai_run.handoff_reason or 'A IA identificou sinal de intenção para transferência ao vendedor.' }}</p></div>
+      {% endif %}
+      {% if latest_ai_run.summary %}
+      <details class="ai-shadow-details"><summary>Ver resumo da IA</summary><p>{{ latest_ai_run.summary }}</p></details>
+      {% endif %}
+      <small class="transfer-help">Shadow Mode: esta resposta não foi enviada ao cliente e não alterou o CRM.</small>
+    </div>
+    {% endif %}
+
     <div class="context-section conversation-transfer-section">
       <div class="context-title">Transferir atendimento</div>
       {% if users %}
