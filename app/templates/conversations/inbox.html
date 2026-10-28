@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block page_content_class %}conversation-page-content{% endblock %}
 {% block content %}
 <div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
   <aside class="inbox-list-panel">
