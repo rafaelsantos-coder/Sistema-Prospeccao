@@ -29,13 +29,13 @@ def _login(client: TestClient) -> None:
     assert response.status_code == 303
 
 
-def _create_conversation_with_message(client: TestClient, monkeypatch) -> str:
+def _create_conversation_with_message(client: TestClient, monkeypatch, suffix: str) -> str:
     monkeypatch.setattr(
         ZApiService,
         "send_text",
         lambda self, *, phone, message: {
-            "messageId": "TEST-REPORT-MSG-1",
-            "zaapId": "TEST-REPORT-ZAAP-1",
+            "messageId": f"TEST-REPORT-MSG-{suffix}",
+            "zaapId": f"TEST-REPORT-ZAAP-{suffix}",
         },
     )
     lead = client.get("/leads/1")
@@ -64,7 +64,7 @@ def _create_conversation_with_message(client: TestClient, monkeypatch) -> str:
 def test_whatsapp_reports_page(monkeypatch):
     with TestClient(app) as client:
         _login(client)
-        _create_conversation_with_message(client, monkeypatch)
+        _create_conversation_with_message(client, monkeypatch, "PAGE")
         response = client.get("/reports/whatsapp")
         assert response.status_code == 200
         assert "Relatórios WhatsApp" in response.text
@@ -77,7 +77,7 @@ def test_whatsapp_reports_page(monkeypatch):
 def test_whatsapp_reports_csv_exports(monkeypatch):
     with TestClient(app) as client:
         _login(client)
-        location = _create_conversation_with_message(client, monkeypatch)
+        location = _create_conversation_with_message(client, monkeypatch, "CSV")
 
         summary = client.get("/reports/whatsapp/export/conversations.csv")
         assert summary.status_code == 200
@@ -101,7 +101,7 @@ def test_whatsapp_reports_csv_exports(monkeypatch):
 def test_whatsapp_reports_pdf_exports(monkeypatch):
     with TestClient(app) as client:
         _login(client)
-        location = _create_conversation_with_message(client, monkeypatch)
+        location = _create_conversation_with_message(client, monkeypatch, "PDF")
 
         report = client.get("/reports/whatsapp/export/report.pdf")
         assert report.status_code == 200
