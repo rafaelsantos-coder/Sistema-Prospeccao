@@ -20,9 +20,11 @@ def run() -> None:
     while True:
         db = SessionLocal()
         outcome = "idle"
+        used_dispatch = False
         try:
             dispatch_recipient = claim_next_dispatch_recipient(db)
             if dispatch_recipient:
+                used_dispatch = True
                 outcome = process_dispatch_recipient(db, dispatch_recipient)
                 db.commit()
                 LOG.info(
@@ -52,7 +54,7 @@ def run() -> None:
         finally:
             db.close()
 
-        if dispatch_recipient if 'dispatch_recipient' in locals() else False:
+        if used_dispatch:
             time.sleep(IDLE_INTERVAL)
         elif outcome == "sent":
             time.sleep(SEND_INTERVAL)
