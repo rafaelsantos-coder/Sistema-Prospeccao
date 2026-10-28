@@ -46,9 +46,9 @@ def _login_admin(client: TestClient) -> str:
     return _csrf(client.get("/dispatches").text)
 
 
-def _campaign_and_queue(db):
+def _campaign_and_queue(db, suffix: str):
     campaign = Campaign(
-        name="Campanha Disparo CSV",
+        name=f"Campanha Disparo CSV {suffix}",
         channel="WHATSAPP",
         status="APROVADA",
         daily_limit=100,
@@ -59,8 +59,8 @@ def _campaign_and_queue(db):
         ),
     )
     queue = ServiceQueue(
-        name="Fila Digital Disparo",
-        code="DIGITAL-DISPATCH-TEST",
+        name=f"Fila Digital Disparo {suffix}",
+        code=f"DIGITAL-DISPATCH-{suffix}",
         team="DIGITAL",
         routing_strategy="ROUND_ROBIN",
         active=True,
@@ -86,7 +86,7 @@ def test_create_dispatch_from_csv():
         token = _login_admin(client)
         db = SessionLocal()
         try:
-            campaign, queue = _campaign_and_queue(db)
+            campaign, queue = _campaign_and_queue(db, "CREATE")
             db.commit()
             campaign_id = campaign.id
             queue_id = queue.id
@@ -143,7 +143,7 @@ def test_dispatch_sends_via_zapi_and_preserves_queue(monkeypatch):
     with TestClient(app):
         db = SessionLocal()
         try:
-            campaign, queue = _campaign_and_queue(db)
+            campaign, queue = _campaign_and_queue(db, "SEND")
             dispatch = CampaignDispatch(
                 campaign_id=campaign.id,
                 queue_id=queue.id,
