@@ -180,6 +180,11 @@ def queue_detail(
         if not actor.branch_id and queue.team != actor.team:
             return RedirectResponse("/settings", status_code=303)
     users = _scoped_users(db, queue)
+    if actor.role == "SUPERVISOR":
+        if actor.branch_id:
+            users = [item for item in users if item.branch_id == actor.branch_id]
+        else:
+            users = [item for item in users if item.team == actor.team]
     member_ids = {item.user_id for item in queue.members if item.active}
     branches = list(
         db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city))
