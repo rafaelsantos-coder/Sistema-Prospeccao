@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, Form, Query, Request
@@ -286,6 +286,9 @@ def lead_detail(lead_id: int, request: Request, db: Session = Depends(get_db)):
         return render(request, "404.html", user=user, page_title="Lead não encontrado", status_code=404)
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
     users = list(db.scalars(select(User).where(User.active.is_(True)).order_by(User.name)))
+    comparison_now = utcnow()
+    if lead.next_action_at and lead.next_action_at.tzinfo is not None:
+        comparison_now = comparison_now.replace(tzinfo=timezone.utc)
     return render(
         request,
         "leads/detail.html",
@@ -297,7 +300,7 @@ def lead_detail(lead_id: int, request: Request, db: Session = Depends(get_db)):
         users=users,
         pipeline=PIPELINE_STAGES,
         current_stage_index=(PIPELINE_STAGES.index(lead.stage) if lead.stage in PIPELINE_STAGES else -1),
-        now=utcnow(),
+        now=comparison_now,
     )
 
 
