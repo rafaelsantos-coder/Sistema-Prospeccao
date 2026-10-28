@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">FILA DE ATENDIMENTO</span>
+    <h2>{{ queue.name }}</h2>
+    <p>{{ queue.code }} · {{ constants.teams.get(queue.team, queue.team) }} · {{ queue.branch.city if queue.branch else 'Corporativo / todas as unidades' }}</p>
+  </div>
+  <a class="button button-secondary" href="/settings">Voltar às configurações</a>
+</div>
+
+<div class="queue-overview-grid">
+  <article class="panel queue-stat"><span>Membros</span><strong>{{ queue_stats.members }}</strong><small>usuários cadastrados</small></article>
+  <article class="panel queue-stat"><span>Online agora</span><strong>{{ queue_stats.online }}</strong><small>aptos a receber</small></article>
+  <article class="panel queue-stat"><span>Conversas abertas</span><strong>{{ queue_stats.open }}</strong><small>vinculadas à fila</small></article>
+  <article class="panel queue-stat {% if queue_stats.waiting %}attention{% endif %}"><span>Aguardando distribuição</span><strong>{{ queue_stats.waiting }}</strong><small>sem responsável</small></article>
+</div>
+
+<div class="settings-grid top-space">
+  <article class="panel panel-span-7">
+    <div class="panel-header"><div><span class="eyebrow">CONFIGURAÇÃO</span><h3>Regras da fila</h3></div><span class="connection-status {% if queue.active %}on{% endif %}">{{ 'Ativa' if queue.active else 'Inativa' }}</span></div>
+    <form action="/settings/queues/{{ queue.id }}" method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field field-span-2"><span>Nome da fila</span><input name="name" required value="{{ queue.name }}"></label>
+        <label class="field"><span>Código</span><input value="{{ queue.code }}" disabled><small>O código é permanente para preservar histórico e integrações.</small></label>
+        <label class="field"><span>Equipe</span><select name="team" {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}>{% for key, label in constants.teams.items() %}<option value="{{ key }}" {% if queue.team == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label class="field"><span>Unidade</span><select name="branch_id" {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}><option value="">Corporativo / todas</option>{% for branch in branches %}<option value="{{ branch.id }}" {% if queue.branch_id == branch.id %}selected{% endif %}>{{ branch.city }}</option>{% endfor %}</select></label>
+        <label class="field"><span>Estratégia</span><select name="routing_strategy" {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}>{% for key, label in routing_strategies.items() %}<option value="{{ key }}" {% if queue.routing_strategy == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label class="queue-check field-span-2"><input type="checkbox" name="is_default_inbound" value="true" {% if queue.is_default_inbound %}checked{% endif %} {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}><span>Fila padrão para novas mensagens espontâneas desta equipe/unidade</span></label>
+        <label class="queue-check field-span-2"><input type="checkbox" name="active" value="true" {% if queue.active %}checked{% endif %} {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}><span>Fila ativa</span></label>
+      </div>
+
+      <div class="queue-members-block">
+        <div class="panel-header"><div><span class="eyebrow">MEMBROS</span><h3>Usuários que participam desta fila</h3></div><span class="panel-note">Só recebem atendimentos quando estiverem online no WhatsApp.</span></div>
+        <div class="queue-member-grid">
+          {% for item in users %}
+          <label class="queue-member-card">
+            <input type="checkbox" name="member_user_ids" value="{{ item.id }}" {% if item.id in member_ids %}checked{% endif %} {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}>
+            <span class="avatar">{{ item.name[:1]|upper }}</span>
+            <span><strong>{{ item.name }}</strong><small>{{ constants.roles.get(item.role, item.role) }} · {{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</small></span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      {% if current_user.role in ['ADMIN','GESTOR'] %}
+      <div class="form-actions"><button class="button button-primary" type="submit">Salvar configuração da fila</button></div>
+      {% endif %}
+    </form>
+  </article>
+
+  <aside class="panel panel-span-5">
+    <div class="panel-header"><div><span class="eyebrow">COMO SERÁ DISTRIBUÍDO</span><h3>{{ routing_strategies.get(queue.routing_strategy, queue.routing_strategy) }}</h3></div></div>
+    {% if queue.routing_strategy == 'ROUND_ROBIN' %}
+    <div class="info-box"><strong>Carrossel / rodízio</strong><p>Entre os membros online, o sistema entrega a próxima conversa para quem está há mais tempo sem receber uma nova atribuição nesta fila. Em empate, considera prioridade e quantidade de atendimentos abertos.</p></div>
+    {% elif queue.routing_strategy == 'LEAST_OPEN' %}
+    <div class="info-box"><strong>Menor carga pendente</strong><p>Entre os membros online, o sistema escolhe quem possui menos conversas abertas nesta fila. Em empate, usa a última atribuição para manter equilíbrio.</p></div>
+    {% else %}
+    <div class="info-box"><strong>Distribuição manual</strong><p>As mensagens entram na fila sem responsável. Um gestor ou supervisor precisa atribuir o atendimento manualmente.</p></div>
+    {% endif %}
+
+    <div class="queue-flow">
+      <div><span>1</span><p>Disparo ou mensagem espontânea é vinculada à fila.</p></div>
+      <i></i>
+      <div><span>2</span><p>A resposta do cliente permanece na mesma fila.</p></div>
+      <i></i>
+      <div><span>3</span><p>Somente membros online da fila entram no cálculo.</p></div>
+      <i></i>
+      <div><span>4</span><p>A conversa recebe responsável conforme a estratégia definida.</p></div>
+    </div>
+  </aside>
+</div>
+{% endblock %}

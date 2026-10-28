@@ -216,6 +216,7 @@
       <div class="context-title">Atendimento</div>
       <dl class="context-list">
         <div><dt>Responsável</dt><dd>{{ conversation.assigned_user.name if conversation.assigned_user else 'Sem responsável' }}</dd></div>
+        <div><dt>Fila</dt><dd>{% if selected_queue %}<strong>{{ selected_queue.name }}</strong><span class="table-subline">{{ selected_queue.code }}</span>{% else %}Sem fila definida{% endif %}</dd></div>
         <div><dt>Equipe</dt><dd>{{ constants.teams.get(conversation.team, conversation.team) }}</dd></div>
         <div><dt>Unidade</dt><dd>{{ conversation.branch.city if conversation.branch else 'Não definida' }}</dd></div>
         <div><dt>Iniciada</dt><dd>{{ conversation.opened_at|datetime_br }}</dd></div>

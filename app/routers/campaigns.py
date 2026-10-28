@@ -9,11 +9,12 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.responses import RedirectResponse
 
 from app.database import get_db
-from app.models import Branch, Campaign
+from app.models import Branch, Campaign, CampaignQueueLink
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.campaign_queue import campaign_queue_counts, enqueue_campaign
 from app.services.legacy_adapter import generate_message, rate_status
+from app.services.queue_routing import available_queues_for_user, bind_campaign_queue, get_queue, queue_for_campaign
 from app.timeutils import utcnow
 from app.web import flash, render
 
@@ -39,6 +40,11 @@ def list_campaigns(request: Request, db: Session = Depends(get_db)):
     campaigns = list(db.scalars(stmt))
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
     queue_counts = {campaign.id: campaign_queue_counts(db, campaign.id) for campaign in campaigns}
+    service_queues = available_queues_for_user(db, user)
+    campaign_queues = {
+        campaign.id: queue_for_campaign(db, campaign.id)
+        for campaign in campaigns
+    }
     preview = generate_message(
         "empresa local",
         1,
@@ -56,6 +62,13 @@ def list_campaigns(request: Request, db: Session = Depends(get_db)):
         rate_status=rate_status(),
         message_preview=preview,
         queue_counts=queue_counts,
+        service_queues=service_queues,
+        campaign_queues=campaign_queues,
+        routing_strategies={
+            "ROUND_ROBIN": "Carrossel / rodízio",
+            "LEAST_OPEN": "Menor número de atendimentos pendentes",
+            "MANUAL": "Somente distribuição manual",
+        },
     )
 
 
@@ -69,6 +82,7 @@ def create_campaign(
     channel: str = Form("WHATSAPP"),
     daily_limit: int = Form(30),
     message: str = Form(...),
+    queue_id: int | None = Form(None),
     branch_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -77,6 +91,13 @@ def create_campaign(
         return redirect
     validate_csrf(request, csrf_token)
     clean_message = message.strip()
+    selected_queue = get_queue(db, queue_id)
+    if channel == "WHATSAPP" and not selected_queue:
+        flash(request, "Selecione a fila que receberá as respostas desta campanha.", "warning")
+        return RedirectResponse("/campaigns", status_code=303)
+    if selected_queue and selected_queue.id not in {item.id for item in available_queues_for_user(db, user)}:
+        flash(request, "Você não possui acesso a esta fila.", "error")
+        return RedirectResponse("/campaigns", status_code=303)
     if not clean_message:
         flash(request, "Informe a mensagem inicial da campanha.", "warning")
         return RedirectResponse("/campaigns", status_code=303)
@@ -100,13 +121,19 @@ def create_campaign(
     )
     db.add(campaign)
     db.flush()
+    if selected_queue:
+        bind_campaign_queue(db, campaign.id, selected_queue.id)
     write_audit(
         db,
         user=user,
         action="CAMPAIGN_CREATED",
         entity_type="campaign",
         entity_id=campaign.id,
-        payload={"channel": channel, "daily_limit": limit},
+        payload={
+            "channel": channel,
+            "daily_limit": limit,
+            "queue_id": selected_queue.id if selected_queue else None,
+        },
     )
     db.commit()
     flash(request, "Campanha criada como rascunho. A aprovação gerencial é obrigatória.")
@@ -178,6 +205,9 @@ def enqueue_campaign_recipients(
         return RedirectResponse("/campaigns", status_code=303)
     if campaign.channel != "WHATSAPP":
         flash(request, "A fila automatizada esta liberada inicialmente apenas para WhatsApp.", "warning")
+        return RedirectResponse("/campaigns", status_code=303)
+    if not queue_for_campaign(db, campaign.id):
+        flash(request, "Defina uma fila de atendimento para esta campanha antes do disparo.", "warning")
         return RedirectResponse("/campaigns", status_code=303)
     if campaign.status not in {"APROVADA", "PAUSADA", "ATIVA"}:
         flash(request, "A campanha precisa ser aprovada antes de entrar na fila.", "warning")

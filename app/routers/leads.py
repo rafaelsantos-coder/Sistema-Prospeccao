@@ -18,6 +18,7 @@ from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.followups import initial_next_action, next_followup_after
 from app.services.metrics import apply_user_scope
+from app.services.queue_routing import available_queues_for_user, preferred_queue_for_lead
 from app.services.scoring import calculate_sulnet_score, normalize_phone
 from app.timeutils import local_input_to_utc, utcnow
 from app.web import flash, render
@@ -286,6 +287,8 @@ def lead_detail(lead_id: int, request: Request, db: Session = Depends(get_db)):
         return render(request, "404.html", user=user, page_title="Lead não encontrado", status_code=404)
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
     users = list(db.scalars(select(User).where(User.active.is_(True)).order_by(User.name)))
+    service_queues = available_queues_for_user(db, user)
+    preferred_queue = preferred_queue_for_lead(db, lead.id)
     comparison_now = utcnow()
     if lead.next_action_at and lead.next_action_at.tzinfo is not None:
         comparison_now = comparison_now.replace(tzinfo=timezone.utc)
@@ -298,6 +301,8 @@ def lead_detail(lead_id: int, request: Request, db: Session = Depends(get_db)):
         lead=lead,
         branches=branches,
         users=users,
+        service_queues=service_queues,
+        preferred_queue=preferred_queue,
         pipeline=PIPELINE_STAGES,
         current_stage_index=(PIPELINE_STAGES.index(lead.stage) if lead.stage in PIPELINE_STAGES else -1),
         now=comparison_now,

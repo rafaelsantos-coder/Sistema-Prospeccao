@@ -13,7 +13,14 @@ from app.models import (
     Lead,
     Message,
     MessageEvent,
+    ServiceQueue,
     User,
+)
+from app.services.queue_routing import (
+    assign_queue_user,
+    bind_conversation_queue,
+    queue_for_conversation,
+    resolve_queue,
 )
 from app.services.scoring import normalize_phone
 from app.services.whatsapp_presence import mark_whatsapp_assignment, online_user_ids, presence_for_users
@@ -111,7 +118,16 @@ def _presence_timestamp(value) -> float:
     return value.timestamp()
 
 
-def choose_assignee(db: Session, contact: Contact, lead: Lead | None) -> User | None:
+def choose_assignee(
+    db: Session,
+    contact: Contact,
+    lead: Lead | None,
+    *,
+    queue: ServiceQueue | None = None,
+) -> User | None:
+    if queue:
+        return assign_queue_user(db, queue)
+
     online_ids = set(online_user_ids(db))
     if not online_ids:
         return None
@@ -170,6 +186,9 @@ def ensure_open_conversation(
     *,
     lead: Lead | None = None,
     source: str = "WHATSAPP",
+    queue_id: int | None = None,
+    queue_origin: str = "INBOUND",
+    assign_if_unowned: bool = True,
 ) -> Conversation:
     conversation = db.scalar(
         select(Conversation)
@@ -180,13 +199,36 @@ def ensure_open_conversation(
         .order_by(Conversation.updated_at.desc())
         .limit(1)
     )
+    team = lead.team if lead and lead.team else "B2B"
+    branch_id = lead.branch_id if lead else None
+
     if conversation:
         if lead and not conversation.lead_id:
             conversation.lead_id = lead.id
             conversation.branch_id = lead.branch_id
             conversation.team = lead.team
-        if not conversation.assigned_user_id:
-            owner = choose_assignee(db, contact, lead)
+
+        queue = resolve_queue(
+            db,
+            conversation_id=conversation.id,
+            explicit_queue_id=queue_id,
+            lead_id=lead.id if lead else conversation.lead_id,
+            team=conversation.team or team,
+            branch_id=conversation.branch_id or branch_id,
+        )
+        if queue:
+            bind_conversation_queue(
+                db,
+                conversation.id,
+                queue.id,
+                origin=queue_origin,
+            )
+            conversation.team = queue.team
+            if queue.branch_id and not conversation.branch_id:
+                conversation.branch_id = queue.branch_id
+
+        if assign_if_unowned and not conversation.assigned_user_id:
+            owner = choose_assignee(db, contact, lead, queue=queue)
             if owner:
                 conversation.assigned_user_id = owner.id
                 conversation.status = "ATRIBUIDO"
@@ -195,25 +237,52 @@ def ensure_open_conversation(
                         conversation_id=conversation.id,
                         user_id=owner.id,
                         assigned_by_id=None,
-                        event="AUTO_ASSIGNED",
+                        event="AUTO_ASSIGNED_QUEUE" if queue else "AUTO_ASSIGNED",
                     )
                 )
-                mark_whatsapp_assignment(db, owner.id)
+                if queue is None:
+                    mark_whatsapp_assignment(db, owner.id)
+                if lead and lead.assigned_user_id != owner.id:
+                    lead.assigned_user_id = owner.id
         return conversation
 
-    owner = choose_assignee(db, contact, lead)
+    queue = resolve_queue(
+        db,
+        explicit_queue_id=queue_id,
+        lead_id=lead.id if lead else contact.lead_id,
+        team=team,
+        branch_id=branch_id,
+    )
+    owner = (
+        choose_assignee(db, contact, lead, queue=queue)
+        if assign_if_unowned
+        else None
+    )
     conversation = Conversation(
         contact_id=contact.id,
         lead_id=lead.id if lead else contact.lead_id,
         assigned_user_id=owner.id if owner else None,
-        branch_id=lead.branch_id if lead else None,
-        team=lead.team if lead else "B2B",
+        branch_id=(
+            lead.branch_id
+            if lead and lead.branch_id
+            else (queue.branch_id if queue else None)
+        ),
+        team=queue.team if queue else team,
         source=source,
         status="ATRIBUIDO" if owner else "EM_FILA",
         opened_at=utcnow(),
     )
     db.add(conversation)
     db.flush()
+
+    if queue:
+        bind_conversation_queue(
+            db,
+            conversation.id,
+            queue.id,
+            origin=queue_origin,
+        )
+
     if owner and lead and lead.assigned_user_id != owner.id:
         lead.assigned_user_id = owner.id
     db.add(
@@ -221,10 +290,16 @@ def ensure_open_conversation(
             conversation_id=conversation.id,
             user_id=owner.id if owner else None,
             assigned_by_id=None,
-            event="AUTO_ASSIGNED" if owner else "QUEUED",
+            event=(
+                "AUTO_ASSIGNED_QUEUE"
+                if owner and queue
+                else "AUTO_ASSIGNED"
+                if owner
+                else "QUEUED"
+            ),
         )
     )
-    if owner:
+    if owner and queue is None:
         mark_whatsapp_assignment(db, owner.id)
     return conversation
 
@@ -239,7 +314,9 @@ def distribute_waiting_conversations(
             select(Conversation)
             .where(
                 Conversation.assigned_user_id.is_(None),
-                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                Conversation.status.in_(
+                    OPEN_CONVERSATION_STATUSES - {"AGUARDANDO_CLIENTE"}
+                ),
             )
             .order_by(
                 Conversation.opened_at.asc(),
@@ -254,7 +331,22 @@ def distribute_waiting_conversations(
         if not contact:
             continue
         lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
-        owner = choose_assignee(db, contact, lead)
+        queue = queue_for_conversation(db, conversation.id)
+        if not queue:
+            queue = resolve_queue(
+                db,
+                lead_id=lead.id if lead else None,
+                team=conversation.team or (lead.team if lead else "B2B"),
+                branch_id=conversation.branch_id or (lead.branch_id if lead else None),
+            )
+            if queue:
+                bind_conversation_queue(
+                    db,
+                    conversation.id,
+                    queue.id,
+                    origin="AUTO_QUEUE",
+                )
+        owner = choose_assignee(db, contact, lead, queue=queue)
         if not owner:
             continue
         conversation.assigned_user_id = owner.id
@@ -267,10 +359,11 @@ def distribute_waiting_conversations(
                 conversation_id=conversation.id,
                 user_id=owner.id,
                 assigned_by_id=None,
-                event="AUTO_ASSIGNED_QUEUE",
+                event="AUTO_ASSIGNED_QUEUE" if queue else "AUTO_ASSIGNED_QUEUE",
             )
         )
-        mark_whatsapp_assignment(db, owner.id)
+        if queue is None:
+            mark_whatsapp_assignment(db, owner.id)
         assigned_count += 1
     db.flush()
     return assigned_count

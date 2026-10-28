@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import Contact, Conversation, User, WhatsAppPresence
+from app.models import Contact, Conversation, ServiceQueue, User, WhatsAppPresence
 from app.security import hash_password
 from app.services.conversation_engine import choose_assignee
 from app.services.whatsapp_presence import (
@@ -214,6 +214,8 @@ def test_join_distributes_waiting_queue_to_online_group_member():
             for presence in db.scalars(select(WhatsAppPresence)):
                 presence.status = "OFFLINE"
                 presence.last_left_at = utcnow()
+            for queue in db.scalars(select(ServiceQueue)):
+                queue.is_default_inbound = False
             db.flush()
             user = db.scalar(select(User).where(User.email == email))
             if not user:

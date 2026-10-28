@@ -75,6 +75,54 @@
     </div>
   </article>
 
+  <article class="panel panel-span-12">
+    <div class="panel-header">
+      <div><span class="eyebrow">FILAS DE ATENDIMENTO</span><h3>Roteamento do WhatsApp</h3></div>
+      <span class="count-badge">{{ queues|length }}</span>
+    </div>
+    <div class="data-table-wrap">
+      <table class="data-table queue-table">
+        <thead><tr><th>Fila</th><th>Equipe / Unidade</th><th>Distribuição</th><th>Membros</th><th>Online</th><th>Pendentes</th><th>Padrão</th><th>Ação</th></tr></thead>
+        <tbody>
+        {% for queue in queues %}
+          {% set qs = queue_stats.get(queue.id, {}) %}
+          <tr>
+            <td><strong>{{ queue.name }}</strong><span class="table-subline">{{ queue.code }}</span></td>
+            <td>{{ constants.teams.get(queue.team, queue.team) }}<span class="table-subline">{{ queue.branch.city if queue.branch else 'Corporativo / todas' }}</span></td>
+            <td>{{ routing_strategies.get(queue.routing_strategy, queue.routing_strategy) }}</td>
+            <td>{{ qs.get('members', 0) }}</td>
+            <td><span class="connection-status {% if qs.get('online', 0) %}on{% endif %}">{{ qs.get('online', 0) }} online</span></td>
+            <td><strong>{{ qs.get('waiting', 0) }}</strong><span class="table-subline">{{ qs.get('open', 0) }} abertas</span></td>
+            <td>{% if queue.is_default_inbound %}<span class="soft-badge">Entrada padrão</span>{% else %}—{% endif %}</td>
+            <td><a class="button button-ghost" href="/settings/queues/{{ queue.id }}">Configurar</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="8"><div class="empty-state"><strong>Nenhuma fila criada</strong><span>Crie uma fila para controlar a distribuição das respostas do WhatsApp.</span></div></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if current_user.role in ['ADMIN','GESTOR'] %}
+    <div class="queue-create-box">
+      <div class="panel-header"><div><span class="eyebrow">NOVA FILA</span><h3>Criar fila de atendimento</h3></div><span class="panel-note">Os membros poderão receber apenas enquanto estiverem online no WhatsApp.</span></div>
+      <form action="/settings/queues" method="post" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label class="field"><span>Nome</span><input name="name" required placeholder="Ex.: Comercial Digital"></label>
+          <label class="field"><span>Código</span><input name="code" required placeholder="Ex.: DIGITAL"></label>
+          <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+          <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Corporativo / todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
+          <label class="field field-span-2"><span>Estratégia de distribuição</span><select name="routing_strategy">{% for key, label in routing_strategies.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+          <label class="field field-span-2"><span>Usuários da fila</span><select name="member_user_ids" multiple size="6">{% for item in users %}<option value="{{ item.id }}">{{ item.name }} · {{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</option>{% endfor %}</select><small>Use Ctrl/Cmd para selecionar vários usuários.</small></label>
+          <label class="queue-check"><input type="checkbox" name="is_default_inbound" value="true"><span>Usar como fila padrão para novas mensagens espontâneas desta equipe/unidade</span></label>
+        </div>
+        <button class="button button-primary" type="submit">Criar fila</button>
+      </form>
+    </div>
+    {% endif %}
+  </article>
+
   {% if current_user.role in ['ADMIN','GESTOR'] %}
   <article class="panel panel-span-12">
     <div class="panel-header"><div><span class="eyebrow">EQUIPE DO INBOX</span><h3>Novo usuário</h3></div><span class="panel-note">Senha provisória · troca obrigatória no primeiro acesso</span></div>

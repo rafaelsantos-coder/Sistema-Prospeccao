@@ -351,3 +351,117 @@ class WhatsAppPresence(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     user: Mapped[User] = relationship()
+
+
+class ServiceQueue(Base):
+    __tablename__ = "service_queues"
+    __table_args__ = (
+        Index("ix_service_queues_scope", "team", "branch_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    code: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    team: Mapped[str] = mapped_column(String(30), default="B2B", index=True)
+    branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True, index=True)
+    routing_strategy: Mapped[str] = mapped_column(String(30), default="ROUND_ROBIN", index=True)
+    is_default_inbound: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    branch: Mapped[Branch | None] = relationship()
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+    members: Mapped[list["ServiceQueueMember"]] = relationship(
+        back_populates="queue",
+        cascade="all, delete-orphan",
+        order_by="ServiceQueueMember.id",
+    )
+
+
+class ServiceQueueMember(Base):
+    __tablename__ = "service_queue_members"
+    __table_args__ = (
+        UniqueConstraint("queue_id", "user_id", name="uq_service_queue_member"),
+        Index("ix_service_queue_members_active", "queue_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    queue_id: Mapped[int] = mapped_column(ForeignKey("service_queues.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    last_assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    queue: Mapped[ServiceQueue] = relationship(back_populates="members")
+    user: Mapped[User] = relationship()
+
+
+class ConversationQueueLink(Base):
+    __tablename__ = "conversation_queue_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    queue_id: Mapped[int] = mapped_column(ForeignKey("service_queues.id", ondelete="CASCADE"), index=True)
+    origin: Mapped[str] = mapped_column(String(40), default="INBOUND", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    conversation: Mapped[Conversation] = relationship()
+    queue: Mapped[ServiceQueue] = relationship()
+
+
+class CampaignQueueLink(Base):
+    __tablename__ = "campaign_queue_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    queue_id: Mapped[int] = mapped_column(ForeignKey("service_queues.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    campaign: Mapped[Campaign] = relationship()
+    queue: Mapped[ServiceQueue] = relationship()
+
+
+class ProspectingQueueLink(Base):
+    __tablename__ = "prospecting_queue_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    prospecting_job_id: Mapped[int] = mapped_column(
+        ForeignKey("prospecting_jobs.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    queue_id: Mapped[int] = mapped_column(ForeignKey("service_queues.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    prospecting_job: Mapped[ProspectingJob] = relationship()
+    queue: Mapped[ServiceQueue] = relationship()
+
+
+class LeadQueuePreference(Base):
+    __tablename__ = "lead_queue_preferences"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(
+        ForeignKey("leads.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    queue_id: Mapped[int] = mapped_column(ForeignKey("service_queues.id", ondelete="CASCADE"), index=True)
+    source: Mapped[str] = mapped_column(String(40), default="MANUAL")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    lead: Mapped[Lead] = relationship()
+    queue: Mapped[ServiceQueue] = relationship()

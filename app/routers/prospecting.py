@@ -16,6 +16,13 @@ from app.security import get_current_user, validate_csrf
 from app.services.apify import ApifyNotConfigured, ApifySearchError, ApifyService
 from app.services.audit import write_audit
 from app.services.followups import initial_next_action
+from app.services.queue_routing import (
+    available_queues_for_user,
+    bind_prospecting_queue,
+    get_queue,
+    queue_for_prospecting_job,
+    set_lead_queue_preference,
+)
 from app.timeutils import utcnow
 from app.web import flash, render
 
@@ -33,6 +40,7 @@ def _run_job(job_id: int) -> None:
         job.started_at = utcnow()
         db.commit()
         try:
+            service_queue = queue_for_prospecting_job(db, job.id)
             results = asyncio.run(
                 ApifyService().search(segment=job.segment, city=job.city, limit=job.limit)
             )
@@ -69,6 +77,14 @@ def _run_job(job_id: int) -> None:
                     next_action_at=initial_next_action(job.team),
                 )
                 db.add(lead)
+                db.flush()
+                if service_queue:
+                    set_lead_queue_preference(
+                        db,
+                        lead.id,
+                        service_queue.id,
+                        source="PROSPECTING",
+                    )
                 imported += 1
             job.imported_count = imported
             job.status = "CONCLUIDO"
@@ -99,6 +115,11 @@ def prospecting_page(request: Request, db: Session = Depends(get_db)):
         stmt = stmt.where(ProspectingJob.created_by_id == user.id)
     jobs = list(db.scalars(stmt))
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
+    service_queues = available_queues_for_user(db, user)
+    job_queues = {
+        job.id: queue_for_prospecting_job(db, job.id)
+        for job in jobs
+    }
     return render(
         request,
         "prospecting/index.html",
@@ -107,6 +128,8 @@ def prospecting_page(request: Request, db: Session = Depends(get_db)):
         page_title="Prospecção automatizada",
         jobs=jobs,
         branches=branches,
+        service_queues=service_queues,
+        job_queues=job_queues,
         apify_configured=settings.integrations["apify"],
     )
 
@@ -121,12 +144,20 @@ def create_job(
     limit: int = Form(20),
     team: str = Form("B2B"),
     branch_id: int | None = Form(None),
+    queue_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
     validate_csrf(request, csrf_token)
+    selected_queue = get_queue(db, queue_id)
+    if queue_id and not selected_queue:
+        flash(request, "A fila selecionada não está ativa.", "warning")
+        return RedirectResponse("/prospecting", status_code=303)
+    if selected_queue and selected_queue.id not in {item.id for item in available_queues_for_user(db, user)}:
+        flash(request, "Você não possui acesso a esta fila.", "error")
+        return RedirectResponse("/prospecting", status_code=303)
     job = ProspectingJob(
         segment=segment.strip(),
         city=city.strip(),
@@ -138,13 +169,20 @@ def create_job(
     )
     db.add(job)
     db.flush()
+    if selected_queue:
+        bind_prospecting_queue(db, job.id, selected_queue.id)
     write_audit(
         db,
         user=user,
         action="PROSPECTING_JOB_CREATED",
         entity_type="prospecting_job",
         entity_id=job.id,
-        payload={"segment": segment, "city": city, "limit": limit},
+        payload={
+            "segment": segment,
+            "city": city,
+            "limit": limit,
+            "queue_id": selected_queue.id if selected_queue else None,
+        },
     )
     db.commit()
     background_tasks.add_task(_run_job, job.id)
