@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models import Branch, Campaign
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
+from app.services.campaign_queue import campaign_queue_counts, enqueue_campaign
 from app.services.legacy_adapter import generate_message, rate_status
 from app.timeutils import utcnow
 from app.web import flash, render
@@ -37,6 +38,7 @@ def list_campaigns(request: Request, db: Session = Depends(get_db)):
         stmt = stmt.where(Campaign.branch_id == user.branch_id)
     campaigns = list(db.scalars(stmt))
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
+    queue_counts = {campaign.id: campaign_queue_counts(db, campaign.id) for campaign in campaigns}
     preview = generate_message(
         "empresa local",
         1,
@@ -53,6 +55,7 @@ def list_campaigns(request: Request, db: Session = Depends(get_db)):
         branches=branches,
         rate_status=rate_status(),
         message_preview=preview,
+        queue_counts=queue_counts,
     )
 
 
@@ -65,6 +68,7 @@ def create_campaign(
     team: str = Form("B2B"),
     channel: str = Form("WHATSAPP"),
     daily_limit: int = Form(30),
+    message: str = Form(...),
     branch_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -72,8 +76,12 @@ def create_campaign(
     if redirect:
         return redirect
     validate_csrf(request, csrf_token)
+    clean_message = message.strip()
+    if not clean_message:
+        flash(request, "Informe a mensagem inicial da campanha.", "warning")
+        return RedirectResponse("/campaigns", status_code=303)
     sequence = [
-        {"day": 1, "label": "Abordagem inicial"},
+        {"day": 1, "label": "Abordagem inicial", "message": clean_message},
         {"day": 3, "label": "Follow-up de valor"},
         {"day": 10, "label": "Retomada consultiva"},
         {"day": 20, "label": "Última tentativa"},
@@ -130,7 +138,7 @@ def approve_campaign(
             entity_id=campaign.id,
         )
         db.commit()
-        flash(request, "Campanha aprovada. O disparo continua desativado até a integração ser validada.")
+        flash(request, "Campanha aprovada. Agora prepare a audiência para colocar os leads na fila de envio.")
     return RedirectResponse("/campaigns", status_code=303)
 
 
@@ -151,4 +159,69 @@ def pause_campaign(
         write_audit(db, user=user, action="CAMPAIGN_PAUSED", entity_type="campaign", entity_id=campaign.id)
         db.commit()
         flash(request, "Campanha pausada.", "warning")
+    return RedirectResponse("/campaigns", status_code=303)
+
+
+@router.post("/{campaign_id}/enqueue")
+def enqueue_campaign_recipients(
+    campaign_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _auth(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        return RedirectResponse("/campaigns", status_code=303)
+    if campaign.channel != "WHATSAPP":
+        flash(request, "A fila automatizada esta liberada inicialmente apenas para WhatsApp.", "warning")
+        return RedirectResponse("/campaigns", status_code=303)
+    if campaign.status not in {"APROVADA", "PAUSADA", "ATIVA"}:
+        flash(request, "A campanha precisa ser aprovada antes de entrar na fila.", "warning")
+        return RedirectResponse("/campaigns", status_code=303)
+    if user.role == "SUPERVISOR" and campaign.branch_id != user.branch_id:
+        return RedirectResponse("/campaigns", status_code=303)
+    if user.role == "CONSULTOR" and campaign.created_by_id != user.id:
+        return RedirectResponse("/campaigns", status_code=303)
+    try:
+        created = enqueue_campaign(db, campaign)
+    except ValueError as exc:
+        flash(request, str(exc), "error")
+        return RedirectResponse("/campaigns", status_code=303)
+    write_audit(
+        db,
+        user=user,
+        action="CAMPAIGN_ENQUEUED",
+        entity_type="campaign",
+        entity_id=campaign.id,
+        payload={"recipients_added": created},
+    )
+    db.commit()
+    if created:
+        flash(request, f"{created} leads adicionados a fila. O worker fara os envios respeitando o limite diario.")
+    else:
+        flash(request, "Nenhum novo lead elegivel foi encontrado para esta campanha.", "warning")
+    return RedirectResponse("/campaigns", status_code=303)
+
+
+@router.post("/{campaign_id}/resume")
+def resume_campaign(
+    campaign_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _auth(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.get(Campaign, campaign_id)
+    if campaign and campaign.status == "PAUSADA":
+        campaign.status = "ATIVA"
+        write_audit(db, user=user, action="CAMPAIGN_RESUMED", entity_type="campaign", entity_id=campaign.id)
+        db.commit()
+        flash(request, "Campanha retomada.")
     return RedirectResponse("/campaigns", status_code=303)
