@@ -4,7 +4,7 @@ import logging
 import os
 import time
 
-from app.database import Base, SessionLocal, engine
+from app.database import SessionLocal
 from app.services.campaign_queue import claim_next_recipient, process_recipient
 
 
@@ -15,7 +15,6 @@ IDLE_INTERVAL = max(2, int(os.getenv("CAMPAIGN_IDLE_INTERVAL_SECONDS", "5")))
 
 
 def run() -> None:
-    Base.metadata.create_all(bind=engine)
     LOG.info("Campaign worker iniciado. Intervalo entre envios: %ss", SEND_INTERVAL)
     while True:
         db = SessionLocal()

@@ -32,6 +32,7 @@ from app.services.conversation_engine import (
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
+from app.services.whatsapp_presence import is_user_whatsapp_online, online_user_ids
 from app.services.zapi import ZApiError, ZApiService
 from app.timeutils import utcnow
 from app.web import flash, render
@@ -44,6 +45,13 @@ def _user_or_redirect(request: Request, db: Session):
     user = get_current_user(request, db)
     if not user:
         return None, RedirectResponse("/login", status_code=303)
+    if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
+        flash(
+            request,
+            "Entre no WhatsApp para acessar o canal de conversas e receber atendimentos.",
+            "warning",
+        )
+        return None, RedirectResponse("/dashboard", status_code=303)
     return user, None
 
 
@@ -64,7 +72,13 @@ def _get_conversation(db: Session, user: User, conversation_id: int) -> Conversa
 
 
 def _eligible_users(db: Session, user: User, conversation: Conversation | None = None) -> list[User]:
-    stmt = select(User).where(User.active.is_(True)).order_by(User.name)
+    online_ids = online_user_ids(db)
+    if not online_ids:
+        return []
+    stmt = select(User).where(
+        User.active.is_(True),
+        User.id.in_(online_ids),
+    ).order_by(User.name)
     users = list(db.scalars(stmt))
     if user.role == "SUPERVISOR":
         if user.branch_id:
@@ -229,8 +243,15 @@ def start_lead_conversation(
     except ValueError:
         flash(request, "O telefone do lead nao e valido para WhatsApp.", "error")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    if user.role == "CONSULTOR" and is_user_whatsapp_online(db, user.id):
+        lead.assigned_user_id = user.id
+        db.flush()
     conversation = ensure_open_conversation(db, contact, lead=lead, source=lead.source)
-    if not conversation.assigned_user_id and user.role == "CONSULTOR":
+    if (
+        not conversation.assigned_user_id
+        and user.role == "CONSULTOR"
+        and is_user_whatsapp_online(db, user.id)
+    ):
         conversation.assigned_user_id = user.id
         conversation.status = "ATRIBUIDO"
         db.add(
@@ -513,6 +534,8 @@ def conversation_media(
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
+        return RedirectResponse("/dashboard", status_code=303)
     message = db.get(Message, message_id)
     if not message or not message.media_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -663,6 +686,11 @@ def conversation_inbox_api(
     user = get_current_user(request, db)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Entre no WhatsApp para acessar o canal.",
+        )
     conversations = _inbox_query(db, user, q=q, view=view)
     return {
         "counts": _inbox_counts(db, user),
@@ -695,7 +723,12 @@ def conversation_messages_api(
 ):
     user = get_current_user(request, db)
     if not user:
-        return {"error": "unauthorized"}
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Entre no WhatsApp para acessar o canal.",
+        )
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation or not conversation_visible_to_user(conversation, user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)

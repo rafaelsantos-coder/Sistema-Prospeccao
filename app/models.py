@@ -328,3 +328,26 @@ class CampaignRecipient(Base):
     campaign: Mapped[Campaign] = relationship()
     lead: Mapped[Lead] = relationship()
     conversation: Mapped[Conversation | None] = relationship()
+
+
+class WhatsAppPresence(Base):
+    __tablename__ = "whatsapp_presence"
+    __table_args__ = (
+        Index("ix_whatsapp_presence_online", "status", "last_heartbeat_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), default="OFFLINE", index=True)
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    user: Mapped[User] = relationship()
