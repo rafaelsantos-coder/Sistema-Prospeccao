@@ -13,7 +13,7 @@ from app.models import (
     ZApiInstance,
 )
 from app.services.secret_store import decrypt_secret, encrypt_secret
-from app.services.zapi import ZApiService
+from app.services.zapi import ZApiNotConfigured, ZApiService
 
 
 def list_zapi_instances(db: Session, *, active_only: bool = True) -> list[ZApiInstance]:
@@ -127,24 +127,41 @@ def bind_conversation_instance(
 
 
 def service_for_queue(db: Session, queue_id: int | None) -> ZApiService:
-    instance = queue_instance(db, queue_id)
-    if instance:
+    if queue_id:
+        instance = queue_instance(db, queue_id)
+        if not instance:
+            raise ZApiNotConfigured(
+                "A fila selecionada não possui uma instância WhatsApp ativa configurada."
+            )
         return service_for_instance(instance)
     return ZApiService()
 
 
 def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
-    instance = conversation_instance(db, conversation_id)
-    if instance:
-        return service_for_instance(instance)
+    """
+    A fila é a fonte oficial da instância de saída.
+
+    O vínculo salvo na conversa serve para histórico/entrada, mas nunca pode
+    sobrescrever o número configurado atualmente na fila. Se estiver antigo,
+    ele é autocorrigido antes do envio.
+    """
     from app.services.queue_routing import queue_for_conversation
 
     queue = queue_for_conversation(db, conversation_id)
     if queue:
         instance = queue_instance(db, queue.id)
-        if instance:
+        if not instance:
+            raise ZApiNotConfigured(
+                f"A fila {queue.name} não possui uma instância WhatsApp ativa configurada."
+            )
+        current = conversation_instance(db, conversation_id)
+        if not current or current.id != instance.id:
             bind_conversation_instance(db, conversation_id, instance.id)
-            return service_for_instance(instance)
+        return service_for_instance(instance)
+
+    instance = conversation_instance(db, conversation_id)
+    if instance:
+        return service_for_instance(instance)
     return ZApiService()
 
 
