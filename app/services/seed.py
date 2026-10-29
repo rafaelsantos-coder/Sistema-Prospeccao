@@ -24,6 +24,7 @@ from app.models import (
 from app.security import hash_password
 from app.services.followups import initial_next_action
 from app.services.scoring import calculate_sulnet_score
+from app.services.zapi_instances import seed_default_zapi_instance
 from app.timeutils import utcnow
 
 
@@ -172,6 +173,8 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
                 fallback_to_human=True,
             )
         )
+
+    seed_default_zapi_instance(db, created_by_id=admin.id)
 
     for team, metric, goal in DEFAULT_TARGETS:
         exists = db.scalar(
