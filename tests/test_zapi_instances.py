@@ -493,6 +493,7 @@ def test_configure_webhooks_explicitly_sets_received_callback(monkeypatch):
     assert [call[0].rsplit("/", 1)[-1] for call in calls] == [
         "update-every-webhooks",
         "update-webhook-received",
+        "update-webhook-received-delivery",
     ]
     assert calls[0][2] == {
         "value": "https://app.exemplo.com/webhooks/zapi/instance/abc123",
@@ -501,5 +502,9 @@ def test_configure_webhooks_explicitly_sets_received_callback(monkeypatch):
     assert calls[1][2] == {
         "value": "https://app.exemplo.com/webhooks/zapi/instance/abc123"
     }
+    assert calls[2][2] == {
+        "value": "https://app.exemplo.com/webhooks/zapi/instance/abc123"
+    }
     assert result["all"] == {"value": True}
     assert result["received"] == {"value": True}
+    assert result["received_delivery"] == {"value": True}
