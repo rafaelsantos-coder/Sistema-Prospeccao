@@ -1444,7 +1444,7 @@ def test_mobile_catalog_more_plans_paginates_remaining_options():
                 "direction": "OUTBOUND",
                 "body": (
                     "No Sulmóvel temos planos nacionais com valores confirmados. "
-                    "Escolha: 5GB ou 7GB."
+                    "Escolha uma opção para continuar:"
                 ),
             }
         ],
@@ -1480,3 +1480,28 @@ def test_mobile_catalog_back_returns_to_first_mobile_page():
         "7GB - R$ 47,90",
         "Mais planos",
     ]
+
+
+def test_fiber_catalog_city_reply_is_recognized_without_model_extraction():
+    decision = _base_catalog_decision()
+    decision.qualification.city = None
+    context = {
+        "latest_customer_message": "Santa Rosa",
+        "lead": {"city": ""},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Claro! Para eu mostrar somente os planos de fibra óptica disponíveis, "
+                    "qual é a sua cidade?"
+                ),
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.sales_state == "OFFERING"
+    assert result.qualification.city == "Santa Rosa"
+    assert [item.label for item in result.quick_replies] == ["800 Mega", "650 Mega"]
