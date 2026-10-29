@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import Activity, Campaign, CampaignRecipient, Lead
 from app.services.audit import write_audit
 from app.services.conversation_engine import ensure_contact, ensure_open_conversation, register_message
+from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.queue_routing import queue_for_campaign
 from app.services.zapi import ZApiError, ZApiService
 from app.timeutils import local_day_start_utc, utcnow
@@ -24,6 +25,29 @@ def campaign_message_template(campaign: Campaign) -> str:
             if isinstance(step, dict) and step.get("message"):
                 return str(step["message"]).strip()
     return ""
+
+
+def campaign_media_attachments(campaign: Campaign) -> list[dict[str, str]]:
+    try:
+        sequence = json.loads(campaign.sequence_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(sequence, list):
+        return []
+    for step in sequence:
+        if not isinstance(step, dict) or not step.get("message"):
+            continue
+        media = step.get("media")
+        if not isinstance(media, list):
+            return []
+        return [
+            item
+            for item in media
+            if isinstance(item, dict)
+            and item.get("type") in {"IMAGE", "VIDEO", "AUDIO"}
+            and item.get("storage_uri")
+        ]
+    return []
 
 
 def personalize_message(template: str, lead: Lead) -> str:
@@ -196,6 +220,63 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         provider_zaap_id=zaap_id,
         status="SENT",
     )
+
+    media_sent = 0
+    media_errors: list[str] = []
+    attachments = campaign_media_attachments(campaign)
+    if attachments:
+        storage = MediaStorage()
+        zapi = ZApiService()
+        for attachment in attachments:
+            kind = str(attachment.get("type") or "")
+            storage_uri = str(attachment.get("storage_uri") or "")
+            file_name = str(attachment.get("file_name") or "arquivo")
+            mime_type = str(attachment.get("mime_type") or "application/octet-stream")
+            try:
+                delivery_url = storage.presigned_download_url(
+                    storage_uri,
+                    filename=file_name,
+                    expires_seconds=3600,
+                )
+                if kind == "IMAGE":
+                    media_result = zapi.send_image(
+                        phone=lead.phone,
+                        image_url=delivery_url,
+                    )
+                    media_body = "[Imagem]"
+                elif kind == "VIDEO":
+                    media_result = zapi.send_video(
+                        phone=lead.phone,
+                        video_url=delivery_url,
+                    )
+                    media_body = "[Video]"
+                else:
+                    media_result = zapi.send_audio(
+                        phone=lead.phone,
+                        audio_url=delivery_url,
+                    )
+                    media_body = "[Audio]"
+                media_provider_id = str(
+                    media_result.get("messageId") or media_result.get("id") or ""
+                ).strip() or None
+                media_zaap_id = str(media_result.get("zaapId") or "").strip() or None
+                register_message(
+                    db,
+                    conversation,
+                    direction="OUTBOUND",
+                    message_type=kind,
+                    body=media_body,
+                    sender_user_id=campaign.created_by_id,
+                    media_url=storage_uri,
+                    mime_type=mime_type,
+                    provider_message_id=media_provider_id,
+                    provider_zaap_id=media_zaap_id,
+                    status="SENT",
+                )
+                media_sent += 1
+            except (MediaStorageError, ZApiError) as exc:
+                media_errors.append(f"{file_name}: {exc}")
+
     now = utcnow()
     recipient.status = "ENVIADO"
     recipient.sent_at = now
@@ -229,6 +310,8 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
             "conversation_id": conversation.id,
             "provider_message_id": provider_id,
             "queue_id": service_queue.id,
+            "media_sent": media_sent,
+            "media_errors": media_errors,
         },
     )
     return "sent"
