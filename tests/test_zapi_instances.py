@@ -468,6 +468,15 @@ def test_configure_webhooks_explicitly_sets_received_callback(monkeypatch):
         def put(self, url, headers=None, json=None):
             calls.append((url, headers, json))
             return FakeResponse()
+        def get(self, url, headers=None):
+            class MeResponse(FakeResponse):
+                def json(self):
+                    return {
+                        "receivedCallbackUrl": "https://app.exemplo.com/webhooks/zapi/instance/abc123",
+                        "receiveCallbackSentByMe": True,
+                        "connected": True,
+                    }
+            return MeResponse()
 
     monkeypatch.setattr("app.services.zapi.httpx.Client", FakeClient)
 
