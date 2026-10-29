@@ -154,6 +154,58 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         db.add(ai_user)
         db.flush()
 
+    # Vendedor IA: identidade comercial própria, sem login interativo.
+    # Nasce em Shadow e inativo até homologação das integrações de fechamento.
+    seller_user = db.scalar(select(User).where(User.email == "sulia.vendedor@system.local"))
+    if not seller_user:
+        seller_user = User(
+            name="Vendedor IA Sulnet",
+            email="sulia.vendedor@system.local",
+            password_hash=hash_password(secrets.token_urlsafe(48)),
+            role="CONSULTOR",
+            team="DIGITAL",
+            branch_id=None,
+            active=False,
+            must_change_password=False,
+        )
+        db.add(seller_user)
+        db.flush()
+    seller_agent = db.scalar(
+        select(AIAgentProfile).where(AIAgentProfile.user_id == seller_user.id)
+    )
+    if not seller_agent:
+        seller_agent = AIAgentProfile(
+            user_id=seller_user.id,
+            name="SulIA Vendedor de Fechamento",
+            slug="sulia-vendedor-fechamento",
+            role_type="CLOSER",
+            execution_mode="SHADOW",
+            model="gpt-6-luna",
+            reasoning_effort="low",
+            active=False,
+            public_name="Sulnet",
+            qualification_handoff_score=80,
+            max_history_messages=80,
+            max_knowledge_chars=20000,
+            business_goal="Receber aceite do SDR e concluir cadastro, crédito, endereço, plano, faturamento e contrato.",
+            system_prompt=(
+                "Você é o Vendedor IA da Sulnet, especializado em fechamento. "
+                "Receba o histórico completo do SDR e não repita dados conhecidos. "
+                "Peça somente dados faltantes: nome, telefone, CPF, CEP, número e complemento, "
+                "confirmação do plano, e-mail e faturamento. "
+                "Valide crédito/CPF apenas pelo retorno real do CRM; consulte CEP pela integração oficial. "
+                "Salve cada etapa na oportunidade e preserve o protocolo. "
+                "Não exija caixa NAP/ANATEL, coordenadas, técnico, data de ativação, "
+                "selfie ou fotografias de documentos no funil SDR IA. "
+                "Nunca declare crédito aprovado, contrato assinado ou venda concluída "
+                "sem confirmação da API. Prazo de até 48 horas somente quando autorizado. "
+                "Escale exceções e nunca altere preço fora da política."
+            ),
+            created_by_id=admin.id,
+        )
+        db.add(seller_agent)
+        db.flush()
+
     ai_agent = db.scalar(
         select(AIAgentProfile).where(AIAgentProfile.user_id == ai_user.id)
     )
