@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">USUÁRIOS</span>
+    <h2>Editar usuário</h2>
+    <p>Atualize os dados de acesso de {{ target_user.name }} e, quando necessário, gere uma nova senha provisória.</p>
+  </div>
+  <div class="page-actions">
+    <a class="button button-secondary" href="/settings">Voltar para configurações</a>
+  </div>
+</div>
+
+{% if temporary_password %}
+<section class="panel user-temp-password-panel">
+  <div class="panel-header">
+    <div>
+      <span class="eyebrow">SENHA PROVISÓRIA GERADA</span>
+      <h3>Copie esta senha agora</h3>
+    </div>
+    <span class="connection-status on">Reset concluído</span>
+  </div>
+  <div class="info-box">
+    <strong>Esta senha é exibida somente nesta tela.</strong>
+    <p>Repasse ao usuário por um canal seguro. No próximo acesso, ele será obrigado a criar uma nova senha pessoal.</p>
+  </div>
+  <div class="temporary-password-box">
+    <input id="temporary-password" value="{{ temporary_password }}" readonly aria-label="Senha provisória">
+    <button class="button button-primary" type="button" data-copy-temporary-password>Copiar senha</button>
+  </div>
+</section>
+{% endif %}
+
+<div class="settings-grid top-space">
+  <article class="panel panel-span-8">
+    <div class="panel-header">
+      <div><span class="eyebrow">DADOS DO USUÁRIO</span><h3>{{ target_user.name }}</h3></div>
+      <span class="connection-status {% if target_user.active %}on{% endif %}">{{ 'Ativo' if target_user.active else 'Inativo' }}</span>
+    </div>
+
+    <form action="/settings/users/{{ target_user.id }}/edit" method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field"><span>Nome</span><input name="name" value="{{ target_user.name }}" maxlength="120" required></label>
+        <label class="field"><span>E-mail</span><input name="email" type="email" value="{{ target_user.email }}" maxlength="180" required></label>
+
+        <label class="field">
+          <span>Perfil</span>
+          <select name="role" required {% if target_user.id == current_user.id %}disabled{% endif %}>
+            <option value="CONSULTOR" {% if target_user.role == 'CONSULTOR' %}selected{% endif %}>Consultor</option>
+            <option value="SUPERVISOR" {% if target_user.role == 'SUPERVISOR' %}selected{% endif %}>Supervisor</option>
+            {% if current_user.role == 'ADMIN' %}
+            <option value="GESTOR" {% if target_user.role == 'GESTOR' %}selected{% endif %}>Gestor</option>
+            <option value="ADMIN" {% if target_user.role == 'ADMIN' %}selected{% endif %}>Administrador</option>
+            {% endif %}
+          </select>
+          {% if target_user.id == current_user.id %}
+          <input type="hidden" name="role" value="{{ target_user.role }}">
+          <small>Seu próprio perfil não pode ser rebaixado por esta tela.</small>
+          {% endif %}
+        </label>
+
+        <label class="field">
+          <span>Equipe</span>
+          <select name="team" required>
+            {% for key, label in constants.teams.items() %}
+            <option value="{{ key }}" {% if target_user.team == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Unidade</span>
+          <select name="branch_id">
+            <option value="">Todas / corporativo</option>
+            {% for branch in branches %}
+            <option value="{{ branch.id }}" {% if target_user.branch_id == branch.id %}selected{% endif %}>{{ branch.city }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Status do acesso</span>
+          {% if target_user.id == current_user.id %}
+          <input type="hidden" name="active" value="true">
+          <div class="readonly-field">Ativo · sua própria conta</div>
+          {% else %}
+          <select name="active">
+            <option value="true" {% if target_user.active %}selected{% endif %}>Ativo</option>
+            <option value="false" {% if not target_user.active %}selected{% endif %}>Inativo</option>
+          </select>
+          {% endif %}
+        </label>
+      </div>
+      <button class="button button-primary" type="submit">Salvar alterações</button>
+    </form>
+  </article>
+
+  <article class="panel panel-span-4">
+    <div class="panel-header"><div><span class="eyebrow">SEGURANÇA</span><h3>Senha do usuário</h3></div></div>
+    {% if target_user.id == current_user.id %}
+      <p class="panel-note">Para sua própria conta, use a troca de senha autenticada.</p>
+      <a class="button button-secondary top-space" href="/change-password">Alterar minha senha</a>
+    {% else %}
+      <p class="panel-note">O reset invalida a senha atual, gera uma senha provisória aleatória e obriga o usuário a trocar a senha no próximo acesso.</p>
+      <form action="/settings/users/{{ target_user.id }}/reset-password" method="post" class="top-space" onsubmit="return confirm('Gerar uma nova senha provisória para {{ target_user.name }}? A senha atual deixará de funcionar.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-danger" type="submit">Resetar senha</button>
+      </form>
+      {% if target_user.must_change_password %}
+      <div class="info-box top-space"><strong>Troca de senha pendente</strong><p>Este usuário deverá definir uma nova senha no próximo acesso.</p></div>
+      {% endif %}
+    {% endif %}
+  </article>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if temporary_password %}
+<script>
+document.addEventListener("click", function (event) {
+  const button = event.target.closest("[data-copy-temporary-password]");
+  if (!button) return;
+  const input = document.getElementById("temporary-password");
+  if (!input) return;
+  navigator.clipboard.writeText(input.value).then(function () {
+    const original = button.textContent;
+    button.textContent = "Copiado";
+    window.setTimeout(function () { button.textContent = original; }, 1600);
+  });
+});
+</script>
+{% endif %}
+{% endblock %}
