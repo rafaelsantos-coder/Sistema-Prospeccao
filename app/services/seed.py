@@ -165,7 +165,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
             role="CONSULTOR",
             team="DIGITAL",
             branch_id=None,
-            active=False,
+            active=settings.ai_seller_enabled,
             must_change_password=False,
         )
         db.add(seller_user)
@@ -179,10 +179,10 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
             name="SulIA Vendedor de Fechamento",
             slug="sulia-vendedor-fechamento",
             role_type="CLOSER",
-            execution_mode="SHADOW",
+            execution_mode="AUTO" if settings.ai_seller_enabled and settings.ai_autonomous_enabled else "SHADOW",
             model="gpt-6-luna",
             reasoning_effort="low",
-            active=False,
+            active=settings.ai_seller_enabled,
             public_name="Sulnet",
             qualification_handoff_score=80,
             max_history_messages=80,
@@ -205,6 +205,23 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         )
         db.add(seller_agent)
         db.flush()
+
+    # O seed mantém a identidade alinhada às flags de ambiente. O closer só
+    # recebe conversas quando a integração foi explicitamente habilitada.
+    seller_user.name = "Vendedor IA Sulnet"
+    seller_user.role = "CONSULTOR"
+    seller_user.team = "DIGITAL"
+    seller_user.active = settings.ai_seller_enabled
+    seller_user.must_change_password = False
+    seller_agent.role_type = "CLOSER"
+    seller_agent.active = settings.ai_seller_enabled
+    seller_agent.execution_mode = (
+        "AUTO"
+        if settings.ai_seller_enabled and settings.ai_autonomous_enabled
+        else "SHADOW"
+    )
+    seller_agent.max_history_messages = max(int(seller_agent.max_history_messages or 40), 80)
+    seller_agent.max_knowledge_chars = max(int(seller_agent.max_knowledge_chars or 12000), 20000)
 
     ai_agent = db.scalar(
         select(AIAgentProfile).where(AIAgentProfile.user_id == ai_user.id)
