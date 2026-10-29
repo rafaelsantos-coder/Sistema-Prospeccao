@@ -42,8 +42,14 @@
       {% endif %}
       {% if current_user.role in ['ADMIN', 'GESTOR'] %}
       <a href="/ai" class="nav-item {% if active_nav == 'ai' %}active{% endif %}">
-        <span class="nav-icon">✦</span><span>IA & Agentes</span>
+        <span class="nav-icon">✦</span><span>IA</span>
       </a>
+      {% if active_nav == 'ai' %}
+      <div class="nav-submenu">
+        <a href="/ai" class="{% if ai_section != 'seller' %}active{% endif %}">SDR IA</a>
+        <a href="/ai/seller" class="{% if ai_section == 'seller' %}active{% endif %}">Vendedor IA</a>
+      </div>
+      {% endif %}
       {% endif %}
       <a href="/reports/whatsapp" class="nav-item {% if active_nav == 'reports' %}active{% endif %}">
         <span class="nav-icon">▥</span><span>Relatórios</span>
