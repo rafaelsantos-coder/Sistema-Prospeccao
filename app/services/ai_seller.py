@@ -628,6 +628,8 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == "BIRTH_DATE":
         return "Para concluir a consulta cadastral, preciso também da sua data de nascimento. Pode me enviar no formato DD/MM/AAAA?"
     if state.step == "CEP":
+        if _is_mobile_plan(state, collected):
+            return "Consulta aprovada! Qual é o CEP do seu endereço de cadastro?"
         return "Consulta aprovada! Qual é o CEP do endereço onde será instalada a internet?"
     if state.step == "ADDRESS_NUMBER":
         street = str(collected.get("street") or "").strip()
@@ -640,6 +642,52 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         return f"Perfeito. O plano negociado ficou {plan}. Confirma que seguimos com ele?"
     if state.step == "EMAIL":
         return "Certo. Qual e-mail você quer deixar no cadastro e receber as comunicações da contratação?"
+    if state.step == "MOBILE_CONTRACT_TYPE":
+        return "Para o Sulmóvel, será número novo, portabilidade de um número que você já usa ou M2M?"
+    if state.step == "MOBILE_NEW_ICCID":
+        return "Certo. Me informe o ICCID do chip da nova linha."
+    if state.step == "MOBILE_NEW_NUMBER":
+        return "Agora me informe o número da nova linha."
+    if state.step == "MOBILE_PORT_ICCID":
+        return "Para a portabilidade, me informe o ICCID do chip."
+    if state.step == "MOBILE_PORT_NUMBER":
+        return "Qual é o número que será portado?"
+    if state.step == "MOBILE_PORT_TITULAR":
+        return "A portabilidade está em nome do titular desta contratação? Responda sim ou não."
+    if state.step == "MOBILE_PORT_NAME":
+        return "Qual é o nome completo do titular da linha que será portada?"
+    if state.step == "MOBILE_PORT_DOC":
+        return "Qual é o CPF ou CNPJ do titular da linha que será portada?"
+    if state.step == "MOBILE_PORT_DATE":
+        return "Qual data você deseja para a portabilidade? Pode enviar no formato DD/MM/AAAA."
+    if state.step == "MOBILE_M2M_QTY":
+        return "Quantos chips M2M serão contratados?"
+    if state.step == "MOBILE_M2M_ICCIDS":
+        qty = int(_mobile_values(collected).get("m2m_quantidade") or 0)
+        suffix = f" ({qty} ICCIDs)" if qty else ""
+        return f"Envie os ICCIDs dos chips, um por linha{suffix}."
+    if state.step == "MOBILE_DUE_DAY":
+        return "Qual dia de vencimento você prefere para a fatura?"
+    if state.step == "MOBILE_ACTIVATION_FEE":
+        return "Há taxa de ativação nesta contratação? Responda sim ou não."
+    if state.step == "MOBILE_ACTIVATION_VALUE":
+        return "Qual é o valor da taxa de ativação?"
+    if state.step == "MOBILE_PAYMENT_METHOD":
+        return "Qual forma de pagamento você prefere: boleto ou débito em conta?"
+    if state.step == "MOBILE_INVOICE_DELIVERY":
+        return "Como quer receber a fatura: WhatsApp, e-mail ou ambos?"
+    if state.step == "MOBILE_DEBIT_BANK":
+        return "Para o débito em conta, qual é o banco?"
+    if state.step == "MOBILE_DEBIT_AGENCY":
+        return "Qual é a agência?"
+    if state.step == "MOBILE_DEBIT_ACCOUNT":
+        return "Qual é a conta?"
+    if state.step == "MOBILE_DEBIT_HOLDER":
+        return "Qual é o nome do titular da conta bancária?"
+    if state.step == "MOBILE_UNIFY":
+        return "Deseja unificar esta fatura com outras faturas Sulnet? Responda sim ou não."
+    if state.step == "MOBILE_UNIFY_REASON":
+        return "Qual é o motivo para não unificar as faturas?"
     if state.step == "BILLING":
         return "Agora falta o faturamento: como prefere pagar/receber a fatura e qual dia de vencimento você prefere?"
     if state.step == "CREDIT_REJECTED":
