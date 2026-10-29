@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from collections import Counter
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -10,8 +14,10 @@ from app.database import get_db
 from app.models import (
     AIAgentProfile,
     AIKnowledgeItem,
+    AIKnowledgeMetadata,
     AIQueueBinding,
     AIRun,
+    Conversation,
     ServiceQueue,
     User,
 )
@@ -34,6 +40,17 @@ EXECUTION_MODES = {
     "SHADOW": "Shadow · analisa sem enviar",
     "APPROVAL": "Aprovação humana",
     "AUTO": "Autônomo",
+}
+
+KNOWLEDGE_CATEGORIES = {
+    "INSTITUCIONAL": "Institucional e história da empresa",
+    "DIFERENCIAIS": "Diferenciais competitivos",
+    "PRODUTOS": "Produtos, planos e benefícios",
+    "ATENDIMENTO": "Atendimento e suporte",
+    "COBERTURA": "Cobertura e regiões atendidas",
+    "ARGUMENTOS_COMERCIAIS": "Argumentos comerciais",
+    "OBJECOES": "Objeções e respostas",
+    "REGRAS_COMERCIAIS": "Regras e restrições comerciais",
 }
 
 
@@ -131,6 +148,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         "ai/index.html",
         user=actor,
         active_nav="ai",
+        ai_section="agent",
         page_title="IA & Agentes",
         agents=agents,
         queues=queues,
@@ -145,6 +163,125 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         openai_configured=bool(settings.openai_api_key),
         ai_sdr_enabled=settings.ai_sdr_enabled,
         autonomous_enabled=settings.ai_autonomous_enabled,
+    )
+
+
+@router.get("/knowledge")
+def knowledge_dashboard(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+
+    agents = list(
+        db.scalars(
+            select(AIAgentProfile)
+            .options(selectinload(AIAgentProfile.user))
+            .order_by(AIAgentProfile.id)
+        )
+    )
+    items = list(
+        db.scalars(
+            select(AIKnowledgeItem)
+            .options(selectinload(AIKnowledgeItem.agent))
+            .order_by(AIKnowledgeItem.category, AIKnowledgeItem.updated_at.desc())
+            .limit(500)
+        )
+    )
+    metadata_rows = list(db.scalars(select(AIKnowledgeMetadata)))
+    metadata = {row.knowledge_item_id: row for row in metadata_rows}
+
+    category_counts = {
+        key: sum(1 for item in items if item.category == key and item.active)
+        for key in KNOWLEDGE_CATEGORIES
+    }
+    approved_count = sum(
+        1
+        for item in items
+        if item.active
+        and (
+            item.id not in metadata
+            or metadata[item.id].approval_status == "APPROVED"
+        )
+    )
+    recent_runs = list(
+        db.scalars(
+            select(AIRun)
+            .order_by(AIRun.created_at.desc())
+            .limit(250)
+        )
+    )
+    failed_runs = sum(1 for run in recent_runs if run.status == "FALHOU")
+    handoffs = sum(1 for run in recent_runs if run.handoff_recommended)
+    interested = sum(
+        1 for run in recent_runs
+        if run.intent in {"INTEREST", "HIGH_INTENT", "PROPOSAL_REQUEST"}
+    )
+    qualified = sum(1 for run in recent_runs if int(run.qualification_score or 0) >= 70)
+    human_requests = sum(1 for run in recent_runs if run.intent == "HUMAN_REQUEST")
+    attended = len({run.conversation_id for run in recent_runs})
+
+    objection_counts: Counter[str] = Counter()
+    argument_counts: Counter[str] = Counter()
+    unanswered_questions: list[str] = []
+    handoff_conversation_ids: set[int] = set()
+    for run in recent_runs:
+        if run.handoff_recommended:
+            handoff_conversation_ids.add(run.conversation_id)
+        try:
+            output = json.loads(run.output_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            output = {}
+        objection = str(output.get("objection") or "").strip()
+        if objection and objection != "NONE":
+            objection_counts[objection] += 1
+        for argument in output.get("commercial_arguments_used") or []:
+            clean = str(argument).strip()
+            if clean:
+                argument_counts[clean] += 1
+        unanswered = str(output.get("unanswered_question") or "").strip()
+        if unanswered and unanswered not in unanswered_questions:
+            unanswered_questions.append(unanswered)
+
+    conversions_after_handoff = 0
+    if handoff_conversation_ids:
+        transferred = list(
+            db.scalars(
+                select(Conversation)
+                .options(selectinload(Conversation.lead))
+                .where(Conversation.id.in_(handoff_conversation_ids))
+            )
+        )
+        conversions_after_handoff = sum(
+            1 for conversation in transferred
+            if conversation.lead and conversation.lead.stage == "GANHO"
+        )
+
+    return render(
+        request,
+        "ai/knowledge.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="knowledge",
+        page_title="Conhecimento Sulnet",
+        agents=agents,
+        knowledge=items,
+        metadata=metadata,
+        knowledge_categories=KNOWLEDGE_CATEGORIES,
+        category_counts=category_counts,
+        approved_count=approved_count,
+        training_metrics={
+            "runs": len(recent_runs),
+            "attended": attended,
+            "interested": interested,
+            "qualified": qualified,
+            "handoffs": handoffs,
+            "human_requests": human_requests,
+            "converted_after_handoff": conversions_after_handoff,
+            "failed": failed_runs,
+        },
+        top_objections=objection_counts.most_common(8),
+        top_arguments=argument_counts.most_common(8),
+        unanswered_questions=unanswered_questions[:12],
     )
 
 
@@ -226,6 +363,14 @@ def create_knowledge(
     category: str = Form("GERAL"),
     tags: str = Form(""),
     content: str = Form(...),
+    subject: str = Form(""),
+    product_service: str = Form(""),
+    region: str = Form(""),
+    source_reference: str = Form(""),
+    priority: int = Form(50),
+    valid_until: str = Form(""),
+    approval_status: str = Form("APPROVED"),
+    redirect_to: str = Form("/ai"),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -239,7 +384,8 @@ def create_knowledge(
     clean_content = content.strip()
     if not clean_title or not clean_content:
         flash(request, "Informe título e conteúdo do conhecimento.", "warning")
-        return RedirectResponse("/ai", status_code=303)
+        target = redirect_to if redirect_to.startswith("/ai") else "/ai"
+        return RedirectResponse(target, status_code=303)
 
     item = AIKnowledgeItem(
         agent_id=agent.id,
@@ -253,6 +399,30 @@ def create_knowledge(
     )
     db.add(item)
     db.flush()
+
+    valid_until_dt = None
+    if valid_until.strip():
+        try:
+            valid_until_dt = datetime.fromisoformat(valid_until.strip()).replace(tzinfo=timezone.utc)
+        except ValueError:
+            valid_until_dt = None
+
+    db.add(
+        AIKnowledgeMetadata(
+            knowledge_item_id=item.id,
+            subject=subject.strip()[:120],
+            product_service=product_service.strip()[:120],
+            region=region.strip()[:180],
+            source_reference=source_reference.strip()[:500],
+            priority=max(0, min(100, priority)),
+            approval_status=(
+                approval_status.strip().upper()
+                if approval_status.strip().upper() in {"APPROVED", "DRAFT", "REVIEW"}
+                else "APPROVED"
+            ),
+            valid_until=valid_until_dt,
+        )
+    )
     write_audit(
         db,
         user=actor,
@@ -263,7 +433,88 @@ def create_knowledge(
     )
     db.commit()
     flash(request, "Conhecimento adicionado à base do SulIA.")
-    return RedirectResponse("/ai", status_code=303)
+    target = redirect_to if redirect_to.startswith("/ai") else "/ai"
+    return RedirectResponse(target, status_code=303)
+
+
+@router.post("/knowledge/{item_id}")
+def update_knowledge(
+    item_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    title: str = Form(...),
+    category: str = Form("GERAL"),
+    tags: str = Form(""),
+    content: str = Form(...),
+    subject: str = Form(""),
+    product_service: str = Form(""),
+    region: str = Form(""),
+    source_reference: str = Form(""),
+    priority: int = Form(50),
+    valid_until: str = Form(""),
+    approval_status: str = Form("APPROVED"),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(actor, "ADMIN", "GESTOR")
+
+    item = db.get(AIKnowledgeItem, item_id)
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    clean_title = title.strip()
+    clean_content = content.strip()
+    if not clean_title or not clean_content:
+        flash(request, "Informe título e conteúdo do conhecimento.", "warning")
+        return RedirectResponse("/ai/knowledge", status_code=303)
+
+    item.title = clean_title[:180]
+    item.category = (category.strip().upper() or "GERAL")[:80]
+    item.tags = tags.strip()[:500]
+    item.content = clean_content
+
+    meta = db.scalar(
+        select(AIKnowledgeMetadata).where(
+            AIKnowledgeMetadata.knowledge_item_id == item.id
+        )
+    )
+    if not meta:
+        meta = AIKnowledgeMetadata(knowledge_item_id=item.id)
+        db.add(meta)
+
+    meta.subject = subject.strip()[:120]
+    meta.product_service = product_service.strip()[:120]
+    meta.region = region.strip()[:180]
+    meta.source_reference = source_reference.strip()[:500]
+    meta.priority = max(0, min(100, priority))
+    clean_status = approval_status.strip().upper()
+    meta.approval_status = clean_status if clean_status in {"APPROVED", "DRAFT", "REVIEW"} else "APPROVED"
+    meta.valid_until = None
+    if valid_until.strip():
+        try:
+            meta.valid_until = datetime.fromisoformat(valid_until.strip()).replace(tzinfo=timezone.utc)
+        except ValueError:
+            meta.valid_until = None
+
+    write_audit(
+        db,
+        user=actor,
+        action="AI_KNOWLEDGE_UPDATED",
+        entity_type="ai_knowledge",
+        entity_id=item.id,
+        payload={
+            "title": item.title,
+            "category": item.category,
+            "priority": meta.priority,
+            "approval_status": meta.approval_status,
+        },
+    )
+    db.commit()
+    flash(request, "Conhecimento atualizado.")
+    return RedirectResponse("/ai/knowledge", status_code=303)
 
 
 @router.post("/knowledge/{item_id}/toggle")
@@ -271,6 +522,7 @@ def toggle_knowledge(
     item_id: int,
     request: Request,
     csrf_token: str = Form(...),
+    redirect_to: str = Form("/ai"),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -289,7 +541,8 @@ def toggle_knowledge(
         entity_id=item.id,
     )
     db.commit()
-    return RedirectResponse("/ai", status_code=303)
+    target = redirect_to if redirect_to.startswith("/ai") else "/ai"
+    return RedirectResponse(target, status_code=303)
 
 
 @router.post("/queues/bind")

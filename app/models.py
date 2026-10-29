@@ -684,6 +684,29 @@ class AIKnowledgeItem(Base):
     created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
 
 
+class AIKnowledgeMetadata(Base):
+    __tablename__ = "ai_knowledge_metadata"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    knowledge_item_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_knowledge_items.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    subject: Mapped[str] = mapped_column(String(120), default="")
+    product_service: Mapped[str] = mapped_column(String(120), default="")
+    region: Mapped[str] = mapped_column(String(180), default="")
+    source_reference: Mapped[str] = mapped_column(String(500), default="")
+    priority: Mapped[int] = mapped_column(Integer, default=50, index=True)
+    approval_status: Mapped[str] = mapped_column(String(30), default="APPROVED", index=True)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    knowledge_item: Mapped[AIKnowledgeItem] = relationship()
+
+
 class AIJob(Base):
     __tablename__ = "ai_jobs"
     __table_args__ = (

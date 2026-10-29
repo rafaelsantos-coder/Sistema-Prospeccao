@@ -157,40 +157,15 @@
 
 <section class="panel top-space">
   <div class="panel-header">
-    <div><span class="eyebrow">BASE DE CONHECIMENTO</span><h3>Treinamento operacional do agente</h3></div>
+    <div><span class="eyebrow">TREINAMENTO</span><h3>Conhecimento Sulnet</h3></div>
     <span class="count-badge">{{ knowledge|length }}</span>
   </div>
-  {% if agents %}
-  <form action="/ai/knowledge" method="post" class="ai-knowledge-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="form-grid">
-      <label class="field"><span>Agente</span><select name="agent_id">{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select></label>
-      <label class="field"><span>Categoria</span><input name="category" placeholder="PLANOS, REGRAS, OBJEÇÕES..." value="GERAL"></label>
-      <label class="field field-span-2"><span>Título</span><input name="title" required placeholder="Ex.: Plano empresarial 800 Mega"></label>
-      <label class="field field-span-2"><span>Tags</span><input name="tags" placeholder="internet, empresarial, preço, santa rosa"></label>
-      <label class="field field-span-2"><span>Conteúdo</span><textarea name="content" rows="5" required placeholder="Cadastre aqui a informação oficial que o agente pode usar."></textarea></label>
-    </div>
-    <button class="button button-primary" type="submit">Adicionar conhecimento</button>
-  </form>
-  {% endif %}
-
-  <div class="ai-knowledge-grid top-space">
-    {% for item in knowledge %}
-    <article class="ai-knowledge-card {% if not item.active %}inactive{% endif %}">
-      <div>
-        <span class="eyebrow">{{ item.category }}</span>
-        <h4>{{ item.title }}</h4>
-        <p>{{ item.content }}</p>
-        {% if item.tags %}<small>{{ item.tags }}</small>{% endif %}
-      </div>
-      <form action="/ai/knowledge/{{ item.id }}/toggle" method="post">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="mini-button {% if item.active %}queue-remove{% else %}success{% endif %}" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button>
-      </form>
-    </article>
-    {% else %}
-    <div class="empty-state"><strong>Base vazia</strong><span>Adicione regras, planos, produtos e objeções para treinar o SulIA.</span></div>
-    {% endfor %}
+  <div class="info-box">
+    <strong>Base comercial centralizada</strong>
+    <p>História, cultura, diferenciais, produtos, argumentos, objeções e regras comerciais agora são administrados em uma área própria, com aprovação, fonte, prioridade e validade.</p>
+  </div>
+  <div class="top-space">
+    <a class="button button-primary" href="/ai/knowledge">Abrir Treinamento · Conhecimento Sulnet</a>
   </div>
 </section>
 

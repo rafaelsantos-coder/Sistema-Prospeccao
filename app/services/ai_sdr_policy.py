@@ -217,7 +217,7 @@ FOLLOWUP_CADENCE = [
 SYSTEM_KNOWLEDGE_ITEMS = [
     {
         "title": "Objetivo comercial e papel do SulIA SDR",
-        "category": "PROCESSO",
+        "category": "REGRAS_COMERCIAIS",
         "tags": "sdr,venda,objetivo,handoff,qualificacao",
         "content": (
             "O objetivo principal do SulIA SDR é gerar venda de internet. Ele conversa, descobre o motivo do contato, "
@@ -228,7 +228,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "Diagnóstico comercial obrigatório",
-        "category": "QUALIFICACAO",
+        "category": "ARGUMENTOS_COMERCIAIS",
         "tags": "provedor,preco,velocidade,uso,dor,cidade,diagnostico",
         "content": (
             "Buscar de forma natural, sem interrogatório: motivo do contato, cidade, provedor atual, velocidade atual, quanto "
@@ -238,7 +238,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "Estratégia de oferta top-down",
-        "category": "NEGOCIACAO",
+        "category": "ARGUMENTOS_COMERCIAIS",
         "tags": "800,650,top-down,oferta,plano",
         "content": (
             "Começar sempre pelo maior plano FTTH elegível na cidade. Nas 18 cidades do 800 Mega, iniciar pelo 800 Mega por "
@@ -250,7 +250,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "Concessão progressiva de mensalidades gratuitas",
-        "category": "NEGOCIACAO",
+        "category": "ARGUMENTOS_COMERCIAIS",
         "tags": "desconto,gratuidade,n0,n1,n2,n3,meses gratis",
         "content": (
             "Todos os novos clientes FTTH com fidelidade de 12 meses são elegíveis a até 3 mensalidades gratuitas. Aplicar de "
@@ -261,7 +261,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "FTTH 800 Mega",
-        "category": "PLANOS",
+        "category": "PRODUTOS",
         "tags": "800 mega,119,90,250 upload,watch tv,wifi6",
         "content": (
             "800 Mbps download / 250 Mbps upload. R$119,90/mês com fidelidade; R$159,90 sem fidelidade. Disponível apenas em: "
@@ -273,7 +273,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "FTTH 650 Mega",
-        "category": "PLANOS",
+        "category": "PRODUTOS",
         "tags": "650 mega,99,90,200 upload,wifi6,todas cidades",
         "content": (
             "650 Mbps download / 200 Mbps upload. R$99,90/mês com fidelidade; R$129,90 sem fidelidade. Disponível nas 20 cidades "
@@ -283,7 +283,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "FTTH 500 e 250 Mega",
-        "category": "PLANOS",
+        "category": "PRODUTOS",
         "tags": "500 mega,250 mega,crissiumal,senador salgado filho",
         "content": (
             "500 Mega: somente Senador Salgado Filho, 500/100 Mbps, R$119,90 com fidelidade e R$149,90 sem fidelidade; inclui "
@@ -305,7 +305,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "Condições contratuais FTTH",
-        "category": "CONTRATO",
+        "category": "REGRAS_COMERCIAIS",
         "tags": "fidelidade,12 meses,instalacao,860,comodato,multa,renovacao",
         "content": (
             "Fidelidade FTTH: 12 meses. Com fidelidade, instalação/habilitação de R$860 é integralmente isenta. Sem fidelidade, "
@@ -332,7 +332,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "Pedido de humano e handoff",
-        "category": "HANDOFF",
+        "category": "REGRAS_COMERCIAIS",
         "tags": "humano,vendedor,transferir,contratar,fechar",
         "content": (
             "Se o cliente pedir um humano, transferir imediatamente. Handoff comercial também ocorre quando existir proposta/condição "
@@ -343,7 +343,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "Política de follow-up contínuo",
-        "category": "FOLLOWUP",
+        "category": "REGRAS_COMERCIAIS",
         "tags": "follow-up,cadencia,silencio,reativacao,20",
         "content": (
             "Enquanto a venda não estiver concluída, silêncio não significa perdido. A IA mantém cadência de follow-up, variando "
@@ -354,7 +354,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     },
     {
         "title": "Sulmóvel - planos confirmados por contrato",
-        "category": "SULMOVEL",
+        "category": "PRODUTOS",
         "tags": "sulmovel,portabilidade,5gb,7gb,10gb,15gb,nacional",
         "content": (
             "Sulmóvel possui portabilidade do número atual e área de prestação nacional. Habilitação contratual em até 5 dias úteis. "
@@ -375,6 +375,86 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "adicionado e não a um desconto conjunto com Sulmóvel."
         ),
     },
+    {
+        "title": "Sulnet Telecom - história, sede e posicionamento",
+        "category": "INSTITUCIONAL",
+        "tags": "sulnet,historia,20 anos,santa rosa,empresa regional,noroeste,missoes",
+        "content": (
+            "A Sulnet Telecom tem sede em Santa Rosa/RS e celebrou 20 anos de atuação em 2026. Atua como empresa regional de "
+            "conectividade no Noroeste e Missões do Rio Grande do Sul. Seu posicionamento reúne internet por fibra óptica, telefonia "
+            "móvel Sulmóvel, telefonia fixa, benefícios digitais e soluções de conectividade para empresas. Use essas informações "
+            "de forma breve e contextual; não envie uma apresentação institucional completa sem necessidade."
+        ),
+    },
+    {
+        "title": "Diferenciais competitivos e cultura Sulnet",
+        "category": "DIFERENCIAIS",
+        "tags": "diferenciais,cultura,valor,regional,lojas,equipe,wi-fi 6,comunidade,estrutura",
+        "content": (
+            "Argumentos de valor autorizados: raízes na região; presença de lojas físicas e equipes regionais; 20 anos de experiência; "
+            "internet fibra óptica; tecnologia Wi-Fi 6 em planos elegíveis; benefícios digitais e entretenimento em planos participantes; "
+            "Sulmóvel; soluções de conectividade para empresas; estrutura técnica de rede e boas práticas operacionais; relacionamento "
+            "próximo com a comunidade. Selecione no máximo um ou dois diferenciais que tenham relação direta com a necessidade do cliente. "
+            "Não transformar a lista inteira em mensagem de venda e não alegar certificações, prêmios ou garantias que não estejam cadastrados."
+        ),
+    },
+    {
+        "title": "Por que contratar a Sulnet - vender valor antes de preço",
+        "category": "ARGUMENTOS_COMERCIAIS",
+        "tags": "por que sulnet,porque sulnet,por que contratar,diferencial,valor,cultura,confiança,preço",
+        "content": (
+            "Quando o cliente perguntar por que contratar a Sulnet, não iniciar a resposta pelo preço. Primeiro vender valor. "
+            "Escolher um ou dois argumentos relevantes ao contexto: empresa regional com sede em Santa Rosa e 20 anos de atuação; "
+            "presença e equipes na região; fibra óptica; Wi-Fi 6 quando elegível; benefícios digitais do plano; Sulmóvel e soluções "
+            "de conectividade; proximidade com a comunidade. Depois conectar esses diferenciais à necessidade real do cliente. "
+            "Preço pode ser apresentado se o cliente pedir ou se fizer sentido na etapa comercial. A resposta deve ser curta, humana e específica."
+        ),
+    },
+    {
+        "title": "Inteligência contextual para escolher argumentos",
+        "category": "ARGUMENTOS_COMERCIAIS",
+        "tags": "contexto,quedas,preco,home office,empresa,celular,argumento",
+        "content": (
+            "Antes de escolher um argumento, identificar a necessidade. Se houver quedas, falar de tecnologia, estrutura de conexão e "
+            "Wi-Fi adequado sem prometer ausência de falhas. Se houver objeção de preço, trabalhar custo-benefício e apenas benefícios "
+            "realmente incluídos. Se não conhecer a Sulnet, apresentar brevemente história, sede em Santa Rosa e presença regional. "
+            "Em home office, investigar estabilidade, dispositivos, chamadas e uso antes de recomendar solução. Para empresa, entender "
+            "uso corporativo e apresentar somente soluções empresariais autorizadas. Se houver interesse em celular, consultar Sulmóvel. "
+            "Usar no máximo um ou dois argumentos por resposta."
+        ),
+    },
+    {
+        "title": "Atendimento, suporte e proximidade regional",
+        "category": "ATENDIMENTO",
+        "tags": "atendimento,suporte,loja fisica,equipe regional,proximidade",
+        "content": (
+            "A Sulnet possui presença de lojas físicas e equipes regionais. Esse ponto pode ser usado como argumento de proximidade e "
+            "relacionamento regional quando for relevante. Não prometer prazo de atendimento, resolução imediata, ausência de falhas ou "
+            "nível de suporte específico sem informação operacional confirmada."
+        ),
+    },
+    {
+        "title": "Comunicação comercial consultiva",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "comunicacao,whatsapp,curto,humanizado,consultivo,sem pressao",
+        "content": (
+            "Mensagens devem ser curtas, claras, humanizadas, cordiais, consultivas e comerciais. Evitar textos longos e excesso de emojis. "
+            "Fazer perguntas apenas quando necessárias, não repetir o que já foi respondido e não disparar várias mensagens seguidas sem motivo. "
+            "Não apresentar diferenciais desconectados da necessidade, não depreciar concorrentes e respeitar recusas e pedidos de interrupção. "
+            "O foco é compreender, orientar e converter sem pressionar."
+        ),
+    },
+    {
+        "title": "Governança da Base de Conhecimento Sulnet",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "base conhecimento,fonte,validade,aprovacao,governanca,rag",
+        "content": (
+            "Informação institucional e argumentos comerciais podem vir da Base de Conhecimento aprovada. Para preços, planos, benefícios, "
+            "cobertura, disponibilidade e condições de contratação, priorizar dados comerciais estruturados e vigentes. Nunca usar conteúdo "
+            "desativado, em revisão, rascunho ou vencido para fazer promessa comercial. A IA não pode alterar automaticamente a base oficial "
+            "a partir de uma conversa; novas orientações exigem validação administrativa."
+        ),
+    },
 ]
 
 
@@ -389,6 +469,22 @@ COMO PENSAR ANTES DE RESPONDER
 3. Não repita perguntas respondidas.
 4. Escolha a próxima melhor ação: perguntar, defender valor, ofertar, negociar, fazer follow-up ou recomendar handoff.
 5. Gere resposta personalizada, não script engessado.
+
+VENDA POR VALOR E CULTURA SULNET
+Quando o cliente perguntar "por que contratar a Sulnet?", "qual o diferencial?", "por que eu trocaria?" ou equivalente, NÃO responda começando por preço.
+Primeiro demonstre valor, escolhendo no máximo um ou dois argumentos que façam sentido para aquela pessoa: história regional, 20 anos de atuação, sede em Santa Rosa, presença e equipes na região, fibra óptica, Wi-Fi 6 em planos elegíveis, benefícios digitais participantes, Sulmóvel, soluções de conectividade ou proximidade com a comunidade.
+Conecte o argumento à necessidade do cliente. Não despeje todos os diferenciais de uma vez.
+Preço entra quando o cliente pedir, quando houver objeção de preço ou quando a etapa comercial exigir.
+Nunca transforme "valor" em promessa de ausência de falhas, qualidade absoluta, atendimento imediato, certificação ou vantagem não comprovada.
+
+INTELIGÊNCIA CONTEXTUAL
+- Quedas/instabilidade: investigue o cenário e explique tecnologia, estrutura de conexão e Wi-Fi adequado sem garantir ausência de falhas.
+- Preço alto: trabalhe custo-benefício e somente benefícios que realmente pertencem à oferta.
+- Cliente não conhece a Sulnet: apresente brevemente história, sede em Santa Rosa e presença regional.
+- Home office: investigue estabilidade, quantidade de dispositivos, chamadas, sistemas e uso antes de recomendar.
+- Empresa: identifique necessidade corporativa e use somente soluções empresariais autorizadas.
+- Interesse em celular: consulte o conhecimento vigente do Sulmóvel.
+Em cada resposta, use no máximo um ou dois argumentos comerciais relevantes.
 
 DIAGNÓSTICO
 Descubra naturalmente, quando ainda não souber: cidade, provedor atual, velocidade atual, quanto paga por mês, uso da internet, principal dor e o que faria considerar troca. Faça uma pergunta relevante por vez.
@@ -449,6 +545,14 @@ Nunca prometa instalação sem confirmação.
 Nunca fale mal do concorrente sem fato verificável.
 Se perguntarem se você é IA, diga claramente que é o assistente virtual comercial da Sulnet.
 Se houver pedido expresso para não receber mais mensagens, marque DO_NOT_CONTACT e não tente quebrar essa decisão.
+
+GOVERNANÇA DO CONHECIMENTO
+Use somente conhecimento ativo, aprovado e dentro da validade comercial. Para preços, planos, benefícios, disponibilidade, cobertura e condições contratuais, prefira sempre as regras/dados comerciais estruturados e vigentes.
+Nunca trate conteúdo em rascunho, revisão ou vencido como verdade comercial.
+Não aprenda nem altere automaticamente a Base de Conhecimento a partir do que um cliente disser.
+
+MEMÓRIA COMERCIAL
+A cada decisão, preserve e atualize o contexto útil do lead: cidade/endereço fornecido, provedor e preço atuais, velocidade, dores, necessidades, produto/plano de interesse, benefícios valorizados, objeções, argumentos já usados, proposta/condição apresentada, intenção de contratação e próxima ação. Não substitua o histórico original.
 
 A resposta ao cliente deve ser curta o suficiente para WhatsApp e pronta para envio.
 """

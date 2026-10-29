@@ -17,6 +17,7 @@ from app.models import (
     AIConversationState,
     AIJob,
     AIKnowledgeItem,
+    AIKnowledgeMetadata,
     AIQueueBinding,
     AIRun,
     Conversation,
@@ -29,7 +30,7 @@ from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
-from app.timeutils import utcnow
+from app.timeutils import is_past, utcnow
 
 
 LOG = logging.getLogger("sulnet_ai_sdr")
@@ -47,6 +48,7 @@ class QualificationData(BaseModel):
     decision_maker: Literal["SIM", "NAO", "NAO_INFORMADO"] = "NAO_INFORMADO"
     timeframe: str | None = None
     city: str | None = None
+    address: str | None = None
 
 
 class AIDecision(BaseModel):
@@ -114,6 +116,11 @@ class AIDecision(BaseModel):
     free_months: int = Field(default=0, ge=0, le=3)
     customer_commitment: bool = False
     followup_needed: bool = True
+    customer_needs: list[str] = Field(default_factory=list)
+    benefits_valued: list[str] = Field(default_factory=list)
+    commercial_arguments_used: list[str] = Field(default_factory=list)
+    proposal_summary: str = Field(default="", max_length=800)
+    unanswered_question: str | None = Field(default=None, max_length=500)
 
 
 class AIConfigurationError(RuntimeError):
@@ -259,20 +266,48 @@ def retrieve_knowledge(
     if not items:
         return []
 
-    query_tokens = _tokens(query)
-    ranked: list[tuple[int, int, AIKnowledgeItem]] = []
-    for item in items:
-        haystack = f"{item.title} {item.category} {item.tags} {item.content}".lower()
-        score = sum(4 if token in (item.title or "").lower() else 1 for token in query_tokens if token in haystack)
-        ranked.append((score, item.id, item))
+    metadata_rows = list(
+        db.scalars(
+            select(AIKnowledgeMetadata).where(
+                AIKnowledgeMetadata.knowledge_item_id.in_([item.id for item in items])
+            )
+        )
+    )
+    metadata = {row.knowledge_item_id: row for row in metadata_rows}
+    now = utcnow()
 
-    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    query_tokens = _tokens(query)
+    ranked: list[tuple[int, int, int, AIKnowledgeItem]] = []
+    for item in items:
+        meta = metadata.get(item.id)
+        if meta and meta.approval_status != "APPROVED":
+            continue
+        if meta and is_past(meta.valid_until, now):
+            continue
+        haystack = (
+            f"{item.title} {item.category} {item.tags} {item.content} "
+            f"{meta.subject if meta else ''} {meta.product_service if meta else ''} "
+            f"{meta.region if meta else ''}"
+        ).lower()
+        semantic_score = sum(
+            4 if token in (item.title or "").lower() else 1
+            for token in query_tokens
+            if token in haystack
+        )
+        priority = int(meta.priority if meta else 50)
+        ranked.append((semantic_score, priority, item.id, item))
+
+    ranked.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+    if query_tokens:
+        matched = [row for row in ranked if row[0] > 0]
+        pool = matched if matched else ranked
+    else:
+        pool = ranked
+
     selected: list[AIKnowledgeItem] = []
     chars = 0
     max_chars = max(2000, int(agent.max_knowledge_chars or 12000))
-    for score, _item_id, item in ranked:
-        if selected and query_tokens and score <= 0:
-            continue
+    for _score, _priority, _item_id, item in pool:
         size = len(item.content or "") + len(item.title or "")
         if selected and chars + size > max_chars:
             break
@@ -281,8 +316,6 @@ def retrieve_knowledge(
         if len(selected) >= 10:
             break
 
-    if not selected:
-        selected = items[:5]
     return selected
 
 
@@ -331,6 +364,14 @@ def build_ai_context(
         limit=int(agent.max_history_messages or 24),
     )
     knowledge = retrieve_knowledge(db, agent=agent, query=message.body or "")
+    knowledge_meta_rows = list(
+        db.scalars(
+            select(AIKnowledgeMetadata).where(
+                AIKnowledgeMetadata.knowledge_item_id.in_([item.id for item in knowledge])
+            )
+        )
+    ) if knowledge else []
+    knowledge_meta = {row.knowledge_item_id: row for row in knowledge_meta_rows}
 
     return {
         "agent": {
@@ -378,6 +419,16 @@ def build_ai_context(
                 "title": item.title,
                 "category": item.category,
                 "content": item.content,
+                "subject": knowledge_meta[item.id].subject if item.id in knowledge_meta else "",
+                "product_service": knowledge_meta[item.id].product_service if item.id in knowledge_meta else "",
+                "region": knowledge_meta[item.id].region if item.id in knowledge_meta else "",
+                "source": knowledge_meta[item.id].source_reference if item.id in knowledge_meta else item.source_type,
+                "priority": knowledge_meta[item.id].priority if item.id in knowledge_meta else 50,
+                "valid_until": (
+                    knowledge_meta[item.id].valid_until.isoformat()
+                    if item.id in knowledge_meta and knowledge_meta[item.id].valid_until
+                    else None
+                ),
             }
             for item in knowledge
         ],
@@ -403,6 +454,11 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Use o histórico, o CRM e a base de conhecimento abaixo. "
         "Produza a decisão estruturada do SDR. Além da resposta, classifique objeção, estado comercial, "
         "plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
+        "Atualize também a memória comercial estruturada: customer_needs, benefits_valued, commercial_arguments_used, "
+        "proposal_summary e unanswered_question. Registre em commercial_arguments_used somente argumentos realmente usados "
+        "na resposta ao cliente, não todos os argumentos disponíveis na base. Se o cliente fizer uma pergunta cuja resposta "
+        "não esteja sustentada pela base aprovada nem pelas regras estruturadas, não invente: responda com transparência e "
+        "preencha unanswered_question com a dúvida que precisa de validação administrativa. "
         "Sempre que a mensagem fizer uma pergunta com 2 ou 3 respostas previsíveis, preencha quick_replies com "
         "2 ou 3 botões curtos, com no máximo 20 caracteres por label. Exemplos: Para casa/Para empresa; Sim/Não; "
         "800 Mega/650 Mega; Preço/Lentidão/Quedas. Para pergunta realmente aberta, quick_replies pode ficar vazio. "
@@ -547,14 +603,43 @@ def _apply_crm_decision(
         if decision.sales_state == "READY_FOR_HUMAN_SALES":
             lead.priority = "ALTA"
 
+    qualification = decision.qualification
+    if qualification.city:
+        lead.city = qualification.city.strip()[:120]
+    if qualification.address:
+        lead.address = qualification.address.strip()[:255]
+
+    memory_parts = [
+        f"Estado={decision.sales_state}",
+        f"intenção={decision.intent}",
+        f"objeção={decision.objection}",
+        f"plano={decision.offer_plan_code or '-'}",
+        f"N{decision.concession_level}",
+        f"meses_gratis={decision.free_months}",
+    ]
+    if qualification.current_provider:
+        memory_parts.append(f"provedor={qualification.current_provider}")
+    if qualification.current_speed:
+        memory_parts.append(f"velocidade_atual={qualification.current_speed}")
+    if qualification.current_price:
+        memory_parts.append(f"preco_atual={qualification.current_price}")
+    if qualification.desired_product:
+        memory_parts.append(f"produto_interesse={qualification.desired_product}")
+    if qualification.pain_points:
+        memory_parts.append(f"dores={', '.join(qualification.pain_points)}")
+    if decision.customer_needs:
+        memory_parts.append(f"necessidades={', '.join(decision.customer_needs)}")
+    if decision.benefits_valued:
+        memory_parts.append(f"beneficios_valorizados={', '.join(decision.benefits_valued)}")
+    if decision.commercial_arguments_used:
+        memory_parts.append(f"argumentos_usados={', '.join(decision.commercial_arguments_used)}")
+    if decision.proposal_summary:
+        memory_parts.append(f"proposta={decision.proposal_summary}")
+
     lead.notes = _append_note(lead.notes, decision.summary)
     lead.potential = _append_note(
         lead.potential,
-        (
-            f"Estado={decision.sales_state}; intenção={decision.intent}; objeção={decision.objection}; "
-            f"plano={decision.offer_plan_code or '-'}; N{decision.concession_level}; "
-            f"meses_gratis={decision.free_months}"
-        ),
+        "Memória comercial: " + "; ".join(memory_parts),
     )
     lead.last_contact_at = utcnow()
     db.add(
@@ -567,6 +652,9 @@ def _apply_crm_decision(
             outcome=decision.sales_state[:120],
             description=(
                 f"IA SDR: {decision.summary}\nPróxima ação: {decision.next_action}\n"
+                f"Argumentos usados: {', '.join(decision.commercial_arguments_used) or '-'}\n"
+                f"Benefícios valorizados: {', '.join(decision.benefits_valued) or '-'}\n"
+                f"Proposta: {decision.proposal_summary or '-'}\n"
                 f"CRM: {' | '.join(decision.crm_notes)}"
             )[:5000],
             completed_at=utcnow(),
@@ -605,6 +693,36 @@ def _perform_handoff(
             conversation.lead.stage = "NEGOCIACAO"
             conversation.lead.priority = "ALTA"
 
+    handoff_summary = (
+        f"Resumo SDR: {decision.summary}\n"
+        f"Plano/serviço: {decision.offer_plan_code or decision.qualification.desired_product or '-'}\n"
+        f"Condição: N{decision.concession_level}; meses grátis={decision.free_months}; "
+        f"preço ofertado={decision.offer_price if decision.offer_price is not None else '-'}\n"
+        f"Provedor atual: {decision.qualification.current_provider or '-'}; "
+        f"velocidade atual: {decision.qualification.current_speed or '-'}; "
+        f"valor atual: {decision.qualification.current_price or '-'}\n"
+        f"Necessidades: {', '.join(decision.customer_needs) or '-'}\n"
+        f"Dores: {', '.join(decision.qualification.pain_points) or '-'}\n"
+        f"Benefícios valorizados: {', '.join(decision.benefits_valued) or '-'}\n"
+        f"Objeção atual: {decision.objection}\n"
+        f"Argumentos já usados: {', '.join(decision.commercial_arguments_used) or '-'}\n"
+        f"Proposta: {decision.proposal_summary or '-'}\n"
+        f"Pendência/próxima ação: {decision.next_action}"
+    )
+    if conversation.lead:
+        db.add(
+            Activity(
+                lead_id=conversation.lead.id,
+                user_id=agent.user_id,
+                kind="HANDOFF_IA",
+                status="CONCLUIDA",
+                channel="WHATSAPP",
+                outcome="PRONTO_PARA_FECHAMENTO",
+                description=handoff_summary[:5000],
+                completed_at=utcnow(),
+            )
+        )
+
     from app.services.ai_followups import cancel_pending_followups
     cancel_pending_followups(db, conversation.id, reason="HANDOFF_HUMANO")
 
@@ -621,6 +739,12 @@ def _perform_handoff(
             "reason": decision.handoff_reason,
             "offer_plan_code": decision.offer_plan_code,
             "free_months": decision.free_months,
+            "qualification": decision.qualification.model_dump(),
+            "customer_needs": decision.customer_needs,
+            "benefits_valued": decision.benefits_valued,
+            "commercial_arguments_used": decision.commercial_arguments_used,
+            "proposal_summary": decision.proposal_summary,
+            "next_action": decision.next_action,
         },
     )
 

@@ -13,6 +13,7 @@ from app.models import (
     Activity,
     AIAgentProfile,
     AIKnowledgeItem,
+    AIKnowledgeMetadata,
     AIQueueBinding,
     Branch,
     Campaign,
@@ -180,6 +181,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         not ai_agent.system_prompt
         or "OBJETIVO" not in ai_agent.system_prompt
         or "BOTÕES E RESPOSTAS RÁPIDAS" not in ai_agent.system_prompt
+        or "VENDA POR VALOR E CULTURA SULNET" not in ai_agent.system_prompt
     ):
         ai_agent.system_prompt = SULIA_SYSTEM_PROMPT
     ai_agent.business_goal = (
@@ -205,17 +207,43 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
                 category=knowledge_data["category"],
                 tags=knowledge_data["tags"],
                 content=knowledge_data["content"],
-                source_type="SULNET_POLICY_V1",
+                source_type="SULNET_KB_V2",
                 active=True,
                 created_by_id=admin.id,
             )
             db.add(item)
-        else:
+            db.flush()
+        elif item.source_type != "SULNET_KB_V2":
+            # Migração única V1 -> V2. Após isso, edições feitas no painel são preservadas.
             item.category = knowledge_data["category"]
             item.tags = knowledge_data["tags"]
             item.content = knowledge_data["content"]
-            item.source_type = "SULNET_POLICY_V1"
-            item.active = True
+            item.source_type = "SULNET_KB_V2"
+
+        meta = db.scalar(
+            select(AIKnowledgeMetadata).where(
+                AIKnowledgeMetadata.knowledge_item_id == item.id
+            )
+        )
+        if not meta:
+            title_lower = knowledge_data["title"].lower()
+            priority = 100 if "por que contratar" in title_lower else 90
+            if knowledge_data["category"] in {"INSTITUCIONAL", "DIFERENCIAIS", "ATENDIMENTO"}:
+                priority = 80
+            meta = AIKnowledgeMetadata(
+                knowledge_item_id=item.id,
+                subject=knowledge_data["title"][:120],
+                product_service=(
+                    "Institucional"
+                    if knowledge_data["category"] in {"INSTITUCIONAL", "DIFERENCIAIS", "ATENDIMENTO"}
+                    else "Comercial Sulnet"
+                ),
+                region="Área de atuação Sulnet",
+                source_reference="Base comercial aprovada Sulnet · V2 · 29/10/2026",
+                priority=priority,
+                approval_status="APPROVED",
+            )
+            db.add(meta)
 
     seed_default_zapi_instance(db, created_by_id=admin.id)
     dedicated_ai_queue = _ensure_dedicated_ai_queue(db, admin=admin)

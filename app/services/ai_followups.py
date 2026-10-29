@@ -197,10 +197,31 @@ def _generate_followup(
             AIConversationState.conversation_id == job.conversation_id
         )
     )
-    knowledge = "\n\n".join(
-        f"[{item['category']}] {item['title']}: {item['content']}"
-        for item in SYSTEM_KNOWLEDGE_ITEMS
+    from app.services.ai_sdr import retrieve_knowledge
+
+    history = _recent_history(db, job.conversation_id)
+    retrieval_query = " ".join(
+        [
+            job.theme or "",
+            state.summary if state else "",
+            " ".join(str(row.get("body") or "") for row in history[-8:]),
+        ]
     )
+    relevant_knowledge = retrieve_knowledge(
+        db,
+        agent=agent,
+        query=retrieval_query,
+    )
+    if relevant_knowledge:
+        knowledge = "\n\n".join(
+            f"[{item.category}] {item.title}: {item.content}"
+            for item in relevant_knowledge
+        )
+    else:
+        knowledge = "\n\n".join(
+            f"[{item['category']}] {item['title']}: {item['content']}"
+            for item in SYSTEM_KNOWLEDGE_ITEMS
+        )
     context = {
         "followup_step": job.step,
         "followup_theme": job.theme,
@@ -215,7 +236,7 @@ def _generate_followup(
             "last_intent": state.last_intent if state else "UNKNOWN",
             "temperature": state.temperature if state else "FRIO",
         },
-        "history": _recent_history(db, job.conversation_id),
+        "history": history,
     }
     prompt = (
         "Crie APENAS a próxima mensagem de follow-up comercial para WhatsApp. "
