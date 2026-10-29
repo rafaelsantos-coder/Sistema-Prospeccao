@@ -799,6 +799,41 @@ class AIConversationState(Base):
     last_run: Mapped[AIRun | None] = relationship(foreign_keys=[last_run_id])
 
 
+class AIClosingState(Base):
+    __tablename__ = "ai_closing_states"
+    __table_args__ = (
+        Index("ix_ai_closing_states_step_updated", "step", "updated_at"),
+        Index("ix_ai_closing_states_contract_status", "contract_status", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    agent_id: Mapped[int] = mapped_column(ForeignKey("ai_agent_profiles.id"), index=True)
+    step: Mapped[str] = mapped_column(String(40), default="NAME", index=True)
+    external_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    opportunity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    protocol: Mapped[str] = mapped_column(String(80), default="")
+    plan_label: Mapped[str] = mapped_column(String(180), default="")
+    offer_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    credit_status: Mapped[str] = mapped_column(String(80), default="")
+    credit_analysis_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    contract_status: Mapped[str] = mapped_column(String(80), default="")
+    sign_url: Mapped[str] = mapped_column(Text, default="")
+    collected_json: Mapped[str] = mapped_column(Text, default="{}")
+    handoff_summary: Mapped[str] = mapped_column(Text, default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    conversation: Mapped[Conversation] = relationship()
+    agent: Mapped[AIAgentProfile] = relationship()
+
+
 class AIFollowupJob(Base):
     __tablename__ = "ai_followup_jobs"
     __table_args__ = (
