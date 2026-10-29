@@ -21,7 +21,11 @@ from app.models import (
     User,
 )
 from app.security import hash_password
-from app.services.ai_followups import cancel_pending_followups, schedule_followup
+from app.services.ai_followups import (
+    _followup_is_repetitive,
+    cancel_pending_followups,
+    schedule_followup,
+)
 from app.services.ai_sdr_policy import FTTH_PLANS, followup_spec
 from app.services.conversation_engine import apply_conversation_scope, store_received_payload
 from app.services.whatsapp_presence import join_whatsapp
@@ -40,7 +44,7 @@ def test_650_official_speed_is_650_200():
     assert plan["price_fidelity"] == 99.90
 
 
-def test_followup_cadence_starts_in_60_seconds_and_becomes_monthly_after_step_20():
+def test_followup_cadence_starts_10m_30m_2h_and_becomes_monthly_after_step_20():
     delay_1, theme_1 = followup_spec(1)
     delay_2, theme_2 = followup_spec(2)
     delay_3, theme_3 = followup_spec(3)
@@ -50,18 +54,47 @@ def test_followup_cadence_starts_in_60_seconds_and_becomes_monthly_after_step_20
     delay_20, _theme_20 = followup_spec(20)
     delay_21, theme_21 = followup_spec(21)
 
-    assert delay_1 == timedelta(seconds=60)
-    assert delay_2 == timedelta(seconds=60)
-    assert delay_3 == timedelta(seconds=60)
-    assert "rápida 1" in theme_1
-    assert "rápida 2" in theme_2
-    assert "rápida 3" in theme_3
-    assert delay_4 == timedelta(minutes=30)
-    assert delay_5 == timedelta(hours=2)
-    assert delay_6 == timedelta(hours=6)
+    assert delay_1 == timedelta(minutes=10)
+    assert delay_2 == timedelta(minutes=30)
+    assert delay_3 == timedelta(hours=2)
+    assert "reativação 1" in theme_1
+    assert "reativação 2" in theme_2
+    assert "reativação 3" in theme_3
+    assert delay_4 == timedelta(hours=6)
+    assert delay_5 == timedelta(days=1)
+    assert delay_6 == timedelta(days=2)
     assert delay_20 == timedelta(days=30)
     assert delay_21 == timedelta(days=30)
     assert "reativação mensal" in theme_21
+
+
+def test_followup_blocks_router_paraphrases_from_recent_history():
+    previous = [
+        (
+            "Entendi, sua dúvida é sobre quantos roteadores estão incluídos. "
+            "Posso confirmar isso antes de avançarmos?"
+        ),
+        (
+            "Sobre os roteadores, ainda preciso confirmar quantos acompanham o plano. "
+            "Quer que eu verifique isso?"
+        ),
+    ]
+    candidate = (
+        "Entendi que sua dúvida é sobre os roteadores. "
+        "Posso confirmar quantos acompanham o plano antes de seguirmos?"
+    )
+    assert _followup_is_repetitive(candidate, previous) is True
+
+
+def test_followup_allows_a_genuinely_different_angle():
+    previous = [
+        "Quantos roteadores são decisivos para você escolher o plano de 650 Mega?"
+    ]
+    candidate = (
+        "Enquanto isso, posso te explicar como funciona a cobertura Wi-Fi dentro da casa "
+        "e quando vale a pena usar um equipamento adicional?"
+    )
+    assert _followup_is_repetitive(candidate, previous) is False
 
 
 def test_followup_job_is_persistent_and_cancelled_when_context_changes():

@@ -160,10 +160,40 @@ def _recent_outbound_bodies(history: list[dict], limit: int = 12) -> list[str]:
     return values[-max(1, limit):]
 
 
+_FOLLOWUP_STOPWORDS = {
+    "a", "ao", "aos", "as", "com", "como", "da", "das", "de", "do", "dos",
+    "e", "ela", "ele", "em", "essa", "esse", "esta", "este", "eu", "ja",
+    "mais", "me", "na", "nas", "no", "nos", "o", "os", "ou", "para",
+    "por", "que", "se", "sem", "sua", "seu", "sobre", "um", "uma", "voce",
+}
+
+
+def _followup_content_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in _normalize_followup_text(value).split()
+        if len(token) >= 4 and token not in _FOLLOWUP_STOPWORDS
+    }
+
+
+def _followup_question(value: str) -> str:
+    questions = [
+        part.strip()
+        for part in re.split(r"[.!]", value or "")
+        if "?" in part
+    ]
+    if not questions:
+        return ""
+    return _normalize_followup_text(questions[-1].replace("?", " "))
+
+
 def _followup_is_repetitive(candidate: str, previous_messages: list[str]) -> bool:
     normalized_candidate = _normalize_followup_text(candidate)
     if not normalized_candidate:
         return True
+
+    candidate_tokens = _followup_content_tokens(candidate)
+    candidate_question = _followup_question(candidate)
 
     for previous in previous_messages:
         normalized_previous = _normalize_followup_text(previous)
@@ -171,23 +201,34 @@ def _followup_is_repetitive(candidate: str, previous_messages: list[str]) -> boo
             continue
         if normalized_candidate == normalized_previous:
             return True
+
         similarity = SequenceMatcher(
             None,
             normalized_candidate,
             normalized_previous,
         ).ratio()
-        if similarity >= 0.84:
+        if similarity >= 0.70:
             return True
 
-        candidate_tokens = set(normalized_candidate.split())
-        previous_tokens = set(normalized_previous.split())
+        previous_tokens = _followup_content_tokens(previous)
         if candidate_tokens and previous_tokens:
-            overlap = len(candidate_tokens & previous_tokens) / min(
+            containment = len(candidate_tokens & previous_tokens) / min(
                 len(candidate_tokens),
                 len(previous_tokens),
             )
-            if overlap >= 0.80:
+            if containment >= 0.58:
                 return True
+
+        previous_question = _followup_question(previous)
+        if candidate_question and previous_question:
+            question_similarity = SequenceMatcher(
+                None,
+                candidate_question,
+                previous_question,
+            ).ratio()
+            if question_similarity >= 0.62:
+                return True
+
     return False
 
 
