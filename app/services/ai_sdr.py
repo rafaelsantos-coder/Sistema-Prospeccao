@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import timedelta
 from typing import Literal
@@ -25,6 +26,9 @@ from app.models import (
 from app.services.audit import write_audit
 from app.services.queue_routing import queue_for_conversation
 from app.timeutils import utcnow
+
+
+LOG = logging.getLogger("sulnet_ai_sdr")
 
 
 DEFAULT_SYSTEM_PROMPT = """Você é o SulIA SDR, agente comercial da Sulnet.
@@ -133,12 +137,28 @@ def enqueue_ai_job(
     if message.direction != "INBOUND" or message.message_type != "TEXT":
         return None
     binding = binding_for_conversation(db, conversation.id)
-    if (
-        not binding
-        or not binding.agent
-        or not binding.agent.active
-        or binding.handling_mode == "HUMAN"
-    ):
+    if not binding:
+        queue = queue_for_conversation(db, conversation.id)
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=no_binding queue=%s team=%s",
+            conversation.id,
+            queue.id if queue else None,
+            queue.team if queue else None,
+        )
+        return None
+    if not binding.agent or not binding.agent.active:
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=agent_inactive queue=%s",
+            conversation.id,
+            binding.queue_id,
+        )
+        return None
+    if binding.handling_mode == "HUMAN":
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=human_mode queue=%s",
+            conversation.id,
+            binding.queue_id,
+        )
         return None
 
     existing = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
@@ -155,6 +175,14 @@ def enqueue_ai_job(
     )
     db.add(job)
     db.flush()
+    LOG.info(
+        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s",
+        job.id,
+        conversation.id,
+        message.id,
+        binding.queue_id,
+        binding.agent_id,
+    )
     return job
 
 
