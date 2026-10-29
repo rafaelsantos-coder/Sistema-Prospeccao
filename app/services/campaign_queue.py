@@ -50,6 +50,30 @@ def campaign_media_attachments(campaign: Campaign) -> list[dict[str, str]]:
     return []
 
 
+def campaign_quick_replies(campaign: Campaign) -> list[dict[str, str]]:
+    try:
+        sequence = json.loads(campaign.sequence_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(sequence, list):
+        return []
+    for step in sequence:
+        if not isinstance(step, dict) or not step.get("message"):
+            continue
+        replies = step.get("quick_replies")
+        if not isinstance(replies, list):
+            return []
+        return [
+            {
+                "id": str(item.get("id") or "").strip(),
+                "label": str(item.get("label") or "").strip(),
+            }
+            for item in replies[:3]
+            if isinstance(item, dict) and str(item.get("label") or "").strip()
+        ]
+    return []
+
+
 def personalize_message(template: str, lead: Lead) -> str:
     values = {
         "nome": lead.contact_name or lead.business_name,
@@ -180,8 +204,17 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         return "skipped"
 
     recipient.attempts = int(recipient.attempts or 0) + 1
+    quick_replies = campaign_quick_replies(campaign)
     try:
-        result = ZApiService().send_text(phone=lead.phone, message=recipient.message_body)
+        zapi = ZApiService()
+        if quick_replies:
+            result = zapi.send_button_list(
+                phone=lead.phone,
+                message=recipient.message_body,
+                buttons=quick_replies,
+            )
+        else:
+            result = zapi.send_text(phone=lead.phone, message=recipient.message_body)
     except ZApiError as exc:
         recipient.error = str(exc)[:500]
         if recipient.attempts >= 3:
@@ -213,7 +246,7 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         db,
         conversation,
         direction="OUTBOUND",
-        message_type="TEXT",
+        message_type="BUTTONS" if quick_replies else "TEXT",
         body=recipient.message_body,
         sender_user_id=campaign.created_by_id,
         provider_message_id=provider_id,
@@ -310,6 +343,7 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
             "conversation_id": conversation.id,
             "provider_message_id": provider_id,
             "queue_id": service_queue.id,
+            "quick_reply_count": len(quick_replies),
             "media_sent": media_sent,
             "media_errors": media_errors,
         },

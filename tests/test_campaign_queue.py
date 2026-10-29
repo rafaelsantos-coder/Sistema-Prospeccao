@@ -1,5 +1,10 @@
 from app.models import Campaign, Lead
-from app.services.campaign_queue import campaign_media_attachments, campaign_message_template, personalize_message
+from app.services.campaign_queue import (
+    campaign_media_attachments,
+    campaign_message_template,
+    campaign_quick_replies,
+    personalize_message,
+)
 
 
 def test_campaign_personalization():
@@ -37,6 +42,21 @@ def test_campaign_reads_media_from_initial_step():
     assert media[0]["file_name"] == "foto.jpg"
 
 
+
+def test_campaign_reads_quick_replies():
+    campaign = Campaign(
+        name="Teste botões",
+        channel="WHATSAPP",
+        sequence_json='[{"day":1,"message":"Olá","quick_replies":[{"id":"yes","label":"Tenho interesse"},{"id":"more","label":"Quero saber mais"},{"id":"no","label":"Agora não"}]}]',
+    )
+    replies = campaign_quick_replies(campaign)
+    assert [item["label"] for item in replies] == [
+        "Tenho interesse",
+        "Quero saber mais",
+        "Agora não",
+    ]
+
+
 def test_campaign_template_page_renders():
     import re
     from fastapi.testclient import TestClient
@@ -55,3 +75,5 @@ def test_campaign_template_page_renders():
         assert "{{nome}}" in page.text
         assert 'name="media"' in page.text
         assert 'accept="image/*,video/*,audio/*"' in page.text
+        assert 'name="button_1"' in page.text
+        assert "Tenho interesse" in page.text

@@ -114,6 +114,55 @@ class ZApiService:
             raise ZApiError("A Z-API retornou uma resposta inesperada.")
         return payload
 
+    def send_button_list(
+        self,
+        *,
+        phone: str,
+        message: str,
+        buttons: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        normalized_phone = self.normalize_phone(phone)
+        clean_message = message.strip()
+        if not clean_message:
+            raise ZApiError("A mensagem nao pode ficar vazia.")
+        if len(clean_message) > 4096:
+            raise ZApiError("A mensagem deve ter no maximo 4.096 caracteres.")
+
+        clean_buttons: list[dict[str, str]] = []
+        for index, button in enumerate(buttons[:3], start=1):
+            label = str(button.get("label") or "").strip()
+            if not label:
+                continue
+            if len(label) > 20:
+                raise ZApiError("Cada botao deve ter no maximo 20 caracteres.")
+            button_id = str(button.get("id") or f"reply_{index}").strip()
+            clean_buttons.append({"id": button_id[:64], "label": label})
+        if not clean_buttons:
+            raise ZApiError("Informe ao menos um botao de resposta.")
+
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    self._url("send-button-list"),
+                    headers=self._headers(json_request=True),
+                    json={
+                        "phone": normalized_phone,
+                        "message": clean_message,
+                        "buttonList": {"buttons": clean_buttons},
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise ZApiError("Nao foi possivel enviar os botoes pela Z-API.") from exc
+        if response.status_code >= 400:
+            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ZApiError("A Z-API retornou uma resposta inesperada.") from exc
+        if not isinstance(payload, dict):
+            raise ZApiError("A Z-API retornou uma resposta inesperada.")
+        return payload
+
     def _send_media(
         self,
         *,

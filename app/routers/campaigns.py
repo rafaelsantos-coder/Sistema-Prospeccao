@@ -85,6 +85,9 @@ async def create_campaign(
     channel: str = Form("WHATSAPP"),
     daily_limit: int = Form(30),
     message: str = Form(...),
+    button_1: str = Form("Tenho interesse"),
+    button_2: str = Form("Quero saber mais"),
+    button_3: str = Form("Agora não"),
     queue_id: int | None = Form(None),
     branch_id: int | None = Form(None),
     media: list[UploadFile] = File(default=[]),
@@ -180,12 +183,29 @@ async def create_campaign(
             }
         )
 
+    quick_replies = []
+    for index, raw_label in enumerate((button_1, button_2, button_3), start=1):
+        label = raw_label.strip()
+        if not label:
+            continue
+        if len(label) > 20:
+            db.rollback()
+            flash(request, f"O botão {index} deve ter no máximo 20 caracteres.", "warning")
+            return RedirectResponse("/campaigns", status_code=303)
+        quick_replies.append(
+            {
+                "id": f"campaign_{campaign.id}_reply_{index}",
+                "label": label,
+            }
+        )
+
     sequence = [
         {
             "day": 1,
             "label": "Abordagem inicial",
             "message": clean_message,
             "media": attachments,
+            "quick_replies": quick_replies,
         },
         {"day": 3, "label": "Follow-up de valor"},
         {"day": 10, "label": "Retomada consultiva"},
@@ -205,6 +225,7 @@ async def create_campaign(
             "daily_limit": limit,
             "queue_id": selected_queue.id if selected_queue else None,
             "media_count": len(attachments),
+            "quick_reply_count": len(quick_replies),
         },
     )
     db.commit()
