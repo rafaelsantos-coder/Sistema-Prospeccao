@@ -5,14 +5,17 @@
     <h2>Vendedor IA Sulnet</h2>
     <p>Recebe o cliente já qualificado pelo SDR IA, conduz o cadastro e prepara o contrato. O mesmo usuário comercial pode receber atribuições de oportunidades no CRM.</p>
   </div>
-  <div class="ai-phase-badge"><strong>Preparação · Shadow</strong><span class="connection-status">Integrações de contrato e crédito pendentes de homologação</span></div>
+  <div class="ai-phase-badge">
+    <strong>{{ 'Operacional' if seller_enabled and crm_configured and autonomous_enabled else 'Protegido / homologação' }}</strong>
+    <span class="connection-status">CRM {{ 'conectado' if crm_configured else 'não configurado' }} · autonomia {{ 'liberada' if autonomous_enabled else 'desativada' }}</span>
+  </div>
 </div>
 {% if agent %}
 <section class="ai-agent-hero panel">
   <div class="ai-agent-identity"><div class="ai-agent-avatar">IA</div>
     <div><span class="eyebrow">VENDEDOR DIGITAL</span><h3>{{ agent.name }}</h3>
       <p>{{ agent.business_goal }}</p>
-      <small>Usuário CRM: {{ agent.user.name }} · {{ agent.user.email }} · {{ 'Ativo' if agent.user.active else 'Acesso inativo' }}</small>
+      <small>Identidade no Prospecta: {{ agent.user.name }} · {{ agent.user.email }} · {{ 'Ativo' if agent.user.active else 'Acesso inativo' }}</small>
     </div>
   </div>
   <div class="ai-agent-kpis">
@@ -47,13 +50,13 @@
       <div><span>{{ loop.index }}</span><p>{{ title }}</p></div>{% if not loop.last %}<i></i>{% endif %}
       {% endfor %}
     </div>
-    <div class="info-box"><strong>Campos dispensados</strong><p>NAP/ANATEL, coordenadas, técnico, data/hora, metragem, selfies e fotos de documentos. A exceção deve existir também na validação do CRM externo.</p></div>
+    <div class="info-box"><strong>Campos dispensados</strong><p>NAP/ANATEL, coordenadas, técnico, data/hora, metragem, selfies e fotos de documentos. A API de captura do CRM aplica essa regra ao funil SDR IA.</p></div>
   </aside>
 </div>
 <section class="panel top-space">
  <div class="panel-header"><div><span class="eyebrow">BASE DE CONHECIMENTO</span><h3>Treinar Vendedor IA</h3></div></div>
  <form action="/ai/knowledge" method="post" class="stack-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="agent_id" value="{{ agent.id }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="agent_id" value="{{ agent.id }}"><input type="hidden" name="redirect_to" value="/ai/seller">
   <div class="form-grid"><label class="field"><span>Categoria</span><input name="category" value="FECHAMENTO"></label>
    <label class="field"><span>Título</span><input name="title" required></label>
    <label class="field field-span-2"><span>Tags</span><input name="tags"></label>
@@ -63,7 +66,7 @@
  <div class="ai-knowledge-grid top-space">
  {% for item in knowledge %}
  <article class="ai-knowledge-card {% if not item.active %}inactive{% endif %}"><div><span class="eyebrow">{{ item.category }}</span><h4>{{ item.title }}</h4><p>{{ item.content }}</p></div>
- <form action="/ai/knowledge/{{ item.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="mini-button" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button></form></article>
+ <form action="/ai/knowledge/{{ item.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="redirect_to" value="/ai/seller"><button class="mini-button" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button></form></article>
  {% else %}<div class="empty-state">Inclua regras de crédito, planos, faturamento e contrato para o agente de fechamento.</div>{% endfor %}
  </div>
 </section>
