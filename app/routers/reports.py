@@ -16,6 +16,7 @@ from app.models import (
     Conversation,
     ConversationAssignment,
     Message,
+    ServiceQueue,
     User,
 )
 from app.security import get_current_user
@@ -61,6 +62,7 @@ def _filters_from_request(request: Request) -> ChatReportFilters:
         direction=(params.get("direction") or "").strip().upper(),
         message_type=(params.get("message_type") or "").strip().upper(),
         channel_phone=(params.get("channel_phone") or "").strip(),
+        queue_id=_int_or_none(params.get("queue_id")),
     )
 
 
@@ -74,6 +76,21 @@ def _available_operators(db: Session, user: User) -> list[User]:
         else:
             stmt = stmt.where(User.team == user.team)
     return list(db.scalars(stmt))
+
+
+def _available_queues(db: Session, user: User) -> list[ServiceQueue]:
+    stmt = select(ServiceQueue).where(ServiceQueue.active.is_(True)).order_by(ServiceQueue.name)
+    queues = list(db.scalars(stmt))
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            queues = [item for item in queues if item.branch_id in {None, user.branch_id}]
+        else:
+            queues = [item for item in queues if item.team == user.team]
+    elif user.role == "CONSULTOR":
+        queues = [item for item in queues if item.team == user.team]
+        if user.branch_id:
+            queues = [item for item in queues if item.branch_id in {None, user.branch_id}]
+    return queues
 
 
 def _available_branches(db: Session, user: User) -> list[Branch]:
@@ -140,6 +157,7 @@ def whatsapp_reports(request: Request, db: Session = Depends(get_db)):
         filters=filters,
         operators=_available_operators(db, user),
         branches=_available_branches(db, user),
+        queues=_available_queues(db, user),
         query_string=query_string,
         format_duration=format_duration,
     )
