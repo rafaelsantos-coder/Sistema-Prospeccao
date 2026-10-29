@@ -123,7 +123,6 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
     yes_no_cues = (
         "faz sentido",
         "voce faria",
-        "voce faria",
         "quer que eu",
         "posso te",
         "posso lhe",
@@ -131,10 +130,8 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
         "quer conhecer",
         "tem interesse",
         "vale a pena",
-        "podemos avançar",
         "podemos avancar",
         "quer comparar",
-        "sim ou não",
         "sim ou nao",
         "responda sim",
         "confirma que",
