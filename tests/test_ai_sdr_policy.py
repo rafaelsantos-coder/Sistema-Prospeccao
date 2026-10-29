@@ -44,7 +44,7 @@ def test_followup_cadence_becomes_monthly_after_step_20():
     delay_20, _theme_20 = followup_spec(20)
     delay_21, theme_21 = followup_spec(21)
     assert delay_1 == timedelta(hours=2)
-    assert delay_20 == timedelta(days=270)
+    assert delay_20 == timedelta(days=30)
     assert delay_21 == timedelta(days=30)
     assert "reativação mensal" in theme_21
 
