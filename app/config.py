@@ -49,6 +49,7 @@ class Settings:
     ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
     ai_seller_enabled: bool = os.getenv("AI_SELLER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     sulnet_crm_base_url: str = os.getenv("SULNET_CRM_BASE_URL", "").rstrip("/")
+    sulnet_crm_bearer_token: str = os.getenv("SULNET_CRM_BEARER_TOKEN", "")
     sulnet_ai_integration_key: str = os.getenv("SULNET_AI_INTEGRATION_KEY", "")
     media_s3_endpoint: str = os.getenv("MEDIA_S3_ENDPOINT", "")
     media_s3_bucket: str = os.getenv("MEDIA_S3_BUCKET", "")
@@ -80,7 +81,7 @@ class Settings:
             "email": bool(self.resend_api_key and self.resend_from_email),
             "openai": bool(self.openai_api_key),
             "ai_sdr": bool(self.ai_sdr_enabled and self.openai_api_key),
-            "ai_seller": bool(self.ai_seller_enabled and self.openai_api_key and self.sulnet_crm_base_url and self.sulnet_ai_integration_key),
+            "ai_seller": bool(self.ai_seller_enabled and self.openai_api_key and self.sulnet_crm_base_url and self.sulnet_crm_bearer_token),
         }
 
 
@@ -110,7 +111,7 @@ def validate_production_settings() -> None:
     if settings.ai_seller_enabled:
         if not settings.sulnet_crm_base_url.startswith(("https://", "http://")):
             errors.append("AI_SELLER_ENABLED requer SULNET_CRM_BASE_URL válida")
-        if len(settings.sulnet_ai_integration_key) < 24:
-            errors.append("AI_SELLER_ENABLED requer SULNET_AI_INTEGRATION_KEY com ao menos 24 caracteres")
+        if len(settings.sulnet_crm_bearer_token) < 24:
+            errors.append("AI_SELLER_ENABLED requer SULNET_CRM_BEARER_TOKEN com ao menos 24 caracteres")
     if errors:
         raise RuntimeError("Configuração de produção inválida: " + "; ".join(errors))
