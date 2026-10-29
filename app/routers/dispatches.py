@@ -306,6 +306,76 @@ def dispatch_detail(
     )
 
 
+@router.post("/{dispatch_id}/configuration")
+def update_dispatch_configuration(
+    dispatch_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    interval_seconds: int = Form(...),
+    daily_limit: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+
+    dispatch = _dispatch_or_404(db, dispatch_id)
+    if dispatch.status not in {"RASCUNHO", "PAUSADO"}:
+        flash(
+            request,
+            "Pause o disparo antes de alterar a configuração.",
+            "warning",
+        )
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    interval = max(5, min(int(interval_seconds or 30), 3600))
+    limit = max(1, min(int(daily_limit or 100), 5000))
+    old_interval = int(dispatch.interval_seconds or 30)
+    old_limit = int(dispatch.daily_limit or 100)
+
+    dispatch.interval_seconds = interval
+    dispatch.daily_limit = limit
+    if dispatch.status == "PAUSADO":
+        dispatch.next_send_at = None
+
+    counts = dispatch_counts(db, dispatch.id)
+    try:
+        summary = json.loads(dispatch.import_summary_json or "{}")
+    except (TypeError, ValueError):
+        summary = {}
+    summary["estimated_duration_seconds"] = estimated_duration_seconds(
+        counts["pending"] + counts["sending"],
+        interval,
+    )
+    dispatch.import_summary_json = json.dumps(summary, ensure_ascii=False)
+
+    write_audit(
+        db,
+        user=actor,
+        action="CAMPAIGN_DISPATCH_CONFIG_UPDATED",
+        entity_type="campaign_dispatch",
+        entity_id=dispatch.id,
+        payload={
+            "interval_seconds": {
+                "from": old_interval,
+                "to": interval,
+            },
+            "daily_limit": {
+                "from": old_limit,
+                "to": limit,
+            },
+            "status": dispatch.status,
+        },
+    )
+    db.commit()
+    flash(
+        request,
+        f"Configuração atualizada: intervalo de {interval}s e limite de {limit} mensagens/dia.",
+    )
+    return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+
 @router.post("/{dispatch_id}/recipients/{recipient_id}/edit")
 def edit_dispatch_recipient(
     dispatch_id: int,
