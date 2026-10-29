@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Any
 
@@ -16,6 +17,8 @@ from app.services.audit import write_audit
 from app.services.conversation_engine import (
     ensure_contact,
     ensure_open_conversation,
+    payload_from_me,
+    payload_message_content,
     register_message,
     store_received_payload,
     update_message_statuses,
@@ -49,6 +52,7 @@ from app.web import flash
 
 
 router = APIRouter()
+LOG = logging.getLogger("sulnet_zapi_webhooks")
 OPT_OUT_TERMS = (
     "nao quero",
     "não quero",
@@ -151,13 +155,37 @@ def _process_zapi_payload(
     zapi_instance_id: int | None = None,
 ):
     if not isinstance(payload, dict):
+        LOG.info("zapi_callback ignored=payload_not_dict instance_db=%s", zapi_instance_id)
         return {"ok": True, "ignored": "payload"}
+
+    raw_type = str(payload.get("type") or "")
+    raw_from_me = payload.get("fromMe")
+    parsed_from_me = payload_from_me(payload)
+    detected_type, _detected_body, _media_url, _mime_type = payload_message_content(payload)
+    LOG.info(
+        "zapi_callback instance_db=%s queue=%s callback_type=%s has_ids=%s has_phone=%s "
+        "from_me_raw_type=%s from_me=%s message_type=%s has_text=%s group=%s newsletter=%s",
+        zapi_instance_id,
+        queue_id,
+        raw_type or "-",
+        bool(payload.get("ids")),
+        bool(payload.get("phone") or payload.get("participantPhone")),
+        type(raw_from_me).__name__,
+        parsed_from_me,
+        detected_type,
+        detected_type != "UNKNOWN",
+        bool(payload.get("isGroup")),
+        bool(payload.get("isNewsletter")),
+    )
+
     if expected_instance_id and payload.get("instanceId") not in {
         None,
         expected_instance_id,
     }:
+        LOG.info("zapi_callback ignored=instance_mismatch instance_db=%s queue=%s", zapi_instance_id, queue_id)
         return {"ok": True, "ignored": "instance"}
     if payload.get("isGroup") or payload.get("isNewsletter"):
+        LOG.info("zapi_callback ignored=non_direct instance_db=%s queue=%s", zapi_instance_id, queue_id)
         return {"ok": True, "ignored": "non_direct"}
 
     if payload.get("type") == "MessageStatusCallback" or payload.get("ids"):
@@ -175,6 +203,13 @@ def _process_zapi_payload(
             },
         )
         db.commit()
+        LOG.info(
+            "zapi_callback status_only instance_db=%s queue=%s updated=%s status=%s",
+            zapi_instance_id,
+            queue_id,
+            updated,
+            payload.get("status"),
+        )
         return {"ok": True, "status_updated": updated}
 
     conversation, message, created = store_received_payload(
@@ -185,6 +220,12 @@ def _process_zapi_payload(
     )
     if not conversation or not message:
         db.commit()
+        LOG.info(
+            "zapi_callback ignored=unsupported_or_unmatched instance_db=%s queue=%s message_type=%s",
+            zapi_instance_id,
+            queue_id,
+            detected_type,
+        )
         return {"ok": True, "ignored": "unsupported_or_unmatched"}
 
     opt_out = False
@@ -254,6 +295,16 @@ def _process_zapi_payload(
         and message.message_type in {"IMAGE", "VIDEO", "AUDIO", "DOCUMENT"}
     ):
         background_tasks.add_task(_archive_message_media, message.id)
+    LOG.info(
+        "zapi_callback stored instance_db=%s queue=%s conversation=%s message=%s created=%s direction=%s message_type=%s",
+        zapi_instance_id,
+        queue_id,
+        conversation.id,
+        message.id,
+        created,
+        message.direction,
+        message.message_type,
+    )
     return {
         "ok": True,
         "conversation_id": conversation.id,
