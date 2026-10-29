@@ -182,6 +182,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         or "OBJETIVO" not in ai_agent.system_prompt
         or "BOTÕES E RESPOSTAS RÁPIDAS" not in ai_agent.system_prompt
         or "VENDA POR VALOR E CULTURA SULNET" not in ai_agent.system_prompt
+        or "APRESENTAÇÃO INICIAL DO PLANO" not in ai_agent.system_prompt
     ):
         ai_agent.system_prompt = SULIA_SYSTEM_PROMPT
     ai_agent.business_goal = (
