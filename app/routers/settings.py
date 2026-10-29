@@ -65,6 +65,7 @@ def _render_user_edit(
         "user_edit.html",
         user=actor,
         active_nav="settings",
+        settings_section="users",
         page_title=f"Editar usuário · {target.name}",
         target_user=target,
         branches=list(db.scalars(select(Branch).order_by(Branch.city))),
