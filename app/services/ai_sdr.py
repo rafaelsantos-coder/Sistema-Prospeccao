@@ -601,7 +601,17 @@ def _city_from_sales_context(decision: AIDecision, context: dict) -> str:
     lead_city = str((context.get("lead") or {}).get("city") or "").strip()
     if lead_city:
         return lead_city
-    return str(decision.qualification.city or "").strip()
+
+    qualification_city = str(decision.qualification.city or "").strip()
+    if qualification_city:
+        return qualification_city
+
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    for service_city in SERVICE_CITIES:
+        city_key = _normalized_city(service_city)
+        if latest == city_key or city_key in latest:
+            return service_city
+    return ""
 
 
 def _plan_available_in_city(plan: dict, city: str) -> bool:
@@ -863,12 +873,10 @@ def _apply_catalog_navigation_policy(
     }:
         return _show_mobile_catalog_page(decision, page=1)
 
-    if latest in {"mais planos", "ver mais", "mais opcoes"} and (
-        "5gb" in previous and "7gb" in previous
-    ):
+    if latest in {"mais planos", "ver mais", "mais opcoes"}:
         return _show_mobile_catalog_page(decision, page=2)
 
-    if latest == "voltar" and "10gb" in previous and "15gb" in previous:
+    if latest == "voltar" and "sulmovel" in previous:
         return _show_mobile_catalog_page(decision, page=1)
 
     if (
