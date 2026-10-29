@@ -91,6 +91,43 @@ class ZApiService:
             "error": payload.get("error"),
         }
 
+    def device(self) -> dict[str, Any]:
+        self._ensure_configured()
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.get(self._url("device"), headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ZApiError("Nao foi possivel consultar o dispositivo da Z-API.") from exc
+        if response.status_code >= 400:
+            raise ZApiError(
+                f"Falha ao consultar dispositivo Z-API: {self._safe_error(response)}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ZApiError("A Z-API retornou dados invalidos do dispositivo.") from exc
+        if not isinstance(payload, dict):
+            raise ZApiError("A Z-API retornou dados invalidos do dispositivo.")
+        device = payload.get("device")
+        return {
+            "phone": str(payload.get("phone") or "").strip(),
+            "name": str(payload.get("name") or "").strip(),
+            "img_url": str(payload.get("imgUrl") or "").strip(),
+            "about": str(payload.get("about") or "").strip(),
+            "is_business": bool(payload.get("isBusiness")),
+            "original_device": str(payload.get("originalDevice") or "").strip(),
+            "session_name": (
+                str(device.get("sessionName") or "").strip()
+                if isinstance(device, dict)
+                else ""
+            ),
+            "device_model": (
+                str(device.get("device_model") or "").strip()
+                if isinstance(device, dict)
+                else ""
+            ),
+        }
+
     def send_text(self, *, phone: str, message: str) -> dict[str, Any]:
         normalized_phone = self.normalize_phone(phone)
         clean_message = message.strip()
