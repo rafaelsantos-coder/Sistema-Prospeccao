@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import unicodedata
+from datetime import timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -884,7 +885,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         job.error = str(exc)[:1200]
         if int(job.attempts or 0) < 3:
             job.status = "PENDENTE"
-            job.available_at = utcnow()
+            job.available_at = utcnow() + timedelta(seconds=30 * max(1, int(job.attempts or 1)))
         else:
             _handoff_to_human(
                 db, state=state, conversation=conversation, agent=agent,
@@ -913,7 +914,8 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
     states = list(
         db.scalars(
             select(AIClosingState).where(
-                AIClosingState.step.in_(["WAITING_CONTRACT", "WAITING_SIGNATURE"])
+                AIClosingState.step.in_(["WAITING_CONTRACT", "WAITING_SIGNATURE"]),
+                AIClosingState.updated_at <= utcnow() - timedelta(seconds=45),
             ).order_by(AIClosingState.updated_at.asc()).limit(limit)
         )
     )
