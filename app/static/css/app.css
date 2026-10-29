@@ -1842,6 +1842,54 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .dispatch-recipient-table {
   min-width: 980px;
 }
+.dispatch-recipient-table.is-editable {
+  min-width: 1250px;
+}
+.dispatch-review-info {
+  margin: 0 0 14px;
+}
+.dispatch-inline-input,
+.dispatch-inline-message {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #dfe4e8;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+.dispatch-inline-input {
+  min-width: 150px;
+  padding: 8px 9px;
+}
+.dispatch-phone-input {
+  min-width: 145px;
+}
+.dispatch-inline-message {
+  min-width: 360px;
+  padding: 8px 9px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.dispatch-inline-input:focus,
+.dispatch-inline-message:focus {
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(247, 105, 31, .10);
+}
+.dispatch-recipient-actions {
+  min-width: 96px;
+}
+.dispatch-recipient-actions form {
+  margin: 0 0 6px;
+}
+.dispatch-save-button,
+.dispatch-remove-button {
+  width: 100%;
+  justify-content: center;
+  padding: 7px 9px;
+  font-size: 8px;
+}
 @media (max-width: 1180px) {
   .dispatch-layout { grid-template-columns: 1fr; }
   .dispatch-metric-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }

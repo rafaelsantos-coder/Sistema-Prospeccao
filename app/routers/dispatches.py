@@ -27,6 +27,7 @@ from app.services.dispatch_queue import (
     parse_dispatch_csv,
 )
 from app.services.queue_routing import available_queues_for_user, get_queue
+from app.services.scoring import normalize_phone
 from app.timeutils import utcnow
 from app.web import flash, render
 
@@ -303,6 +304,156 @@ def dispatch_detail(
             )
         ),
     )
+
+
+@router.post("/{dispatch_id}/recipients/{recipient_id}/edit")
+def edit_dispatch_recipient(
+    dispatch_id: int,
+    recipient_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(""),
+    phone: str = Form(...),
+    message_body: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+
+    dispatch = _dispatch_or_404(db, dispatch_id)
+    if dispatch.status != "RASCUNHO":
+        flash(
+            request,
+            "A edição dos destinatários só é permitida antes de iniciar o disparo.",
+            "warning",
+        )
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    recipient = db.scalar(
+        select(CampaignDispatchRecipient).where(
+            CampaignDispatchRecipient.id == recipient_id,
+            CampaignDispatchRecipient.dispatch_id == dispatch.id,
+        )
+    )
+    if not recipient or recipient.status != "PENDENTE":
+        flash(request, "Destinatário não disponível para edição.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    clean_phone = normalize_phone(phone)
+    if not clean_phone:
+        flash(request, "Informe um telefone válido com DDD.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    duplicate = db.scalar(
+        select(CampaignDispatchRecipient.id).where(
+            CampaignDispatchRecipient.dispatch_id == dispatch.id,
+            CampaignDispatchRecipient.phone == clean_phone,
+            CampaignDispatchRecipient.id != recipient.id,
+        )
+    )
+    if duplicate:
+        flash(request, "Já existe outro destinatário com este telefone no disparo.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    clean_name = name.strip()[:180] or clean_phone
+    clean_message = message_body.strip()
+    if not clean_message:
+        flash(request, "A mensagem do destinatário não pode ficar vazia.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+    if len(clean_message) > 4096:
+        flash(request, "A mensagem deve ter no máximo 4.096 caracteres.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    old_phone = recipient.phone
+    old_name = recipient.name
+    phone_changed = old_phone != clean_phone
+
+    recipient.name = clean_name
+    recipient.phone = clean_phone
+    recipient.message_body = clean_message
+    recipient.error = None
+
+    if phone_changed:
+        recipient.lead_id = None
+        recipient.conversation_id = None
+        recipient.provider_message_id = None
+        recipient.attempts = 0
+
+    write_audit(
+        db,
+        user=actor,
+        action="CAMPAIGN_DISPATCH_RECIPIENT_EDITED",
+        entity_type="campaign_dispatch_recipient",
+        entity_id=recipient.id,
+        payload={
+            "dispatch_id": dispatch.id,
+            "phone_changed": phone_changed,
+            "name_changed": old_name != clean_name,
+            "message_changed": True,
+        },
+    )
+    db.commit()
+    flash(request, f"Destinatário #{recipient.id} atualizado.")
+    return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+
+@router.post("/{dispatch_id}/recipients/{recipient_id}/remove")
+def remove_dispatch_recipient(
+    dispatch_id: int,
+    recipient_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+
+    dispatch = _dispatch_or_404(db, dispatch_id)
+    if dispatch.status != "RASCUNHO":
+        flash(
+            request,
+            "Só é possível remover destinatários antes de iniciar o disparo.",
+            "warning",
+        )
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    recipient = db.scalar(
+        select(CampaignDispatchRecipient).where(
+            CampaignDispatchRecipient.id == recipient_id,
+            CampaignDispatchRecipient.dispatch_id == dispatch.id,
+        )
+    )
+    if not recipient or recipient.status != "PENDENTE":
+        flash(request, "Destinatário não disponível para remoção.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    write_audit(
+        db,
+        user=actor,
+        action="CAMPAIGN_DISPATCH_RECIPIENT_REMOVED",
+        entity_type="campaign_dispatch_recipient",
+        entity_id=recipient.id,
+        payload={
+            "dispatch_id": dispatch.id,
+            "phone": recipient.phone,
+        },
+    )
+
+    try:
+        summary = json.loads(dispatch.import_summary_json or "{}")
+    except (TypeError, ValueError):
+        summary = {}
+    summary["removed_manual"] = int(summary.get("removed_manual", 0) or 0) + 1
+    dispatch.import_summary_json = json.dumps(summary, ensure_ascii=False)
+
+    db.delete(recipient)
+    db.commit()
+    flash(request, "Destinatário removido da revisão.")
+    return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
 
 
 @router.post("/{dispatch_id}/start")

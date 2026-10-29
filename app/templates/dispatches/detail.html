@@ -34,7 +34,7 @@
 {% set sent = counts.sent %}
 {% set progress = (sent / total * 100) if total else 0 %}
 <div class="metric-grid dispatch-metric-grid">
-  <article class="metric-card"><span>Total importado</span><strong>{{ total }}</strong><small>{{ import_summary.get('duplicates', 0) }} duplicados · {{ import_summary.get('invalid', 0) }} inválidos</small></article>
+  <article class="metric-card"><span>{{ 'Total em revisão' if dispatch.status == 'RASCUNHO' else 'Total importado' }}</span><strong>{{ total }}</strong><small>{{ import_summary.get('duplicates', 0) }} duplicados · {{ import_summary.get('invalid', 0) }} inválidos{% if import_summary.get('removed_manual', 0) %} · {{ import_summary.get('removed_manual', 0) }} removidos na revisão{% endif %}</small></article>
   <article class="metric-card"><span>Enviados</span><strong>{{ sent }}</strong><small>{{ '%.1f'|format(progress) }}% concluído</small></article>
   <article class="metric-card"><span>Pendentes</span><strong>{{ counts.pending }}</strong><small>{{ counts.failed }} falhas · {{ counts.skipped }} ignorados</small></article>
   <article class="metric-card"><span>Intervalo</span><strong>{{ dispatch.interval_seconds }}s</strong><small>entre cada mensagem</small></article>
@@ -81,22 +81,59 @@
     <div><span class="eyebrow">DESTINATÁRIOS</span><h3>Sequência do disparo</h3></div>
     <span class="panel-note">Exibindo até 500 registros.</span>
   </div>
+  {% if dispatch.status == 'RASCUNHO' %}
+  <div class="info-box dispatch-review-info">
+    <strong>Revisão antes do envio</strong>
+    <p>Você pode corrigir nome, telefone e mensagem individualmente ou remover contatos. Depois de clicar em <strong>Iniciar disparo</strong>, esta edição é bloqueada para preservar o histórico.</p>
+  </div>
+  {% endif %}
   <div class="data-table-wrap">
-    <table class="data-table dispatch-recipient-table">
-      <thead><tr><th>#</th><th>Nome</th><th>Telefone</th><th>Status</th><th>Mensagem</th><th>Enviado em</th><th>Erro</th></tr></thead>
+    <table class="data-table dispatch-recipient-table {% if dispatch.status == 'RASCUNHO' %}is-editable{% endif %}">
+      <thead><tr><th>#</th><th>Nome</th><th>Telefone</th><th>Status</th><th>Mensagem</th><th>Enviado em</th><th>Erro</th>{% if dispatch.status == 'RASCUNHO' %}<th>Ações</th>{% endif %}</tr></thead>
       <tbody>
         {% for item in recipients %}
         <tr>
           <td>{{ loop.index }}</td>
+          {% if dispatch.status == 'RASCUNHO' and item.status == 'PENDENTE' %}
+          <td>
+            <input class="dispatch-inline-input" form="recipient-edit-{{ item.id }}" name="name" value="{{ item.name }}" maxlength="180" aria-label="Nome do destinatário {{ loop.index }}">
+            {% if item.lead_id %}<span class="table-subline">Lead #{{ item.lead_id }}</span>{% endif %}
+          </td>
+          <td>
+            <input class="dispatch-inline-input dispatch-phone-input" form="recipient-edit-{{ item.id }}" name="phone" value="{{ item.phone }}" inputmode="numeric" required aria-label="Telefone do destinatário {{ loop.index }}">
+          </td>
+          {% else %}
           <td><strong>{{ item.name }}</strong>{% if item.lead_id %}<span class="table-subline">Lead #{{ item.lead_id }}</span>{% endif %}</td>
           <td>{{ item.phone|phone_br }}</td>
+          {% endif %}
           <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
-          <td><span class="dispatch-message-preview">{{ item.message_body }}</span></td>
+          <td>
+            {% if dispatch.status == 'RASCUNHO' and item.status == 'PENDENTE' %}
+            <textarea class="dispatch-inline-message" form="recipient-edit-{{ item.id }}" name="message_body" rows="4" maxlength="4096" required aria-label="Mensagem do destinatário {{ loop.index }}">{{ item.message_body }}</textarea>
+            <span class="table-subline">Mensagem individual deste contato.</span>
+            {% else %}
+            <span class="dispatch-message-preview">{{ item.message_body }}</span>
+            {% endif %}
+          </td>
           <td>{{ item.sent_at|datetime_br if item.sent_at else '—' }}</td>
           <td>{% if item.error %}<span class="text-danger">{{ item.error }}</span>{% else %}—{% endif %}</td>
+          {% if dispatch.status == 'RASCUNHO' %}
+          <td class="dispatch-recipient-actions">
+            {% if item.status == 'PENDENTE' %}
+            <form id="recipient-edit-{{ item.id }}" action="/dispatches/{{ dispatch.id }}/recipients/{{ item.id }}/edit" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button button-primary dispatch-save-button" type="submit">Salvar</button>
+            </form>
+            <form action="/dispatches/{{ dispatch.id }}/recipients/{{ item.id }}/remove" method="post" onsubmit="return confirm('Remover este destinatário do disparo?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button button-ghost dispatch-remove-button" type="submit">Remover</button>
+            </form>
+            {% else %}—{% endif %}
+          </td>
+          {% endif %}
         </tr>
         {% else %}
-        <tr><td colspan="7"><div class="empty-state">Nenhum destinatário.</div></td></tr>
+        <tr><td colspan="{{ 8 if dispatch.status == 'RASCUNHO' else 7 }}"><div class="empty-state">Nenhum destinatário.</div></td></tr>
         {% endfor %}
       </tbody>
     </table>

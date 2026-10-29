@@ -218,3 +218,164 @@ def test_dispatch_sends_via_zapi_and_preserves_queue(monkeypatch):
             assert counts["pending"] == 1
         finally:
             db.close()
+
+
+def test_draft_dispatch_recipient_can_be_edited_before_start():
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "EDIT")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id,
+                queue_id=queue.id,
+                status="RASCUNHO",
+                interval_seconds=30,
+                daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            from app.services.dispatch_queue import ensure_dispatch_lead
+            lead = ensure_dispatch_lead(
+                db,
+                name="Empresa Original",
+                phone="5555999991301",
+                queue=queue,
+                created_by_id=None,
+            )
+            recipient = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id,
+                lead_id=lead.id,
+                name="Empresa Original",
+                phone="5555999991301",
+                message_body="Mensagem original",
+                status="PENDENTE",
+            )
+            db.add(recipient)
+            db.commit()
+            dispatch_id = dispatch.id
+            recipient_id = recipient.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/dispatches/{dispatch_id}/recipients/{recipient_id}/edit",
+            data={
+                "csrf_token": token,
+                "name": "Empresa Revisada",
+                "phone": "(55) 99999-1302",
+                "message_body": "Mensagem revisada antes do envio.",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/dispatches/{dispatch_id}"
+
+        db = SessionLocal()
+        try:
+            recipient = db.get(CampaignDispatchRecipient, recipient_id)
+            assert recipient is not None
+            assert recipient.name == "Empresa Revisada"
+            assert recipient.phone == "5555999991302"
+            assert recipient.message_body == "Mensagem revisada antes do envio."
+            assert recipient.lead_id is None
+            assert recipient.status == "PENDENTE"
+        finally:
+            db.close()
+
+
+def test_draft_dispatch_recipient_can_be_removed_before_start():
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "REMOVE")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id,
+                queue_id=queue.id,
+                status="RASCUNHO",
+                interval_seconds=30,
+                daily_limit=100,
+                import_summary_json=json.dumps({"imported": 1}),
+            )
+            db.add(dispatch)
+            db.flush()
+            recipient = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id,
+                name="Empresa Remover",
+                phone="5555999991401",
+                message_body="Mensagem",
+                status="PENDENTE",
+            )
+            db.add(recipient)
+            db.commit()
+            dispatch_id = dispatch.id
+            recipient_id = recipient.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/dispatches/{dispatch_id}/recipients/{recipient_id}/remove",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        db = SessionLocal()
+        try:
+            assert db.get(CampaignDispatchRecipient, recipient_id) is None
+            dispatch = db.get(CampaignDispatch, dispatch_id)
+            summary = json.loads(dispatch.import_summary_json)
+            assert summary["removed_manual"] == 1
+        finally:
+            db.close()
+
+
+def test_started_dispatch_recipient_cannot_be_edited():
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "LOCKED")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id,
+                queue_id=queue.id,
+                status="ATIVO",
+                interval_seconds=30,
+                daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            recipient = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id,
+                name="Empresa Travada",
+                phone="5555999991501",
+                message_body="Mensagem original",
+                status="PENDENTE",
+            )
+            db.add(recipient)
+            db.commit()
+            dispatch_id = dispatch.id
+            recipient_id = recipient.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/dispatches/{dispatch_id}/recipients/{recipient_id}/edit",
+            data={
+                "csrf_token": token,
+                "name": "Não deve alterar",
+                "phone": "5555999991502",
+                "message_body": "Não deve alterar",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        db = SessionLocal()
+        try:
+            recipient = db.get(CampaignDispatchRecipient, recipient_id)
+            assert recipient.phone == "5555999991501"
+            assert recipient.message_body == "Mensagem original"
+        finally:
+            db.close()
