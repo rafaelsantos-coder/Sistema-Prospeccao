@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections import Counter
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -15,6 +17,7 @@ from app.models import (
     AIKnowledgeMetadata,
     AIQueueBinding,
     AIRun,
+    Conversation,
     ServiceQueue,
     User,
 )
