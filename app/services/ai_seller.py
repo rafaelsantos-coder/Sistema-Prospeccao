@@ -900,6 +900,76 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     return "Vou seguir com a próxima etapa da sua contratação."
 
 
+def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
+    states = list(
+        db.scalars(
+            select(AIClosingState)
+            .where(
+                AIClosingState.step.like("MOBILE_%"),
+                AIClosingState.updated_at >= utcnow() - timedelta(days=2),
+            )
+            .order_by(AIClosingState.updated_at.desc())
+            .limit(limit)
+        )
+    )
+    resumed = 0
+    obsolete_keys = {
+        "novo_iccid",
+        "numero_novo",
+        "port_iccid",
+        "port_data",
+        "m2m_quantidade",
+        "m2m_iccids",
+        "vencimento",
+        "taxa_ativacao",
+        "taxa_valor",
+    }
+
+    for state in states:
+        collected = _load_collected(state)
+        values = _mobile_values(collected)
+        changed = state.step in REMOVED_MOBILE_STEPS
+
+        if values.get("tipo_contratacao") == "M2M":
+            values.pop("tipo_contratacao", None)
+            changed = True
+
+        if not changed:
+            continue
+
+        for key in obsolete_keys:
+            values.pop(key, None)
+
+        next_step = _mobile_next_step(values) or "MOBILE_PAYMENT_METHOD"
+        collected["mobileCategoryValues"] = values
+        _save_collected(state, collected)
+        state.step = next_step
+        state.last_error = ""
+
+        conversation = db.get(Conversation, state.conversation_id)
+        agent = db.get(AIAgentProfile, state.agent_id)
+        if (
+            conversation
+            and agent
+            and agent.active
+            and agent.execution_mode == "AUTO"
+            and conversation.status not in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+        ):
+            prompt = _prompt_for_step(state, collected)
+            _send_step_message(
+                db,
+                agent=agent,
+                conversation=conversation,
+                state=state,
+                text=prompt,
+            )
+        resumed += 1
+
+    if resumed:
+        db.flush()
+    return resumed
+
+
 def _handoff_to_human(
     db: Session,
     *,
