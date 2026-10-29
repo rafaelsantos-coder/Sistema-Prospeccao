@@ -19,12 +19,14 @@ from app.models import (
     ServiceQueue,
     ServiceQueueMember,
     User,
+    ZApiInstance,
 )
 from app.security import hash_password
 from app.services.ai_sdr import AIDecision, QualificationData, claim_ai_job, process_ai_job
 from app.services.conversation_engine import store_received_payload
 from app.services.seed import seed_database
 from app.services.whatsapp_presence import join_whatsapp
+from app.services.zapi_instances import create_zapi_instance, queue_instance
 
 
 def _csrf(html: str) -> str:
@@ -443,3 +445,61 @@ def test_seed_binds_sulia_to_all_active_digital_queues():
                 assert binding.handling_mode == "AI_FIRST"
         finally:
             db.close()
+
+
+def test_seed_materializes_fila_ia_instance_as_service_queue():
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            admin = db.scalar(
+                select(User).where(User.email == "admin@sulnet.local")
+            )
+            assert admin is not None
+            instance = db.scalar(
+                select(ZApiInstance).where(ZApiInstance.name == "Fila IA")
+            )
+            if not instance:
+                instance = create_zapi_instance(
+                    db,
+                    name="Fila IA",
+                    phone_label="Número IA",
+                    base_url="https://api.z-api.io",
+                    instance_id="instance-fila-ia-seed-test",
+                    instance_token="token-fila-ia-seed-test",
+                    client_token="client-fila-ia-seed-test",
+                    created_by_id=admin.id,
+                )
+                db.commit()
+
+            seed_database(db, include_demo=False)
+
+            queue = db.scalar(
+                select(ServiceQueue).where(ServiceQueue.code == "FILA-IA")
+            )
+            assert queue is not None
+            assert queue.name == "Fila IA"
+            assert queue.team == "DIGITAL"
+            assert queue.routing_strategy == "MANUAL"
+            assert queue.active is True
+
+            linked_instance = queue_instance(db, queue.id)
+            assert linked_instance is not None
+            assert linked_instance.id == instance.id
+
+            binding = db.scalar(
+                select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id)
+            )
+            assert binding is not None
+            assert binding.active is True
+            assert binding.handling_mode == "AI_FIRST"
+        finally:
+            db.close()
+
+
+def test_ai_dashboard_shows_queue_whatsapp_instance():
+    with TestClient(app) as client:
+        _login_admin(client)
+        page = client.get("/ai")
+        assert page.status_code == 200
+        assert "Fila IA" in page.text
+        assert "WhatsApp: Fila IA" in page.text
