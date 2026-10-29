@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 import httpx
 
 from app.config import settings
+
+
+LOG = logging.getLogger("sulnet_crm_client")
 
 
 class CRMIntegrationError(RuntimeError):
@@ -55,6 +59,13 @@ class SulnetCRMClient:
                 )
         except httpx.HTTPError as exc:
             raise CRMIntegrationError("CRM Sulnet indisponível no momento.") from exc
+
+        LOG.info(
+            "crm_http method=%s path=%s status=%s",
+            method.upper(),
+            path,
+            response.status_code,
+        )
 
         try:
             payload = response.json()
@@ -129,6 +140,12 @@ class SulnetCRMClient:
             normalized["protocol"] = lead.get("protocol")
             normalized["status"] = lead.get("status", result.get("status"))
             normalized["created"] = result.get("created", True)
+            LOG.info(
+                "crm_lead_result opportunity_id=%s protocol=%s created=%s",
+                normalized.get("opportunityId"),
+                normalized.get("protocol") or "-",
+                normalized.get("created"),
+            )
             return normalized
         return result
 
@@ -144,11 +161,29 @@ class SulnetCRMClient:
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}")
         return result if isinstance(result, dict) else {}
 
-    def consult_credit(self, opportunity_id: int, cpf: str) -> dict[str, Any]:
+    def consult_credit(
+        self,
+        opportunity_id: int,
+        cpf: str | None = None,
+        *,
+        birth_date: str | None = None,
+        extra_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if cpf:
+            body["clientCpf"] = cpf
+        if birth_date:
+            body["clientBirthDate"] = birth_date
+        if extra_fields:
+            for key in ("cep", "street", "addressNumber", "neighborhood", "uf", "city"):
+                value = extra_fields.get(key)
+                if value not in (None, ""):
+                    body[key] = value
+
         result = self._request(
             "POST",
             f"/api/capture/leads/{opportunity_id}/consult",
-            json_body={"clientCpf": cpf},
+            json_body=body,
             timeout=45.0,
         )
         if not isinstance(result, dict):
@@ -168,13 +203,35 @@ class SulnetCRMClient:
         normalized.setdefault("analysisId", analysis.get("id") or result.get("analysisId"))
 
         if "approved" not in normalized:
-            key = status.lower()
-            normalized["approved"] = any(token in key for token in ("aprovado", "liberado", "pre-aprovado"))
+            if "approved" in analysis:
+                normalized["approved"] = bool(analysis.get("approved"))
+            else:
+                key = status.lower()
+                normalized["approved"] = any(
+                    token in key for token in ("aprovado", "liberado", "pre-aprovado")
+                )
         if "rejected" not in normalized:
-            normalized["rejected"] = "reprov" in status.lower()
+            if "rejected" in analysis:
+                normalized["rejected"] = bool(analysis.get("rejected"))
+            else:
+                normalized["rejected"] = "reprov" in status.lower()
         if "manualReview" not in normalized:
             normalized["manualReview"] = not normalized["approved"] and not normalized["rejected"]
-        normalized.setdefault("canContest", bool(normalized["rejected"]))
+        if "canContest" not in normalized:
+            normalized["canContest"] = (
+                bool(analysis.get("canContest"))
+                if "canContest" in analysis
+                else bool(normalized["rejected"])
+            )
+
+        LOG.info(
+            "crm_credit_result opportunity_id=%s analysis_id=%s status=%s approved=%s rejected=%s",
+            opportunity_id,
+            normalized.get("analysisId"),
+            status or "-",
+            bool(normalized.get("approved")),
+            bool(normalized.get("rejected")),
+        )
         return normalized
 
     def lookup_cep(self, cep: str) -> dict[str, Any]:
