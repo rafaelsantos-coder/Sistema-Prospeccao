@@ -12,6 +12,7 @@ from app.main import app
 from app.models import (
     AIAgentProfile,
     AIFollowupJob,
+    Conversation,
     AIQueueBinding,
     Lead,
     LeadQueuePreference,
@@ -22,7 +23,7 @@ from app.models import (
 from app.security import hash_password
 from app.services.ai_followups import cancel_pending_followups, schedule_followup
 from app.services.ai_sdr_policy import FTTH_PLANS, followup_spec
-from app.services.conversation_engine import store_received_payload
+from app.services.conversation_engine import apply_conversation_scope, store_received_payload
 from app.services.whatsapp_presence import join_whatsapp
 
 
@@ -208,5 +209,14 @@ def test_autonomous_ai_queue_holds_lead_until_handoff(monkeypatch):
             assert created is True
             assert conversation.assigned_user_id is None
             assert conversation.status == "EM_FILA"
+            visible = list(
+                db.scalars(
+                    apply_conversation_scope(
+                        select(Conversation).where(Conversation.id == conversation.id),
+                        seller,
+                    )
+                )
+            )
+            assert [item.id for item in visible] == [conversation.id]
         finally:
             db.close()
