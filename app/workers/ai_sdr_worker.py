@@ -8,10 +8,12 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import AIFollowupJob, AIJob
+from app.models import AIFollowupJob, AIConversationState, AIJob, Conversation, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job
-from app.services.ai_sdr import claim_ai_job, process_ai_job
+from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import poll_pending_contracts
+from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
+from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utcnow
 
 
@@ -71,6 +73,88 @@ def _recover_stale_followups() -> int:
     return recovered
 
 
+def _recover_recent_unqueued_inbounds() -> int:
+    db = SessionLocal()
+    recovered = 0
+    try:
+        threshold = utcnow() - timedelta(minutes=30)
+        messages = list(
+            db.scalars(
+                select(Message)
+                .where(
+                    Message.direction == "INBOUND",
+                    Message.message_type == "TEXT",
+                    Message.created_at >= threshold,
+                )
+                .order_by(Message.id.desc())
+                .limit(200)
+            )
+        )
+        seen_conversations: set[int] = set()
+        for message in messages:
+            if message.conversation_id in seen_conversations:
+                continue
+            seen_conversations.add(message.conversation_id)
+
+            if db.scalar(select(AIJob.id).where(AIJob.message_id == message.id).limit(1)):
+                continue
+
+            conversation = db.get(Conversation, message.conversation_id)
+            if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+                continue
+
+            state = db.scalar(
+                select(AIConversationState).where(
+                    AIConversationState.conversation_id == conversation.id
+                )
+            )
+            if state and state.state in {"HANDOFF", "HUMAN_ACTIVE", "OPT_OUT"}:
+                continue
+
+            later_outbound = db.scalar(
+                select(Message.id)
+                .where(
+                    Message.conversation_id == conversation.id,
+                    Message.direction == "OUTBOUND",
+                    Message.id > message.id,
+                )
+                .order_by(Message.id.asc())
+                .limit(1)
+            )
+            if later_outbound:
+                continue
+
+            instance = conversation_instance(db, conversation.id)
+            if instance:
+                target_queue = default_queue_for_instance(db, instance.id)
+                if target_queue and queue_ai_binding(db, target_queue.id):
+                    current_queue = queue_for_conversation(db, conversation.id)
+                    if not current_queue or current_queue.id != target_queue.id:
+                        bind_conversation_queue(
+                            db,
+                            conversation.id,
+                            target_queue.id,
+                            origin="AI_RECOVERY_INSTANCE",
+                        )
+                        conversation.team = target_queue.team
+                        if conversation.assigned_user_id:
+                            conversation.assigned_user_id = None
+                            conversation.status = "EM_FILA"
+
+            job = enqueue_ai_job(
+                db,
+                conversation=conversation,
+                message=message,
+            )
+            if job:
+                recovered += 1
+
+        db.commit()
+    finally:
+        db.close()
+    return recovered
+
+
 def run() -> None:
     Base.metadata.create_all(bind=engine)
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
@@ -83,6 +167,9 @@ def run() -> None:
     )
     _recover_stale_jobs()
     _recover_stale_followups()
+    recovered_recent = _recover_recent_unqueued_inbounds()
+    if recovered_recent:
+        LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
 
     missing_key_logged = False
     while True:
