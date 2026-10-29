@@ -114,11 +114,13 @@
   </div>
   <div class="data-table-wrap">
     <table class="data-table">
-      <thead><tr><th>Fila</th><th>Equipe</th><th>Agente</th><th>Modo</th><th>Fallback</th><th>Status</th><th>Ação</th></tr></thead>
+      <thead><tr><th>Fila</th><th>WhatsApp</th><th>Equipe</th><th>Agente</th><th>Modo</th><th>Fallback</th><th>Status</th><th>Ação</th></tr></thead>
       <tbody>
       {% for binding in bindings %}
         <tr>
+          {% set qi = queue_instances.get(binding.queue.id) %}
           <td><strong>{{ binding.queue.name }}</strong><span class="table-subline">{{ binding.queue.code }}</span></td>
+          <td><strong>{{ qi.name if qi else 'Sem instância' }}</strong><span class="table-subline">{{ qi.phone_label if qi and qi.phone_label else '—' }}</span></td>
           <td>{{ constants.teams.get(binding.queue.team, binding.queue.team) }}</td>
           <td>{{ binding.agent.name }}</td>
           <td><span class="ai-mode-badge">{{ handling_modes.get(binding.handling_mode, binding.handling_mode) }}</span></td>
@@ -132,7 +134,7 @@
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="7"><div class="empty-state"><strong>Nenhuma fila ligada à IA</strong><span>Vincule uma fila abaixo para iniciar o Shadow Mode.</span></div></td></tr>
+        <tr><td colspan="8"><div class="empty-state"><strong>Nenhuma fila ligada à IA</strong><span>Vincule uma fila abaixo para iniciar o atendimento do agente.</span></div></td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -143,7 +145,7 @@
     <div class="panel-header"><div><span class="eyebrow">VINCULAR FILA</span><h3>Configurar atuação do agente</h3></div></div>
     <form action="/ai/queues/bind" method="post" class="form-grid">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label class="field"><span>Fila</span><select name="queue_id" required><option value="">Selecione</option>{% for queue in queues %}<option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Fila</span><select name="queue_id" required><option value="">Selecione</option>{% for queue in queues %}{% set qi = queue_instances.get(queue.id) %}<option value="{{ queue.id }}">{{ queue.name }} · WhatsApp: {{ qi.name if qi else 'sem instância' }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select><small>Selecione a fila operacional. A instância WhatsApp vinculada aparece no próprio nome da opção.</small></label>
       <label class="field"><span>Agente</span><select name="agent_id" required>{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select></label>
       <label class="field"><span>Modo da fila</span><select name="handling_mode">{% for key, label in handling_modes.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
       <label class="queue-check"><input type="checkbox" name="fallback_to_human" value="true" checked><span>Usar humano como fallback</span></label>

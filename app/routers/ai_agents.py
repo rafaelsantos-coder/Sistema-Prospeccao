@@ -18,6 +18,7 @@ from app.models import (
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.ai_sdr import ai_metrics
 from app.services.audit import write_audit
+from app.services.zapi_instances import queue_instance
 from app.web import flash, render
 
 
@@ -88,6 +89,10 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
             .order_by(AIQueueBinding.queue_id)
         )
     )
+    queue_instances = {
+        queue.id: queue_instance(db, queue.id)
+        for queue in queues
+    }
     knowledge = list(
         db.scalars(
             select(AIKnowledgeItem)
@@ -130,6 +135,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         agents=agents,
         queues=queues,
         bindings=bindings,
+        queue_instances=queue_instances,
         knowledge=knowledge,
         recent_runs=recent_runs,
         metrics=metrics,
