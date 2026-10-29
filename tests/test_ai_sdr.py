@@ -28,6 +28,7 @@ from app.services.ai_sdr import (
     QualificationData,
     _apply_catalog_navigation_policy,
     _apply_offer_rejection_diagnostic_policy,
+    _apply_router_information_policy,
     _apply_secondary_decline_reengagement_policy,
     _apply_unavailable_plan_policy,
     _is_company_context,
@@ -1649,3 +1650,127 @@ def test_current_mobile_allowance_is_not_misread_as_catalog_selection():
 
     assert result.reply_text == "Entendi. Você quer aumentar sua franquia atual?"
     assert result.offer_plan_code is None
+
+
+def _base_router_question_decision():
+    return AIDecision(
+        reply_text="Preciso validar quantos roteadores estão incluídos.",
+        intent="INFORMATION",
+        qualification_score=55,
+        temperature="MORNO",
+        recommended_stage="PROPOSTA",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.8,
+        summary="Cliente perguntou sobre roteadores.",
+        next_action="Validar informação.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="OFFERING",
+        offer_plan_code="FTTH_650",
+        offer_price=99.90,
+        unanswered_question="Quantos roteadores acompanham o plano de 650 Mega?",
+    )
+
+
+def test_router_question_for_650_answers_directly_without_validation():
+    decision = _base_router_question_decision()
+    context = {
+        "latest_customer_message": "Roteadores",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Plano de 650 Mega por R$ 99,90 mensais.",
+            },
+            {
+                "direction": "INBOUND",
+                "body": "Roteadores",
+            },
+        ],
+    }
+
+    result = _apply_router_information_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.offer_plan_code == "FTTH_650"
+    assert result.offer_price == 99.90
+    assert result.unanswered_question is None
+    assert "1 roteador em comodato" in result.reply_text
+    assert "R$ 29,90 por mês" in result.reply_text
+    assert "validar" not in result.reply_text.lower()
+    assert [item.label for item in result.quick_replies] == [
+        "Quero contratar",
+        "Tenho outra dúvida",
+    ]
+
+
+def test_router_and_fiber_question_answers_both_points_for_650():
+    decision = _base_router_question_decision()
+    context = {
+        "latest_customer_message": (
+            "A internet é fibra? Vem apenas um roteador ou tem mais inclusos?"
+        ),
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Plano de 650 Mega por R$ 99,90 mensais.",
+            }
+        ],
+    }
+
+    result = _apply_router_information_policy(decision, context)
+
+    assert "é de fibra óptica" in result.reply_text
+    assert "1 roteador em comodato" in result.reply_text
+    assert "cada roteador adicional é locado por R$ 29,90 por mês" in result.reply_text
+    assert "Quer seguir com o plano de 650 Mega por R$ 99,90 mensais?" in result.reply_text
+
+
+def test_router_question_for_800_uses_same_confirmed_rule():
+    decision = _base_router_question_decision()
+    decision.offer_plan_code = "FTTH_800"
+    decision.offer_price = 119.90
+    context = {
+        "latest_customer_message": "Quantos roteadores vêm inclusos?",
+        "lead": {"city": "Santa Rosa"},
+        "history": [],
+    }
+
+    result = _apply_router_information_policy(decision, context)
+
+    assert "plano de 800 Mega inclui 1 roteador em comodato" in result.reply_text
+    assert "R$ 29,90 por mês" in result.reply_text
+    assert result.offer_price == 119.90
+
+
+def test_router_question_with_unsupported_explicit_speed_keeps_unavailable_plan_answer():
+    decision = AIDecision(
+        reply_text=(
+            "O plano de 850 Mega não está disponível em Santa Rosa. "
+            "Hoje temos 800 Mega por R$ 119,90 ou 650 Mega por R$ 99,90 mensais."
+        ),
+        intent="INTEREST",
+        qualification_score=55,
+        temperature="MORNO",
+        recommended_stage="PROPOSTA",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.9,
+        summary="Cliente pediu plano indisponível.",
+        next_action="Oferecer alternativas válidas.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="OFFERING",
+    )
+    context = {
+        "latest_customer_message": "O plano de 850 Mega vem com quantos roteadores?",
+        "lead": {"city": "Santa Rosa"},
+        "history": [],
+    }
+
+    result = _apply_router_information_policy(decision, context)
+
+    assert "850 Mega não está disponível" in result.reply_text
+    assert "1 roteador" not in result.reply_text
