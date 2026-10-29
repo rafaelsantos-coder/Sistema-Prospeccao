@@ -19,7 +19,7 @@ from app.services.zapi_instances import instance_webhook_url, list_zapi_instance
 from app.web import render
 
 
-LOG = logging.getLogger("sulnet_prospecta")
+LOG = logging.getLogger("uvicorn.error")
 
 
 async def initialize_database(max_attempts: int = 12) -> None:
@@ -57,7 +57,7 @@ async def configure_zapi_webhooks() -> None:
             if not webhook_url:
                 continue
             try:
-                await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     service_for_instance(instance).configure_webhooks,
                     webhook_url,
                 )
@@ -68,7 +68,14 @@ async def configure_zapi_webhooks() -> None:
                     exc,
                 )
             else:
-                LOG.info("Webhooks da Z-API %s configurados com sucesso.", instance.name)
+                state = result.get("webhook_state") or {}
+                LOG.info(
+                    "Webhooks da Z-API %s configurados. received_ok=%s sent_by_me=%s connected=%s",
+                    instance.name,
+                    bool(state.get("received_callback_url")),
+                    bool(state.get("receive_sent_by_me")),
+                    bool(state.get("connected")),
+                )
     finally:
         db.close()
 
