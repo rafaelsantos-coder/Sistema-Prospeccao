@@ -108,7 +108,7 @@
             <td><strong>{{ lead.business_name }}</strong><span>{{ lead.city }}</span></td>
             <td><span class="soft-badge">{{ constants.teams.get(lead.team, lead.team) }}</span></td>
             <td>{{ constants.stages.get(lead.stage, lead.stage) }}</td>
-            <td class="{% if lead.next_action_at and lead.next_action_at < now %}text-danger{% endif %}">{{ lead.next_action_at|datetime_br }}</td>
+            <td class="{% if lead.next_action_at|is_past %}text-danger{% endif %}">{{ lead.next_action_at|datetime_br }}</td>
             <td><a href="/leads/{{ lead.id }}" class="table-action">→</a></td>
           </tr>
           {% else %}
