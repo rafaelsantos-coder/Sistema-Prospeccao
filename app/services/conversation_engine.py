@@ -244,10 +244,11 @@ def ensure_open_conversation(
             conversation.branch_id = lead.branch_id
             conversation.team = lead.team
 
+        existing_queue = queue_for_conversation(db, conversation.id)
         queue = resolve_queue(
             db,
             conversation_id=conversation.id,
-            explicit_queue_id=queue_id,
+            explicit_queue_id=queue_id if not existing_queue else None,
             lead_id=lead.id if lead else conversation.lead_id,
             team=conversation.team or team,
             branch_id=conversation.branch_id or branch_id,
