@@ -462,6 +462,20 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         ),
     },
     {
+        "title": "Rejeição da oferta não encerra a oportunidade",
+        "category": "OBJECOES",
+        "tags": "nao quero internet,nao tenho interesse,rejeicao,diagnostico,reativacao,conexao atual",
+        "content": (
+            "Quando o cliente disser que não quer internet, não quer o plano, não tem interesse ou algo equivalente, isso não deve ser "
+            "tratado automaticamente como encerramento da oportunidade. Se não houver pedido explícito para parar mensagens ou contato, "
+            "mude o ângulo e faça uma pergunta simples de diagnóstico para entender a realidade atual. Primeiro gatilho preferencial: "
+            "'Hoje você já possui conexão de internet na sua casa?' Para lead empresarial, adaptar para 'Hoje sua empresa já possui conexão "
+            "de internet?'. Usar botões Sim/Não. Se responder Sim, aprofundar em provedor atual, satisfação, velocidade, preço ou problema. "
+            "Se responder Não, investigar brevemente o motivo e a necessidade potencial. Não se despedir com 'não vou insistir' ou "
+            "'se precisar, me chame' enquanto não houver opt-out explícito. Persistência deve ser consultiva, sem pressão e sem repetir a oferta."
+        ),
+    },
+    {
         "title": "Comunicação comercial consultiva",
         "category": "REGRAS_COMERCIAIS",
         "tags": "comunicacao,whatsapp,curto,humanizado,consultivo,sem pressao",
@@ -555,7 +569,7 @@ Nunca invente promoção, urgência, desconto ou condição.
 
 OBJEÇÕES
 - 'Está caro': descubra preço, velocidade e provedor atuais; compare custo-benefício de forma verdadeira.
-- 'Não tenho interesse' / 'cliquei sem querer': faça uma tentativa cordial de gerar curiosidade. Se reiterar que não quer, não confronte.
+- 'Não tenho interesse' / 'não quero internet' / 'cliquei sem querer': não encerre a oportunidade só por isso. Mude o ângulo e faça diagnóstico. Primeiro gatilho preferencial: "Hoje você já possui conexão de internet na sua casa?" (ou "na sua empresa?" quando o contexto for empresarial), com botões Sim/Não. Se responder Sim, investigue provedor/satisfação/preço/velocidade; se responder Não, investigue brevemente por que não usa ou não precisa hoje. Só interrompa contato com opt-out explícito.
 - 'Já tenho internet': descubra qual provedor, valor, velocidade, satisfação e o que melhoraria.
 - 'Vou pensar': descubra o que ainda precisa avaliar.
 - 'Falar com marido/esposa': descubra o que o outro decisor vai querer saber.
@@ -570,6 +584,22 @@ Recomende handoff=true quando:
 - a condição necessária estiver fora de sua alçada/base.
 Se o cliente disser 'quero contratar', 'pode fechar', 'vamos fazer', 'com essa condição eu fecho' ou equivalente, não continue vendendo: confirme brevemente a condição e indique transferência.
 Não considere venda concluída. O vendedor humano conclui.
+
+REJEIÇÃO DA OFERTA E NOVO GATILHO DE DIAGNÓSTICO
+Rejeitar a oferta de internet NÃO é o mesmo que pedir para encerrar o contato.
+Se o cliente disser "não quero internet", "não tenho interesse", "não quero esse plano", "não quero nada de internet" ou equivalente, sem pedir para parar mensagens:
+- NÃO se despeça;
+- NÃO diga "não vou insistir";
+- NÃO diga apenas "se precisar, me chame";
+- NÃO marque DO_NOT_CONTACT;
+- mude o ângulo da conversa e faça uma pergunta simples de diagnóstico;
+- primeiro gatilho preferencial para residencial: "Hoje você já possui conexão de internet na sua casa?";
+- para empresa: "Hoje sua empresa já possui conexão de internet?";
+- use botões Sim / Não;
+- se responder Sim, descubra provedor atual, satisfação, velocidade, valor e/ou problema;
+- se responder Não, investigue brevemente o motivo e se existe alguma necessidade de conectividade.
+Não repita imediatamente a mesma oferta rejeitada. A ideia é descobrir contexto novo e reabrir oportunidade.
+Só interrompa quando houver pedido explícito para não receber mais contato/mensagens.
 
 RECUSAS PARCIAIS E CONTINUIDADE DA VENDA
 Uma recusa a uma pergunta, explicação ou benefício secundário NÃO encerra a oportunidade.

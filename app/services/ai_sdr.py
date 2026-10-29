@@ -593,6 +593,103 @@ def _apply_secondary_decline_reengagement_policy(
     return decision
 
 
+_OFFER_REJECTION_CUES = (
+    "nao quero nada de internet",
+    "nao quero internet",
+    "nao tenho interesse em internet",
+    "nao quero esse plano",
+    "nao quero o plano",
+    "nao quero contratar",
+    "nao tenho interesse",
+    "nao quero nada",
+)
+
+_EXPLICIT_CONTACT_STOP_CUES = (
+    "nao quero mais mensagens",
+    "nao quero mais contato",
+    "nao me contate",
+    "nao entre em contato",
+    "nao me chame",
+    "pare de me chamar",
+    "pare de mandar",
+    "me remova",
+    "remover meu numero",
+    "sair da lista",
+    "descadastrar",
+)
+
+
+def _is_company_context(context: dict) -> bool:
+    lead = context.get("lead") or {}
+    segment = _fold_sales_text(str(lead.get("segment") or ""))
+    business_name = _fold_sales_text(str(lead.get("business_name") or ""))
+    company_terms = (
+        "empresa",
+        "empresarial",
+        "corporativo",
+        "pj",
+        "comercio",
+        "comercial",
+        "loja",
+        "clinica",
+        "escritorio",
+    )
+    if any(term in segment for term in company_terms):
+        return True
+    if any(term in business_name for term in company_terms):
+        return True
+    for row in reversed((context.get("history") or [])[-8:]):
+        body = _fold_sales_text(str(row.get("body") or ""))
+        if "sua empresa" in body or "para empresa" in body:
+            return True
+    return False
+
+
+def _apply_offer_rejection_diagnostic_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    if not latest:
+        return decision
+    if any(cue in latest for cue in _EXPLICIT_CONTACT_STOP_CUES):
+        return decision
+    if not any(cue in latest for cue in _OFFER_REJECTION_CUES):
+        return decision
+
+    # Não repetir esse mesmo gatilho indefinidamente.
+    for row in context.get("history") or []:
+        if str(row.get("direction") or "").upper() != "OUTBOUND":
+            continue
+        body = _fold_sales_text(str(row.get("body") or ""))
+        if (
+            "possui conexao de internet na sua casa" in body
+            or "sua empresa ja possui conexao de internet" in body
+        ):
+            return decision
+
+    if _is_company_context(context):
+        question = "Entendi. Hoje sua empresa já possui conexão de internet?"
+    else:
+        question = "Entendi. Hoje você já possui conexão de internet na sua casa?"
+
+    decision.reply_text = question
+    decision.quick_replies = [
+        QuickReply(id="possui_internet_sim", label="Sim"),
+        QuickReply(id="possui_internet_nao", label="Não"),
+    ]
+    decision.intent = "QUALIFYING"
+    decision.sales_state = "DISCOVERY"
+    decision.objection = "NO_INTEREST"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.followup_needed = True
+    decision.next_action = (
+        "Descobrir a situação atual da conexão antes de retomar uma oferta."
+    )
+    return decision
+
+
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
@@ -620,6 +717,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Esses detalhes só entram se o cliente perguntar, hesitar ou trouxer objeção. "
         "Se o cliente recusar apenas uma informação secundária com 'não, obrigado', 'agora não' ou equivalente, não encerre a conversa: "
         "aceite a recusa daquele detalhe e volte para a oferta principal com CTA de avanço. Nunca responda apenas 'se quiser, me chame' nesse cenário. "
+        "Se o cliente rejeitar a própria oferta de internet sem pedir para parar o contato, também não encerre: mude o ângulo e pergunte se ele já possui conexão "
+        "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
         "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação ou exceção que exija humano. "
         f"Modo efetivo: {effective_mode}.\n\n"
         + json.dumps(context, ensure_ascii=False, default=str)
@@ -640,7 +739,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = result.final_output
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
-    return _apply_secondary_decline_reengagement_policy(decision, context)
+    decision = _apply_secondary_decline_reengagement_policy(decision, context)
+    return _apply_offer_rejection_diagnostic_policy(decision, context)
 
 
 def _send_autonomous_reply(

@@ -25,6 +25,7 @@ from app.security import hash_password
 from app.services.ai_sdr import (
     AIDecision,
     QualificationData,
+    _apply_offer_rejection_diagnostic_policy,
     _apply_secondary_decline_reengagement_policy,
     claim_ai_job,
     process_ai_job,
@@ -909,3 +910,134 @@ def test_decline_to_direct_contract_question_is_not_reinterpreted():
     result = _apply_secondary_decline_reengagement_policy(decision, context)
     assert result.reply_text == "Tudo bem. Posso ajudar com outra informação."
     assert result.intent == "NOT_INTERESTED"
+
+
+
+def _base_rejection_decision():
+    return AIDecision(
+        reply_text="Entendi, obrigado por avisar. Não vou insistir na oferta de internet.",
+        intent="NOT_INTERESTED",
+        qualification_score=35,
+        temperature="FRIO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.95,
+        summary="Cliente rejeitou a oferta de internet.",
+        next_action="Encerrar conversa.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        objection="NO_INTEREST",
+        sales_state="WAITING_CUSTOMER",
+    )
+
+
+def test_offer_rejection_opens_residential_diagnostic_instead_of_goodbye():
+    decision = _base_rejection_decision()
+    context = {
+        "latest_customer_message": "eu não quero nada de internet",
+        "lead": {
+            "segment": "Residencial",
+            "business_name": "",
+            "city": "Santa Rosa",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Claro! Qual é a sua dúvida?",
+            },
+            {
+                "direction": "INBOUND",
+                "body": "eu não quero nada de internet",
+            },
+        ],
+    }
+
+    result = _apply_offer_rejection_diagnostic_policy(decision, context)
+
+    assert result.reply_text == (
+        "Entendi. Hoje você já possui conexão de internet na sua casa?"
+    )
+    assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+    assert result.intent == "QUALIFYING"
+    assert result.sales_state == "DISCOVERY"
+    assert result.handoff_recommended is False
+    assert result.followup_needed is True
+
+
+def test_offer_rejection_uses_company_diagnostic_for_business_lead():
+    decision = _base_rejection_decision()
+    context = {
+        "latest_customer_message": "não tenho interesse em internet",
+        "lead": {
+            "segment": "Empresa",
+            "business_name": "Mercado Teste",
+            "city": "Santa Rosa",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Podemos avançar com o plano de 800 Mega?",
+            },
+            {
+                "direction": "INBOUND",
+                "body": "não tenho interesse em internet",
+            },
+        ],
+    }
+
+    result = _apply_offer_rejection_diagnostic_policy(decision, context)
+
+    assert result.reply_text == (
+        "Entendi. Hoje sua empresa já possui conexão de internet?"
+    )
+    assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+
+
+def test_explicit_opt_out_is_not_overridden_by_sales_reengagement():
+    decision = _base_rejection_decision()
+    decision.intent = "DO_NOT_CONTACT"
+    decision.sales_state = "OPT_OUT"
+    context = {
+        "latest_customer_message": "não quero mais mensagens, não me contate",
+        "lead": {
+            "segment": "Residencial",
+            "business_name": "",
+        },
+        "history": [],
+    }
+
+    result = _apply_offer_rejection_diagnostic_policy(decision, context)
+
+    assert result.intent == "DO_NOT_CONTACT"
+    assert result.sales_state == "OPT_OUT"
+    assert result.reply_text == (
+        "Entendi, obrigado por avisar. Não vou insistir na oferta de internet."
+    )
+
+
+def test_offer_rejection_diagnostic_is_not_repeated_indefinitely():
+    decision = _base_rejection_decision()
+    context = {
+        "latest_customer_message": "não quero internet",
+        "lead": {
+            "segment": "Residencial",
+            "business_name": "",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Entendi. Hoje você já possui conexão de internet na sua casa?",
+            },
+            {
+                "direction": "INBOUND",
+                "body": "não quero internet",
+            },
+        ],
+    }
+
+    result = _apply_offer_rejection_diagnostic_policy(decision, context)
+
+    assert result.reply_text == (
+        "Entendi, obrigado por avisar. Não vou insistir na oferta de internet."
+    )
