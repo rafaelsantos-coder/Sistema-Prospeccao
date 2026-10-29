@@ -74,6 +74,33 @@ def _get_conversation(db: Session, user: User, conversation_id: int) -> Conversa
     return db.scalar(_conversation_stmt(user).where(Conversation.id == conversation_id))
 
 
+def _contact_history_messages(db: Session, conversation: Conversation) -> list[Message]:
+    return list(
+        db.scalars(
+            select(Message)
+            .where(Message.contact_id == conversation.contact_id)
+            .options(selectinload(Message.sender_user))
+            .order_by(Message.created_at.asc(), Message.id.asc())
+        )
+    )
+
+
+def _message_visible_through_contact(
+    db: Session,
+    user: User,
+    message: Message,
+) -> bool:
+    if not message.contact_id:
+        return False
+    visible_conversation = db.scalar(
+        _conversation_stmt(user)
+        .where(Conversation.contact_id == message.contact_id)
+        .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+        .limit(1)
+    )
+    return visible_conversation is not None
+
+
 def _eligible_users(db: Session, user: User, conversation: Conversation | None = None) -> list[User]:
     online_ids = online_user_ids(db)
     if not online_ids:
@@ -181,15 +208,7 @@ def _render_inbox(
         if selected.unread_count:
             mark_conversation_read(db, selected)
             db.commit()
-        messages = list(
-            db.scalars(
-                select(Message)
-                .where(Message.conversation_id == selected.id)
-                .options(selectinload(Message.sender_user))
-                .order_by(Message.created_at.asc())
-                .limit(1000)
-            )
-        )
+        messages = _contact_history_messages(db, selected)
         users = _eligible_users(db, user, selected)
 
     counts = _inbox_counts(db, user)
@@ -568,8 +587,7 @@ def conversation_media(
     message = db.get(Message, message_id)
     if not message or not message.media_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    conversation = _get_conversation(db, user, message.conversation_id)
-    if not conversation or not conversation_visible_to_user(conversation, user):
+    if not _message_visible_through_contact(db, user, message):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     try:
         url = MediaStorage().presigned_download_url(
@@ -766,12 +784,11 @@ def conversation_messages_api(
     stmt = (
         select(Message)
         .where(
-            Message.conversation_id == conversation.id,
+            Message.contact_id == conversation.contact_id,
             Message.id > max(after_id, 0),
         )
         .options(selectinload(Message.sender_user))
         .order_by(Message.id.asc())
-        .limit(250)
     )
     items = list(db.scalars(stmt))
     if conversation.unread_count:
