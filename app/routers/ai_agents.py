@@ -204,7 +204,7 @@ def seller_dashboard(request: Request, db: Session = Depends(get_db)):
         execution_modes=EXECUTION_MODES,
         autonomous_enabled=settings.ai_autonomous_enabled,
         seller_enabled=settings.ai_seller_enabled,
-        crm_configured=bool(settings.sulnet_crm_base_url and settings.sulnet_ai_integration_key),
+        crm_configured=bool(settings.sulnet_crm_base_url and settings.sulnet_crm_bearer_token),
     )
 
 
