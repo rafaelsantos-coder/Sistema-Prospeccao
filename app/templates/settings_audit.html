@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_settings_nav.html" %}
+
+<div class="page-lead split settings-section-lead">
+  <div>
+    <span class="eyebrow">CONFIGURAÇÕES · GOVERNANÇA</span>
+    <h2>Auditoria</h2>
+    <p>Histórico recente das principais ações administrativas e operacionais do sistema.</p>
+  </div>
+  <a class="button button-secondary" href="/settings">← Configurações</a>
+</div>
+
+<div class="settings-grid">
+  <article class="panel panel-span-12">
+    <div class="panel-header"><div><span class="eyebrow">EVENTOS</span><h3>Eventos recentes do sistema</h3></div><span class="count-badge">{{ audit_logs|length }}</span></div>
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Entidade</th><th>ID</th></tr></thead>
+        <tbody>
+          {% for log in audit_logs %}
+          <tr>
+            <td>{{ log.created_at|datetime_br }}</td>
+            <td>{{ log.user.name if log.user else 'Sistema' }}</td>
+            <td><strong>{{ log.action }}</strong></td>
+            <td>{{ log.entity_type }}</td>
+            <td>{{ log.entity_id or '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5"><div class="empty-state">Nenhum evento registrado.</div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</div>
+{% endblock %}
