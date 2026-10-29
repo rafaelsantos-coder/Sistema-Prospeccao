@@ -394,6 +394,28 @@ def payload_message_content(payload: dict[str, Any]) -> tuple[str, str, str | No
     if isinstance(text, dict) and text.get("message"):
         return "TEXT", str(text["message"]).strip(), None, None
 
+    buttons_response = payload.get("buttonsResponseMessage")
+    if isinstance(buttons_response, dict):
+        body = (
+            buttons_response.get("message")
+            or buttons_response.get("selectedDisplayText")
+            or buttons_response.get("selectedButtonId")
+            or buttons_response.get("buttonId")
+            or "[Resposta de botão]"
+        )
+        return "TEXT", str(body).strip(), None, None
+
+    list_response = payload.get("listResponseMessage")
+    if isinstance(list_response, dict):
+        body = (
+            list_response.get("message")
+            or list_response.get("title")
+            or list_response.get("selectedRowId")
+            or list_response.get("description")
+            or "[Resposta de lista]"
+        )
+        return "TEXT", str(body).strip(), None, None
+
     image = payload.get("image")
     if isinstance(image, dict):
         return (
