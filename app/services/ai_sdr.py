@@ -169,14 +169,13 @@ def enqueue_ai_job(
         return existing
 
     # Depois do handoff, a conversa pertence ao Vendedor IA e não volta ao SDR.
-    closing_state = db.scalar(
+    ai_state = db.scalar(
         select(AIConversationState).where(
-            AIConversationState.conversation_id == conversation.id,
-            AIConversationState.state == "CLOSING",
+            AIConversationState.conversation_id == conversation.id
         )
     )
-    if closing_state and settings.ai_seller_enabled:
-        closer = db.get(AIAgentProfile, closing_state.agent_id)
+    if ai_state and ai_state.state == "CLOSING" and settings.ai_seller_enabled:
+        closer = db.get(AIAgentProfile, ai_state.agent_id)
         queue = queue_for_conversation(db, conversation.id)
         if closer and closer.active and closer.role_type == "CLOSER" and queue:
             from app.services.ai_followups import cancel_pending_followups
@@ -200,6 +199,21 @@ def enqueue_ai_job(
                 closer.id,
             )
             return job
+
+    if ai_state and ai_state.state in {
+        "HANDOFF",
+        "HANDOFF_HUMAN",
+        "HUMAN_ACTIVE",
+        "OPT_OUT",
+        "ESCALATED",
+        "COMPLETED",
+    }:
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=terminal_state state=%s",
+            conversation.id,
+            ai_state.state,
+        )
+        return None
 
     if not settings.ai_sdr_enabled:
         return None
@@ -486,7 +500,7 @@ def build_ai_context(
     history = _conversation_messages(
         db,
         conversation.id,
-        limit=int(agent.max_history_messages or 24),
+        limit=max(40, int(agent.max_history_messages or 24)),
     )
     knowledge = retrieve_knowledge(db, agent=agent, query=message.body or "")
     knowledge_meta_rows = list(
@@ -520,11 +534,14 @@ def build_ai_context(
             "temperature": lead.temperature if lead else "FRIO",
             "confirmed_customer_type": _confirmed_customer_type_from_lead(lead),
             "confirmed_existing_customer": _confirmed_existing_customer_from_lead(lead),
+            "commercial_memory": (lead.potential or "")[-6000:] if lead else "",
         },
         "previous_ai_state": {
             "qualification_score": state.qualification_score if state else 0,
             "temperature": state.temperature if state else "FRIO",
             "last_intent": state.last_intent if state else "UNKNOWN",
+            "summary": state.summary if state else "",
+            "state": state.state if state else "NEW",
         },
         "customer_evidence": [
             {
