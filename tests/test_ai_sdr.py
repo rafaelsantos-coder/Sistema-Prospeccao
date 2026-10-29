@@ -28,6 +28,7 @@ from app.services.queue_routing import queue_for_conversation
 from app.services.seed import seed_database
 from app.services.whatsapp_presence import join_whatsapp
 from app.services.zapi_instances import bind_queue_instance, create_zapi_instance, queue_instance
+from app.workers.ai_sdr_worker import _recover_recent_unqueued_inbounds
 
 
 def _csrf(html: str) -> str:
@@ -736,5 +737,66 @@ def test_inbound_instance_rebinds_stale_conversation_to_ai_queue():
             assert job is not None
             assert job.queue_id == ai_queue.id
             assert job.status == "PENDENTE"
+        finally:
+            db.close()
+
+
+
+def test_worker_recovers_recent_inbound_that_missed_ai_job():
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+
+            _agent, ai_queue, _human = _create_bound_digital_queue(db, "RECOVER-MISSED")
+            instance = queue_instance(db, ai_queue.id)
+            assert instance is not None
+
+            old_queue = ServiceQueue(
+                name="Fila Antiga Recovery",
+                code="OLD-RECOVERY",
+                team="DIGITAL",
+                routing_strategy="MANUAL",
+                active=True,
+            )
+            db.add(old_queue)
+            db.commit()
+
+            conversation, message, created = store_received_payload(
+                db,
+                {
+                    "phone": "5555988866444",
+                    "messageId": "AI-MISSED-IN-1",
+                    "senderName": "Cliente Recovery",
+                    "text": {"message": "Quero internet"},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+                queue_id=old_queue.id,
+                zapi_instance_id=instance.id,
+            )
+            db.commit()
+            assert created is True
+            assert db.scalar(select(AIJob).where(AIJob.message_id == message.id)) is None
+            assert queue_for_conversation(db, conversation.id).id == old_queue.id
+        finally:
+            db.close()
+
+        recovered = _recover_recent_unqueued_inbounds()
+        assert recovered >= 1
+
+        db = SessionLocal()
+        try:
+            job = db.scalar(
+                select(AIJob).where(
+                    AIJob.message_id == message.id,
+                    AIJob.status == "PENDENTE",
+                )
+            )
+            assert job is not None
+            assert job.queue_id == ai_queue.id
+            assert queue_for_conversation(db, conversation.id).id == ai_queue.id
         finally:
             db.close()
