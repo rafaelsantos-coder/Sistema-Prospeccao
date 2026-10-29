@@ -353,6 +353,64 @@ class WhatsAppPresence(Base):
     user: Mapped[User] = relationship()
 
 
+class ZApiInstance(Base):
+    __tablename__ = "zapi_instances"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    phone_label: Mapped[str] = mapped_column(String(80), default="")
+    base_url: Mapped[str] = mapped_column(String(255), default="https://api.z-api.io")
+    instance_id: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    instance_token_encrypted: Mapped[str] = mapped_column(Text)
+    client_token_encrypted: Mapped[str] = mapped_column(Text, default="")
+    webhook_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    source_type: Mapped[str] = mapped_column(String(20), default="DB", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+
+
+class ServiceQueueZApiInstance(Base):
+    __tablename__ = "service_queue_zapi_instances"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    queue_id: Mapped[int] = mapped_column(
+        ForeignKey("service_queues.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    zapi_instance_id: Mapped[int] = mapped_column(
+        ForeignKey("zapi_instances.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    zapi_instance: Mapped[ZApiInstance] = relationship()
+
+
+class ConversationZApiInstance(Base):
+    __tablename__ = "conversation_zapi_instances"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    zapi_instance_id: Mapped[int] = mapped_column(
+        ForeignKey("zapi_instances.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    zapi_instance: Mapped[ZApiInstance] = relationship()
+
+
 class ServiceQueue(Base):
     __tablename__ = "service_queues"
     __table_args__ = (
