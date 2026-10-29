@@ -1505,3 +1505,114 @@ def test_fiber_catalog_city_reply_is_recognized_without_model_extraction():
     assert result.sales_state == "OFFERING"
     assert result.qualification.city == "Santa Rosa"
     assert [item.label for item in result.quick_replies] == ["800 Mega", "650 Mega"]
+
+
+def test_selecting_fiber_plan_from_catalog_moves_to_contract_cta_without_handoff():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "800 Mega",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Em Santa Rosa, os planos de fibra óptica disponíveis são "
+                    "800 Mega por R$ 119,90 e 650 Mega por R$ 99,90 mensais. "
+                    "Qual você quer conhecer?"
+                ),
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.sales_state == "OFFERING"
+    assert result.offer_plan_code == "FTTH_800"
+    assert result.offer_price == 119.90
+    assert "800 Mega" in result.reply_text
+    assert "R$ 119,90" in result.reply_text
+    assert "contratar esse plano agora" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Quero contratar",
+        "Ver outros planos",
+    ]
+
+
+def test_selecting_mobile_plan_from_catalog_moves_to_contract_cta_without_handoff():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "5GB - R$ 44,90",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "No Sulmóvel temos planos nacionais com valores confirmados. "
+                    "Escolha uma opção para continuar:"
+                ),
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.sales_state == "OFFERING"
+    assert result.offer_plan_code == "SULMOVEL_5GB"
+    assert result.offer_price == 44.90
+    assert "Sulmóvel 5GB" in result.reply_text
+    assert "R$ 44,90" in result.reply_text
+    assert "Quer contratar esse plano?" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Quero contratar",
+        "Ver outros planos",
+    ]
+
+
+def test_ver_outros_planos_after_mobile_selection_returns_mobile_catalog():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Ver outros planos",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Legal! O Sulmóvel 5GB custa R$ 44,90 mensais. "
+                    "Quer contratar esse plano?"
+                ),
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert [item.label for item in result.quick_replies] == [
+        "5GB - R$ 44,90",
+        "7GB - R$ 47,90",
+        "Mais planos",
+    ]
+
+
+def test_ver_outros_planos_after_fiber_selection_returns_city_catalog():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Ver outros planos",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Legal! Em Santa Rosa temos o plano de fibra óptica de 800 Mega "
+                    "por R$ 119,90 mensais. Quer aproveitar e contratar esse plano agora?"
+                ),
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert "800 Mega por R$ 119,90" in result.reply_text
+    assert "650 Mega por R$ 99,90" in result.reply_text
+    assert [item.label for item in result.quick_replies] == ["800 Mega", "650 Mega"]
