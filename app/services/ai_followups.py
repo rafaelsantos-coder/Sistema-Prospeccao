@@ -200,11 +200,14 @@ def _generate_followup(
     from app.services.ai_sdr import retrieve_knowledge
 
     history = _recent_history(db, job.conversation_id)
+    inbound_history = [
+        row for row in history
+        if str(row.get("direction") or "").upper() == "INBOUND"
+    ]
     retrieval_query = " ".join(
         [
             job.theme or "",
-            state.summary if state else "",
-            " ".join(str(row.get("body") or "") for row in history[-8:]),
+            " ".join(str(row.get("body") or "") for row in inbound_history[-8:]),
         ]
     )
     relevant_knowledge = retrieve_knowledge(
@@ -228,20 +231,21 @@ def _generate_followup(
         "lead": {
             "city": lead.city if lead else "",
             "stage": lead.stage if lead else "",
-            "notes": lead.notes if lead else "",
-            "potential": lead.potential if lead else "",
         },
         "ai_state": {
-            "summary": state.summary if state else "",
             "last_intent": state.last_intent if state else "UNKNOWN",
             "temperature": state.temperature if state else "FRIO",
         },
+        "customer_evidence": inbound_history,
         "history": history,
     }
     prompt = (
         "Crie APENAS a próxima mensagem de follow-up comercial para WhatsApp. "
         "Ela deve retomar a conversa com naturalidade, usar o contexto real, ter um motivo comercial e "
-        "estimular resposta. Não repita mensagens anteriores. Não aumente desconto por silêncio. "
+        "estimular resposta. REGRA DE EVIDÊNCIA: apenas mensagens INBOUND/customer_evidence são falas do cliente. "
+        "Mensagens OUTBOUND são falas do SulIA e jamais podem virar fato sobre provedor, preço, velocidade, uso, "
+        "satisfação, residência ou empresa. Se um dado não foi confirmado pelo cliente, pergunte; não assuma. "
+        "Não repita mensagens anteriores. Não aumente desconto por silêncio. "
         "Não invente urgência. Não diga 'viu minha mensagem?'. Faça no máximo uma pergunta principal. "
         "Nos passos 1, 2 e 3 da cadência rápida, escreva uma mensagem especialmente curta e mude o ângulo a cada tentativa: "
         "não repita a mesma pergunta, não copie a mesma CTA e não envie três variações quase idênticas. "

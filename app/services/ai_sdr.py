@@ -426,22 +426,25 @@ def build_ai_context(
         },
         "lead": {
             "id": lead.id if lead else None,
-            "business_name": lead.business_name if lead else "",
             "contact_name": lead.contact_name if lead else "",
-            "segment": lead.segment if lead else "",
             "city": lead.city if lead else "",
             "stage": lead.stage if lead else "",
             "score": lead.score if lead else 0,
             "temperature": lead.temperature if lead else "FRIO",
-            "notes": lead.notes if lead else "",
-            "potential": lead.potential if lead else "",
         },
         "previous_ai_state": {
-            "summary": state.summary if state else "",
             "qualification_score": state.qualification_score if state else 0,
             "temperature": state.temperature if state else "FRIO",
             "last_intent": state.last_intent if state else "UNKNOWN",
         },
+        "customer_evidence": [
+            {
+                "body": item.body,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+            }
+            for item in history
+            if item.direction == "INBOUND"
+        ],
         "history": [
             {
                 "direction": item.direction,
@@ -484,6 +487,53 @@ def _fold_sales_text(value: str | None) -> str:
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = text.casefold()
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _customer_inbound_text(context: dict) -> str:
+    parts = []
+    for row in context.get("history") or []:
+        if str(row.get("direction") or "").upper() != "INBOUND":
+            continue
+        parts.append(_fold_sales_text(str(row.get("body") or "")))
+    return " ".join(part for part in parts if part).strip()
+
+
+def _numbers_in_text(value: str | None) -> set[str]:
+    return set(re.findall(r"\d+", _fold_sales_text(value)))
+
+
+def _sanitize_unconfirmed_customer_facts(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    inbound = _customer_inbound_text(context)
+    qualification = decision.qualification
+
+    provider = _fold_sales_text(qualification.current_provider)
+    if provider and provider not in inbound:
+        original_provider = qualification.current_provider or ""
+        qualification.current_provider = None
+        for field_name in ("reply_text", "summary", "next_action", "proposal_summary"):
+            value = getattr(decision, field_name, "") or ""
+            if original_provider and original_provider.casefold() in value.casefold():
+                value = re.sub(
+                    re.escape(original_provider),
+                    "seu provedor atual",
+                    value,
+                    flags=re.IGNORECASE,
+                )
+                setattr(decision, field_name, value)
+
+    speed_numbers = _numbers_in_text(qualification.current_speed)
+    inbound_numbers = _numbers_in_text(inbound)
+    if qualification.current_speed and speed_numbers and speed_numbers.isdisjoint(inbound_numbers):
+        qualification.current_speed = None
+
+    price_numbers = _numbers_in_text(qualification.current_price)
+    if qualification.current_price and price_numbers and price_numbers.isdisjoint(inbound_numbers):
+        qualification.current_price = None
+
+    return decision
 
 
 _SECONDARY_DECLINES = {
@@ -620,27 +670,40 @@ _EXPLICIT_CONTACT_STOP_CUES = (
 
 
 def _is_company_context(context: dict) -> bool:
-    lead = context.get("lead") or {}
-    segment = _fold_sales_text(str(lead.get("segment") or ""))
-    business_name = _fold_sales_text(str(lead.get("business_name") or ""))
     company_terms = (
+        "minha empresa",
+        "nossa empresa",
+        "para empresa",
         "empresa",
-        "empresarial",
-        "corporativo",
-        "pj",
-        "comercio",
-        "comercial",
-        "loja",
-        "clinica",
-        "escritorio",
+        "cnpj",
+        "meu negocio",
+        "meu comercio",
+        "minha loja",
+        "meu escritorio",
     )
-    if any(term in segment for term in company_terms):
-        return True
-    if any(term in business_name for term in company_terms):
-        return True
-    for row in reversed((context.get("history") or [])[-8:]):
+    for row in reversed(context.get("history") or []):
+        if str(row.get("direction") or "").upper() != "INBOUND":
+            continue
         body = _fold_sales_text(str(row.get("body") or ""))
-        if "sua empresa" in body or "para empresa" in body:
+        if any(term in body for term in company_terms):
+            return True
+    return False
+
+
+def _is_residential_context(context: dict) -> bool:
+    residential_terms = (
+        "minha casa",
+        "para casa",
+        "em casa",
+        "residencial",
+        "minha residencia",
+        "meu apartamento",
+    )
+    for row in reversed(context.get("history") or []):
+        if str(row.get("direction") or "").upper() != "INBOUND":
+            continue
+        body = _fold_sales_text(str(row.get("body") or ""))
+        if any(term in body for term in residential_terms):
             return True
     return False
 
@@ -670,8 +733,10 @@ def _apply_offer_rejection_diagnostic_policy(
 
     if _is_company_context(context):
         question = "Entendi. Hoje sua empresa já possui conexão de internet?"
-    else:
+    elif _is_residential_context(context):
         question = "Entendi. Hoje você já possui conexão de internet na sua casa?"
+    else:
+        question = "Entendi. Hoje você já possui conexão de internet?"
 
     decision.reply_text = question
     decision.quick_replies = [
@@ -700,7 +765,12 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     effective_mode = _effective_execution_mode(agent)
     prompt = (
         "Analise esta interação comercial do WhatsApp da Sulnet. "
-        "Use o histórico, o CRM e a base de conhecimento abaixo. "
+        "Use o histórico e a base de conhecimento abaixo, respeitando rigorosamente a origem de cada dado. "
+        "REGRA DE EVIDÊNCIA: mensagens INBOUND são falas do cliente; mensagens OUTBOUND são falas do próprio SulIA. "
+        "Nunca transforme uma frase OUTBOUND em fato sobre o cliente. Nunca conclua provedor, preço atual, velocidade atual, "
+        "uso, satisfação, residência ou empresa apenas porque o SulIA mencionou isso antes. A seção customer_evidence contém "
+        "somente falas reais do cliente e é a fonte principal para esses fatos. Dados de memória/CRM gerados pela IA não devem "
+        "ser tratados como confirmação do cliente. Quando algo não estiver confirmado, pergunte em vez de assumir. "
         "Produza a decisão estruturada do SDR. Além da resposta, classifique objeção, estado comercial, "
         "plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
         "Atualize também a memória comercial estruturada: customer_needs, benefits_valued, commercial_arguments_used, "
@@ -739,8 +809,10 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = result.final_output
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
+    decision = _sanitize_unconfirmed_customer_facts(decision, context)
     decision = _apply_secondary_decline_reengagement_policy(decision, context)
-    return _apply_offer_rejection_diagnostic_policy(decision, context)
+    decision = _apply_offer_rejection_diagnostic_policy(decision, context)
+    return _sanitize_unconfirmed_customer_facts(decision, context)
 
 
 def _send_autonomous_reply(

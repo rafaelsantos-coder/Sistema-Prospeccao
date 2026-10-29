@@ -28,6 +28,9 @@ from app.services.ai_sdr import (
     QualificationData,
     _apply_offer_rejection_diagnostic_policy,
     _apply_secondary_decline_reengagement_policy,
+    _is_company_context,
+    _sanitize_unconfirmed_customer_facts,
+    build_ai_context,
     claim_ai_job,
     process_ai_job,
 )
@@ -967,7 +970,7 @@ def test_offer_rejection_opens_residential_diagnostic_instead_of_goodbye():
     result = _apply_offer_rejection_diagnostic_policy(decision, context)
 
     assert result.reply_text == (
-        "Entendi. Hoje você já possui conexão de internet na sua casa?"
+        "Entendi. Hoje você já possui conexão de internet?"
     )
     assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
     assert result.intent == "QUALIFYING"
@@ -986,6 +989,10 @@ def test_offer_rejection_uses_company_diagnostic_for_business_lead():
             "city": "Santa Rosa",
         },
         "history": [
+            {
+                "direction": "INBOUND",
+                "body": "Estou vendo isso para minha empresa.",
+            },
             {
                 "direction": "OUTBOUND",
                 "body": "Podemos avançar com o plano de 800 Mega?",
@@ -1052,3 +1059,144 @@ def test_offer_rejection_diagnostic_is_not_repeated_indefinitely():
     assert result.reply_text == (
         "Entendi, obrigado por avisar. Não vou insistir na oferta de internet."
     )
+
+
+
+def test_company_context_ignores_ai_outbound_claims():
+    context = {
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Para uma empresa que usa internet para emitir notas fiscais, "
+                    "contar com uma empresa regional pode ser um diferencial."
+                ),
+            },
+            {
+                "direction": "INBOUND",
+                "body": "?",
+            },
+        ]
+    }
+
+    assert _is_company_context(context) is False
+
+
+def test_unconfirmed_provider_is_removed_before_reuse():
+    decision = AIDecision(
+        reply_text=(
+            "Entendi — vocês estão satisfeitos com a conexão atual da Brphoni?"
+        ),
+        intent="QUALIFYING",
+        qualification_score=45,
+        temperature="MORNO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.8,
+        summary="Cliente usa Brphoni atualmente.",
+        next_action="Comparar a Brphoni com a Sulnet.",
+        qualification=QualificationData(
+            city="Santa Rosa",
+            current_provider="Brphoni",
+        ),
+        crm_notes=[],
+        sales_state="DISCOVERY",
+        proposal_summary="Comparar Brphoni com a Sulnet.",
+    )
+    context = {
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Você usa Brphoni hoje?",
+            },
+            {
+                "direction": "INBOUND",
+                "body": "eu não quero nada de internet",
+            },
+            {
+                "direction": "INBOUND",
+                "body": "?",
+            },
+        ]
+    }
+
+    result = _sanitize_unconfirmed_customer_facts(decision, context)
+
+    assert result.qualification.current_provider is None
+    assert "Brphoni" not in result.reply_text
+    assert "Brphoni" not in result.summary
+    assert "Brphoni" not in result.next_action
+    assert "Brphoni" not in result.proposal_summary
+
+
+def test_ai_context_does_not_feed_cross_conversation_ai_memory_back_as_fact():
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            agent, queue, _human = _create_bound_digital_queue(db, "SOURCE-ISOLATION")
+            from app.models import Lead, LeadQueuePreference
+
+            lead = Lead(
+                business_name="Empresa Antiga do CRM",
+                contact_name="Cliente",
+                phone="5555988877999",
+                segment="Empresa",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="CONTATO_REALIZADO",
+                score=25,
+                temperature="FRIO",
+                priority="NORMAL",
+                notes="[IA SDR] Cliente usa Brphoni.",
+                potential="[IA SDR] Memória comercial: provedor=Brphoni; uso=notas fiscais",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(
+                LeadQueuePreference(
+                    lead_id=lead.id,
+                    queue_id=queue.id,
+                    source="TEST_SOURCE_ISOLATION",
+                )
+            )
+            db.commit()
+
+            conversation, message, created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-SOURCE-ISOLATION-IN-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "?"},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            assert created is True
+
+            job = db.scalar(
+                select(AIJob).where(AIJob.message_id == message.id)
+            )
+            assert job is not None
+
+            context = build_ai_context(db, job=job, agent=agent)
+
+            assert "notes" not in context["lead"]
+            assert "potential" not in context["lead"]
+            assert "segment" not in context["lead"]
+            assert "business_name" not in context["lead"]
+            assert "summary" not in context["previous_ai_state"]
+            assert context["customer_evidence"] == [
+                {
+                    "body": "?",
+                    "created_at": message.created_at.isoformat(),
+                }
+            ]
+            assert "Brphoni" not in str(context)
+            assert "notas fiscais" not in str(context)
+        finally:
+            db.close()
