@@ -46,9 +46,43 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
     O modelo continua livre para gerar botões melhores; esta função só cobre
     perguntas previsíveis quando ele não retornar quick_replies.
     """
-    text = (reply_text or "").strip().lower()
-    if "?" not in text:
+    raw_text = (reply_text or "").strip().lower()
+    if "?" not in raw_text:
         return []
+    text = unicodedata.normalize("NFKD", raw_text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+
+    if "cliente sulnet" in text or "nosso cliente" in text:
+        return [
+            {"id": "sim", "label": "Sim"},
+            {"id": "nao", "label": "Não"},
+        ]
+
+    if "internet" in text and ("telefonia movel" in text or "sulmovel" in text):
+        if "nova conexao" in text or "outro endereco" in text:
+            return [
+                {"id": "movel", "label": "Telefonia Móvel"},
+                {"id": "nova_conexao", "label": "Nova conexão"},
+            ]
+        return [
+            {"id": "internet", "label": "Internet"},
+            {"id": "movel", "label": "Telefonia Móvel"},
+        ]
+
+    if "fibra optica" in text and ("movel" in text or "sulmovel" in text):
+        return [
+            {"id": "fibra", "label": "Fibra óptica"},
+            {"id": "movel", "label": "Móvel"},
+        ]
+
+    if all(value in text for value in ("200", "250", "650")) and (
+        "corp" in text or "empresa" in text or "corporativo" in text
+    ):
+        return [
+            {"id": "corp_200", "label": "Corp. 200"},
+            {"id": "corp_250", "label": "Corp. 250"},
+            {"id": "corp_650", "label": "Corp. 650"},
+        ]
 
     if (
         ("casa" in text and "empresa" in text)
@@ -72,7 +106,7 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
             {"id": "preco", "label": "Preço alto"},
         ]
 
-    if all(term in text for term in ("preço", "velocidade")):
+    if all(term in text for term in ("preco", "velocidade")):
         options = [
             {"id": "preco", "label": "Preço"},
             {"id": "velocidade", "label": "Velocidade"},
@@ -88,7 +122,7 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
 
     yes_no_cues = (
         "faz sentido",
-        "você faria",
+        "voce faria",
         "voce faria",
         "quer que eu",
         "posso te",
