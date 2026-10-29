@@ -271,7 +271,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
     ):
         ai_agent.system_prompt = SULIA_SYSTEM_PROMPT
     ai_agent.business_goal = (
-        "Gerar vendas de internet: diagnosticar, ofertar do maior plano elegível para o menor, "
+        "Gerar vendas de internet e Telefonia Móvel: qualificar primeiro se já é cliente Sulnet, diagnosticar, ofertar do maior plano elegível para o menor, "
         "tratar objeções, negociar até 3 meses gratuitos em FTTH com fidelidade, manter follow-up "
         "contínuo e transferir para o Vendedor IA quando houver intenção clara de contratação; "
         "pedidos explícitos de atendimento humano continuam sendo encaminhados para uma pessoa."
