@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div><span class="eyebrow">IA · FECHAMENTO COMERCIAL</span>
+    <h2>Vendedor IA Sulnet</h2>
+    <p>Recebe o cliente já qualificado pelo SDR IA, conduz o cadastro e prepara o contrato. O mesmo usuário comercial pode receber atribuições de oportunidades no CRM.</p>
+  </div>
+  <div class="ai-phase-badge"><strong>Preparação · Shadow</strong><span class="connection-status">Integrações de contrato e crédito pendentes de homologação</span></div>
+</div>
+{% if agent %}
+<section class="ai-agent-hero panel">
+  <div class="ai-agent-identity"><div class="ai-agent-avatar">IA</div>
+    <div><span class="eyebrow">VENDEDOR DIGITAL</span><h3>{{ agent.name }}</h3>
+      <p>{{ agent.business_goal }}</p>
+      <small>Usuário CRM: {{ agent.user.name }} · {{ agent.user.email }} · {{ 'Ativo' if agent.user.active else 'Acesso inativo' }}</small>
+    </div>
+  </div>
+  <div class="ai-agent-kpis">
+    <div><span>Análises</span><strong>{{ metrics.get('runs', 0) }}</strong></div>
+    <div><span>Handoffs</span><strong>{{ metrics.get('handoffs', 0) }}</strong></div>
+    <div><span>Jobs pendentes</span><strong>{{ metrics.get('pending', 0) }}</strong></div>
+    <div><span>Conhecimentos</span><strong>{{ knowledge|length }}</strong></div>
+  </div>
+</section>
+<div class="settings-grid top-space">
+  <article class="panel panel-span-7">
+    <div class="panel-header"><div><span class="eyebrow">IDENTIDADE E TREINAMENTO</span><h3>Configurar Vendedor IA</h3></div></div>
+    <form action="/ai/agents/{{ agent.id }}" method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field"><span>Nome interno</span><input name="name" value="{{ agent.name }}" required></label>
+        <label class="field"><span>Nome público</span><input name="public_name" value="{{ agent.public_name }}" required></label>
+        <label class="field"><span>Modelo de IA</span><input name="model" value="{{ agent.model }}" required></label>
+        <label class="field"><span>Raciocínio</span><select name="reasoning_effort">{% for effort in ['none','low','medium','high'] %}<option value="{{ effort }}" {% if agent.reasoning_effort == effort %}selected{% endif %}>{{ effort|upper }}</option>{% endfor %}</select></label>
+        <label class="field"><span>Modo de execução</span><select name="execution_mode">{% for key, label in execution_modes.items() %}<option value="{{ key }}" {% if agent.execution_mode == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select><small>Autonomia real depende das integrações de CRM, crédito e contrato homologadas.</small></label>
+        <label class="field"><span>Histórico lido (mensagens)</span><input type="number" name="max_history_messages" min="4" max="80" value="{{ agent.max_history_messages }}"></label>
+        <label class="field field-span-2"><span>Objetivo comercial</span><textarea name="business_goal" rows="3">{{ agent.business_goal }}</textarea></label>
+        <label class="field field-span-2"><span>Instruções da IA</span><textarea name="system_prompt" rows="11">{{ agent.system_prompt }}</textarea></label>
+        <label class="queue-check"><input type="checkbox" name="active" value="true" {% if agent.active %}checked{% endif %}><span>Perfil IA habilitado (não libera integrações externas)</span></label>
+      </div>
+      <button class="button button-primary" type="submit">Salvar configurações</button>
+    </form>
+  </article>
+  <aside class="panel panel-span-5"><div class="panel-header"><div><span class="eyebrow">PROCESSO</span><h3>Etapas do fechamento</h3></div></div>
+    <div class="queue-flow ai-flow">
+      {% for title in ['Handoff do SDR com histórico integral','Nome e telefone; criar ou atualizar oportunidade','CPF e retorno real da consulta de crédito','CEP, endereço, número e complemento','Confirmação do plano e faturamento','Contrato PDF, assinatura e acompanhamento','Venda ganha somente após confirmação do CRM'] %}
+      <div><span>{{ loop.index }}</span><p>{{ title }}</p></div>{% if not loop.last %}<i></i>{% endif %}
+      {% endfor %}
+    </div>
+    <div class="info-box"><strong>Campos dispensados</strong><p>NAP/ANATEL, coordenadas, técnico, data/hora, metragem, selfies e fotos de documentos. A exceção deve existir também na validação do CRM externo.</p></div>
+  </aside>
+</div>
+<section class="panel top-space">
+ <div class="panel-header"><div><span class="eyebrow">BASE DE CONHECIMENTO</span><h3>Treinar Vendedor IA</h3></div></div>
+ <form action="/ai/knowledge" method="post" class="stack-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="agent_id" value="{{ agent.id }}">
+  <div class="form-grid"><label class="field"><span>Categoria</span><input name="category" value="FECHAMENTO"></label>
+   <label class="field"><span>Título</span><input name="title" required></label>
+   <label class="field field-span-2"><span>Tags</span><input name="tags"></label>
+   <label class="field field-span-2"><span>Conteúdo e regras</span><textarea name="content" rows="5" required></textarea></label>
+  </div><button type="submit" class="button button-primary">Adicionar conhecimento</button>
+ </form>
+ <div class="ai-knowledge-grid top-space">
+ {% for item in knowledge %}
+ <article class="ai-knowledge-card {% if not item.active %}inactive{% endif %}"><div><span class="eyebrow">{{ item.category }}</span><h4>{{ item.title }}</h4><p>{{ item.content }}</p></div>
+ <form action="/ai/knowledge/{{ item.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="mini-button" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button></form></article>
+ {% else %}<div class="empty-state">Inclua regras de crédito, planos, faturamento e contrato para o agente de fechamento.</div>{% endfor %}
+ </div>
+</section>
+{% else %}
+<section class="panel"><div class="empty-state"><strong>Vendedor IA ainda não cadastrado</strong><span>Execute o seed do sistema para criar a identidade do novo vendedor de fechamento.</span></div></section>
+{% endif %}
+{% endblock %}
