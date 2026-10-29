@@ -148,7 +148,7 @@ class SulnetCRMClient:
         result = self._request(
             "POST",
             f"/api/capture/leads/{opportunity_id}/consult",
-            json_body={"cpf": cpf},
+            json_body={"clientCpf": cpf},
             timeout=45.0,
         )
         if not isinstance(result, dict):
