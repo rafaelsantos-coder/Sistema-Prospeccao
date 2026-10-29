@@ -25,6 +25,7 @@ from app.models import (
     Message,
     ServiceQueue,
 )
+from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
@@ -50,6 +51,7 @@ class QualificationData(BaseModel):
 
 class AIDecision(BaseModel):
     reply_text: str = Field(min_length=1, max_length=1800)
+    quick_replies: list[QuickReply] = Field(default_factory=list, max_length=3)
     intent: Literal[
         "INFORMATION",
         "QUALIFYING",
