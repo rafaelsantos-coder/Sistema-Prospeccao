@@ -21,6 +21,7 @@ from app.models import (
 from app.security import hash_password
 from app.services.ai_sdr import AIDecision, QualificationData, claim_ai_job, process_ai_job
 from app.services.conversation_engine import store_received_payload
+from app.services.seed import seed_database
 from app.services.whatsapp_presence import join_whatsapp
 
 
@@ -295,5 +296,38 @@ def test_shadow_job_stores_decision_without_sending(monkeypatch):
             assert outbound_after == outbound_before
             assert lead.stage == "NOVO"
             assert lead.score == 0
+        finally:
+            db.close()
+
+
+def test_seed_binds_sulia_to_all_active_digital_queues():
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            suffix = "SEED-ALL-DIGITAL"
+            queues = []
+            for index in (1, 2):
+                queue = ServiceQueue(
+                    name=f"Fila Digital Seed {index}",
+                    code=f"DIGITAL-SEED-{index}",
+                    team="DIGITAL",
+                    routing_strategy="ROUND_ROBIN",
+                    active=True,
+                )
+                db.add(queue)
+                db.flush()
+                queues.append(queue)
+            db.commit()
+
+            seed_database(db, include_demo=False)
+            for queue in queues:
+                binding = db.scalar(
+                    select(AIQueueBinding).where(
+                        AIQueueBinding.queue_id == queue.id
+                    )
+                )
+                assert binding is not None
+                assert binding.active is True
+                assert binding.handling_mode == "AI_FIRST"
         finally:
             db.close()
