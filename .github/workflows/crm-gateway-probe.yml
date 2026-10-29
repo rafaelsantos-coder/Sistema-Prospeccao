@@ -1,0 +1,24 @@
+name: CRM gateway probe
+
+on:
+  push:
+    branches: [test/crm-gateway-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe CRM public gateway
+        shell: bash
+        env:
+          BASE: https://oil-burton-americas-largely.trycloudflare.com
+        run: |
+          set -u
+          for path in /health /api/capture/context /api/capture/config /api/capture/login; do
+            echo "===== $path ====="
+            curl -sS -i --max-time 20 "$BASE$path" || true
+            echo
+          done
