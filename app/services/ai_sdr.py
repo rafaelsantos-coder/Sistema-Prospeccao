@@ -991,8 +991,15 @@ def _apply_catalog_navigation_policy(
         return _show_fiber_catalog(decision, context)
 
     mobile_plan = _selected_mobile_plan(latest_raw)
-    if mobile_plan and ("sulmovel" in previous or "gb" in latest):
-        return _show_selected_mobile_plan(decision, mobile_plan)
+    if mobile_plan:
+        mobile_gb = int(mobile_plan["data_gb"])
+        mobile_compact = latest in {f"{mobile_gb}gb", f"{mobile_gb} gb"}
+        mobile_button_label = (
+            latest.startswith(f"{mobile_gb}gb r ")
+            or latest.startswith(f"{mobile_gb} gb r ")
+        )
+        if "sulmovel" in previous or mobile_compact or mobile_button_label:
+            return _show_selected_mobile_plan(decision, mobile_plan)
 
     city = _city_from_sales_context(decision, context)
     if city:
