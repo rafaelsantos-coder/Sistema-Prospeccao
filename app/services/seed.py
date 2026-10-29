@@ -13,6 +13,7 @@ from app.models import (
     Activity,
     AIAgentProfile,
     AIKnowledgeItem,
+    AIKnowledgeMetadata,
     AIQueueBinding,
     Branch,
     Campaign,
