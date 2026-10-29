@@ -210,6 +210,21 @@ def _billing_local(text: str) -> dict[str, Any]:
 
 
 MOBILE_SIGNATURE_TYPE = "Assinatura Digital IA"
+MOBILE_CONTRACT_BUTTONS = [
+    {"id": "portabilidade", "label": "Portabilidade"},
+    {"id": "numero_novo", "label": "Número novo"},
+]
+REMOVED_MOBILE_STEPS = {
+    "MOBILE_NEW_ICCID",
+    "MOBILE_NEW_NUMBER",
+    "MOBILE_PORT_ICCID",
+    "MOBILE_PORT_DATE",
+    "MOBILE_M2M_QTY",
+    "MOBILE_M2M_ICCIDS",
+    "MOBILE_DUE_DAY",
+    "MOBILE_ACTIVATION_FEE",
+    "MOBILE_ACTIVATION_VALUE",
+}
 
 
 def _extract_generic_date(text: str) -> str | None:
@@ -252,11 +267,9 @@ def _extract_due_day(text: str) -> int | None:
 
 def _extract_mobile_contract_type(text: str) -> str | None:
     n = _norm(text)
-    if "m2m" in n:
-        return "M2M"
     if "port" in n:
         return "Número Portabilidade"
-    if "novo" in n or "nova linha" in n or "linha nova" in n:
+    if "numero_novo" in n or "novo" in n or "nova linha" in n or "linha nova" in n:
         return "Número novo"
     return None
 
@@ -448,29 +461,21 @@ def _persist_mobile_category_form(
 def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
     required = [
         "tipo_contratacao",
-        "vencimento",
-        "taxa_ativacao",
         "forma_pagamento",
         "unificar_faturas",
         "tipo_assinatura_contrato",
     ]
     contract_type = str(values.get("tipo_contratacao") or "")
-    if contract_type == "Número novo":
-        required += ["novo_iccid", "numero_novo"]
-    elif contract_type == "Número Portabilidade":
+    if contract_type == "Número Portabilidade":
         required += [
-            "port_iccid",
             "numero_portado",
             "port_titular",
             "port_nome_titular",
             "port_cpf_cnpj",
-            "port_data",
         ]
-    elif contract_type == "M2M":
-        required += ["m2m_quantidade", "m2m_iccids"]
+    elif contract_type not in {"Número novo", "Número Portabilidade"}:
+        required.append("tipo_contratacao")
 
-    if values.get("taxa_ativacao") == "Sim":
-        required.append("taxa_valor")
     if values.get("forma_pagamento") == "Boleto":
         required.append("envio_fatura")
     elif values.get("forma_pagamento") == "Débito em Conta":
@@ -483,50 +488,25 @@ def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
         value = values.get(field)
         if value in (None, "", []):
             missing.append(field)
-
-    if contract_type == "M2M" and "m2m_quantidade" not in missing and "m2m_iccids" not in missing:
-        qty = int(values.get("m2m_quantidade") or 0)
-        iccids = [line.strip() for line in str(values.get("m2m_iccids") or "").splitlines() if line.strip()]
-        if qty <= 0 or len(iccids) != qty:
-            missing.append("m2m_iccids")
-    return missing
+    return list(dict.fromkeys(missing))
 
 
 def _mobile_next_step(values: dict[str, Any]) -> str | None:
     contract_type = str(values.get("tipo_contratacao") or "")
-    if not contract_type:
+    if contract_type not in {"Número novo", "Número Portabilidade"}:
         return "MOBILE_CONTRACT_TYPE"
-    if contract_type == "Número novo":
-        if not values.get("novo_iccid"):
-            return "MOBILE_NEW_ICCID"
-        if not values.get("numero_novo"):
-            return "MOBILE_NEW_NUMBER"
-    elif contract_type == "Número Portabilidade":
+
+    if contract_type == "Número Portabilidade":
         order = [
-            ("port_iccid", "MOBILE_PORT_ICCID"),
             ("numero_portado", "MOBILE_PORT_NUMBER"),
             ("port_titular", "MOBILE_PORT_TITULAR"),
             ("port_nome_titular", "MOBILE_PORT_NAME"),
             ("port_cpf_cnpj", "MOBILE_PORT_DOC"),
-            ("port_data", "MOBILE_PORT_DATE"),
         ]
         for field, step in order:
             if not values.get(field):
                 return step
-    elif contract_type == "M2M":
-        if not values.get("m2m_quantidade"):
-            return "MOBILE_M2M_QTY"
-        qty = int(values.get("m2m_quantidade") or 0)
-        iccids = [line.strip() for line in str(values.get("m2m_iccids") or "").splitlines() if line.strip()]
-        if not values.get("m2m_iccids") or len(iccids) != qty:
-            return "MOBILE_M2M_ICCIDS"
 
-    if not values.get("vencimento"):
-        return "MOBILE_DUE_DAY"
-    if not values.get("taxa_ativacao"):
-        return "MOBILE_ACTIVATION_FEE"
-    if values.get("taxa_ativacao") == "Sim" and values.get("taxa_valor") in (None, ""):
-        return "MOBILE_ACTIVATION_VALUE"
     if not values.get("forma_pagamento"):
         return "MOBILE_PAYMENT_METHOD"
     if values.get("forma_pagamento") == "Boleto":
@@ -555,7 +535,7 @@ def _apply_mobile_answer(
     if step == "MOBILE_CONTRACT_TYPE":
         contract_type = _extract_mobile_contract_type(text)
         if not contract_type:
-            return False, "Me diga se será número novo, portabilidade ou M2M."
+            return False, "Escolha uma das opções: Portabilidade ou Número novo."
         previous = str(values.get("tipo_contratacao") or "")
         values["tipo_contratacao"] = contract_type
         if previous and previous != contract_type:
@@ -567,18 +547,11 @@ def _apply_mobile_answer(
                 values.pop(key, None)
         return True, ""
 
-    if step in {"MOBILE_NEW_ICCID", "MOBILE_PORT_ICCID"}:
-        iccid = _extract_iccid(text)
-        if not iccid:
-            return False, "Preciso do ICCID completo do chip."
-        values["novo_iccid" if step == "MOBILE_NEW_ICCID" else "port_iccid"] = iccid
-        return True, ""
-
-    if step in {"MOBILE_NEW_NUMBER", "MOBILE_PORT_NUMBER"}:
+    if step == "MOBILE_PORT_NUMBER":
         number = _extract_mobile_number(text)
         if not number:
-            return False, "Preciso do número completo com DDD."
-        values["numero_novo" if step == "MOBILE_NEW_NUMBER" else "numero_portado"] = number
+            return False, "Preciso do número completo com DDD que será portado."
+        values["numero_portado"] = number
         return True, ""
 
     if step == "MOBILE_PORT_TITULAR":
@@ -600,53 +573,6 @@ def _apply_mobile_answer(
         if not document:
             return False, "Informe o CPF ou CNPJ completo do titular da linha."
         values["port_cpf_cnpj"] = document
-        return True, ""
-
-    if step == "MOBILE_PORT_DATE":
-        date_value = _extract_generic_date(text)
-        if not date_value:
-            return False, "Informe a data da portabilidade no formato DD/MM/AAAA."
-        values["port_data"] = date_value
-        return True, ""
-
-    if step == "MOBILE_M2M_QTY":
-        qty = _extract_positive_int(text)
-        if not qty:
-            return False, "Informe a quantidade de chips M2M."
-        values["m2m_quantidade"] = qty
-        return True, ""
-
-    if step == "MOBILE_M2M_ICCIDS":
-        qty = int(values.get("m2m_quantidade") or 0)
-        iccids = re.findall(r"(?<!\d)\d{18,22}(?!\d)", text or "")
-        if qty <= 0:
-            return False, "Primeiro preciso da quantidade de chips M2M."
-        if len(iccids) != qty:
-            return False, f"Preciso de {qty} ICCID(s), um por linha."
-        values["m2m_iccids"] = "\n".join(iccids)
-        return True, ""
-
-    if step == "MOBILE_DUE_DAY":
-        day = _extract_due_day(text)
-        if not day:
-            return False, "Informe um dia de vencimento entre 1 e 31."
-        values["vencimento"] = day
-        return True, ""
-
-    if step == "MOBILE_ACTIVATION_FEE":
-        answer = _yes_no(text)
-        if answer == "NAO_INFORMADO":
-            return False, "Responda sim ou não para a taxa de ativação."
-        values["taxa_ativacao"] = "Sim" if answer == "SIM" else "Não"
-        if answer == "NAO":
-            values.pop("taxa_valor", None)
-        return True, ""
-
-    if step == "MOBILE_ACTIVATION_VALUE":
-        amount = _extract_money(text)
-        if amount is None:
-            return False, "Informe o valor da taxa de ativação."
-        values["taxa_valor"] = amount
         return True, ""
 
     if step == "MOBILE_PAYMENT_METHOD":
