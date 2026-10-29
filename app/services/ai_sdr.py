@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings
 from app.models import (
+    Activity,
     AIAgentProfile,
     AIConversationState,
     AIJob,
@@ -19,37 +20,21 @@ from app.models import (
     AIQueueBinding,
     AIRun,
     Conversation,
+    ConversationAssignment,
     Lead,
     Message,
     ServiceQueue,
 )
+from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
-from app.services.queue_routing import queue_for_conversation
+from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.timeutils import utcnow
 
 
 LOG = logging.getLogger("sulnet_ai_sdr")
 
 
-DEFAULT_SYSTEM_PROMPT = """Você é o SulIA SDR, agente comercial da Sulnet.
-Sua função é atuar como SDR: entender a necessidade do prospect, qualificar a oportunidade,
-tratar dúvidas comerciais usando SOMENTE as informações fornecidas no contexto e recomendar
-o momento correto de transferir para um vendedor humano.
-
-Regras obrigatórias:
-- Fale em português do Brasil, de forma natural, curta, profissional e consultiva.
-- Faça uma pergunta por vez quando ainda estiver qualificando.
-- Nunca invente preço, cobertura, prazo, promoção, disponibilidade ou condição comercial.
-- Se a informação comercial não estiver na base de conhecimento, diga que um consultor confirma.
-- Nunca prometa desconto ou condição fora da base fornecida.
-- Considere pedido de proposta, contratação, negociação, desconto, vendedor humano,
-  frustração relevante ou alta intenção como sinais fortes de handoff.
-- Se o cliente pedir para não receber mensagens, marque intenção DO_NOT_CONTACT e recomende handoff.
-- Se o cliente perguntar se é humano ou IA, seja transparente: você é o assistente virtual comercial da Sulnet.
-- Não diga ao cliente que está calculando score, temperatura ou regras internas.
-- A resposta sugerida deve ser pronta para WhatsApp e sem formatação excessiva.
-- No modo Shadow, você NÃO envia nada. Apenas produz a decisão estruturada para revisão interna.
-"""
+DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
 
 
 class QualificationData(BaseModel):
@@ -97,6 +82,36 @@ class AIDecision(BaseModel):
     next_action: str = Field(max_length=600)
     qualification: QualificationData = Field(default_factory=QualificationData)
     crm_notes: list[str] = Field(default_factory=list)
+    objection: Literal[
+        "NONE",
+        "PRICE",
+        "NO_INTEREST",
+        "CURRENT_PROVIDER",
+        "FIDELITY",
+        "TIMING",
+        "DECISION_MAKER",
+        "TRUST",
+        "INSTALLATION",
+        "MONEY_NOW",
+        "OTHER",
+    ] = "NONE"
+    sales_state: Literal[
+        "NEW_LEAD",
+        "DISCOVERY",
+        "QUALIFIED",
+        "OFFERING",
+        "NEGOTIATING",
+        "WAITING_CUSTOMER",
+        "PURCHASE_INTENT",
+        "READY_FOR_HUMAN_SALES",
+        "OPT_OUT",
+    ] = "DISCOVERY"
+    offer_plan_code: str | None = None
+    offer_price: float | None = None
+    concession_level: int = Field(default=0, ge=0, le=3)
+    free_months: int = Field(default=0, ge=0, le=3)
+    customer_commitment: bool = False
+    followup_needed: bool = True
 
 
 class AIConfigurationError(RuntimeError):
@@ -160,6 +175,13 @@ def enqueue_ai_job(
             binding.queue_id,
         )
         return None
+
+    from app.services.ai_followups import cancel_pending_followups
+    cancel_pending_followups(
+        db,
+        conversation.id,
+        reason="CLIENTE_RESPONDEU",
+    )
 
     existing = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
     if existing:
@@ -379,7 +401,9 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     prompt = (
         "Analise esta interação comercial do WhatsApp da Sulnet. "
         "Use o histórico, o CRM e a base de conhecimento abaixo. "
-        "Produza a decisão estruturada do SDR. "
+        "Produza a decisão estruturada do SDR. Além da resposta, classifique objeção, estado comercial, "
+        "plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
+        "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação ou exceção que exija humano. "
         f"Modo efetivo: {effective_mode}.\n\n"
         + json.dumps(context, ensure_ascii=False, default=str)
     )
@@ -466,6 +490,120 @@ def _send_autonomous_reply(
     return message
 
 
+def _append_note(existing: str, value: str) -> str:
+    clean = (value or "").strip()
+    if not clean:
+        return existing or ""
+    current = (existing or "").strip()
+    if clean in current:
+        return current
+    joined = f"{current}\n[IA SDR] {clean}".strip()
+    return joined[-6000:]
+
+
+def _apply_crm_decision(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    decision: AIDecision,
+) -> None:
+    conversation = db.get(Conversation, job.conversation_id)
+    if not conversation:
+        return
+    lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
+    if not lead:
+        return
+
+    if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
+        lead.do_not_contact = True
+        lead.stage = "NAO_CONTATAR"
+        lead.next_action_at = None
+    elif lead.stage not in {"GANHO", "NAO_CONTATAR"}:
+        lead.stage = decision.recommended_stage
+        lead.temperature = decision.temperature
+        lead.score = max(float(lead.score or 0), float(decision.qualification_score or 0))
+        if decision.sales_state == "READY_FOR_HUMAN_SALES":
+            lead.priority = "ALTA"
+
+    lead.notes = _append_note(lead.notes, decision.summary)
+    lead.potential = _append_note(
+        lead.potential,
+        (
+            f"Estado={decision.sales_state}; intenção={decision.intent}; objeção={decision.objection}; "
+            f"plano={decision.offer_plan_code or '-'}; N{decision.concession_level}; "
+            f"meses_gratis={decision.free_months}"
+        ),
+    )
+    lead.last_contact_at = utcnow()
+    db.add(
+        Activity(
+            lead_id=lead.id,
+            user_id=agent.user_id,
+            kind="IA_SDR",
+            status="CONCLUIDA",
+            channel="WHATSAPP",
+            outcome=decision.sales_state[:120],
+            description=(
+                f"IA SDR: {decision.summary}\nPróxima ação: {decision.next_action}\n"
+                f"CRM: {' | '.join(decision.crm_notes)}"
+            )[:5000],
+            completed_at=utcnow(),
+        )
+    )
+
+
+def _perform_handoff(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    decision: AIDecision,
+) -> None:
+    conversation = db.get(Conversation, job.conversation_id)
+    if not conversation:
+        return
+    queue = queue_for_conversation(db, conversation.id)
+    owner = conversation.assigned_user
+    if not owner or owner.role == "AI_SDR":
+        owner = assign_queue_user(db, queue) if queue else None
+        conversation.assigned_user_id = owner.id if owner else None
+
+    conversation.status = "EM_ATENDIMENTO" if owner else "EM_FILA"
+    db.add(
+        ConversationAssignment(
+            conversation_id=conversation.id,
+            user_id=owner.id if owner else None,
+            assigned_by_id=agent.user_id,
+            event="AI_HANDOFF_READY_FOR_SALES",
+        )
+    )
+    if conversation.lead:
+        conversation.lead.assigned_user_id = owner.id if owner else conversation.lead.assigned_user_id
+        if conversation.lead.stage not in {"GANHO", "NAO_CONTATAR"}:
+            conversation.lead.stage = "NEGOCIACAO"
+            conversation.lead.priority = "ALTA"
+
+    from app.services.ai_followups import cancel_pending_followups
+    cancel_pending_followups(db, conversation.id, reason="HANDOFF_HUMANO")
+
+    write_audit(
+        db,
+        user=agent.user,
+        action="AI_SDR_HANDOFF",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={
+            "queue_id": queue.id if queue else job.queue_id,
+            "assigned_user_id": owner.id if owner else None,
+            "intent": decision.intent,
+            "reason": decision.handoff_reason,
+            "offer_plan_code": decision.offer_plan_code,
+            "free_months": decision.free_months,
+        },
+    )
+
+
 def process_ai_job(db: Session, job: AIJob) -> str:
     agent = db.get(AIAgentProfile, job.agent_id)
     if not agent or not agent.active:
@@ -512,12 +650,38 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     if effective_mode == "AUTO":
         try:
-            _send_autonomous_reply(
+            _apply_crm_decision(
                 db,
                 agent=agent,
                 job=job,
                 decision=decision,
             )
+            sent_message = _send_autonomous_reply(
+                db,
+                agent=agent,
+                job=job,
+                decision=decision,
+            )
+            if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
+                from app.services.ai_followups import cancel_pending_followups
+                cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
+            elif decision.handoff_recommended or decision.sales_state == "READY_FOR_HUMAN_SALES":
+                _perform_handoff(
+                    db,
+                    agent=agent,
+                    job=job,
+                    decision=decision,
+                )
+            elif decision.followup_needed and sent_message is not None:
+                from app.services.ai_followups import schedule_followup
+                schedule_followup(
+                    db,
+                    agent_id=agent.id,
+                    queue_id=job.queue_id,
+                    conversation_id=job.conversation_id,
+                    source_message_id=job.message_id,
+                    step=1,
+                )
         except Exception as exc:
             run.status = "FALHOU"
             run.error = f"Falha no envio automático: {exc}"[:2000]
@@ -554,7 +718,15 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         )
         db.add(state)
     state.agent_id = agent.id
-    state.state = "SHADOW_REVIEW" if effective_mode == "SHADOW" else "AI_ACTIVE"
+    if effective_mode == "SHADOW":
+        state.state = "SHADOW_REVIEW"
+    elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
+        state.state = "OPT_OUT"
+    elif decision.handoff_recommended or decision.sales_state == "READY_FOR_HUMAN_SALES":
+        state.state = "HANDOFF"
+        state.handoff_at = utcnow()
+    else:
+        state.state = "AI_ACTIVE"
     state.summary = decision.summary
     state.qualification_score = decision.qualification_score
     state.temperature = decision.temperature
