@@ -4,13 +4,13 @@
   <div>
     <span class="eyebrow">INTELIGÊNCIA COMERCIAL</span>
     <h2>SulIA SDR</h2>
-    <p>Agente comercial em Shadow Mode: analisa respostas, qualifica oportunidades e sugere o próximo passo sem enviar mensagens automaticamente.</p>
+    <p>{% if autonomous_enabled %}Agente comercial autônomo: analisa, qualifica e responde clientes automaticamente pelo WhatsApp.{% else %}Agente comercial em Shadow Mode: analisa respostas, qualifica oportunidades e sugere o próximo passo sem enviar mensagens automaticamente.{% endif %}</p>
   </div>
   <div class="ai-phase-badge">
     <span class="connection-status {% if openai_configured and ai_sdr_enabled %}on{% endif %}">
       {% if openai_configured and ai_sdr_enabled %}OpenAI conectado{% elif not openai_configured %}OpenAI pendente{% else %}IA desativada{% endif %}
     </span>
-    <strong>Fase 1 · Shadow</strong>
+    <strong>{% if autonomous_enabled %}Modo · Autônomo{% else %}Fase 1 · Shadow{% endif %}</strong>
   </div>
 </div>
 
@@ -78,7 +78,7 @@
             <option value="{{ key }}" {% if agent.execution_mode == key %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>
-          <small>Fase 1 força Shadow Mode no backend.</small>
+          <small>{% if autonomous_enabled %}Autonomia global ativa: o SulIA padrão opera em AUTO efetivo.{% else %}Autonomia global desativada: o backend força Shadow Mode.{% endif %}</small>
         </label>
         <label class="field"><span>Score para recomendar handoff</span><input name="qualification_handoff_score" type="number" min="0" max="100" value="{{ agent.qualification_handoff_score }}"></label>
         <label class="field"><span>Mensagens de histórico</span><input name="max_history_messages" type="number" min="4" max="80" value="{{ agent.max_history_messages }}"></label>
@@ -91,7 +91,7 @@
   </article>
 
   <aside class="panel panel-span-5">
-    <div class="panel-header"><div><span class="eyebrow">ARQUITETURA</span><h3>O que acontece no Shadow Mode</h3></div></div>
+    <div class="panel-header"><div><span class="eyebrow">ARQUITETURA</span><h3>{% if autonomous_enabled %}O que acontece no modo Autônomo{% else %}O que acontece no Shadow Mode{% endif %}</h3></div></div>
     <div class="queue-flow ai-flow">
       <div><span>1</span><p>Cliente responde pelo WhatsApp e a mensagem é salva no PostgreSQL.</p></div>
       <i></i>
@@ -101,7 +101,7 @@
       <i></i>
       <div><span>4</span><p>A IA gera resposta sugerida, score, intenção e recomendação de handoff.</p></div>
       <i></i>
-      <div><span>5</span><p>Nada é enviado ao cliente nesta fase. O resultado fica disponível para avaliação.</p></div>
+      <div><span>5</span><p>{% if autonomous_enabled %}A resposta é enviada ao cliente pelo WhatsApp e registrada no histórico da conversa.{% else %}Nada é enviado ao cliente nesta fase. O resultado fica disponível para avaliação.{% endif %}</p></div>
     </div>
   </aside>
 </div>
