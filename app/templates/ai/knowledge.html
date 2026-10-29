@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">SDR IA · TREINAMENTO</span>
+    <h2>Conhecimento Sulnet</h2>
+    <p>Base comercial aprovada para o SulIA compreender a Sulnet, vender valor e adaptar os argumentos ao contexto do cliente.</p>
+  </div>
+  <div class="ai-phase-badge">
+    <span class="connection-status on">{{ approved_count }} conhecimentos aprovados</span>
+    <strong>Base oficial treinável</strong>
+  </div>
+</div>
+
+<div class="info-box">
+  <strong>Regra de ouro da marca</strong>
+  <p>Quando o cliente perguntar por que contratar a Sulnet, a IA deve vender primeiro valor: presença regional, história, proximidade, estrutura, tecnologia e benefícios pertinentes. Preço só entra quando fizer sentido no contexto ou quando o cliente perguntar.</p>
+</div>
+
+<div class="ai-agent-kpis top-space">
+  <div><span>Atendimentos analisados</span><strong>{{ training_metrics.runs }}</strong></div>
+  <div><span>Leads com interesse</span><strong>{{ training_metrics.interested }}</strong></div>
+  <div><span>Handoffs</span><strong>{{ training_metrics.handoffs }}</strong></div>
+  <div><span>Falhas para revisar</span><strong>{{ training_metrics.failed }}</strong></div>
+</div>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">NOVO CONHECIMENTO</span><h3>Adicionar orientação aprovada</h3></div>
+    <span class="panel-note">Conteúdo não aprovado não deve orientar promessas comerciais.</span>
+  </div>
+  <form action="/ai/knowledge" method="post" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="redirect_to" value="/ai/knowledge">
+    <div class="form-grid">
+      <label class="field"><span>Agente</span>
+        <select name="agent_id" required>
+          {% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="field"><span>Categoria</span>
+        <select name="category" required>
+          {% for key, label in knowledge_categories.items() %}
+          <option value="{{ key }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field"><span>Título</span><input name="title" required placeholder="Ex.: Por que contratar a Sulnet?"></label>
+      <label class="field"><span>Assunto</span><input name="subject" placeholder="Ex.: valor da marca"></label>
+      <label class="field"><span>Produto/serviço relacionado</span><input name="product_service" placeholder="Ex.: FTTH, Sulmóvel ou Institucional"></label>
+      <label class="field"><span>Cidade/região</span><input name="region" placeholder="Ex.: Todas as cidades / Santa Rosa"></label>
+      <label class="field"><span>Prioridade</span><input name="priority" type="number" min="0" max="100" value="70"></label>
+      <label class="field"><span>Status de aprovação</span>
+        <select name="approval_status">
+          <option value="APPROVED">Aprovado</option>
+          <option value="REVIEW">Em revisão</option>
+          <option value="DRAFT">Rascunho</option>
+        </select>
+      </label>
+      <label class="field"><span>Validade comercial até</span><input name="valid_until" type="date"></label>
+      <label class="field"><span>Fonte</span><input name="source_reference" placeholder="Ex.: Diretriz Comercial Sulnet 29/10/2026"></label>
+      <label class="field field-span-2"><span>Tags para recuperação</span><input name="tags" placeholder="por que sulnet, diferencial, valor, cultura, confiança"></label>
+      <label class="field field-span-2"><span>Conteúdo aprovado</span><textarea name="content" rows="6" required placeholder="Escreva a orientação que a IA poderá consultar e aplicar contextualizadamente."></textarea></label>
+    </div>
+    <button class="button button-primary" type="submit">Adicionar à Base Sulnet</button>
+  </form>
+</section>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">ORGANIZAÇÃO</span><h3>Áreas de conhecimento</h3></div>
+    <span class="panel-note">Ativo + aprovado + dentro da validade = utilizável pela IA.</span>
+  </div>
+  <div class="ai-agent-kpis">
+    {% for key, label in knowledge_categories.items() %}
+    <div><span>{{ label }}</span><strong>{{ category_counts.get(key, 0) }}</strong></div>
+    {% endfor %}
+  </div>
+</section>
+
+{% for key, label in knowledge_categories.items() %}
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">{{ key }}</span><h3>{{ label }}</h3></div>
+    <span class="dispatch-status status-ativo">{{ category_counts.get(key, 0) }} ativos</span>
+  </div>
+
+  <div class="stack-form">
+    {% set ns = namespace(found=false) %}
+    {% for item in knowledge if item.category == key %}
+      {% set ns.found = true %}
+      {% set meta = metadata.get(item.id) %}
+      <details class="panel" style="box-shadow:none; margin-bottom:12px;">
+        <summary style="cursor:pointer; display:flex; justify-content:space-between; gap:16px; align-items:center;">
+          <span>
+            <strong>{{ item.title }}</strong>
+            <span class="table-subline">
+              {{ item.agent.name }} · atualizado em {{ item.updated_at.strftime('%d/%m/%Y %H:%M') if item.updated_at else '—' }}
+              {% if meta and meta.product_service %} · {{ meta.product_service }}{% endif %}
+              {% if meta and meta.region %} · {{ meta.region }}{% endif %}
+            </span>
+          </span>
+          <span class="connection-status {% if item.active and (not meta or meta.approval_status == 'APPROVED') %}on{% endif %}">
+            {% if not item.active %}Inativo{% elif meta and meta.approval_status != 'APPROVED' %}{{ meta.approval_status }}{% else %}Aprovado{% endif %}
+          </span>
+        </summary>
+
+        <form action="/ai/knowledge/{{ item.id }}" method="post" class="stack-form top-space">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="form-grid">
+            <label class="field"><span>Título</span><input name="title" value="{{ item.title }}" required></label>
+            <label class="field"><span>Categoria</span>
+              <select name="category">
+                {% for cat_key, cat_label in knowledge_categories.items() %}
+                <option value="{{ cat_key }}" {% if item.category == cat_key %}selected{% endif %}>{{ cat_label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label class="field"><span>Assunto</span><input name="subject" value="{{ meta.subject if meta else '' }}"></label>
+            <label class="field"><span>Produto/serviço</span><input name="product_service" value="{{ meta.product_service if meta else '' }}"></label>
+            <label class="field"><span>Cidade/região</span><input name="region" value="{{ meta.region if meta else '' }}"></label>
+            <label class="field"><span>Prioridade</span><input name="priority" type="number" min="0" max="100" value="{{ meta.priority if meta else 50 }}"></label>
+            <label class="field"><span>Aprovação</span>
+              <select name="approval_status">
+                {% set approval = meta.approval_status if meta else 'APPROVED' %}
+                <option value="APPROVED" {% if approval == 'APPROVED' %}selected{% endif %}>Aprovado</option>
+                <option value="REVIEW" {% if approval == 'REVIEW' %}selected{% endif %}>Em revisão</option>
+                <option value="DRAFT" {% if approval == 'DRAFT' %}selected{% endif %}>Rascunho</option>
+              </select>
+            </label>
+            <label class="field"><span>Validade até</span><input name="valid_until" type="date" value="{{ meta.valid_until.strftime('%Y-%m-%d') if meta and meta.valid_until else '' }}"></label>
+            <label class="field field-span-2"><span>Fonte</span><input name="source_reference" value="{{ meta.source_reference if meta else item.source_type }}"></label>
+            <label class="field field-span-2"><span>Tags</span><input name="tags" value="{{ item.tags }}"></label>
+            <label class="field field-span-2"><span>Conteúdo</span><textarea name="content" rows="6" required>{{ item.content }}</textarea></label>
+          </div>
+          <button class="button button-primary" type="submit">Salvar atualização</button>
+        </form>
+
+        <form action="/ai/knowledge/{{ item.id }}/toggle" method="post" class="top-space">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="redirect_to" value="/ai/knowledge">
+          <button class="button button-secondary" type="submit">{{ 'Desativar conhecimento' if item.active else 'Ativar conhecimento' }}</button>
+        </form>
+      </details>
+    {% endfor %}
+    {% if not ns.found %}
+      <div class="empty-state"><strong>Nenhum conteúdo nesta área</strong><span>Cadastre uma orientação aprovada acima.</span></div>
+    {% endif %}
+  </div>
+</section>
+{% endfor %}
+{% endblock %}
