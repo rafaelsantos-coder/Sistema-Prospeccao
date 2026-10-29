@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import Counter
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -75,6 +76,8 @@ def _recover_stale_followups() -> int:
 def _recover_recent_unqueued_inbounds() -> int:
     db = SessionLocal()
     recovered = 0
+    reasons: Counter[str] = Counter()
+    inspected: list[str] = []
     try:
         threshold = utcnow() - timedelta(minutes=30)
         messages = list(
@@ -89,17 +92,27 @@ def _recover_recent_unqueued_inbounds() -> int:
                 .limit(200)
             )
         )
+        reasons["recent_text"] = len(messages)
         seen_conversations: set[int] = set()
         for message in messages:
             if message.conversation_id in seen_conversations:
+                reasons["older_same_conversation"] += 1
                 continue
             seen_conversations.add(message.conversation_id)
 
-            if db.scalar(select(AIJob.id).where(AIJob.message_id == message.id).limit(1)):
+            existing_job = db.scalar(
+                select(AIJob.id).where(AIJob.message_id == message.id).limit(1)
+            )
+            if existing_job:
+                reasons["already_has_job"] += 1
                 continue
 
             conversation = db.get(Conversation, message.conversation_id)
-            if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+            if not conversation:
+                reasons["missing_conversation"] += 1
+                continue
+            if conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+                reasons["closed_conversation"] += 1
                 continue
 
             state = db.scalar(
@@ -108,6 +121,7 @@ def _recover_recent_unqueued_inbounds() -> int:
                 )
             )
             if state and state.state in {"HANDOFF", "HUMAN_ACTIVE", "OPT_OUT"}:
+                reasons[f"state_{state.state.lower()}"] += 1
                 continue
 
             later_outbound = db.scalar(
@@ -121,24 +135,47 @@ def _recover_recent_unqueued_inbounds() -> int:
                 .limit(1)
             )
             if later_outbound:
+                reasons["later_outbound"] += 1
                 continue
 
+            current_queue = queue_for_conversation(db, conversation.id)
             instance = conversation_instance(db, conversation.id)
-            if instance:
-                target_queue = default_queue_for_instance(db, instance.id)
-                if target_queue and queue_ai_binding(db, target_queue.id):
-                    current_queue = queue_for_conversation(db, conversation.id)
-                    if not current_queue or current_queue.id != target_queue.id:
-                        bind_conversation_queue(
-                            db,
-                            conversation.id,
-                            target_queue.id,
-                            origin="AI_RECOVERY_INSTANCE",
-                        )
-                        conversation.team = target_queue.team
-                        if conversation.assigned_user_id:
-                            conversation.assigned_user_id = None
-                            conversation.status = "EM_FILA"
+            target_queue = default_queue_for_instance(db, instance.id) if instance else None
+            target_binding = queue_ai_binding(db, target_queue.id) if target_queue else None
+
+            if len(inspected) < 12:
+                inspected.append(
+                    "conversation=%s message=%s status=%s current_queue=%s instance=%s target_queue=%s target_ai=%s"
+                    % (
+                        conversation.id,
+                        message.id,
+                        conversation.status,
+                        current_queue.id if current_queue else None,
+                        instance.id if instance else None,
+                        target_queue.id if target_queue else None,
+                        bool(target_binding),
+                    )
+                )
+
+            if instance and target_queue and target_binding:
+                if not current_queue or current_queue.id != target_queue.id:
+                    bind_conversation_queue(
+                        db,
+                        conversation.id,
+                        target_queue.id,
+                        origin="AI_RECOVERY_INSTANCE",
+                    )
+                    conversation.team = target_queue.team
+                    if conversation.assigned_user_id:
+                        conversation.assigned_user_id = None
+                        conversation.status = "EM_FILA"
+                    reasons["queue_rebound"] += 1
+            elif not instance:
+                reasons["no_instance"] += 1
+            elif not target_queue:
+                reasons["no_target_queue"] += 1
+            elif not target_binding:
+                reasons["target_without_ai"] += 1
 
             job = enqueue_ai_job(
                 db,
@@ -147,8 +184,14 @@ def _recover_recent_unqueued_inbounds() -> int:
             )
             if job:
                 recovered += 1
+                reasons["recovered"] += 1
+            else:
+                reasons["enqueue_skipped"] += 1
 
         db.commit()
+        LOG.info("AI inbound recovery diagnostics: %s", dict(reasons))
+        for row in inspected:
+            LOG.info("AI inbound recovery candidate: %s", row)
     finally:
         db.close()
     return recovered
