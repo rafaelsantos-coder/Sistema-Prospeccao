@@ -1110,6 +1110,10 @@ def _apply_router_information_policy(
     if not any(cue in latest for cue in router_cues):
         return decision
 
+    explicit_speed = re.search(r"\b(\d{2,4})\s*(?:mega|mb|mbps)\b", latest)
+    if explicit_speed and int(explicit_speed.group(1)) not in {650, 800}:
+        return decision
+
     plan = _plan_from_sales_context(decision, context)
     if not plan:
         speed_match = re.search(r"\b(650|800)\s*mega\b", latest)
