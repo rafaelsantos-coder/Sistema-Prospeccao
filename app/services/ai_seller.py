@@ -29,6 +29,7 @@ from app.models import (
 from app.services.audit import write_audit
 from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
+from app.services.zapi import ZApiError
 from app.timeutils import utcnow
 
 
@@ -1489,6 +1490,18 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     reply = ""
     output: dict[str, Any] = {"step_before": state.step}
     client = SulnetCRMClient.from_settings()
+    state_snapshot = {
+        "step": state.step,
+        "collected_json": state.collected_json,
+        "plan_label": state.plan_label,
+        "offer_price": state.offer_price,
+        "credit_status": state.credit_status,
+        "credit_analysis_id": state.credit_analysis_id,
+        "contract_status": state.contract_status,
+        "sign_url": state.sign_url,
+        "opportunity_id": state.opportunity_id,
+        "protocol": state.protocol,
+    }
 
     try:
         if state.step == "NAME":
@@ -1831,6 +1844,13 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 state=state,
                 text=reply,
             )
+            _schedule_seller_followup(
+                db,
+                state=state,
+                conversation=conversation,
+                source_message_id=message.id,
+                step=1,
+            )
         _record_activity(
             db,
             conversation=conversation,
@@ -1847,8 +1867,22 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         })
         _finish_run(db, run=run, job=job, state=state, reply=reply, output=output)
         return "completed"
-    except CRMIntegrationError as exc:
+    except (CRMIntegrationError, ZApiError) as exc:
+        # Nunca deixa uma falha transitória avançar o estado local parcialmente.
+        # Assim a mesma resposta do cliente não é reinterpretada como resposta da etapa seguinte.
+        state.step = str(state_snapshot["step"])
+        state.collected_json = str(state_snapshot["collected_json"])
+        state.plan_label = str(state_snapshot["plan_label"])
+        state.offer_price = state_snapshot["offer_price"]
+        state.credit_status = str(state_snapshot["credit_status"])
+        state.credit_analysis_id = state_snapshot["credit_analysis_id"]
+        state.contract_status = str(state_snapshot["contract_status"])
+        state.sign_url = str(state_snapshot["sign_url"])
+        state.opportunity_id = state_snapshot["opportunity_id"]
+        state.protocol = str(state_snapshot["protocol"])
         state.last_error = str(exc)
+        collected = _load_collected(state)
+
         run.status = "FALHOU"
         run.error = str(exc)[:1200]
         run.finished_at = utcnow()
@@ -1856,27 +1890,35 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
         attempts = int(job.attempts or 0)
         if attempts < 3:
-            # Falha transitória: tenta novamente em background sem alarmar o cliente.
-            # Isso evita mensagens de "indisponibilidade" seguidas de sucesso segundos depois.
             run.reply_text = ""
             job.status = "PENDENTE"
             job.available_at = utcnow() + timedelta(seconds=30 * max(1, attempts))
             LOG.warning(
-                "seller_crm_retry_silent conversation=%s job=%s attempt=%s error=%s",
+                "seller_transient_retry conversation=%s job=%s step=%s attempt=%s error=%s",
                 conversation.id,
                 job.id,
+                state.step,
                 attempts,
                 str(exc)[:300],
             )
             return "retry"
 
+        # Guarda a etapa real antes do escalonamento técnico. A recuperação usa
+        # este marcador e nunca tenta adivinhar NAME/CPF/BILLING.
+        collected["_resume_step"] = state.step
+        _save_collected(state, collected)
+        technical_reason = (
+            f"Falha repetida na integração CRM: {exc}"
+            if isinstance(exc, CRMIntegrationError)
+            else f"Falha repetida no envio WhatsApp: {exc}"
+        )
         _handoff_to_human(
             db, state=state, conversation=conversation, agent=agent,
-            reason=f"Falha repetida na integração CRM: {exc}",
+            reason=technical_reason,
         )
         reply = (
-            "Tive uma indisponibilidade ao registrar esta etapa no sistema. "
-            "Encaminhei seu atendimento com todo o histórico para você não precisar repetir os dados."
+            "Tive uma indisponibilidade técnica ao registrar esta etapa. "
+            "Seu histórico ficou salvo para ninguém precisar começar novamente."
         )
         try:
             _send_text(db, agent=agent, conversation=conversation, text=reply)
