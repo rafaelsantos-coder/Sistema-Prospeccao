@@ -218,6 +218,10 @@ MOBILE_CONTRACT_BUTTONS = [
 ]
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
+    "CREDIT_REJECTED": [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ],
     "PLAN_CONFIRM": [
         {"id": "sim", "label": "Sim"},
         {"id": "nao", "label": "Não"},
@@ -995,6 +999,7 @@ SELLER_CUSTOMER_INPUT_STEPS = {
     "MOBILE_DEBIT_HOLDER",
     "MOBILE_UNIFY",
     "MOBILE_UNIFY_REASON",
+    "WAITING_SIGNATURE",
 }
 
 
@@ -1041,6 +1046,10 @@ def _seller_followup_prompt(
         return "Para continuar, deseja unificar esta fatura com outras faturas Sulnet?"
     if state.step == "CREDIT_REJECTED":
         return "Se quiser encaminhar a análise cadastral para um atendente, escolha Sim. Caso contrário, pode responder Não."
+    if state.step == "WAITING_SIGNATURE":
+        if state.sign_url:
+            return f"Seu contrato continua aguardando assinatura. Quando puder, assine por aqui: {state.sign_url}"
+        return "Seu contrato continua aguardando assinatura. Assim que o link estiver disponível, sigo por aqui."
     return prefix + prompts.get(state.step, _prompt_for_step(state, collected))
 
 
@@ -1199,6 +1208,13 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
                 conversation=conversation,
                 state=state,
                 text=prompt,
+            )
+            _schedule_seller_followup(
+                db,
+                state=state,
+                conversation=conversation,
+                source_message_id=None,
+                step=1,
             )
         resumed += 1
 
@@ -1961,7 +1977,7 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
     states = list(
         db.scalars(
             select(AIClosingState).where(
-                AIClosingState.step.in_(["WAITING_CONTRACT", "WAITING_SIGNATURE"]),
+                AIClosingState.step.in_(["CREDIT_REVIEW", "WAITING_CONTRACT", "WAITING_SIGNATURE"]),
                 AIClosingState.updated_at <= utcnow() - timedelta(seconds=45),
             ).order_by(AIClosingState.updated_at.asc()).limit(limit)
         )
@@ -1977,6 +1993,52 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
             continue
         try:
             status = client.get_status(state.opportunity_id)
+            if state.step == "CREDIT_REVIEW":
+                opportunity = status.get("opportunity") or {}
+                credit_status = str(opportunity.get("creditStatus") or "")
+                state.credit_status = credit_status
+                normalized_credit = _norm(credit_status)
+                collected = _load_collected(state)
+                if any(token in normalized_credit for token in ("aprovado", "pre-aprovado", "liberado")):
+                    state.step = "CEP"
+                    prompt = _prompt_for_step(state, collected)
+                    _send_step_message(
+                        db,
+                        agent=agent,
+                        conversation=conversation,
+                        state=state,
+                        text=prompt,
+                    )
+                    _schedule_seller_followup(
+                        db,
+                        state=state,
+                        conversation=conversation,
+                        source_message_id=None,
+                        step=1,
+                    )
+                    processed += 1
+                elif "reprov" in normalized_credit:
+                    state.step = "CREDIT_REJECTED"
+                    prompt = _prompt_for_step(state, collected)
+                    _send_step_message(
+                        db,
+                        agent=agent,
+                        conversation=conversation,
+                        state=state,
+                        text=prompt,
+                    )
+                    _schedule_seller_followup(
+                        db,
+                        state=state,
+                        conversation=conversation,
+                        source_message_id=None,
+                        step=1,
+                    )
+                    processed += 1
+                else:
+                    state.updated_at = utcnow()
+                continue
+
             contract = status.get("contract") or {}
             contract_status = str(contract.get("status") or "")
             sign_url = str(contract.get("signUrl") or "").strip()
@@ -2014,6 +2076,13 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     agent=agent,
                     conversation=conversation,
                     text=f"Seu contrato ficou pronto. Você pode assinar por este link: {sign_url}",
+                )
+                _schedule_seller_followup(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    source_message_id=None,
+                    step=1,
                 )
                 processed += 1
             else:
