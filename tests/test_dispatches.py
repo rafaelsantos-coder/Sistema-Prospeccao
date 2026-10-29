@@ -24,6 +24,7 @@ from app.services.dispatch_queue import (
 )
 from app.services.media_storage import MediaStorage
 from app.services.zapi import ZApiService
+from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
 
 
 def _csrf(html: str) -> str:
@@ -69,6 +70,17 @@ def _campaign_and_queue(db, suffix: str):
     )
     db.add_all([campaign, queue])
     db.flush()
+    instance = create_zapi_instance(
+        db,
+        name=f"WhatsApp Disparo {suffix}",
+        phone_label=f"Disparo {suffix}",
+        base_url="https://api.z-api.io",
+        instance_id=f"instance-dispatch-{suffix.lower()}",
+        instance_token=f"token-dispatch-{suffix.lower()}",
+        client_token=f"client-dispatch-{suffix.lower()}",
+        created_by_id=None,
+    )
+    bind_queue_instance(db, queue.id, instance.id)
     return campaign, queue
 
 
