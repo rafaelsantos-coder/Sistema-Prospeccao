@@ -10,6 +10,7 @@ from app.models import (
     Contact,
     Conversation,
     ConversationAssignment,
+    ConversationZApiInstance,
     Lead,
     Message,
     MessageEvent,
@@ -23,6 +24,7 @@ from app.services.queue_routing import (
     resolve_queue,
 )
 from app.services.scoring import normalize_phone
+from app.services.zapi_instances import bind_conversation_instance
 from app.services.whatsapp_presence import mark_whatsapp_assignment, online_user_ids, presence_for_users
 from app.timeutils import utcnow
 
@@ -189,20 +191,54 @@ def ensure_open_conversation(
     queue_id: int | None = None,
     queue_origin: str = "INBOUND",
     assign_if_unowned: bool = True,
+    zapi_instance_id: int | None = None,
 ) -> Conversation:
-    conversation = db.scalar(
-        select(Conversation)
-        .where(
-            Conversation.contact_id == contact.id,
-            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+    if zapi_instance_id:
+        conversation = db.scalar(
+            select(Conversation)
+            .join(
+                ConversationZApiInstance,
+                ConversationZApiInstance.conversation_id == Conversation.id,
+            )
+            .where(
+                Conversation.contact_id == contact.id,
+                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                ConversationZApiInstance.zapi_instance_id == zapi_instance_id,
+            )
+            .order_by(Conversation.updated_at.desc())
+            .limit(1)
         )
-        .order_by(Conversation.updated_at.desc())
-        .limit(1)
-    )
+        if not conversation:
+            conversation = db.scalar(
+                select(Conversation)
+                .outerjoin(
+                    ConversationZApiInstance,
+                    ConversationZApiInstance.conversation_id == Conversation.id,
+                )
+                .where(
+                    Conversation.contact_id == contact.id,
+                    Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                    ConversationZApiInstance.id.is_(None),
+                )
+                .order_by(Conversation.updated_at.desc())
+                .limit(1)
+            )
+    else:
+        conversation = db.scalar(
+            select(Conversation)
+            .where(
+                Conversation.contact_id == contact.id,
+                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            )
+            .order_by(Conversation.updated_at.desc())
+            .limit(1)
+        )
     team = lead.team if lead and lead.team else "B2B"
     branch_id = lead.branch_id if lead else None
 
     if conversation:
+        if zapi_instance_id:
+            bind_conversation_instance(db, conversation.id, zapi_instance_id)
         if lead and not conversation.lead_id:
             conversation.lead_id = lead.id
             conversation.branch_id = lead.branch_id
@@ -274,6 +310,9 @@ def ensure_open_conversation(
     )
     db.add(conversation)
     db.flush()
+
+    if zapi_instance_id:
+        bind_conversation_instance(db, conversation.id, zapi_instance_id)
 
     if queue:
         bind_conversation_queue(
@@ -513,7 +552,13 @@ def register_message(
     return message
 
 
-def store_received_payload(db: Session, payload: dict[str, Any]) -> tuple[Conversation | None, Message | None, bool]:
+def store_received_payload(
+    db: Session,
+    payload: dict[str, Any],
+    *,
+    queue_id: int | None = None,
+    zapi_instance_id: int | None = None,
+) -> tuple[Conversation | None, Message | None, bool]:
     if payload.get("isGroup") or payload.get("isNewsletter") or payload.get("isStatusReply"):
         return None, None, False
     phone = payload.get("phone") or payload.get("participantPhone")
@@ -542,7 +587,15 @@ def store_received_payload(db: Session, payload: dict[str, Any]) -> tuple[Conver
         name=sender_name if not lead else None,
         business_name=lead.business_name if lead else sender_name,
     )
-    conversation = ensure_open_conversation(db, contact, lead=lead, source="WHATSAPP")
+    conversation = ensure_open_conversation(
+        db,
+        contact,
+        lead=lead,
+        source="WHATSAPP",
+        queue_id=queue_id,
+        queue_origin="ZAPI_INSTANCE" if zapi_instance_id else "INBOUND",
+        zapi_instance_id=zapi_instance_id,
+    )
 
     from_me = bool(payload.get("fromMe"))
     direction = "OUTBOUND" if from_me else "INBOUND"
