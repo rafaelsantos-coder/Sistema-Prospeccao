@@ -263,6 +263,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         or "PLANO SOLICITADO INDISPONÍVEL" not in ai_agent.system_prompt
         or "CATÁLOGO POR BOTÕES" not in ai_agent.system_prompt
         or "ROTEADORES NOS PLANOS 800 E 650 MEGA" not in ai_agent.system_prompt
+        or "SEGMENTO EMPRESA / MEMÓRIA PJ" not in ai_agent.system_prompt
         or "tentativa 1 após 10 minutos" not in ai_agent.system_prompt
         or "ORIGEM DOS FATOS E ISOLAMENTO DE CONVERSA" not in ai_agent.system_prompt
     ):
