@@ -112,6 +112,41 @@ class MediaStorage:
             raise MediaStorageError("Nao foi possivel armazenar o arquivo.") from exc
         return self.storage_uri(key), safe_name
 
+    def upload_campaign_bytes(
+        self,
+        *,
+        data: bytes,
+        campaign_id: int,
+        filename: str | None,
+        mime_type: str | None,
+    ) -> tuple[str, str]:
+        if not data:
+            raise MediaStorageError("O arquivo esta vazio.")
+        if len(data) > self.max_bytes:
+            raise MediaStorageError(
+                f"O arquivo excede o limite de {settings.media_max_upload_mb} MB."
+            )
+        safe_name = _safe_filename(filename, mime_type)
+        now = datetime.now(timezone.utc)
+        key = (
+            f"campaigns/{now:%Y/%m}/{campaign_id}/"
+            f"{uuid4().hex}-{safe_name}"
+        )
+        extra: dict[str, str] = {
+            "ContentType": mime_type or "application/octet-stream",
+            "ContentDisposition": f'inline; filename="{safe_name}"',
+        }
+        try:
+            self._client().put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=data,
+                **extra,
+            )
+        except Exception as exc:
+            raise MediaStorageError("Nao foi possivel armazenar o arquivo da campanha.") from exc
+        return self.storage_uri(key), safe_name
+
     def archive_remote(
         self,
         *,
