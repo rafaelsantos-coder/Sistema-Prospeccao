@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_settings_nav.html" %}
+
+<div class="page-lead split settings-section-lead">
+  <div>
+    <span class="eyebrow">CONFIGURAÇÕES · WHATSAPP</span>
+    <h2>Números e conexões Z-API</h2>
+    <p>Gerencie as instâncias WhatsApp que podem ser vinculadas às filas de atendimento.</p>
+  </div>
+  <a class="button button-secondary" href="/settings">← Configurações</a>
+</div>
+
+<div class="settings-grid">
+  <article class="panel panel-span-5">
+    <div class="panel-header"><div><span class="eyebrow">STATUS</span><h3>Conectividade do WhatsApp</h3></div></div>
+    {% if zapi_status.configured %}
+      <div class="integration-list">
+        <div class="integration-row">
+          <div class="integration-logo">Z</div>
+          <div><strong>Z-API</strong><span>Envio e recebimento de mensagens</span></div>
+          <span class="connection-status {% if zapi_status.connected %}on{% endif %}">{{ 'Conectado' if zapi_status.connected else 'Desconectado' }}</span>
+        </div>
+      </div>
+      <div class="info-box compact">
+        <strong>Condição atual</strong>
+        <p>{% if zapi_status.smartphone_connected %}Celular online{% else %}Celular não confirmado{% endif %} · {% if zapi_status.webhook_ready %}webhook preparado{% else %}webhook pendente{% endif %}.</p>
+        {% if zapi_status.error %}<p>{{ zapi_status.error }}</p>{% endif %}
+      </div>
+    {% else %}
+      <div class="empty-state"><strong>Nenhuma instância ativa</strong><span>Cadastre abaixo a primeira conexão Z-API.</span></div>
+    {% endif %}
+  </article>
+
+  <article class="panel panel-span-7">
+    <div class="panel-header"><div><span class="eyebrow">HOMOLOGAÇÃO</span><h3>Testar conexão</h3></div></div>
+    {% if zapi_status.configured %}
+    <form action="/settings/zapi/test" method="post" class="stack-form compact">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Instância WhatsApp</span><select name="zapi_instance_id" required>{% for instance in active_zapi_instances %}<option value="{{ instance.id }}">{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>{% endfor %}</select></label>
+      <label class="field"><span>Número interno para teste</span><input name="phone" required placeholder="5555999999999" inputmode="numeric"></label>
+      <label class="field"><span>Mensagem</span><textarea name="message" rows="3" maxlength="4096" required>Teste de integração do Sulnet Prospecta com a Z-API.</textarea></label>
+      <div class="settings-action-row">
+        <button class="button button-primary" type="submit">Enviar mensagem de teste</button>
+      </div>
+    </form>
+    <form action="/settings/zapi/configure-webhook" method="post" class="top-space">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-secondary" type="submit">Registrar todos os webhooks novamente</button>
+    </form>
+    {% else %}
+    <div class="empty-state"><strong>Teste indisponível</strong><span>Cadastre e valide uma instância primeiro.</span></div>
+    {% endif %}
+  </article>
+
+  <article class="panel panel-span-12">
+    <div class="panel-header">
+      <div><span class="eyebrow">INSTÂNCIAS WHATSAPP</span><h3>Números cadastrados</h3></div>
+      <span class="count-badge">{{ zapi_instances|length }}</span>
+    </div>
+    <p class="panel-note">Cada fila pode usar uma instância diferente. As credenciais ficam protegidas e não são exibidas depois do cadastro.</p>
+    <div class="data-table-wrap top-space">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>Número / identificação</th><th>Instância</th><th>Origem</th><th>Status</th><th>Webhook</th></tr></thead>
+        <tbody>
+        {% for instance in zapi_instances %}
+          <tr>
+            <td><strong>{{ instance.name }}</strong></td>
+            <td>{{ instance.phone_label or 'Não informado' }}</td>
+            <td><span class="table-subline">…{{ instance.instance_id[-8:] }}</span></td>
+            <td>{{ 'Railway / atual' if instance.source_type == 'ENV' else 'Cadastro interno' }}</td>
+            <td><span class="connection-status {% if instance.active %}on{% endif %}">{{ 'Ativa' if instance.active else 'Inativa' }}</span></td>
+            <td>
+              {% if instance.active %}
+              <form action="/settings/zapi/instances/{{ instance.id }}/configure-webhook" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="button button-ghost" type="submit">Atualizar webhook</button>
+              </form>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6"><div class="empty-state"><strong>Nenhuma instância cadastrada</strong><span>Cadastre uma instância para vinculá-la às filas.</span></div></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="queue-create-box">
+      <div class="panel-header">
+        <div><span class="eyebrow">NOVA INSTÂNCIA</span><h3>Adicionar número WhatsApp</h3></div>
+        <span class="panel-note">As credenciais ficam protegidas e não são exibidas novamente.</span>
+      </div>
+      <form action="/settings/zapi/instances" method="post" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label class="field"><span>Nome da instância</span><input name="name" required placeholder="Ex.: WhatsApp B2B"></label>
+          <label class="field"><span>Número / identificação</span><input name="phone_label" placeholder="Ex.: (55) 99999-0000"></label>
+          <label class="field field-span-2"><span>URL da Z-API</span><input name="base_url" value="https://api.z-api.io" required></label>
+          <label class="field"><span>Instance ID</span><input name="instance_id" required autocomplete="off"></label>
+          <label class="field"><span>Instance Token</span><input name="instance_token" type="password" required autocomplete="new-password"></label>
+          <label class="field field-span-2"><span>Client Token</span><input name="client_token" type="password" autocomplete="new-password"><small>Preencha quando sua conta Z-API utilizar Client-Token.</small></label>
+        </div>
+        <button class="button button-primary" type="submit">Validar e cadastrar instância</button>
+      </form>
+    </div>
+  </article>
+</div>
+{% endblock %}
