@@ -905,7 +905,6 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
         db.scalars(
             select(AIClosingState)
             .where(
-                AIClosingState.step.like("MOBILE_%"),
                 AIClosingState.updated_at >= utcnow() - timedelta(days=2),
             )
             .order_by(AIClosingState.updated_at.desc())
@@ -928,10 +927,18 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
     for state in states:
         collected = _load_collected(state)
         values = _mobile_values(collected)
+        contract_type = str(values.get("tipo_contratacao") or "")
+        is_mobile_flow = contract_type in {"Número novo", "Número Portabilidade", "M2M"}
         changed = state.step in REMOVED_MOBILE_STEPS
 
-        if values.get("tipo_contratacao") == "M2M":
+        if contract_type == "M2M":
             values.pop("tipo_contratacao", None)
+            changed = True
+            is_mobile_flow = True
+
+        # Recuperações genéricas antigas podiam devolver o móvel para BILLING.
+        # Corrige imediatamente para a próxima etapa específica do Sulmóvel.
+        if state.step == "BILLING" and is_mobile_flow:
             changed = True
 
         if not changed:
