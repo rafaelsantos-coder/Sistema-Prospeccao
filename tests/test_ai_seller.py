@@ -1,6 +1,7 @@
 from app.services.ai_seller import (
     _billing_local,
     _extract_address_number,
+    _extract_birth_date,
     _extract_cep,
     _extract_cpf,
     _extract_email,
@@ -84,3 +85,10 @@ def test_seller_dashboard_is_available_to_admin():
         assert page.status_code == 200
         assert "Vendedor IA Sulnet" in page.text
         assert "Etapas do fechamento" in page.text
+
+
+
+def test_extract_birth_date_normalizes_to_iso():
+    assert _extract_birth_date("10/05/1990") == "1990-05-10"
+    assert _extract_birth_date("1990-05-10") == "1990-05-10"
+    assert _extract_birth_date("31/02/1990") is None

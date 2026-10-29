@@ -36,6 +36,16 @@ class FakeClient:
             response.payload = {"originId": 77}
         elif url.endswith("/api/capture/leads"):
             response.payload = {"lead": {"id": 1234, "protocol": "CRM-2026-1234"}}
+        elif url.endswith("/api/capture/leads/1234/consult"):
+            response.payload = {
+                "analysis": {
+                    "id": 88,
+                    "status": "Aprovado",
+                    "approved": True,
+                    "rejected": False,
+                    "canContest": False,
+                }
+            }
         else:
             response.payload = {"ok": True}
         return response
@@ -75,3 +85,41 @@ def test_create_lead_normalizes_onprem_response_and_disables_auto_consult(monkey
     assert FakeClient.captured_json is not None
     assert FakeClient.captured_json["runConsult"] is False
     assert FakeClient.captured_json["originId"] == 77
+
+
+
+def test_consult_credit_sends_birth_date_without_persisting_cpf_locally(monkeypatch):
+    monkeypatch.setattr(crm_module.httpx, "Client", FakeClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="service-token-value",
+    )
+    result = client.consult_credit(
+        1234,
+        "00380171058",
+        birth_date="1990-05-10",
+    )
+
+    assert FakeClient.captured_json == {
+        "clientCpf": "00380171058",
+        "clientBirthDate": "1990-05-10",
+    }
+    assert result["analysisId"] == 88
+    assert result["approved"] is True
+    assert result["rejected"] is False
+    assert result["canContest"] is False
+
+
+def test_consult_credit_can_send_birth_date_after_cpf_is_already_in_crm(monkeypatch):
+    monkeypatch.setattr(crm_module.httpx, "Client", FakeClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="service-token-value",
+    )
+    client.consult_credit(1234, birth_date="1990-05-10")
+
+    assert FakeClient.captured_json == {
+        "clientBirthDate": "1990-05-10",
+    }
