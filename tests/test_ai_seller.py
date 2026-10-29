@@ -15,6 +15,7 @@ from app.services.ai_seller import (
     _mobile_values,
     _redact,
     _sync_plan_context,
+    _seller_step_buttons,
     _yes_no,
 )
 
@@ -237,3 +238,32 @@ def test_sync_plan_context_recovers_mobile_product_after_email():
             },
         )
     ]
+
+
+def test_seller_step_buttons_cover_predefined_mobile_questions():
+    assert _seller_step_buttons("MOBILE_CONTRACT_TYPE") == [
+        {"id": "portabilidade", "label": "Portabilidade"},
+        {"id": "numero_novo", "label": "Número novo"},
+    ]
+    assert _seller_step_buttons("MOBILE_PORT_TITULAR") == [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ]
+    assert _seller_step_buttons("MOBILE_PAYMENT_METHOD") == [
+        {"id": "boleto", "label": "Boleto"},
+        {"id": "debito", "label": "Débito em conta"},
+    ]
+    assert _seller_step_buttons("MOBILE_INVOICE_DELIVERY") == [
+        {"id": "whatsapp", "label": "WhatsApp"},
+        {"id": "email", "label": "E-mail"},
+        {"id": "ambos", "label": "Ambos"},
+    ]
+    assert _seller_step_buttons("MOBILE_UNIFY") == [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ]
+
+
+def test_seller_step_buttons_keep_free_text_steps_without_buttons():
+    assert _seller_step_buttons("MOBILE_PORT_NUMBER", "Qual é o número que será portado?") == []
+    assert _seller_step_buttons("EMAIL", "Qual é o seu e-mail?") == []
