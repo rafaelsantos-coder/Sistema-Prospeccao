@@ -214,6 +214,31 @@ MOBILE_CONTRACT_BUTTONS = [
     {"id": "portabilidade", "label": "Portabilidade"},
     {"id": "numero_novo", "label": "Número novo"},
 ]
+
+SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
+    "PLAN_CONFIRM": [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ],
+    "MOBILE_CONTRACT_TYPE": MOBILE_CONTRACT_BUTTONS,
+    "MOBILE_PORT_TITULAR": [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ],
+    "MOBILE_PAYMENT_METHOD": [
+        {"id": "boleto", "label": "Boleto"},
+        {"id": "debito", "label": "Débito em conta"},
+    ],
+    "MOBILE_INVOICE_DELIVERY": [
+        {"id": "whatsapp", "label": "WhatsApp"},
+        {"id": "email", "label": "E-mail"},
+        {"id": "ambos", "label": "Ambos"},
+    ],
+    "MOBILE_UNIFY": [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ],
+}
 REMOVED_MOBILE_STEPS = {
     "MOBILE_NEW_ICCID",
     "MOBILE_NEW_NUMBER",
@@ -736,6 +761,19 @@ def _send_text(
     return message
 
 
+def _seller_step_buttons(step: str, text: str = "") -> list[dict[str, str]]:
+    buttons = SELLER_STEP_BUTTONS.get(step)
+    if buttons:
+        return [dict(item) for item in buttons]
+
+    # Segurança adicional: se uma pergunta estruturada sair do mapa acima,
+    # ainda tentamos transformar perguntas previsíveis (ex.: sim/não) em botões.
+    from app.services.ai_quick_replies import infer_quick_replies
+
+    inferred = infer_quick_replies(text)
+    return inferred if len(inferred) >= 2 else []
+
+
 def _send_step_message(
     db: Session,
     *,
@@ -744,7 +782,8 @@ def _send_step_message(
     state: AIClosingState,
     text: str,
 ) -> Message:
-    if state.step != "MOBILE_CONTRACT_TYPE":
+    buttons = _seller_step_buttons(state.step, text)
+    if len(buttons) < 2:
         return _send_text(
             db,
             agent=agent,
@@ -762,7 +801,7 @@ def _send_step_message(
     result = zapi.send_button_list(
         phone=phone,
         message=text,
-        buttons=MOBILE_CONTRACT_BUTTONS,
+        buttons=buttons,
     )
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
