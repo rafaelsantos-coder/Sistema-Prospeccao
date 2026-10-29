@@ -348,6 +348,30 @@ def create_knowledge(
     )
     db.add(item)
     db.flush()
+
+    valid_until_dt = None
+    if valid_until.strip():
+        try:
+            valid_until_dt = datetime.fromisoformat(valid_until.strip()).replace(tzinfo=timezone.utc)
+        except ValueError:
+            valid_until_dt = None
+
+    db.add(
+        AIKnowledgeMetadata(
+            knowledge_item_id=item.id,
+            subject=subject.strip()[:120],
+            product_service=product_service.strip()[:120],
+            region=region.strip()[:180],
+            source_reference=source_reference.strip()[:500],
+            priority=max(0, min(100, priority)),
+            approval_status=(
+                approval_status.strip().upper()
+                if approval_status.strip().upper() in {"APPROVED", "DRAFT", "REVIEW"}
+                else "APPROVED"
+            ),
+            valid_until=valid_until_dt,
+        )
+    )
     write_audit(
         db,
         user=actor,
