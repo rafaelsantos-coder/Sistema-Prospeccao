@@ -1616,3 +1616,36 @@ def test_ver_outros_planos_after_fiber_selection_returns_city_catalog():
     assert "800 Mega por R$ 119,90" in result.reply_text
     assert "650 Mega por R$ 99,90" in result.reply_text
     assert [item.label for item in result.quick_replies] == ["800 Mega", "650 Mega"]
+
+
+def test_current_mobile_allowance_is_not_misread_as_catalog_selection():
+    decision = AIDecision(
+        reply_text="Entendi. Você quer aumentar sua franquia atual?",
+        intent="QUALIFYING",
+        qualification_score=45,
+        temperature="MORNO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.9,
+        summary="Cliente informou franquia atual.",
+        next_action="Entender necessidade de dados móveis.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="DISCOVERY",
+    )
+    context = {
+        "latest_customer_message": "Eu tenho 5GB hoje no meu celular",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "INBOUND",
+                "body": "Eu tenho 5GB hoje no meu celular",
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.reply_text == "Entendi. Você quer aumentar sua franquia atual?"
+    assert result.offer_plan_code is None
