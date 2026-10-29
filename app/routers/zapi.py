@@ -54,16 +54,30 @@ from app.web import flash
 router = APIRouter()
 LOG = logging.getLogger("uvicorn.error")
 OPT_OUT_TERMS = (
-    "nao quero",
-    "não quero",
-    "pare",
-    "parar",
-    "sair",
-    "remover",
-    "descadastrar",
+    "pare de me chamar",
+    "pare de mandar",
+    "parar de mandar",
     "nao me chame",
     "não me chame",
+    "nao me contate",
+    "não me contate",
+    "nao entre em contato",
+    "não entre em contato",
+    "nao quero mais mensagens",
+    "não quero mais mensagens",
+    "nao quero mais contato",
+    "não quero mais contato",
+    "remover meu numero",
+    "remover meu número",
+    "me remova",
+    "descadastrar",
+    "sair da lista",
 )
+
+
+def _is_explicit_opt_out(value: str | None) -> bool:
+    text = (value or "").casefold().strip()
+    return any(term in text for term in OPT_OUT_TERMS)
 
 
 def _current_user_or_redirect(request: Request, db: Session):
@@ -230,8 +244,7 @@ def _process_zapi_payload(
 
     opt_out = False
     if created and message.direction == "INBOUND":
-        lower_message = (message.body or "").casefold()
-        opt_out = any(term in lower_message for term in OPT_OUT_TERMS)
+        opt_out = _is_explicit_opt_out(message.body)
         lead = conversation.lead
         if lead:
             now = utcnow()
