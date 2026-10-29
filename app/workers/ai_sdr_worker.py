@@ -344,6 +344,13 @@ def run() -> None:
     )
     _recover_stale_jobs()
     _recover_stale_followups()
+    recovered_closer = _recover_closer_capture_patch_failures()
+    if recovered_closer:
+        LOG.info(
+            "Fechamentos do Vendedor IA recuperados apos correcao de PATCH CRM=%s",
+            recovered_closer,
+        )
+
     resumed_mobile = 0
     db = SessionLocal()
     try:
@@ -355,13 +362,6 @@ def run() -> None:
         LOG.info(
             "Fechamentos moveis reposicionados apos simplificacao do fluxo=%s",
             resumed_mobile,
-        )
-
-    recovered_closer = _recover_closer_capture_patch_failures()
-    if recovered_closer:
-        LOG.info(
-            "Fechamentos do Vendedor IA recuperados apos correcao de PATCH CRM=%s",
-            recovered_closer,
         )
     rescheduled_followups = _reschedule_initial_pending_followups()
     if rescheduled_followups:
