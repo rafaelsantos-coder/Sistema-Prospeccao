@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_settings_nav.html" %}
+
+<div class="page-lead split settings-section-lead">
+  <div>
+    <span class="eyebrow">CONFIGURAÇÕES · AMBIENTE</span>
+    <h2>Integrações e ambiente</h2>
+    <p>Visualize a saúde das integrações gerais e a capacidade de envio do ambiente.</p>
+  </div>
+  <span class="environment-badge">{{ environment|upper }}</span>
+</div>
+
+<div class="settings-grid">
+  <article class="panel panel-span-7">
+    <div class="panel-header"><div><span class="eyebrow">INTEGRAÇÕES</span><h3>Conectividade do sistema</h3></div></div>
+    <div class="integration-list">
+      <div class="integration-row"><div class="integration-logo">A</div><div><strong>Apify</strong><span>Busca de empresas no Google Maps</span></div><span class="connection-status {% if integrations.apify %}on{% endif %}">{{ 'Conectado' if integrations.apify else 'Pendente' }}</span></div>
+      <div class="integration-row"><div class="integration-logo">Z</div><div><strong>Z-API</strong><span>Envio e recebimento no WhatsApp</span></div><span class="connection-status {% if integrations.zapi %}on{% endif %}">{{ 'Configurado' if integrations.zapi else 'Pendente' }}</span></div>
+      <div class="integration-row"><div class="integration-logo">R</div><div><strong>Resend</strong><span>Envio de e-mails comerciais</span></div><span class="connection-status {% if integrations.email %}on{% endif %}">{{ 'Conectado' if integrations.email else 'Pendente' }}</span></div>
+      <div class="integration-row"><div class="integration-logo">AI</div><div><strong>OpenAI / SulIA</strong><span>Agente SDR e automações de IA</span></div><span class="connection-status {% if integrations.ai_sdr %}on{% endif %}">{{ 'Conectado' if integrations.ai_sdr else ('Configurado' if integrations.openai else 'Pendente') }}</span></div>
+      <div class="integration-row"><div class="integration-logo">L</div><div><strong>Motor legado</strong><span>Scripts originais do repositório</span></div><span class="connection-status {% if legacy_available %}on{% endif %}">{{ 'Disponível' if legacy_available else 'Modo compatível' }}</span></div>
+    </div>
+    {% if current_user.role in ['ADMIN','GESTOR'] %}
+    <div class="info-box compact"><strong>WhatsApp separado</strong><p>Cadastros de números, credenciais e webhooks ficam em <a href="/settings/whatsapp">Números e conexões Z-API</a>.</p></div>
+    {% endif %}
+  </article>
+
+  <article class="panel panel-span-5">
+    <div class="panel-header"><div><span class="eyebrow">LIMITES</span><h3>Envios de hoje</h3></div></div>
+    {% for channel, data in rate_status.channels.items() %}
+    <div class="capacity-row">
+      <div class="capacity-head"><span>{{ channel|upper }}</span><strong>{{ data.sent_today }}/{{ data.limit }}</strong></div>
+      <div class="progress-track"><span style="width: {{ (data.sent_today / data.limit * 100) if data.limit else 0 }}%"></span></div>
+      <small>{{ data.remaining }} restantes</small>
+    </div>
+    {% endfor %}
+  </article>
+
+  <article class="panel panel-span-12">
+    <div class="panel-header"><div><span class="eyebrow">SEGURANÇA</span><h3>Credenciais do ambiente</h3></div></div>
+    <div class="info-box">
+      <strong>Segredos protegidos</strong>
+      <p>Tokens e credenciais sensíveis não são exibidos pela interface. As credenciais adicionais de Z-API permanecem protegidas no banco e as demais integrações usam variáveis do ambiente.</p>
+    </div>
+  </article>
+</div>
+{% endblock %}
