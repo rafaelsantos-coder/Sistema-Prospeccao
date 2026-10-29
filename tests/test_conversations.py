@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models import Conversation, User
-from app.services.conversation_engine import conversation_visible_to_user
+from app.services.conversation_engine import conversation_visible_to_user, payload_message_content
 from app.services.media_storage import MediaStorage
 from app.services.zapi import ZApiService
 
@@ -100,6 +100,22 @@ def test_consultant_cannot_see_another_consultants_conversation():
     assert conversation_visible_to_user(conversation, owner) is True
     assert conversation_visible_to_user(conversation, other) is False
     assert conversation_visible_to_user(conversation, admin) is True
+
+
+
+def test_button_reply_is_parsed_as_inbound_text():
+    message_type, body, media_url, mime_type = payload_message_content(
+        {
+            "buttonsResponseMessage": {
+                "selectedButtonId": "campaign_10_reply_1",
+                "selectedDisplayText": "Tenho interesse",
+            }
+        }
+    )
+    assert message_type == "TEXT"
+    assert body == "Tenho interesse"
+    assert media_url is None
+    assert mime_type is None
 
 
 def test_realtime_inbox_api_lists_new_conversation():
