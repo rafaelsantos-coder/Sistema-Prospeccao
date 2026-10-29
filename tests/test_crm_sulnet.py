@@ -123,3 +123,67 @@ def test_consult_credit_can_send_birth_date_after_cpf_is_already_in_crm(monkeypa
     assert FakeClient.captured_json == {
         "clientBirthDate": "1990-05-10",
     }
+
+
+
+class CategoryFormClient:
+    captured: list[dict[str, Any]] = []
+
+    def __init__(self, *, headers: dict[str, str], **_: Any):
+        self.headers = headers
+
+    def __enter__(self) -> "CategoryFormClient":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.__class__.captured.append(
+            {"method": method, "url": url, "json": kwargs.get("json")}
+        )
+        response = FakeResponse()
+        if method == "GET" and url.endswith("/api/capture/leads/1234"):
+            response.payload = {
+                "opportunityId": 1234,
+                "aiClosing": {"paymentMethod": "Boleto", "dueDay": 10},
+            }
+        elif method == "PATCH" and url.endswith("/api/opportunities/1234"):
+            response.payload = {"id": 1234, "ok": True}
+        else:
+            response.payload = {"ok": True}
+        return response
+
+
+def test_update_category_form_uses_generic_opportunity_patch(monkeypatch):
+    CategoryFormClient.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", CategoryFormClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="service-token-value",
+    )
+    result = client.update_category_form(
+        1234,
+        {
+            "tipo_contratacao": "Número novo",
+            "tipo_assinatura_contrato": "Assinatura Digital IA",
+        },
+        category_id=13,
+        plan_id=44,
+    )
+
+    assert result["ok"] is True
+    patch = next(
+        item
+        for item in CategoryFormClient.captured
+        if item["method"] == "PATCH"
+    )
+    assert patch["url"].endswith("/api/opportunities/1234")
+    assert patch["json"]["categoryId"] == 13
+    assert patch["json"]["planIds"] == [44]
+    assert patch["json"]["productInfo"]["aiClosing"]["paymentMethod"] == "Boleto"
+    values = patch["json"]["productInfo"]["categoryForm"]["values"]
+    assert values["tipo_contratacao"] == "Número novo"
+    assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
+    assert patch["json"]["productInfo"]["categoryForm"]["files"] == {}
