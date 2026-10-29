@@ -18,12 +18,18 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.audit import write_audit
-from app.services.campaign_queue import campaign_message_template, personalize_message
+from app.services.campaign_queue import (
+    campaign_media_attachments,
+    campaign_message_template,
+    campaign_quick_replies,
+    personalize_message,
+)
 from app.services.conversation_engine import (
     ensure_contact,
     ensure_open_conversation,
     register_message,
 )
+from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.queue_routing import set_lead_queue_preference
 from app.services.scoring import normalize_phone
 from app.services.zapi import ZApiError
@@ -347,12 +353,21 @@ def process_dispatch_recipient(
         return "failed"
 
     recipient.attempts = int(recipient.attempts or 0) + 1
+    quick_replies = campaign_quick_replies(campaign)
     zapi_instance = queue_instance(db, queue.id)
+    zapi = service_for_queue(db, queue.id)
     try:
-        result = service_for_queue(db, queue.id).send_text(
-            phone=lead.phone,
-            message=body,
-        )
+        if quick_replies:
+            result = zapi.send_button_list(
+                phone=lead.phone,
+                message=body,
+                buttons=quick_replies,
+            )
+        else:
+            result = zapi.send_text(
+                phone=lead.phone,
+                message=body,
+            )
     except ZApiError as exc:
         recipient.error = str(exc)[:500]
         if recipient.attempts >= 3:
@@ -388,13 +403,68 @@ def process_dispatch_recipient(
         db,
         conversation,
         direction="OUTBOUND",
-        message_type="TEXT",
+        message_type="BUTTONS" if quick_replies else "TEXT",
         body=body,
         sender_user_id=dispatch.created_by_id,
         provider_message_id=provider_id,
         provider_zaap_id=zaap_id,
         status="SENT",
     )
+
+    media_sent = 0
+    media_errors: list[str] = []
+    attachments = campaign_media_attachments(campaign)
+    if attachments:
+        storage = MediaStorage()
+        for attachment in attachments:
+            kind = str(attachment.get("type") or "")
+            storage_uri = str(attachment.get("storage_uri") or "")
+            file_name = str(attachment.get("file_name") or "arquivo")
+            mime_type = str(attachment.get("mime_type") or "application/octet-stream")
+            try:
+                delivery_url = storage.presigned_download_url(
+                    storage_uri,
+                    filename=file_name,
+                    expires_seconds=3600,
+                )
+                if kind == "IMAGE":
+                    media_result = zapi.send_image(
+                        phone=lead.phone,
+                        image_url=delivery_url,
+                    )
+                    media_body = "[Imagem]"
+                elif kind == "VIDEO":
+                    media_result = zapi.send_video(
+                        phone=lead.phone,
+                        video_url=delivery_url,
+                    )
+                    media_body = "[Video]"
+                else:
+                    media_result = zapi.send_audio(
+                        phone=lead.phone,
+                        audio_url=delivery_url,
+                    )
+                    media_body = "[Audio]"
+                media_provider_id = str(
+                    media_result.get("messageId") or media_result.get("id") or ""
+                ).strip() or None
+                media_zaap_id = str(media_result.get("zaapId") or "").strip() or None
+                register_message(
+                    db,
+                    conversation,
+                    direction="OUTBOUND",
+                    message_type=kind,
+                    body=media_body,
+                    sender_user_id=dispatch.created_by_id,
+                    media_url=storage_uri,
+                    mime_type=mime_type,
+                    provider_message_id=media_provider_id,
+                    provider_zaap_id=media_zaap_id,
+                    status="SENT",
+                )
+                media_sent += 1
+            except (MediaStorageError, ZApiError) as exc:
+                media_errors.append(f"{file_name}: {exc}")
 
     now = utcnow()
     recipient.status = "ENVIADO"
@@ -434,6 +504,9 @@ def process_dispatch_recipient(
             "conversation_id": conversation.id,
             "provider_message_id": provider_id,
             "zapi_instance_id": zapi_instance.id if zapi_instance else None,
+            "quick_reply_count": len(quick_replies),
+            "media_sent": media_sent,
+            "media_errors": media_errors,
             "interval_seconds": dispatch.interval_seconds,
         },
     )
