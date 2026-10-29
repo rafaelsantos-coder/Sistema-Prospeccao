@@ -181,7 +181,12 @@ CORPORATE_PLANS = [
         "fixed_ip": True,
         "wifi6_router": True,
         "free_activation": True,
-        "benefits": ["IP Fixo", "Roteador Wi-Fi 6", "Ativação gratuita"],
+        "sla_service_hours": 8,
+        "support_level": "N2",
+        "specialized_business_team": True,
+        "band_delivery_profile": "CORPORATE_DIFFERENTIATED",
+        "noc_proactive_monitoring": True,
+        "benefits": ["IP Fixo", "Sulnet Monitora", "Roteador Wi-Fi 6", "Ativação gratuita"],
     },
     {
         "code": "CORP_250",
@@ -192,7 +197,12 @@ CORPORATE_PLANS = [
         "fixed_ip": True,
         "wifi6_router": True,
         "free_activation": True,
-        "benefits": ["IP Fixo", "Sulnet Play", "Roteador Wi-Fi 6", "Ativação gratuita"],
+        "sla_service_hours": 8,
+        "support_level": "N2",
+        "specialized_business_team": True,
+        "band_delivery_profile": "CORPORATE_DIFFERENTIATED",
+        "noc_proactive_monitoring": True,
+        "benefits": ["IP Fixo", "Sulnet Play", "Sulnet Monitora", "Roteador Wi-Fi 6", "Ativação gratuita"],
     },
     {
         "code": "CORP_650",
@@ -203,6 +213,11 @@ CORPORATE_PLANS = [
         "fixed_ip": True,
         "wifi6_router": True,
         "free_activation": True,
+        "sla_service_hours": 8,
+        "support_level": "N2",
+        "specialized_business_team": True,
+        "band_delivery_profile": "CORPORATE_DIFFERENTIATED",
+        "noc_proactive_monitoring": True,
         "benefits": ["IP Fixo", "Sulnet Monitora", "Roteador Wi-Fi 6", "Ativação gratuita"],
     },
 ]
@@ -344,15 +359,31 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     {
         "title": "Planos corporativos de fibra óptica para empresas",
         "category": "PRODUTOS",
-        "tags": "empresa,pj,corporativo,corp,200 mega,250 mega,650 mega,ip fixo,sla,wifi6",
+        "tags": "empresa,pj,corporativo,corp,200 mega,250 mega,650 mega,ip fixo,sla,wifi6,monitora,noc,n2",
         "content": (
             "Para clientes PJ de pequeno e médio porte, a Sulnet possui planos corporativos de fibra óptica com atendimento prioritário. "
-            "Corp. 200 Mega: R$139,00/mês, 200 Mbps download / 80 Mbps upload, IP Fixo, roteador Wi-Fi 6 e ativação gratuita. "
-            "Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, roteador Wi-Fi 6 e ativação gratuita. "
+            "Corp. 200 Mega: R$139,00/mês, 200 Mbps download / 80 Mbps upload, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
+            "Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
             "Corp. 650 Mega: R$199,90/mês, 650/200 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
+            "Todos os links corporativos têm SLA de atendimento de até 8 horas, suporte nível 2, equipe especializada em empresas, "
+            "entrega de banda diferenciada em relação ao plano residencial e acompanhamento proativo do NOC pelo Sulnet Monitora. "
             "Quando o cliente confirmar que a internet é para empresa, não apresentar os planos residenciais como oferta principal. "
             "Apresentar os três planos corporativos e permitir escolha por botões. A viabilidade técnica no endereço continua sujeita à consulta. "
             "Não aplicar automaticamente descontos, meses grátis ou condições promocionais residenciais aos planos corporativos sem regra específica aprovada."
+        ),
+    },
+    {
+        "title": "Diferenciais do link corporativo",
+        "category": "ARGUMENTOS_COMERCIAIS",
+        "tags": "empresa,corporativo,diferencial,sla,8 horas,suporte n2,noc,monitora,ip fixo,banda,prioritario",
+        "content": (
+            "O valor do link corporativo não deve ser defendido apenas por velocidade. O principal valor é continuidade operacional para a empresa. "
+            "Diferenciais confirmados: SLA de atendimento de até 8 horas; suporte nível 2; equipe especializada em atendimento empresarial; "
+            "entrega de banda diferenciada, não compartilhada da mesma forma que um plano residencial; IP Fixo; Sulnet Monitora; "
+            "monitoramento contínuo do NOC e atuação proativa diante de queda ou oscilação, antecipando problemas sempre que possível. "
+            "Ao explicar isso ao cliente, traduzir tecnologia em resultado: atendimento mais rápido e eficaz, maior previsibilidade, melhor qualidade de suporte "
+            "e menor risco de a empresa ficar parada. Não chamar o produto de link dedicado, não prometer disponibilidade absoluta e não dizer que o SLA de 8 horas é prazo de resolução; "
+            "a regra confirmada é SLA de atendimento de até 8 horas."
         ),
     },
     {
@@ -719,10 +750,14 @@ Quando o cliente confirmar que a internet é para empresa, PJ, comércio, loja, 
 - NÃO volte a oferecer plano residencial enquanto o cliente não mudar explicitamente o contexto;
 - use o catálogo corporativo de fibra óptica;
 - apresente os três planos com botões: Corp. 200 / Corp. 250 / Corp. 650;
-- Corp. 200 Mega: R$139,00/mês, 200/80 Mbps, IP Fixo, roteador Wi-Fi 6, ativação gratuita;
-- Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, roteador Wi-Fi 6, ativação gratuita;
+- Corp. 200 Mega: R$139,00/mês, 200/80 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
+- Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
 - Corp. 650 Mega: R$199,90/mês, 650/200 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
-- os planos corporativos são destinados a PJ de pequeno e médio porte e possuem atendimento prioritário;
+- todos os links corporativos têm SLA de atendimento de até 8 horas, suporte nível 2 e equipe especializada em empresas;
+- a entrega de banda é diferenciada e não é compartilhada da mesma forma que um plano residencial; NÃO chamar de link dedicado;
+- o Sulnet Monitora permite acompanhamento do NOC, com atuação proativa diante de queda ou oscilação para antecipar problemas sempre que possível;
+- venda esses diferenciais como continuidade operacional: atendimento mais rápido e eficaz, suporte qualificado, maior previsibilidade e menor risco de a empresa ficar parada;
+- nunca diga que 8 horas é prazo garantido de resolução: é SLA de atendimento de até 8 horas;
 - não prometa cobertura no endereço antes da consulta técnica;
 - não aplique meses grátis, descontos ou promoções dos planos residenciais ao corporativo sem regra específica aprovada.
 Se o cliente confirmar que é para casa/residência, grave Residencial e use o catálogo residencial.

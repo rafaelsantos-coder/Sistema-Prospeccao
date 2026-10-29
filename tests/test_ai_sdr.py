@@ -37,6 +37,7 @@ from app.services.ai_sdr import (
     _confirmed_customer_type_from_lead,
     _is_company_context,
     _persist_confirmed_customer_type,
+    _show_corporate_differentials,
     _sanitize_unconfirmed_customer_facts,
     build_ai_context,
     claim_ai_job,
@@ -1984,3 +1985,151 @@ def test_residential_confirmation_can_replace_previous_company_context():
     result = _apply_corporate_customer_policy(decision, context)
 
     assert result.qualification.customer_type == "RESIDENCIAL"
+
+
+
+def test_company_difference_question_explains_business_value_instead_of_reopening_catalog():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "Qual a diferença do plano empresa para o residencial?",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [
+            {"direction": "INBOUND", "body": "Para empresa"},
+            {
+                "direction": "OUTBOUND",
+                "body": "Qual plano corporativo você quer conhecer?",
+            },
+            {
+                "direction": "INBOUND",
+                "body": "Qual a diferença do plano empresa para o residencial?",
+            },
+        ],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert result.qualification.customer_type == "EMPRESA"
+    assert "SLA de atendimento de até 8 horas" in result.reply_text
+    assert "suporte nível 2" in result.reply_text
+    assert "equipe especializada em empresas" in result.reply_text
+    assert "não é compartilhada da mesma forma que no residencial" in result.reply_text
+    assert "IP fixo" in result.reply_text
+    assert "Sulnet Monitora" in result.reply_text
+    assert "NOC" in result.reply_text
+    assert "R$ 139,00" not in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Ver planos",
+        "Outra dúvida",
+    ]
+
+
+def test_corporate_sla_is_presented_as_service_sla_not_resolution_deadline():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "Qual o SLA de vocês para empresa?",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert "SLA de atendimento de até 8 horas" in result.reply_text
+    assert "resolução em até 8 horas" not in result.reply_text.lower()
+    assert "resolve em até 8 horas" not in result.reply_text.lower()
+
+
+def test_corporate_band_question_does_not_claim_dedicated_link():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "É link dedicado ou a banda é compartilhada?",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert "entrega da banda é diferenciada" in result.reply_text
+    assert "não é compartilhada da mesma forma que no residencial" in result.reply_text
+    assert "link dedicado" not in result.reply_text.lower()
+
+
+def test_corporate_monitoring_question_explains_proactive_noc():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "O que é o Sulnet Monitora?",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert "Sulnet Monitora" in result.reply_text
+    assert "NOC acompanhando quedas ou oscilações" in result.reply_text
+    assert "atuando de forma proativa" in result.reply_text
+
+
+def test_corporate_200_now_includes_monitora_in_structured_offer():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "Corp. 200 Mega",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Para empresa temos os planos Corp. 200, Corp. 250 e Corp. 650.",
+            }
+        ],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert result.offer_plan_code == "CORP_200"
+    assert result.offer_price == 139.00
+    assert "Sulnet Monitora" in result.reply_text
+    assert "IP Fixo" in result.reply_text
+
+
+def test_ver_planos_after_corporate_differentials_returns_corporate_catalog():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "Ver planos",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "O link corporativo tem SLA de atendimento de até 8 horas, "
+                    "suporte nível 2 e Sulnet Monitora. Quer ver as opções corporativas?"
+                ),
+            }
+        ],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert "200 Mega por R$ 139,00" in result.reply_text
+    assert "250 Mega por R$ 169,00" in result.reply_text
+    assert "650 Mega por R$ 199,90" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Corp. 200 Mega",
+        "Corp. 250 Mega",
+        "Corp. 650 Mega",
+    ]

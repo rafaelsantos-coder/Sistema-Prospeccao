@@ -1063,6 +1063,76 @@ def _show_selected_mobile_plan(
     return decision
 
 
+def _looks_like_corporate_differential_question(value: str | None) -> bool:
+    folded = _fold_sales_text(value)
+    if not folded:
+        return False
+    cues = (
+        "qual a diferenca",
+        "qual diferenca",
+        "diferencial",
+        "vantagem",
+        "porque e mais caro",
+        "por que e mais caro",
+        "pq e mais caro",
+        "sla",
+        "8 horas",
+        "oito horas",
+        "suporte nivel 2",
+        "suporte n2",
+        "nivel 2",
+        "n2",
+        "banda compartilhada",
+        "compartilhada",
+        "link dedicado",
+        "ip fixo",
+        "sulnet monitora",
+        "monitora",
+        "noc",
+        "monitoramento",
+        "queda",
+        "oscilacao",
+        "empresa ficar parada",
+        "atendimento prioritario",
+        "atendimento empresarial",
+    )
+    return any(cue in folded for cue in cues)
+
+
+def _show_corporate_differentials(decision: AIDecision) -> AIDecision:
+    decision.reply_text = (
+        "O link corporativo é pensado para manter sua empresa operando: tem SLA de atendimento de até 8 horas, "
+        "suporte nível 2 e equipe especializada em empresas. A entrega da banda é diferenciada e não é compartilhada "
+        "da mesma forma que no residencial; além disso, os planos têm IP fixo e Sulnet Monitora, com o NOC acompanhando "
+        "quedas ou oscilações e atuando de forma proativa sempre que possível. Quer ver as opções corporativas?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="ver_planos_corp", label="Ver planos"),
+        QuickReply(id="outra_duvida_corp", label="Outra dúvida"),
+    ]
+    decision.intent = "INFORMATION"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.customer_type = "EMPRESA"
+    decision.qualification.desired_product = "Internet corporativa"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.concession_level = 0
+    decision.free_months = 0
+    decision.followup_needed = True
+    decision.summary = (
+        "Cliente recebeu os diferenciais do link corporativo: SLA de atendimento até 8h, suporte N2, "
+        "equipe empresarial, banda diferenciada, IP fixo e monitoramento proativo do NOC."
+    )
+    decision.next_action = "Oferecer o catálogo corporativo após esclarecer os diferenciais."
+    decision.proposal_summary = (
+        "Diferenciais corporativos: SLA de atendimento até 8h; suporte N2; equipe especializada; "
+        "entrega de banda diferenciada; IP fixo; Sulnet Monitora/NOC."
+    )
+    return decision
+
+
 def _show_corporate_catalog(decision: AIDecision) -> AIDecision:
     option_parts = [
         f"{int(plan['download_mbps'])} Mega por R$ {_format_brl(float(plan['price']))}"
@@ -1167,6 +1237,12 @@ def _apply_corporate_customer_policy(
     latest_raw = str(context.get("latest_customer_message") or "")
     latest = _fold_sales_text(latest_raw)
     previous = _fold_sales_text(_last_outbound_text(context))
+
+    if _looks_like_corporate_differential_question(latest_raw):
+        return _show_corporate_differentials(decision)
+
+    if latest in {"ver planos", "ver planos corporativos", "planos corporativos"}:
+        return _show_corporate_catalog(decision)
 
     if _customer_type_from_text(latest_raw) == "EMPRESA":
         return _show_corporate_catalog(decision)
@@ -1684,8 +1760,10 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Se o cliente rejeitar a própria oferta de internet sem pedir para parar o contato, também não encerre: mude o ângulo e pergunte se ele já possui conexão "
         "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
         "Quando o cliente confirmar que é para empresa/PJ, preserve esse segmento como memória confirmada e use apenas o catálogo corporativo: "
-        "Corp. 200 Mega R$ 139,00; Corp. 250 Mega R$ 169,00; Corp. 650 Mega R$ 199,90, todos com IP Fixo, Wi-Fi 6, ativação gratuita e atendimento prioritário; "
-        "250 inclui Sulnet Play e 650 inclui Sulnet Monitora. Não aplique promoções residenciais ao corporativo sem regra aprovada. "
+        "Corp. 200 Mega R$ 139,00; Corp. 250 Mega R$ 169,00; Corp. 650 Mega R$ 199,90, todos com IP Fixo, Sulnet Monitora, Wi-Fi 6, ativação gratuita e atendimento prioritário; "
+        "250 inclui também Sulnet Play. O diferencial corporativo inclui SLA de atendimento de até 8 horas, suporte nível 2, equipe especializada em empresas, "
+        "entrega de banda diferenciada em relação ao residencial e monitoramento proativo do NOC. Não chame de link dedicado e não trate 8 horas como prazo de resolução. "
+        "Não aplique promoções residenciais ao corporativo sem regra aprovada. "
         "Quando o cliente pedir todos os planos, catálogo, preços ou velocidades de forma ampla, nunca diga que não possui a lista e nunca estime valores: "
         "se o segmento confirmado for Empresa, liste os corporativos; caso contrário, ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
         "Se o cliente pedir uma velocidade/plano que não esteja disponível na cidade, isso NÃO é motivo de handoff: informe que aquela opção não está disponível, "
