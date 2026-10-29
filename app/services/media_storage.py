@@ -26,6 +26,15 @@ def _safe_filename(filename: str | None, mime_type: str | None = None) -> str:
     return raw[:180] or "arquivo"
 
 
+def _boto_addressing_style(value: str | None) -> str:
+    clean = (value or "").strip().lower()
+    if clean in {"virtual-host", "virtual_host", "virtualhost", "virtual"}:
+        return "virtual"
+    if clean == "path":
+        return "path"
+    return "auto"
+
+
 class MediaStorage:
     def __init__(self) -> None:
         self.endpoint = settings.media_s3_endpoint
@@ -33,7 +42,7 @@ class MediaStorage:
         self.region = settings.media_s3_region or "auto"
         self.access_key = settings.media_s3_access_key_id
         self.secret_key = settings.media_s3_secret_access_key
-        self.url_style = settings.media_s3_url_style or "virtual-host"
+        self.url_style = _boto_addressing_style(settings.media_s3_url_style)
         self.max_bytes = max(1, settings.media_max_upload_mb) * 1024 * 1024
 
     @property
