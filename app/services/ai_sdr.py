@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from datetime import timedelta
 from typing import Literal
 
@@ -478,6 +479,120 @@ def _effective_execution_mode(agent: AIAgentProfile) -> str:
     return agent.execution_mode
 
 
+def _fold_sales_text(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.casefold()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+_SECONDARY_DECLINES = {
+    "nao",
+    "nao obrigado",
+    "nao obrigada",
+    "agora nao",
+    "prefiro nao",
+    "dispenso",
+}
+
+_AUXILIARY_QUESTION_CUES = (
+    "quer que eu confira",
+    "quer que eu verifique",
+    "quer que eu explique",
+    "quer que eu tambem",
+    "quer saber como",
+    "posso conferir",
+    "posso verificar",
+    "posso explicar",
+    "como funciona",
+    "como acessar",
+    "sulnet play",
+    "beneficio",
+    "beneficios",
+    "conteudo",
+    "acesso",
+)
+
+
+def _plan_from_sales_context(decision: AIDecision, context: dict):
+    code = (decision.offer_plan_code or "").upper()
+    if code:
+        plan = next(
+            (
+                item
+                for item in FTTH_PLANS
+                if code == item["code"] or str(item["download_mbps"]) in code
+            ),
+            None,
+        )
+        if plan:
+            return plan
+
+    for row in reversed(context.get("history") or []):
+        body = str(row.get("body") or "")
+        match = re.search(r"\b(250|500|650|800)\s*mega\b", body, re.I)
+        if not match:
+            continue
+        speed = int(match.group(1))
+        plan = next(
+            (item for item in FTTH_PLANS if item["download_mbps"] == speed),
+            None,
+        )
+        if plan:
+            return plan
+    return None
+
+
+def _apply_secondary_decline_reengagement_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    if latest not in _SECONDARY_DECLINES:
+        return decision
+
+    previous_outbound = None
+    for row in reversed(context.get("history") or []):
+        if str(row.get("direction") or "").upper() == "OUTBOUND":
+            previous_outbound = str(row.get("body") or "")
+            break
+    if not previous_outbound:
+        return decision
+
+    previous_folded = _fold_sales_text(previous_outbound)
+    # Se a pergunta anterior era diretamente sobre contratar/fechar, a recusa
+    # pode ser da oferta principal e não deve ser reinterpretada.
+    if "contratar" in previous_folded or "fechar" in previous_folded:
+        return decision
+
+    is_auxiliary = any(cue in previous_folded for cue in _AUXILIARY_QUESTION_CUES)
+    if not is_auxiliary:
+        return decision
+
+    plan = _plan_from_sales_context(decision, context)
+    if not plan:
+        return decision
+
+    price = float(plan["price_fidelity"])
+    price_text = f"{price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    decision.reply_text = (
+        "Sem problema! Podemos dar andamento à contratação do plano de fibra óptica de "
+        f"{plan['download_mbps']} Mega por R$ {price_text} mensais?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="quero_contratar", label="Quero contratar"),
+        QuickReply(id="outra_duvida", label="Tenho outra dúvida"),
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.objection = "NONE"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.followup_needed = True
+    decision.next_action = "Retomar o fechamento do plano já apresentado."
+    return decision
+
+
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
@@ -503,6 +618,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Não use a sigla FTTH com o cliente e não mencione espontaneamente fidelidade, multa, instalação, habilitação, upload, roteador ou benefícios. "
         "Não pergunte automaticamente o provedor atual na mesma mensagem da primeira oferta; primeiro teste o fechamento. "
         "Esses detalhes só entram se o cliente perguntar, hesitar ou trouxer objeção. "
+        "Se o cliente recusar apenas uma informação secundária com 'não, obrigado', 'agora não' ou equivalente, não encerre a conversa: "
+        "aceite a recusa daquele detalhe e volte para a oferta principal com CTA de avanço. Nunca responda apenas 'se quiser, me chame' nesse cenário. "
         "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação ou exceção que exija humano. "
         f"Modo efetivo: {effective_mode}.\n\n"
         + json.dumps(context, ensure_ascii=False, default=str)
@@ -523,7 +640,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = result.final_output
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
-    return decision
+    return _apply_secondary_decline_reengagement_policy(decision, context)
 
 
 def _send_autonomous_reply(
