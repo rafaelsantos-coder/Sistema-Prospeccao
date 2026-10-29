@@ -19,6 +19,7 @@ from app.services.zapi import ZApiError
 from app.services.zapi_instances import (
     list_zapi_instances,
     queue_instance,
+    refresh_instance_device_info,
     service_for_instance,
 )
 from app.web import flash, render
@@ -218,18 +219,74 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
 
     zapi_instances = list_zapi_instances(db, active_only=False)
     active_zapi_instances = [item for item in zapi_instances if item.active]
+    zapi_instance_info: dict[int, dict] = {}
+    phone_to_instance_ids: dict[str, list[int]] = {}
+    any_connected = False
+    any_smartphone_connected = False
+    first_error: str | None = None
+
+    for instance in active_zapi_instances:
+        info = {
+            "connected": False,
+            "smartphone_connected": False,
+            "error": None,
+            "phone_raw": "",
+            "phone_label": instance.phone_label or "",
+            "device_name": "",
+            "is_business": False,
+            "duplicate_phone": False,
+        }
+        try:
+            service = service_for_instance(instance)
+            current_status = service.status()
+            info["connected"] = bool(current_status.get("connected"))
+            info["smartphone_connected"] = bool(
+                current_status.get("smartphone_connected")
+            )
+            any_connected = any_connected or info["connected"]
+            any_smartphone_connected = (
+                any_smartphone_connected or info["smartphone_connected"]
+            )
+            device_info = refresh_instance_device_info(instance)
+            info["phone_raw"] = str(device_info.get("phone_raw") or "")
+            info["phone_label"] = (
+                str(device_info.get("phone_label") or "")
+                or instance.phone_label
+                or ""
+            )
+            info["device_name"] = str(device_info.get("name") or "")
+            info["is_business"] = bool(device_info.get("is_business"))
+            phone_key = "".join(
+                ch for ch in info["phone_raw"] if ch.isdigit()
+            )
+            if phone_key:
+                phone_to_instance_ids.setdefault(phone_key, []).append(instance.id)
+        except ZApiError as exc:
+            info["error"] = str(exc)
+            if first_error is None:
+                first_error = str(exc)
+        zapi_instance_info[instance.id] = info
+
+    duplicate_instance_ids = {
+        instance_id
+        for instance_ids in phone_to_instance_ids.values()
+        if len(instance_ids) > 1
+        for instance_id in instance_ids
+    }
+    for instance_id in duplicate_instance_ids:
+        if instance_id in zapi_instance_info:
+            zapi_instance_info[instance_id]["duplicate_phone"] = True
+
+    if active_zapi_instances:
+        db.commit()
+
     zapi_status = {
         "configured": bool(active_zapi_instances),
-        "connected": False,
-        "smartphone_connected": False,
-        "error": None,
+        "connected": any_connected,
+        "smartphone_connected": any_smartphone_connected,
+        "error": first_error,
         "webhook_ready": bool(settings.app_public_url and active_zapi_instances),
     }
-    if active_zapi_instances:
-        try:
-            zapi_status.update(service_for_instance(active_zapi_instances[0]).status())
-        except ZApiError as exc:
-            zapi_status["error"] = str(exc)
 
     return render(
         request,
@@ -241,6 +298,8 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
         zapi_status=zapi_status,
         zapi_instances=zapi_instances,
         active_zapi_instances=active_zapi_instances,
+        zapi_instance_info=zapi_instance_info,
+        duplicate_instance_ids=duplicate_instance_ids,
     )
 
 
