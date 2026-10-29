@@ -41,3 +41,21 @@ def local_day_start_utc(reference: datetime | None = None) -> datetime:
         reference = reference.replace(tzinfo=LOCAL_TZ)
     local_start = reference.astimezone(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
     return local_start.astimezone(UTC).replace(tzinfo=None)
+
+
+def utc_naive(value: datetime | None) -> datetime | None:
+    """Normaliza datetime aware/naive para UTC sem tzinfo, padrão interno do app."""
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
+def is_past(value: datetime | None, reference: datetime | None = None) -> bool:
+    """Compara datas de forma segura mesmo quando o driver devolve tz-aware."""
+    normalized = utc_naive(value)
+    if normalized is None:
+        return False
+    reference_value = utc_naive(reference) or utcnow()
+    return normalized < reference_value
