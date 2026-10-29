@@ -8,7 +8,8 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models import AIJob
+from app.models import AIFollowupJob, AIJob
+from app.services.ai_followups import claim_followup_job, process_followup_job
 from app.services.ai_sdr import claim_ai_job, process_ai_job
 from app.timeutils import utcnow
 
@@ -43,6 +44,32 @@ def _recover_stale_jobs() -> int:
     return recovered
 
 
+def _recover_stale_followups() -> int:
+    db = SessionLocal()
+    recovered = 0
+    try:
+        threshold = utcnow() - timedelta(minutes=10)
+        jobs = list(
+            db.scalars(
+                select(AIFollowupJob).where(
+                    AIFollowupJob.status == "PROCESSANDO",
+                    AIFollowupJob.locked_at.is_not(None),
+                    AIFollowupJob.locked_at < threshold,
+                )
+            )
+        )
+        for job in jobs:
+            job.status = "PENDENTE"
+            job.locked_at = None
+            job.due_at = utcnow()
+            job.error = "Follow-up recuperado após timeout do worker."
+            recovered += 1
+        db.commit()
+    finally:
+        db.close()
+    return recovered
+
+
 def run() -> None:
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
@@ -52,6 +79,7 @@ def run() -> None:
         poll,
     )
     _recover_stale_jobs()
+    _recover_stale_followups()
 
     missing_key_logged = False
     while True:
@@ -70,11 +98,10 @@ def run() -> None:
 
         db = SessionLocal()
         job_id = None
+        followup_id = None
         try:
             job = claim_ai_job(db)
-            if not job:
-                db.commit()
-            else:
+            if job:
                 job_id = job.id
                 db.commit()
                 job = db.get(AIJob, job_id)
@@ -89,9 +116,32 @@ def run() -> None:
                         outcome,
                         job.attempts,
                     )
+            else:
+                followup = claim_followup_job(db)
+                if not followup:
+                    db.commit()
+                else:
+                    followup_id = followup.id
+                    db.commit()
+                    followup = db.get(AIFollowupJob, followup_id)
+                    if followup:
+                        outcome = process_followup_job(db, followup)
+                        db.commit()
+                        LOG.info(
+                            "ai_followup=%s conversation=%s step=%s outcome=%s attempts=%s",
+                            followup.id,
+                            followup.conversation_id,
+                            followup.step,
+                            outcome,
+                            followup.attempts,
+                        )
         except Exception:
             db.rollback()
-            LOG.exception("Falha inesperada no SulIA SDR worker job=%s", job_id)
+            LOG.exception(
+                "Falha inesperada no SulIA SDR worker job=%s followup=%s",
+                job_id,
+                followup_id,
+            )
         finally:
             db.close()
 
