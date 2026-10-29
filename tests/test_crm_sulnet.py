@@ -187,3 +187,57 @@ def test_update_category_form_uses_generic_opportunity_patch(monkeypatch):
     assert values["tipo_contratacao"] == "Número novo"
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
     assert patch["json"]["productInfo"]["categoryForm"]["files"] == {}
+
+
+
+class CatalogFallbackClient:
+    captured: list[tuple[str, str]] = []
+
+    def __init__(self, *, headers: dict[str, str], **_: Any):
+        self.headers = headers
+
+    def __enter__(self) -> "CatalogFallbackClient":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.__class__.captured.append((method, url))
+        response = FakeResponse()
+        if url.endswith("/api/capture/products"):
+            response.status_code = 404
+            response.payload = {"error": "Rota não encontrada."}
+        elif url.endswith("/api/catalog/products"):
+            response.status_code = 200
+            response.payload = [
+                {
+                    "category_id": 13,
+                    "category_name": "TELEFONIA MÓVEL",
+                    "products": [
+                        {
+                            "id": 501,
+                            "name": "Sulmóvel 15GB",
+                            "monthlyValue": 69.80,
+                        }
+                    ],
+                }
+            ]
+        return response
+
+
+def test_products_falls_back_to_catalog_and_flattens_grouped_response(monkeypatch):
+    CatalogFallbackClient.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", CatalogFallbackClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="service-token-value",
+    )
+    products = client.products("Sulmovel 15GB")
+
+    assert len(products) == 1
+    assert products[0]["id"] == 501
+    assert products[0]["categoryId"] == 13
+    assert products[0]["categoryName"] == "TELEFONIA MÓVEL"
+    assert any(url.endswith("/api/catalog/products") for _, url in CatalogFallbackClient.captured)
