@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
 from datetime import timedelta
+from difflib import SequenceMatcher
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -139,6 +142,76 @@ def _recent_history(db: Session, conversation_id: int, limit: int = 30) -> list[
     ]
 
 
+def _normalize_followup_text(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _recent_outbound_bodies(history: list[dict], limit: int = 12) -> list[str]:
+    values = [
+        str(row.get("body") or "").strip()
+        for row in history
+        if str(row.get("direction") or "").upper() == "OUTBOUND"
+        and str(row.get("body") or "").strip()
+    ]
+    return values[-max(1, limit):]
+
+
+def _followup_is_repetitive(candidate: str, previous_messages: list[str]) -> bool:
+    normalized_candidate = _normalize_followup_text(candidate)
+    if not normalized_candidate:
+        return True
+
+    for previous in previous_messages:
+        normalized_previous = _normalize_followup_text(previous)
+        if not normalized_previous:
+            continue
+        if normalized_candidate == normalized_previous:
+            return True
+        similarity = SequenceMatcher(
+            None,
+            normalized_candidate,
+            normalized_previous,
+        ).ratio()
+        if similarity >= 0.84:
+            return True
+    return False
+
+
+def _unique_followup_fallback(
+    *,
+    step: int,
+    previous_messages: list[str],
+) -> FollowupDecision:
+    candidates = [
+        "Posso te ajudar por outro ângulo: qual ponto é mais importante para você decidir?",
+        "Ficou alguma dúvida específica que eu possa esclarecer para facilitar sua decisão?",
+        "Quer que eu organize as opções de uma forma mais simples para você comparar?",
+        "O que falta para você se sentir seguro para decidir?",
+        "Prefere que eu retome pelo valor, pelas características ou pelos benefícios?",
+        "Quer que eu te mostre uma alternativa diferente da que vimos até agora?",
+        "Posso resumir o que vimos e destacar só o que mais importa para sua escolha?",
+        "Tem algum ponto da proposta que ainda não ficou claro para você?",
+    ]
+    start = max(0, (int(step or 1) - 1) % len(candidates))
+    ordered = candidates[start:] + candidates[:start]
+    for text in ordered:
+        if not _followup_is_repetitive(text, previous_messages):
+            return FollowupDecision(
+                reply_text=text,
+                quick_replies=[],
+                rationale="Fallback anti-repetição: mensagem distinta do histórico recente.",
+            )
+    return FollowupDecision(
+        reply_text=f"Posso retomar por um ponto diferente para facilitar sua decisão? Etapa {max(1, int(step or 1))}.",
+        quick_replies=[],
+        rationale="Fallback final anti-repetição.",
+    )
+
+
 def _latest_inbound_id(db: Session, conversation_id: int) -> int | None:
     return db.scalar(
         select(Message.id)
@@ -184,6 +257,7 @@ def _generate_followup(
     *,
     agent: AIAgentProfile,
     job: AIFollowupJob,
+    avoid_messages: list[str] | None = None,
 ) -> FollowupDecision:
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY não configurada.")
@@ -225,9 +299,16 @@ def _generate_followup(
             f"[{item['category']}] {item['title']}: {item['content']}"
             for item in SYSTEM_KNOWLEDGE_ITEMS
         )
+    previous_outbound = _recent_outbound_bodies(history)
+    explicit_avoid = [
+        item for item in (avoid_messages or [])
+        if str(item or "").strip()
+    ]
+    forbidden_messages = (previous_outbound + explicit_avoid)[-15:]
     context = {
         "followup_step": job.step,
         "followup_theme": job.theme,
+        "forbidden_previous_messages": forbidden_messages,
         "lead": {
             "city": lead.city if lead else "",
             "stage": lead.stage if lead else "",
@@ -245,11 +326,12 @@ def _generate_followup(
         "estimular resposta. REGRA DE EVIDÊNCIA: apenas mensagens INBOUND/customer_evidence são falas do cliente. "
         "Mensagens OUTBOUND são falas do SulIA e jamais podem virar fato sobre provedor, preço, velocidade, uso, "
         "satisfação, residência ou empresa. Se um dado não foi confirmado pelo cliente, pergunte; não assuma. "
-        "Não repita mensagens anteriores. Não aumente desconto por silêncio. "
-        "Não invente urgência. Não diga 'viu minha mensagem?'. Faça no máximo uma pergunta principal. "
-        "Nos passos 1, 2 e 3 da cadência rápida, escreva uma mensagem especialmente curta e mude o ângulo a cada tentativa: "
-        "não repita a mesma pergunta, não copie a mesma CTA e não envie três variações quase idênticas. "
-        "O objetivo é facilitar uma resposta rápida sem parecer mensagem automática ou pressão excessiva. "
+        "É PROIBIDO repetir qualquer mensagem OUTBOUND anterior, inclusive com pequenas trocas de palavras. "
+        "Leia forbidden_previous_messages e produza uma mensagem claramente diferente em estrutura, pergunta e CTA. "
+        "Não repita a mesma pergunta, não copie a mesma CTA e não envie variações quase idênticas. "
+        "Não aumente desconto por silêncio. Não invente urgência. Não diga 'viu minha mensagem?'. Faça no máximo uma pergunta principal. "
+        "Na cadência inicial, respeite o novo espaçamento de 10 minutos, depois 30 minutos e depois 2 horas; "
+        "cada tentativa deve usar um ângulo comercial diferente e sem pressão excessiva. "
         "Quando essa pergunta tiver 2 ou 3 respostas previsíveis, retorne quick_replies com botões curtos "
         "(máximo 20 caracteres). Se a resposta exigir texto livre, quick_replies pode ficar vazio. "
         "Se a base não sustentar uma afirmação, não a use.\n\n"
@@ -295,7 +377,25 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         return "cancelled"
 
     try:
+        history = _recent_history(db, job.conversation_id, limit=40)
+        previous_outbound = _recent_outbound_bodies(history)
         decision = _generate_followup(db, agent=agent, job=job)
+
+        if _followup_is_repetitive(decision.reply_text, previous_outbound):
+            first_attempt = decision.reply_text
+            decision = _generate_followup(
+                db,
+                agent=agent,
+                job=job,
+                avoid_messages=previous_outbound + [first_attempt],
+            )
+
+        if _followup_is_repetitive(decision.reply_text, previous_outbound):
+            decision = _unique_followup_fallback(
+                step=job.step,
+                previous_messages=previous_outbound,
+            )
+
         conversation = db.get(Conversation, job.conversation_id)
         if not conversation or not conversation.contact or not conversation.contact.phone:
             raise RuntimeError("Conversa sem telefone para follow-up.")
