@@ -1,0 +1,11 @@
+<nav class="settings-section-nav" aria-label="Seções de configurações">
+  <a href="/settings" class="{% if not settings_section %}active{% endif %}">Visão geral</a>
+  {% if current_user.role in ['ADMIN','GESTOR'] %}
+  <a href="/settings/whatsapp" class="{% if settings_section == 'whatsapp' %}active{% endif %}">Números e Z-API</a>
+  {% endif %}
+  <a href="/settings/queues" class="{% if settings_section == 'queues' %}active{% endif %}">Filas</a>
+  <a href="/settings/users" class="{% if settings_section == 'users' %}active{% endif %}">Usuários</a>
+  <a href="/settings/operations" class="{% if settings_section == 'operations' %}active{% endif %}">Metas e unidades</a>
+  <a href="/settings/integrations" class="{% if settings_section == 'integrations' %}active{% endif %}">Integrações</a>
+  <a href="/settings/audit" class="{% if settings_section == 'audit' %}active{% endif %}">Auditoria</a>
+</nav>
