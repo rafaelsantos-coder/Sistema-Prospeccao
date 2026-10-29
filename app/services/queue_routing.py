@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    AIAgentProfile,
     CampaignQueueLink,
     Conversation,
     ConversationQueueLink,
@@ -260,9 +261,18 @@ def assign_queue_user(
             .order_by(ServiceQueueMember.priority.asc(), ServiceQueueMember.id.asc())
         )
     )
+    closer_user_ids = set(
+        db.scalars(
+            select(AIAgentProfile.user_id).where(
+                AIAgentProfile.role_type == "CLOSER"
+            )
+        )
+    )
     memberships = [
         item for item in memberships
-        if item.user and item.user.active
+        if item.user
+        and item.user.active
+        and item.user_id not in closer_user_ids
     ]
     if not memberships:
         return None
