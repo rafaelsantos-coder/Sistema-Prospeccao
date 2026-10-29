@@ -385,8 +385,6 @@ def build_ai_context(
 def _effective_execution_mode(agent: AIAgentProfile) -> str:
     if not settings.ai_autonomous_enabled:
         return "SHADOW"
-    if agent.execution_mode == "SHADOW" and agent.slug == "sulia-sdr-digital":
-        return "AUTO"
     return agent.execution_mode
 
 
@@ -520,9 +518,11 @@ def _apply_crm_decision(
         lead.stage = "NAO_CONTATAR"
         lead.next_action_at = None
     elif lead.stage not in {"GANHO", "NAO_CONTATAR"}:
-        lead.stage = decision.recommended_stage
+        next_stage = decision.recommended_stage
+        if next_stage == "NAO_CONTATAR":
+            next_stage = "CONTATO_REALIZADO"
+        lead.stage = next_stage
         lead.temperature = decision.temperature
-        lead.score = max(float(lead.score or 0), float(decision.qualification_score or 0))
         if decision.sales_state == "READY_FOR_HUMAN_SALES":
             lead.priority = "ALTA"
 
