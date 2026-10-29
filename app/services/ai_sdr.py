@@ -727,7 +727,7 @@ def _show_catalog_root(decision: AIDecision) -> AIDecision:
     )
     decision.quick_replies = [
         QuickReply(id="catalogo_fibra", label="Fibra óptica"),
-        QuickReply(id="catalogo_sulmovel", label="Sulmóvel"),
+        QuickReply(id="catalogo_sulmovel", label="Móvel"),
     ]
     decision.intent = "INTEREST"
     decision.sales_state = "DISCOVERY"
@@ -1153,7 +1153,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Se o cliente rejeitar a própria oferta de internet sem pedir para parar o contato, também não encerre: mude o ângulo e pergunte se ele já possui conexão "
         "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
         "Quando o cliente pedir todos os planos, catálogo, preços ou velocidades de forma ampla, nunca diga que não possui a lista e nunca estime valores: "
-        "ofereça primeiro Fibra óptica/Sulmóvel em botões e depois liste somente opções confirmadas do catálogo. "
+        "ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
         "Se o cliente pedir uma velocidade/plano que não esteja disponível na cidade, isso NÃO é motivo de handoff: informe que aquela opção não está disponível, "
         "apresente somente os planos válidos do catálogo para a cidade e continue a venda até o cliente escolher uma opção. Se a cidade ainda não estiver confirmada, pergunte a cidade. "
         "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação em uma oferta válida ou exceção real que exija humano. "
