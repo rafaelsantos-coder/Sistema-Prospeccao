@@ -47,6 +47,7 @@ class QualificationData(BaseModel):
     pain_points: list[str] = Field(default_factory=list)
     desired_product: str | None = None
     customer_type: Literal["RESIDENCIAL", "EMPRESA", "NAO_INFORMADO"] = "NAO_INFORMADO"
+    existing_customer: Literal["CLIENTE", "NAO_CLIENTE", "NAO_INFORMADO"] = "NAO_INFORMADO"
     decision_maker: Literal["SIM", "NAO", "NAO_INFORMADO"] = "NAO_INFORMADO"
     timeframe: str | None = None
     city: str | None = None
@@ -421,6 +422,48 @@ def _persist_confirmed_customer_type(
     lead.segment = "Empresa" if value == "EMPRESA" else "Residencial"
 
 
+def _confirmed_existing_customer_from_lead(lead: Lead | None) -> str:
+    if not lead:
+        return ""
+    try:
+        payload = json.loads(lead.raw_data or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    marker = payload.get("ai_existing_customer")
+    if not isinstance(marker, dict):
+        return ""
+    if str(marker.get("source") or "").upper() != "INBOUND_CUSTOMER_CONFIRMED":
+        return ""
+    value = str(marker.get("value") or "").upper()
+    return value if value in {"CLIENTE", "NAO_CLIENTE"} else ""
+
+
+def _persist_confirmed_existing_customer(
+    lead: Lead,
+    status: str,
+    *,
+    conversation_id: int,
+) -> None:
+    value = str(status or "").upper()
+    if value not in {"CLIENTE", "NAO_CLIENTE"}:
+        return
+    try:
+        payload = json.loads(lead.raw_data or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["ai_existing_customer"] = {
+        "value": value,
+        "source": "INBOUND_CUSTOMER_CONFIRMED",
+        "conversation_id": conversation_id,
+        "updated_at": utcnow().isoformat(),
+    }
+    lead.raw_data = json.dumps(payload, ensure_ascii=False, default=str)
+
+
 def build_ai_context(
     db: Session,
     *,
@@ -476,6 +519,7 @@ def build_ai_context(
             "score": lead.score if lead else 0,
             "temperature": lead.temperature if lead else "FRIO",
             "confirmed_customer_type": _confirmed_customer_type_from_lead(lead),
+            "confirmed_existing_customer": _confirmed_existing_customer_from_lead(lead),
         },
         "previous_ai_state": {
             "qualification_score": state.qualification_score if state else 0,
@@ -532,6 +576,84 @@ def _fold_sales_text(value: str | None) -> str:
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = text.casefold()
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _existing_customer_from_text(
+    value: str | None,
+    *,
+    previous_outbound: str | None = None,
+) -> str:
+    folded = _fold_sales_text(value)
+    previous = _fold_sales_text(previous_outbound)
+    if not folded:
+        return ""
+
+    negative_exact = {
+        "nao sou cliente",
+        "ainda nao sou cliente",
+        "nunca fui cliente",
+    }
+    negative_sulnet_cues = (
+        "nao sou cliente sulnet",
+        "nao sou cliente da sulnet",
+        "nao tenho sulnet",
+        "nao sou da sulnet",
+    )
+    positive_exact = {
+        "sou cliente",
+        "ja sou cliente",
+    }
+    positive_sulnet_cues = (
+        "sou cliente sulnet",
+        "sou cliente da sulnet",
+        "ja sou cliente sulnet",
+        "ja sou cliente da sulnet",
+        "ja tenho sulnet",
+        "tenho sulnet",
+    )
+    if folded in negative_exact or any(cue in folded for cue in negative_sulnet_cues):
+        return "NAO_CLIENTE"
+    if folded in positive_exact or any(cue in folded for cue in positive_sulnet_cues):
+        return "CLIENTE"
+
+    status_question = any(
+        cue in previous
+        for cue in (
+            "voce ja e cliente sulnet",
+            "ja e cliente sulnet",
+            "voce ja e nosso cliente",
+        )
+    )
+    if status_question:
+        if folded in {"sim", "sim sou", "sou", "ja sou", "sou sim"}:
+            return "CLIENTE"
+        if folded in {"nao", "nao sou", "ainda nao", "nao ainda"}:
+            return "NAO_CLIENTE"
+    return ""
+
+
+def _existing_customer_from_context(context: dict) -> str:
+    previous = _last_outbound_text(context)
+    latest = _existing_customer_from_text(
+        str(context.get("latest_customer_message") or ""),
+        previous_outbound=previous,
+    )
+    if latest:
+        return latest
+
+    confirmed = str(
+        (context.get("lead") or {}).get("confirmed_existing_customer") or ""
+    ).upper()
+    if confirmed in {"CLIENTE", "NAO_CLIENTE"}:
+        return confirmed
+
+    for row in reversed(context.get("history") or []):
+        if str(row.get("direction") or "").upper() != "INBOUND":
+            continue
+        value = _existing_customer_from_text(str(row.get("body") or ""))
+        if value:
+            return value
+    return ""
 
 
 def _customer_type_from_text(value: str | None) -> str:
@@ -628,6 +750,10 @@ def _sanitize_unconfirmed_customer_facts(
     confirmed_customer_type = _customer_type_from_context(context)
     qualification.customer_type = (
         confirmed_customer_type if confirmed_customer_type else "NAO_INFORMADO"
+    )
+    confirmed_existing_customer = _existing_customer_from_context(context)
+    qualification.existing_customer = (
+        confirmed_existing_customer if confirmed_existing_customer else "NAO_INFORMADO"
     )
 
     provider = _fold_sales_text(qualification.current_provider)
@@ -1303,6 +1429,190 @@ def _apply_corporate_customer_policy(
     return decision
 
 
+def _reset_entry_offer(decision: AIDecision) -> None:
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    decision.concession_level = 0
+    decision.free_months = 0
+    decision.followup_needed = True
+
+
+def _show_existing_customer_question(decision: AIDecision) -> AIDecision:
+    decision.reply_text = "Antes de te mostrar as opções, você já é cliente Sulnet?"
+    decision.quick_replies = [
+        QuickReply(id="cliente_sulnet_sim", label="Sim"),
+        QuickReply(id="cliente_sulnet_nao", label="Não"),
+    ]
+    decision.intent = "QUALIFYING"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.existing_customer = "NAO_INFORMADO"
+    decision.summary = "SulIA iniciou a qualificação perguntando se a pessoa já é cliente Sulnet."
+    decision.next_action = "Confirmar se já é cliente Sulnet."
+    _reset_entry_offer(decision)
+    return decision
+
+
+def _show_new_customer_product_question(decision: AIDecision) -> AIDecision:
+    decision.reply_text = (
+        "Perfeito! O que você quer conhecer: planos de internet ou Telefonia Móvel?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="prospeccao_internet", label="Internet"),
+        QuickReply(id="prospeccao_movel", label="Telefonia Móvel"),
+    ]
+    decision.intent = "QUALIFYING"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.existing_customer = "NAO_CLIENTE"
+    decision.qualification.desired_product = None
+    decision.summary = "Pessoa confirmou que ainda não é cliente Sulnet."
+    decision.next_action = "Cliente escolher entre Internet e Telefonia Móvel."
+    _reset_entry_offer(decision)
+    return decision
+
+
+def _show_existing_customer_product_question(decision: AIDecision) -> AIDecision:
+    decision.reply_text = (
+        "Legal! Para uma nova contratação, você quer Telefonia Móvel ou uma nova conexão "
+        "de internet para outro endereço?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="cliente_movel", label="Telefonia Móvel"),
+        QuickReply(id="cliente_nova_conexao", label="Nova conexão"),
+    ]
+    decision.intent = "QUALIFYING"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.existing_customer = "CLIENTE"
+    decision.qualification.desired_product = None
+    decision.summary = "Pessoa confirmou que já é cliente Sulnet e busca uma nova contratação."
+    decision.next_action = "Cliente escolher Telefonia Móvel ou nova conexão para outro endereço."
+    _reset_entry_offer(decision)
+    return decision
+
+
+def _show_internet_segment_question(
+    decision: AIDecision,
+    *,
+    existing_customer: bool,
+) -> AIDecision:
+    decision.reply_text = (
+        "Essa nova conexão para outro endereço é para sua casa ou empresa?"
+        if existing_customer
+        else "A internet é para sua casa ou empresa?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="internet_casa", label="Para casa"),
+        QuickReply(id="internet_empresa", label="Para empresa"),
+    ]
+    decision.intent = "QUALIFYING"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.existing_customer = (
+        "CLIENTE" if existing_customer else "NAO_CLIENTE"
+    )
+    decision.qualification.desired_product = (
+        "Nova conexão de internet" if existing_customer else "Internet"
+    )
+    decision.summary = (
+        "Cliente Sulnet escolheu contratar uma nova conexão para outro endereço."
+        if existing_customer
+        else "Novo cliente escolheu conhecer planos de internet."
+    )
+    decision.next_action = "Confirmar se a conexão é residencial ou empresarial."
+    _reset_entry_offer(decision)
+    return decision
+
+
+def _apply_prospecting_entry_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    if decision.intent in {"DO_NOT_CONTACT", "HUMAN_REQUEST"} or decision.sales_state == "OPT_OUT":
+        return decision
+
+    latest_raw = str(context.get("latest_customer_message") or "")
+    latest = _fold_sales_text(latest_raw)
+    previous = _last_outbound_text(context)
+    current_confirmation = _existing_customer_from_text(
+        latest_raw,
+        previous_outbound=previous,
+    )
+    status = _existing_customer_from_context(context)
+
+    if not status:
+        return _show_existing_customer_question(decision)
+
+    decision.qualification.existing_customer = status
+
+    if current_confirmation == "CLIENTE":
+        return _show_existing_customer_product_question(decision)
+    if current_confirmation == "NAO_CLIENTE":
+        return _show_new_customer_product_question(decision)
+
+    mobile_choices = {
+        "movel",
+        "telefonia movel",
+        "plano movel",
+        "planos moveis",
+        "sulmovel",
+        "celular",
+    }
+    internet_choices = {
+        "internet",
+        "planos de internet",
+        "plano de internet",
+        "fibra",
+        "fibra optica",
+    }
+    new_connection_choices = {
+        "nova conexao",
+        "outra conexao",
+        "nova internet",
+        "novo endereco",
+        "outro endereco",
+        "internet para outro endereco",
+    }
+
+    if status == "CLIENTE":
+        if latest in mobile_choices:
+            result = _show_mobile_catalog_page(decision, page=1)
+            result.qualification.existing_customer = "CLIENTE"
+            return result
+        if latest in new_connection_choices or latest in internet_choices:
+            return _show_internet_segment_question(
+                decision,
+                existing_customer=True,
+            )
+        return decision
+
+    if latest in mobile_choices:
+        result = _show_mobile_catalog_page(decision, page=1)
+        result.qualification.existing_customer = "NAO_CLIENTE"
+        return result
+
+    if latest in internet_choices:
+        customer_type = _customer_type_from_context(context)
+        if customer_type == "EMPRESA":
+            result = _show_corporate_catalog(decision)
+            result.qualification.existing_customer = "NAO_CLIENTE"
+            return result
+        if customer_type == "RESIDENCIAL":
+            result = _show_fiber_catalog(decision, context)
+            result.qualification.existing_customer = "NAO_CLIENTE"
+            return result
+        return _show_internet_segment_question(
+            decision,
+            existing_customer=False,
+        )
+
+    return decision
+
+
 def _apply_catalog_navigation_policy(
     decision: AIDecision,
     context: dict,
@@ -1739,8 +2049,10 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "uso, satisfação, residência ou empresa apenas porque o SulIA mencionou isso antes. A seção customer_evidence contém "
         "somente falas reais do cliente e é a fonte principal para esses fatos. Dados de memória/CRM gerados pela IA não devem "
         "ser tratados como confirmação do cliente. Quando algo não estiver confirmado, pergunte em vez de assumir. "
-        "Produza a decisão estruturada do SDR. Além da resposta, classifique objeção, estado comercial, "
-        "plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
+        "Produza a decisão estruturada do SDR. Antes de qualquer oferta, se lead.confirmed_existing_customer estiver vazio, "
+        "a primeira qualificação é perguntar se a pessoa já é cliente Sulnet; cliente existente segue para Telefonia Móvel ou nova conexão para outro endereço, "
+        "e não cliente segue para Internet ou Telefonia Móvel. Não repita essa pergunta se a memória já estiver confirmada. "
+        "Além da resposta, classifique objeção, estado comercial, plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
         "Atualize também a memória comercial estruturada: customer_needs, benefits_valued, commercial_arguments_used, "
         "proposal_summary e unanswered_question. Registre em commercial_arguments_used somente argumentos realmente usados "
         "na resposta ao cliente, não todos os argumentos disponíveis na base. Se o cliente fizer uma pergunta cuja resposta "
@@ -1795,6 +2107,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = _apply_corporate_customer_policy(decision, context)
     decision = _apply_secondary_decline_reengagement_policy(decision, context)
     decision = _apply_offer_rejection_diagnostic_policy(decision, context)
+    decision = _apply_prospecting_entry_policy(decision, context)
     return _sanitize_unconfirmed_customer_facts(decision, context)
 
 
@@ -1927,6 +2240,12 @@ def _apply_crm_decision(
             qualification.customer_type,
             conversation_id=conversation.id,
         )
+    if qualification.existing_customer in {"CLIENTE", "NAO_CLIENTE"}:
+        _persist_confirmed_existing_customer(
+            lead,
+            qualification.existing_customer,
+            conversation_id=conversation.id,
+        )
 
     memory_parts = [
         f"Estado={decision.sales_state}",
@@ -1936,6 +2255,7 @@ def _apply_crm_decision(
         f"N{decision.concession_level}",
         f"meses_gratis={decision.free_months}",
         f"segmento_confirmado={qualification.customer_type}",
+        f"cliente_sulnet={qualification.existing_customer}",
     ]
     if qualification.current_provider:
         memory_parts.append(f"provedor={qualification.current_provider}")
@@ -2016,6 +2336,7 @@ def _perform_handoff(
     handoff_summary = (
         f"Resumo SDR: {decision.summary}\n"
         f"Segmento confirmado: {decision.qualification.customer_type}\n"
+        f"Já é cliente Sulnet: {decision.qualification.existing_customer}\n"
         f"Plano/serviço: {decision.offer_plan_code or decision.qualification.desired_product or '-'}\n"
         f"Condição: N{decision.concession_level}; meses grátis={decision.free_months}; "
         f"preço ofertado={decision.offer_price if decision.offer_price is not None else '-'}\n"
