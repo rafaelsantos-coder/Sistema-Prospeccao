@@ -305,6 +305,38 @@ class ZApiService:
             },
         )
 
+    def webhook_state(self) -> dict[str, Any]:
+        self._ensure_configured()
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.get(self._url("me"), headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ZApiError("Nao foi possivel consultar os webhooks da Z-API.") from exc
+        if response.status_code >= 400:
+            raise ZApiError(
+                f"Falha ao consultar webhooks Z-API: {self._safe_error(response)}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ZApiError("A Z-API retornou dados invalidos da instancia.") from exc
+        if not isinstance(payload, dict):
+            raise ZApiError("A Z-API retornou dados invalidos da instancia.")
+        return {
+            "received_callback_url": str(payload.get("receivedCallbackUrl") or "").strip(),
+            "received_and_delivery_callback_url": str(
+                payload.get("receivedAndDeliveryCallbackUrl") or ""
+            ).strip(),
+            "delivery_callback_url": str(payload.get("deliveryCallbackUrl") or "").strip(),
+            "presence_callback_url": str(payload.get("presenceChatCallbackUrl") or "").strip(),
+            "message_status_callback_url": str(
+                payload.get("messageStatusCallbackUrl") or ""
+            ).strip(),
+            "receive_sent_by_me": bool(payload.get("receiveCallbackSentByMe")),
+            "connected": bool(payload.get("connected")),
+        }
+
+
     def configure_webhooks(self, webhook_url: str) -> dict[str, Any]:
         clean_url = webhook_url.strip()
         if not clean_url.startswith("https://"):
@@ -346,9 +378,17 @@ class ZApiService:
         except ValueError:
             received_payload = {"ok": True}
 
+        state = self.webhook_state()
+        configured_url = state.get("received_callback_url") or ""
+        if configured_url.rstrip("/") != clean_url.rstrip("/"):
+            raise ZApiError(
+                "Webhook de mensagens recebidas nao confirmou a URL configurada."
+            )
+
         return {
             "all": all_payload,
             "received": received_payload,
             "notify_sent_by_me": True,
+            "webhook_state": state,
         }
 
