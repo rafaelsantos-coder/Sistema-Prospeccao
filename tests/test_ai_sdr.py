@@ -498,6 +498,31 @@ def test_seed_materializes_fila_ia_instance_as_service_queue():
 
 def test_ai_dashboard_shows_queue_whatsapp_instance():
     with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            admin = db.scalar(
+                select(User).where(User.email == "admin@sulnet.local")
+            )
+            assert admin is not None
+            instance = db.scalar(
+                select(ZApiInstance).where(ZApiInstance.name == "Fila IA")
+            )
+            if not instance:
+                create_zapi_instance(
+                    db,
+                    name="Fila IA",
+                    phone_label="Número IA",
+                    base_url="https://api.z-api.io",
+                    instance_id="instance-fila-ia-dashboard-test",
+                    instance_token="token-fila-ia-dashboard-test",
+                    client_token="client-fila-ia-dashboard-test",
+                    created_by_id=admin.id,
+                )
+                db.commit()
+            seed_database(db, include_demo=False)
+        finally:
+            db.close()
+
         _login_admin(client)
         page = client.get("/ai")
         assert page.status_code == 200
