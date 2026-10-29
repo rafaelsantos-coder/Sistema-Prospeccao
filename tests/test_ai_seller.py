@@ -103,52 +103,52 @@ def test_extract_birth_date_normalizes_to_iso():
 
 
 
-def test_mobile_contract_type_and_new_number_flow():
+def test_mobile_contract_type_new_number_skips_iccid_number_due_day_and_fee():
     values = _mobile_values({})
     assert values["tipo_assinatura_contrato"] == MOBILE_SIGNATURE_TYPE
 
-    ok, _ = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "número novo", values)
+    ok, _ = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "numero_novo", values)
     assert ok is True
     assert values["tipo_contratacao"] == "Número novo"
-    assert _mobile_next_step(values) == "MOBILE_NEW_ICCID"
-
-    ok, _ = _apply_mobile_answer("MOBILE_NEW_ICCID", "8955000000000000001", values)
-    assert ok is True
-    assert _mobile_next_step(values) == "MOBILE_NEW_NUMBER"
-
-    ok, _ = _apply_mobile_answer("MOBILE_NEW_NUMBER", "55 55 99999-0000", values)
-    assert ok is True
-    assert _mobile_next_step(values) == "MOBILE_DUE_DAY"
+    assert _mobile_next_step(values) == "MOBILE_PAYMENT_METHOD"
 
 
-def test_mobile_portability_requires_all_visible_fields():
+def test_mobile_contract_type_rejects_m2m():
+    values = _mobile_values({})
+    ok, message = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "M2M", values)
+    assert ok is False
+    assert "Portabilidade" in message
+    assert "Número novo" in message
+
+
+def test_mobile_portability_requires_number_and_holder_data_but_not_iccid_or_date():
     values = {
         "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
         "tipo_contratacao": "Número Portabilidade",
-        "port_iccid": "8955000000000000001",
         "numero_portado": "5555999990000",
         "port_titular": "Sim",
     }
     missing = _mobile_missing_fields(values)
     assert "port_nome_titular" in missing
     assert "port_cpf_cnpj" in missing
-    assert "port_data" in missing
+    assert "port_iccid" not in missing
+    assert "port_data" not in missing
+    assert "vencimento" not in missing
+    assert "taxa_ativacao" not in missing
 
 
 def test_mobile_boleto_billing_requires_delivery_and_unification_reason():
     values = {
         "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
         "tipo_contratacao": "Número novo",
-        "novo_iccid": "8955000000000000001",
-        "numero_novo": "5555999990000",
-        "vencimento": 10,
-        "taxa_ativacao": "Não",
         "forma_pagamento": "Boleto",
         "unificar_faturas": "Não",
     }
     missing = _mobile_missing_fields(values)
     assert "envio_fatura" in missing
     assert "unificar_motivo" in missing
+    assert "vencimento" not in missing
+    assert "taxa_ativacao" not in missing
 
     values["envio_fatura"] = ["WhatsApp", "E-mail"]
     values["unificar_motivo"] = "Faturas separadas"
@@ -159,10 +159,6 @@ def test_mobile_debit_requires_bank_details():
     values = {
         "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
         "tipo_contratacao": "Número novo",
-        "novo_iccid": "8955000000000000001",
-        "numero_novo": "5555999990000",
-        "vencimento": 15,
-        "taxa_ativacao": "Não",
         "forma_pagamento": "Débito em Conta",
         "unificar_faturas": "Sim",
     }
@@ -173,22 +169,13 @@ def test_mobile_debit_requires_bank_details():
     assert "debito_titular" in missing
 
 
-def test_mobile_m2m_requires_one_iccid_per_chip():
+def test_mobile_next_step_for_portability_goes_directly_to_number():
     values = {
         "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
-        "tipo_contratacao": "M2M",
-        "m2m_quantidade": 2,
-        "m2m_iccids": "8955000000000000001",
-        "vencimento": 10,
-        "taxa_ativacao": "Não",
-        "forma_pagamento": "Boleto",
-        "envio_fatura": ["E-mail"],
-        "unificar_faturas": "Sim",
+        "tipo_contratacao": "Número Portabilidade",
     }
-    assert "m2m_iccids" in _mobile_missing_fields(values)
+    assert _mobile_next_step(values) == "MOBILE_PORT_NUMBER"
 
-    values["m2m_iccids"] = "8955000000000000001\n8955000000000000002"
-    assert _mobile_missing_fields(values) == []
 
 
 
