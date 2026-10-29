@@ -1,14 +1,15 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="page-lead split">
+{% include "_settings_nav.html" %}
+<div class="page-lead split settings-section-lead">
   <div>
     <span class="eyebrow">USUÁRIOS</span>
     <h2>Editar usuário</h2>
     <p>Atualize os dados de acesso de {{ target_user.name }} e, quando necessário, gere uma nova senha provisória.</p>
   </div>
   <div class="page-actions">
-    <a class="button button-secondary" href="/settings">Voltar para configurações</a>
+    <a class="button button-secondary" href="/settings/users">← Usuários e acessos</a>
   </div>
 </div>
 
