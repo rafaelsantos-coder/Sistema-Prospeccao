@@ -148,6 +148,35 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/seller")
+def seller_dashboard(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    agent = db.scalar(
+        select(AIAgentProfile)
+        .options(selectinload(AIAgentProfile.user))
+        .where(AIAgentProfile.role_type == "CLOSER")
+        .order_by(AIAgentProfile.id)
+    )
+    knowledge = []
+    metrics = {}
+    if agent:
+        knowledge = list(db.scalars(
+            select(AIKnowledgeItem)
+            .where(AIKnowledgeItem.agent_id == agent.id)
+            .order_by(AIKnowledgeItem.updated_at.desc())
+        ))
+        metrics = ai_metrics(db, agent.id)
+    return render(
+        request, "ai/seller.html", user=actor, active_nav="ai",
+        ai_section="seller", page_title="Vendedor IA · Fechamento",
+        agent=agent, knowledge=knowledge, metrics=metrics,
+        execution_modes=EXECUTION_MODES,
+        autonomous_enabled=settings.ai_autonomous_enabled,
+    )
+
+
 @router.post("/agents/{agent_id}")
 def update_agent(
     agent_id: int,
@@ -214,7 +243,7 @@ def update_agent(
     )
     db.commit()
     flash(request, f"Agente {agent.name} atualizado.")
-    return RedirectResponse("/ai", status_code=303)
+    return RedirectResponse("/ai/seller" if agent.role_type == "CLOSER" else "/ai", status_code=303)
 
 
 @router.post("/knowledge")
