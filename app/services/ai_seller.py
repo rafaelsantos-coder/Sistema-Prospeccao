@@ -324,6 +324,7 @@ def _create_crm_if_ready(
         "monthlyValue": state.offer_price,
         "sdrSummary": state.handoff_summary,
         "handoffReason": collected.get("handoffReason") or "",
+        "runConsult": False,
     }
     payload = {key: value for key, value in payload.items() if value not in (None, "")}
     result = client.create_opportunity(payload)
