@@ -1265,6 +1265,7 @@ def start_closing_from_sdr(
     state = db.scalar(
         select(AIClosingState).where(AIClosingState.conversation_id == conversation.id)
     )
+    created_state = state is None
     if not state:
         state = AIClosingState(
             conversation_id=conversation.id,
@@ -1277,15 +1278,28 @@ def start_closing_from_sdr(
         db.add(state)
         db.flush()
     else:
+        if state.step == "COMPLETED":
+            return False
         state.agent_id = closer.id
         if not state.plan_label:
             state.plan_label = plan_label
         if state.offer_price is None:
             state.offer_price = getattr(decision, "offer_price", None)
-        if not state.handoff_summary:
-            state.handoff_summary = str(getattr(decision, "summary", "") or "")
+        latest_summary = str(getattr(decision, "summary", "") or "").strip()
+        if latest_summary and latest_summary not in state.handoff_summary:
+            state.handoff_summary = (
+                f"{state.handoff_summary}\n{latest_summary}".strip()
+            )[-5000:]
 
     collected = _load_collected(state)
+    if state.step == "ESCALATED":
+        resume_step = str(collected.pop("_resume_step", "") or "").strip()
+        if not resume_step:
+            # Escalonamento real para humano não deve ser reaberto automaticamente.
+            return False
+        state.step = resume_step
+        state.last_error = ""
+        _save_collected(state, collected)
     phone = _digits(conversation.contact.phone if conversation.contact else "")
     if phone:
         collected["phone"] = phone
@@ -1299,7 +1313,8 @@ def start_closing_from_sdr(
     collected["handoffReason"] = str(getattr(decision, "handoff_reason", "") or "")
     _save_collected(state, collected)
 
-    state.step = "CPF" if collected.get("name") else "NAME"
+    if created_state:
+        state.step = "CPF" if collected.get("name") else "NAME"
     conversation.assigned_user_id = closer.user_id
     conversation.status = "EM_ATENDIMENTO"
     if conversation.lead:
@@ -1308,17 +1323,24 @@ def start_closing_from_sdr(
             conversation.lead.stage = "NEGOCIACAO"
             conversation.lead.priority = "ALTA"
 
-    db.add(
-        ConversationAssignment(
-            conversation_id=conversation.id,
-            user_id=closer.user_id,
-            assigned_by_id=sdr_agent.user_id,
-            event="AI_HANDOFF_TO_CLOSER",
-        )
-    )
     ai_state = db.scalar(
         select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
     )
+    already_closing = bool(
+        not created_state
+        and ai_state
+        and ai_state.state == "CLOSING"
+        and conversation.assigned_user_id == closer.user_id
+    )
+    if not already_closing:
+        db.add(
+            ConversationAssignment(
+                conversation_id=conversation.id,
+                user_id=closer.user_id,
+                assigned_by_id=sdr_agent.user_id,
+                event="AI_HANDOFF_TO_CLOSER",
+            )
+        )
     if not ai_state:
         ai_state = AIConversationState(
             conversation_id=conversation.id,
@@ -1340,6 +1362,17 @@ def start_closing_from_sdr(
     from app.services.ai_followups import cancel_pending_followups
     cancel_pending_followups(db, conversation.id, reason="HANDOFF_VENDEDOR_IA")
 
+    if already_closing:
+        # O fechamento já estava em andamento: não reinicia, não repete a pergunta.
+        _schedule_seller_followup(
+            db,
+            state=state,
+            conversation=conversation,
+            source_message_id=job.message_id,
+            step=1,
+        )
+        return True
+
     try:
         _create_crm_if_ready(db, state=state, conversation=conversation)
     except CRMIntegrationError as exc:
@@ -1353,6 +1386,13 @@ def start_closing_from_sdr(
         conversation=conversation,
         state=state,
         text=prompt,
+    )
+    _schedule_seller_followup(
+        db,
+        state=state,
+        conversation=conversation,
+        source_message_id=job.message_id,
+        step=1,
     )
     _record_activity(
         db,
