@@ -70,9 +70,10 @@ async def configure_zapi_webhooks() -> None:
             else:
                 state = result.get("webhook_state") or {}
                 LOG.info(
-                    "Webhooks da Z-API %s configurados. received_ok=%s sent_by_me=%s connected=%s",
+                    "Webhooks da Z-API %s configurados. received_ok=%s combined_ok=%s sent_by_me=%s connected=%s",
                     instance.name,
                     bool(state.get("received_callback_url")),
+                    bool(state.get("received_and_delivery_callback_url")),
                     bool(state.get("receive_sent_by_me")),
                     bool(state.get("connected")),
                 )
