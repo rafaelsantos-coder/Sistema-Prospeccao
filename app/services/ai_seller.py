@@ -17,6 +17,7 @@ from app.models import (
     AIAgentProfile,
     AIClosingState,
     AIConversationState,
+    AIFollowupJob,
     AIJob,
     AIKnowledgeItem,
     AIRun,
@@ -782,6 +783,27 @@ def _send_step_message(
     state: AIClosingState,
     text: str,
 ) -> Message:
+    recent_duplicate = db.scalar(
+        select(Message)
+        .where(
+            Message.conversation_id == conversation.id,
+            Message.direction == "OUTBOUND",
+            Message.sender_user_id == agent.user_id,
+            Message.body == text,
+            Message.created_at >= utcnow() - timedelta(minutes=5),
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    if recent_duplicate:
+        LOG.info(
+            "seller_duplicate_suppressed conversation=%s step=%s message=%s",
+            conversation.id,
+            state.step,
+            recent_duplicate.id,
+        )
+        return recent_duplicate
+
     buttons = _seller_step_buttons(state.step, text)
     if len(buttons) < 2:
         return _send_text(
@@ -937,6 +959,164 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == "WAITING_SIGNATURE":
         return "Seu contrato já foi enviado. Assim que você concluir a assinatura, eu confirmo a contratação por aqui."
     return "Vou seguir com a próxima etapa da sua contratação."
+
+
+SELLER_CUSTOMER_INPUT_STEPS = {
+    "NAME",
+    "CPF",
+    "BIRTH_DATE",
+    "CEP",
+    "ADDRESS_NUMBER",
+    "PLAN_CONFIRM",
+    "EMAIL",
+    "BILLING",
+    "CREDIT_REJECTED",
+    "MOBILE_CONTRACT_TYPE",
+    "MOBILE_PORT_NUMBER",
+    "MOBILE_PORT_TITULAR",
+    "MOBILE_PORT_NAME",
+    "MOBILE_PORT_DOC",
+    "MOBILE_PAYMENT_METHOD",
+    "MOBILE_INVOICE_DELIVERY",
+    "MOBILE_DEBIT_BANK",
+    "MOBILE_DEBIT_AGENCY",
+    "MOBILE_DEBIT_ACCOUNT",
+    "MOBILE_DEBIT_HOLDER",
+    "MOBILE_UNIFY",
+    "MOBILE_UNIFY_REASON",
+}
+
+
+def _seller_followup_prompt(
+    state: AIClosingState,
+    collected: dict[str, Any],
+    *,
+    followup_step: int,
+) -> str:
+    plan = state.plan_label or "plano combinado"
+    prefix = (
+        "Para continuarmos de onde paramos, "
+        if followup_step <= 1
+        else "Quando puder, seguimos exatamente de onde paramos: "
+    )
+    prompts = {
+        "NAME": "me envie seu nome completo para eu iniciar o cadastro.",
+        "CPF": "me envie seu CPF para eu continuar a consulta cadastral.",
+        "BIRTH_DATE": "me envie sua data de nascimento no formato DD/MM/AAAA.",
+        "CEP": "me envie o CEP do endereço para eu continuar a contratação.",
+        "ADDRESS_NUMBER": "me informe o número do imóvel e, se houver, o complemento.",
+        "EMAIL": "me informe o e-mail que ficará no cadastro.",
+        "MOBILE_PORT_NUMBER": "me informe o número com DDD que será portado.",
+        "MOBILE_PORT_NAME": "me informe o nome completo do titular da linha.",
+        "MOBILE_PORT_DOC": "me informe o CPF ou CNPJ do titular da linha.",
+        "MOBILE_DEBIT_BANK": "me informe o banco para o débito em conta.",
+        "MOBILE_DEBIT_AGENCY": "me informe a agência.",
+        "MOBILE_DEBIT_ACCOUNT": "me informe a conta.",
+        "MOBILE_DEBIT_HOLDER": "me informe o nome do titular da conta bancária.",
+        "MOBILE_UNIFY_REASON": "me informe o motivo para manter as faturas separadas.",
+        "BILLING": "me informe a forma de pagamento/faturamento e o dia de vencimento.",
+    }
+    if state.step == "PLAN_CONFIRM":
+        return f"Para seguirmos com a contratação do {plan}, confirma esse plano?"
+    if state.step == "MOBILE_CONTRACT_TYPE":
+        return "Para continuar com o Sulmóvel, escolha como deseja a linha:"
+    if state.step == "MOBILE_PORT_TITULAR":
+        return "Para continuar a portabilidade, a linha está no nome do titular desta contratação?"
+    if state.step == "MOBILE_PAYMENT_METHOD":
+        return "Para continuar, escolha a forma de pagamento:"
+    if state.step == "MOBILE_INVOICE_DELIVERY":
+        return "Para continuar, escolha como quer receber a fatura:"
+    if state.step == "MOBILE_UNIFY":
+        return "Para continuar, deseja unificar esta fatura com outras faturas Sulnet?"
+    if state.step == "CREDIT_REJECTED":
+        return "Se quiser encaminhar a análise cadastral para um atendente, escolha Sim. Caso contrário, pode responder Não."
+    return prefix + prompts.get(state.step, _prompt_for_step(state, collected))
+
+
+def _schedule_seller_followup(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    source_message_id: int | None,
+    step: int = 1,
+) -> None:
+    if state.step not in SELLER_CUSTOMER_INPUT_STEPS:
+        return
+    queue = queue_for_conversation(db, conversation.id)
+    if not queue:
+        return
+    from app.services.ai_followups import schedule_followup
+
+    schedule_followup(
+        db,
+        agent_id=state.agent_id,
+        queue_id=queue.id,
+        conversation_id=conversation.id,
+        source_message_id=source_message_id,
+        step=step,
+    )
+
+
+def process_seller_followup(
+    db: Session,
+    job: AIFollowupJob,
+    agent: AIAgentProfile,
+) -> str:
+    conversation = db.get(Conversation, job.conversation_id)
+    state = db.scalar(
+        select(AIClosingState).where(
+            AIClosingState.conversation_id == job.conversation_id
+        )
+    )
+    if (
+        not conversation
+        or not state
+        or state.step not in SELLER_CUSTOMER_INPUT_STEPS
+        or state.step in {"ESCALATED", "COMPLETED"}
+    ):
+        job.status = "CANCELADO"
+        job.error = "FECHAMENTO_NAO_AGUARDA_CLIENTE"
+        return "cancelled"
+
+    collected = _load_collected(state)
+    text = _seller_followup_prompt(
+        state,
+        collected,
+        followup_step=max(1, int(job.step or 1)),
+    )
+    message = _send_step_message(
+        db,
+        agent=agent,
+        conversation=conversation,
+        state=state,
+        text=text,
+    )
+    job.status = "ENVIADO"
+    job.sent_at = utcnow()
+    job.error = None
+    write_audit(
+        db,
+        user=agent.user,
+        action="AI_CLOSER_FOLLOWUP_SENT",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={
+            "followup_job_id": job.id,
+            "step": job.step,
+            "closing_step": state.step,
+            "message_id": message.id,
+            "buttons": len(_seller_step_buttons(state.step, text)),
+        },
+    )
+    _schedule_seller_followup(
+        db,
+        state=state,
+        conversation=conversation,
+        source_message_id=job.source_message_id,
+        step=max(1, int(job.step or 1)) + 1,
+    )
+    return "sent"
 
 
 def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
