@@ -13,11 +13,13 @@ from app.models import (
     Contact,
     Conversation,
     ConversationAssignment,
+    ConversationQueueLink,
     ConversationZApiInstance,
     Lead,
     Message,
     MessageEvent,
     ServiceQueue,
+    ServiceQueueMember,
     User,
 )
 from app.services.queue_routing import (
@@ -448,6 +450,23 @@ def apply_conversation_scope(stmt, user: User):
         if user.branch_id:
             return stmt.where(Conversation.branch_id == user.branch_id)
         return stmt.where(Conversation.team == user.team)
+    if user.role == "CONSULTOR":
+        member_queue_ids = select(ServiceQueueMember.queue_id).where(
+            ServiceQueueMember.user_id == user.id,
+            ServiceQueueMember.active.is_(True),
+        )
+        visible_unassigned_ids = select(ConversationQueueLink.conversation_id).where(
+            ConversationQueueLink.queue_id.in_(member_queue_ids)
+        )
+        return stmt.where(
+            or_(
+                Conversation.assigned_user_id == user.id,
+                (
+                    Conversation.assigned_user_id.is_(None)
+                    & Conversation.id.in_(visible_unassigned_ids)
+                ),
+            )
+        )
     return stmt.where(Conversation.assigned_user_id == user.id)
 
 
