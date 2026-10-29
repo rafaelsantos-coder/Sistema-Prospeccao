@@ -116,7 +116,8 @@ def _recover_closer_capture_patch_failures() -> int:
                 select(AIClosingState)
                 .where(
                     AIClosingState.step == "ESCALATED",
-                    AIClosingState.last_error.ilike("%Rota de captura%"),
+                    AIClosingState.last_error.ilike("%Falha repetida na integração CRM:%"),
+                    AIClosingState.updated_at >= utcnow() - timedelta(hours=6),
                 )
                 .order_by(AIClosingState.updated_at.desc())
                 .limit(50)
@@ -170,13 +171,17 @@ def _recover_closer_capture_patch_failures() -> int:
                 select(AIJob)
                 .where(
                     AIJob.conversation_id == conversation.id,
+                    AIJob.agent_id == closer.id,
                     AIJob.status == "FALHOU",
-                    AIJob.error.ilike("%Rota de captura%"),
                 )
                 .order_by(AIJob.id.desc())
                 .limit(1)
             )
             if not failed_job:
+                LOG.warning(
+                    "closer_crm_recovery_without_failed_job conversation=%s",
+                    conversation.id,
+                )
                 continue
 
             failed_job.agent_id = closer.id
@@ -188,6 +193,12 @@ def _recover_closer_capture_patch_failures() -> int:
             recovered += 1
 
         db.commit()
+        if states:
+            LOG.info(
+                "closer_crm_recovery_scan candidates=%s recovered=%s",
+                len(states),
+                recovered,
+            )
     finally:
         db.close()
     return recovered
