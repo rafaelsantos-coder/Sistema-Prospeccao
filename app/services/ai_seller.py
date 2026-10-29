@@ -1285,7 +1285,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 try:
                     client.update_opportunity(
                         state.opportunity_id or 0,
-                        {"planLabel": state.plan_label},
+                        {
+                            "planLabel": state.plan_label,
+                            # Usado apenas para desempatar catálogo; o valor gravado
+                            # continua sendo o preço oficial do produto no CRM.
+                            "monthlyValue": state.offer_price,
+                        },
                     )
                 except CRMIntegrationError:
                     products = client.products(state.plan_label)

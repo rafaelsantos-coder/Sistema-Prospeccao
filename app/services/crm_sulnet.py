@@ -243,10 +243,49 @@ class SulnetCRMClient:
         plan_label = str(payload.get("planLabel") or "").strip()
         if not selected_product and plan_label:
             products = self.products(plan_label)
-            if len(products) == 1:
+
+            exact = [
+                item
+                for item in products
+                if self._fold_catalog_text(str(item.get("name") or ""))
+                == self._fold_catalog_text(plan_label)
+            ]
+            if len(exact) == 1:
+                selected_product = exact[0]
+            elif len(products) == 1:
                 selected_product = products[0]
+            else:
+                expected_value = payload.get("monthlyValue")
+                try:
+                    expected_value_float = (
+                        round(float(expected_value), 2)
+                        if expected_value not in (None, "")
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    expected_value_float = None
+
+                if expected_value_float is not None:
+                    same_price = []
+                    for item in products:
+                        try:
+                            catalog_value = round(float(item.get("monthlyValue")), 2)
+                        except (TypeError, ValueError):
+                            continue
+                        if abs(catalog_value - expected_value_float) < 0.01:
+                            same_price.append(item)
+                    if len(same_price) == 1:
+                        selected_product = same_price[0]
+
+            if selected_product:
                 generic["planIds"] = [int(selected_product.get("id") or 0)]
             elif "planIds" not in generic:
+                LOG.warning(
+                    "crm_plan_ambiguous label=%s candidates=%s expected_value=%s",
+                    plan_label[:120],
+                    len(products),
+                    payload.get("monthlyValue"),
+                )
                 raise CRMIntegrationError(
                     "Plano não localizado de forma inequívoca no catálogo do CRM.",
                     status_code=409,

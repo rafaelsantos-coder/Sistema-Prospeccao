@@ -241,3 +241,74 @@ def test_products_falls_back_to_catalog_and_flattens_grouped_response(monkeypatc
     assert products[0]["categoryId"] == 13
     assert products[0]["categoryName"] == "TELEFONIA MÓVEL"
     assert any(url.endswith("/api/catalog/products") for _, url in CatalogFallbackClient.captured)
+
+
+
+class PlanDisambiguationClient:
+    captured: list[dict[str, Any]] = []
+
+    def __init__(self, *, headers: dict[str, str], **_: Any):
+        self.headers = headers
+
+    def __enter__(self) -> "PlanDisambiguationClient":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.__class__.captured.append(
+            {"method": method, "url": url, "json": kwargs.get("json")}
+        )
+        response = FakeResponse()
+        if method == "PATCH" and url.endswith("/api/capture/leads/1234"):
+            response.status_code = 404
+            response.payload = {"error": "Rota não encontrada."}
+        elif method == "GET" and url.endswith("/api/capture/leads/1234"):
+            response.status_code = 200
+            response.payload = {"opportunityId": 1234, "aiClosing": {}}
+        elif method == "GET" and url.endswith("/api/capture/products"):
+            response.status_code = 404
+            response.payload = {"error": "Rota não encontrada."}
+        elif method == "GET" and url.endswith("/api/catalog/products"):
+            response.status_code = 200
+            response.payload = [
+                {
+                    "category_id": 13,
+                    "category_name": "TELEFONIA MÓVEL",
+                    "products": [
+                        {"id": 501, "name": "Sulmóvel 15GB Básico", "monthlyValue": 59.80},
+                        {"id": 502, "name": "Sulmóvel 15GB", "monthlyValue": 69.80},
+                    ],
+                }
+            ]
+        elif method == "GET" and url.endswith("/api/capture/context"):
+            response.status_code = 200
+            response.payload = {"stages": [{"id": 110, "name": "DADOS E PLANO"}]}
+        elif method == "PATCH" and url.endswith("/api/opportunities/1234"):
+            response.status_code = 200
+            response.payload = {"id": 1234}
+        return response
+
+
+def test_plan_resolution_uses_expected_value_only_as_disambiguation(monkeypatch):
+    PlanDisambiguationClient.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", PlanDisambiguationClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="service-token-value",
+    )
+    client.update_opportunity(
+        1234,
+        {"planLabel": "Sulmóvel 15GB", "monthlyValue": 69.80},
+    )
+
+    patch = next(
+        item
+        for item in PlanDisambiguationClient.captured
+        if item["method"] == "PATCH"
+        and item["url"].endswith("/api/opportunities/1234")
+    )
+    assert patch["json"]["planIds"] == [502]
+    assert patch["json"]["monthlyValue"] == 69.80
