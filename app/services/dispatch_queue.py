@@ -26,7 +26,8 @@ from app.services.conversation_engine import (
 )
 from app.services.queue_routing import set_lead_queue_preference
 from app.services.scoring import normalize_phone
-from app.services.zapi import ZApiError, ZApiService
+from app.services.zapi import ZApiError
+from app.services.zapi_instances import queue_instance, service_for_queue
 from app.timeutils import local_day_start_utc, utcnow
 
 
@@ -346,8 +347,12 @@ def process_dispatch_recipient(
         return "failed"
 
     recipient.attempts = int(recipient.attempts or 0) + 1
+    zapi_instance = queue_instance(db, queue.id)
     try:
-        result = ZApiService().send_text(phone=lead.phone, message=body)
+        result = service_for_queue(db, queue.id).send_text(
+            phone=lead.phone,
+            message=body,
+        )
     except ZApiError as exc:
         recipient.error = str(exc)[:500]
         if recipient.attempts >= 3:
@@ -372,6 +377,7 @@ def process_dispatch_recipient(
         queue_id=queue.id,
         queue_origin="DISPATCH",
         assign_if_unowned=False,
+        zapi_instance_id=zapi_instance.id if zapi_instance else None,
     )
     provider_id = str(
         result.get("messageId") or result.get("id") or ""
@@ -427,6 +433,7 @@ def process_dispatch_recipient(
             "lead_id": lead.id,
             "conversation_id": conversation.id,
             "provider_message_id": provider_id,
+            "zapi_instance_id": zapi_instance.id if zapi_instance else None,
             "interval_seconds": dispatch.interval_seconds,
         },
     )
