@@ -796,7 +796,17 @@ def _send_step_message(
         .order_by(Message.id.desc())
         .limit(1)
     )
-    if recent_duplicate:
+    latest_message = db.scalar(
+        select(Message)
+        .where(Message.conversation_id == conversation.id)
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    if (
+        recent_duplicate
+        and latest_message
+        and latest_message.direction == "OUTBOUND"
+    ):
         LOG.info(
             "seller_duplicate_suppressed conversation=%s step=%s message=%s",
             conversation.id,
