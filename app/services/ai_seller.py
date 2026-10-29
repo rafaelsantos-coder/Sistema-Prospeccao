@@ -928,29 +928,42 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         return "completed"
     except CRMIntegrationError as exc:
         state.last_error = str(exc)
+        run.status = "FALHOU"
+        run.error = str(exc)[:1200]
+        run.finished_at = utcnow()
+        job.error = str(exc)[:1200]
+
+        attempts = int(job.attempts or 0)
+        if attempts < 3:
+            # Falha transitória: tenta novamente em background sem alarmar o cliente.
+            # Isso evita mensagens de "indisponibilidade" seguidas de sucesso segundos depois.
+            run.reply_text = ""
+            job.status = "PENDENTE"
+            job.available_at = utcnow() + timedelta(seconds=30 * max(1, attempts))
+            LOG.warning(
+                "seller_crm_retry_silent conversation=%s job=%s attempt=%s error=%s",
+                conversation.id,
+                job.id,
+                attempts,
+                str(exc)[:300],
+            )
+            return "retry"
+
+        _handoff_to_human(
+            db, state=state, conversation=conversation, agent=agent,
+            reason=f"Falha repetida na integração CRM: {exc}",
+        )
         reply = (
             "Tive uma indisponibilidade ao registrar esta etapa no sistema. "
-            "Se ela persistir, seu atendimento será encaminhado sem você precisar repetir os dados."
+            "Encaminhei seu atendimento com todo o histórico para você não precisar repetir os dados."
         )
         try:
             _send_text(db, agent=agent, conversation=conversation, text=reply)
         except Exception:
             LOG.exception("seller_error_reply_failed conversation=%s", conversation.id)
-        run.status = "FALHOU"
-        run.error = str(exc)[:1200]
         run.reply_text = reply
-        run.finished_at = utcnow()
-        job.error = str(exc)[:1200]
-        if int(job.attempts or 0) < 3:
-            job.status = "PENDENTE"
-            job.available_at = utcnow() + timedelta(seconds=30 * max(1, int(job.attempts or 1)))
-        else:
-            _handoff_to_human(
-                db, state=state, conversation=conversation, agent=agent,
-                reason=f"Falha repetida na integração CRM: {exc}",
-            )
-            job.status = "FALHOU"
-        return "retry"
+        job.status = "FALHOU"
+        return "handoff"
     except Exception as exc:
         LOG.exception("seller_job_failed job=%s", job.id)
         state.last_error = str(exc)[:1200]
