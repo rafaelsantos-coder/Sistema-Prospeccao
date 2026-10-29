@@ -26,6 +26,7 @@ from app.services.ai_sdr import AIDecision, QualificationData, claim_ai_job, pro
 from app.services.conversation_engine import store_received_payload
 from app.services.seed import seed_database
 from app.services.whatsapp_presence import join_whatsapp
+from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
 from app.services.zapi_instances import create_zapi_instance, queue_instance
 
 
@@ -74,6 +75,17 @@ def _create_bound_digital_queue(db, suffix: str):
             fallback_to_human=True,
         )
     )
+    instance = create_zapi_instance(
+        db,
+        name=f"WhatsApp IA Teste {suffix}",
+        phone_label=f"IA {suffix}",
+        base_url="https://api.z-api.io",
+        instance_id=f"instance-ai-{suffix.lower()}",
+        instance_token=f"token-ai-{suffix.lower()}",
+        client_token=f"client-ai-{suffix.lower()}",
+        created_by_id=None,
+    )
+    bind_queue_instance(db, queue.id, instance.id)
 
     user = User(
         name="Consultor Digital Shadow",

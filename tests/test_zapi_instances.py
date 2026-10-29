@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import re
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.main import app
 from app.models import (
+    Contact,
+    Conversation,
     ConversationQueueLink,
     ConversationZApiInstance,
     ServiceQueue,
@@ -15,8 +18,16 @@ from app.models import (
     User,
 )
 from app.services.secret_store import decrypt_secret
-from app.services.zapi import ZApiService
-from app.services.zapi_instances import create_zapi_instance, bind_queue_instance
+from app.services.zapi import ZApiNotConfigured, ZApiService
+from app.services.queue_routing import bind_conversation_queue
+from app.services.zapi_instances import (
+    bind_conversation_instance,
+    bind_queue_instance,
+    conversation_instance,
+    create_zapi_instance,
+    service_for_conversation,
+    service_for_queue,
+)
 
 
 def _csrf(html: str) -> str:
@@ -242,5 +253,76 @@ def test_instance_webhook_routes_new_inbound_to_instance_queue():
             )
             assert instance_link is not None
             assert instance_link.zapi_instance_id == zapi_db_id
+        finally:
+            db.close()
+
+
+def test_conversation_output_always_follows_current_queue_instance():
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            old_instance = _instance(db, "STALE-CONVERSATION")
+            queue_instance_item = _instance(db, "QUEUE-AUTHORITATIVE")
+
+            queue = ServiceQueue(
+                name="Fila com número próprio",
+                code="QUEUE-AUTHORITATIVE-ZAPI",
+                team="DIGITAL",
+                routing_strategy="MANUAL",
+                active=True,
+            )
+            contact = Contact(
+                phone="5555999991666",
+                name="Cliente Multi Número",
+                business_name="Cliente Multi Número",
+            )
+            db.add_all([queue, contact])
+            db.flush()
+
+            conversation = Conversation(
+                contact_id=contact.id,
+                team="DIGITAL",
+                status="EM_FILA",
+            )
+            db.add(conversation)
+            db.flush()
+
+            bind_queue_instance(db, queue.id, queue_instance_item.id)
+            bind_conversation_queue(
+                db,
+                conversation.id,
+                queue.id,
+                origin="TEST",
+            )
+            # Simula uma conversa antiga que ainda estava presa ao número principal/antigo.
+            bind_conversation_instance(db, conversation.id, old_instance.id)
+            db.commit()
+
+            service = service_for_conversation(db, conversation.id)
+
+            assert service.instance_id == queue_instance_item.instance_id
+            repaired = conversation_instance(db, conversation.id)
+            assert repaired is not None
+            assert repaired.id == queue_instance_item.id
+        finally:
+            db.close()
+
+
+def test_queue_without_instance_never_falls_back_to_principal():
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            queue = ServiceQueue(
+                name="Fila Sem Número",
+                code="QUEUE-WITHOUT-ZAPI",
+                team="DIGITAL",
+                routing_strategy="MANUAL",
+                active=True,
+            )
+            db.add(queue)
+            db.commit()
+
+            with pytest.raises(ZApiNotConfigured):
+                service_for_queue(db, queue.id)
         finally:
             db.close()
