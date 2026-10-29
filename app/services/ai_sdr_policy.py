@@ -317,7 +317,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "category": "REGRAS_COMERCIAIS",
         "tags": "sdr,venda,objetivo,handoff,qualificacao",
         "content": (
-            "O objetivo principal do SulIA SDR é gerar venda de internet. Ele conversa, descobre o motivo do contato, "
+            "O objetivo principal do SulIA SDR é gerar vendas de internet e Telefonia Móvel. Ele conversa, descobre o motivo do contato, "
             "qualifica, apresenta oferta, trata objeções, negocia dentro das regras e conduz até intenção clara de contratação. "
             "Quando o cliente estiver pronto para contratar, transfere para vendedor humano da mesma fila. A IA não conclui "
             "cadastro, crédito, contrato, cobrança ou instalação."
