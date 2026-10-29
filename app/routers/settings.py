@@ -348,13 +348,16 @@ def reset_user_password(
         },
     )
     db.commit()
-    return _render_user_edit(
+    response = _render_user_edit(
         request,
         db,
         actor,
         target,
         temporary_password=temporary_password,
     )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @router.post("/users/{user_id}/toggle")
