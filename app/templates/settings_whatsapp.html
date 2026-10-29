@@ -58,18 +58,31 @@
       <div><span class="eyebrow">INSTÂNCIAS WHATSAPP</span><h3>Números cadastrados</h3></div>
       <span class="count-badge">{{ zapi_instances|length }}</span>
     </div>
-    <p class="panel-note">Cada fila pode usar uma instância diferente. As credenciais ficam protegidas e não são exibidas depois do cadastro.</p>
+    <p class="panel-note">Cada fila pode usar uma instância diferente. O número conectado é consultado automaticamente na própria Z-API.</p>
+    {% if duplicate_instance_ids %}
+    <div class="info-box top-space">
+      <strong>Atenção: há instâncias conectadas ao mesmo número</strong>
+      <p>Enquanto duas instâncias apontarem para o mesmo WhatsApp, mensagens enviadas por ambas sairão pelo mesmo número. Revise a conexão dos aparelhos no painel da Z-API.</p>
+    </div>
+    {% endif %}
+    <div class="settings-action-row top-space">
+      <a class="button button-secondary" href="/settings/whatsapp">Atualizar dados da Z-API</a>
+    </div>
     <div class="data-table-wrap top-space">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>Número / identificação</th><th>Instância</th><th>Origem</th><th>Status</th><th>Webhook</th></tr></thead>
         <tbody>
         {% for instance in zapi_instances %}
+          {% set zi = zapi_instance_info.get(instance.id, {}) %}
           <tr>
-            <td><strong>{{ instance.name }}</strong></td>
-            <td>{{ instance.phone_label or 'Não informado' }}</td>
+            <td><strong>{{ instance.name }}</strong>{% if zi.get('device_name') %}<span class="table-subline">{{ zi.get('device_name') }}</span>{% endif %}</td>
+            <td>
+              <strong>{{ zi.get('phone_label') or instance.phone_label or 'Não identificado' }}</strong>
+              {% if zi.get('duplicate_phone') %}<span class="table-subline" style="color:#b45309;font-weight:800;">Mesmo número em outra instância</span>{% elif zi.get('error') %}<span class="table-subline">Não foi possível consultar agora</span>{% else %}<span class="table-subline">Obtido automaticamente da Z-API</span>{% endif %}
+            </td>
             <td><span class="table-subline">…{{ instance.instance_id[-8:] }}</span></td>
             <td>{{ 'Railway / atual' if instance.source_type == 'ENV' else 'Cadastro interno' }}</td>
-            <td><span class="connection-status {% if instance.active %}on{% endif %}">{{ 'Ativa' if instance.active else 'Inativa' }}</span></td>
+            <td><span class="connection-status {% if zi.get('connected') %}on{% endif %}">{{ 'Conectada' if zi.get('connected') else ('Inativa' if not instance.active else 'Desconectada') }}</span></td>
             <td>
               {% if instance.active %}
               <form action="/settings/zapi/instances/{{ instance.id }}/configure-webhook" method="post">
@@ -95,7 +108,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-grid">
           <label class="field"><span>Nome da instância</span><input name="name" required placeholder="Ex.: WhatsApp B2B"></label>
-          <label class="field"><span>Número / identificação</span><input name="phone_label" placeholder="Ex.: (55) 99999-0000"></label>
+          <div class="field"><span>Número / identificação</span><div class="readonly-field">Identificado automaticamente após validar a instância</div><input type="hidden" name="phone_label" value=""></div>
           <label class="field field-span-2"><span>URL da Z-API</span><input name="base_url" value="https://api.z-api.io" required></label>
           <label class="field"><span>Instance ID</span><input name="instance_id" required autocomplete="off"></label>
           <label class="field"><span>Instance Token</span><input name="instance_token" type="password" required autocomplete="new-password"></label>
