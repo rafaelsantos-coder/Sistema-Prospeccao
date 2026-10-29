@@ -100,6 +100,11 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
         "podemos avançar",
         "podemos avancar",
         "quer comparar",
+        "sim ou não",
+        "sim ou nao",
+        "responda sim",
+        "confirma que",
+        "deseja",
     )
     if any(cue in text for cue in yes_no_cues):
         return [
