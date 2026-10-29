@@ -216,6 +216,45 @@ def knowledge_dashboard(request: Request, db: Session = Depends(get_db)):
         1 for run in recent_runs
         if run.intent in {"INTEREST", "HIGH_INTENT", "PROPOSAL_REQUEST"}
     )
+    qualified = sum(1 for run in recent_runs if int(run.qualification_score or 0) >= 70)
+    human_requests = sum(1 for run in recent_runs if run.intent == "HUMAN_REQUEST")
+    attended = len({run.conversation_id for run in recent_runs})
+
+    objection_counts: Counter[str] = Counter()
+    argument_counts: Counter[str] = Counter()
+    unanswered_questions: list[str] = []
+    handoff_conversation_ids: set[int] = set()
+    for run in recent_runs:
+        if run.handoff_recommended:
+            handoff_conversation_ids.add(run.conversation_id)
+        try:
+            output = json.loads(run.output_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            output = {}
+        objection = str(output.get("objection") or "").strip()
+        if objection and objection != "NONE":
+            objection_counts[objection] += 1
+        for argument in output.get("commercial_arguments_used") or []:
+            clean = str(argument).strip()
+            if clean:
+                argument_counts[clean] += 1
+        unanswered = str(output.get("unanswered_question") or "").strip()
+        if unanswered and unanswered not in unanswered_questions:
+            unanswered_questions.append(unanswered)
+
+    conversions_after_handoff = 0
+    if handoff_conversation_ids:
+        transferred = list(
+            db.scalars(
+                select(Conversation)
+                .options(selectinload(Conversation.lead))
+                .where(Conversation.id.in_(handoff_conversation_ids))
+            )
+        )
+        conversions_after_handoff = sum(
+            1 for conversation in transferred
+            if conversation.lead and conversation.lead.stage == "GANHO"
+        )
 
     return render(
         request,
@@ -232,10 +271,17 @@ def knowledge_dashboard(request: Request, db: Session = Depends(get_db)):
         approved_count=approved_count,
         training_metrics={
             "runs": len(recent_runs),
+            "attended": attended,
             "interested": interested,
+            "qualified": qualified,
             "handoffs": handoffs,
+            "human_requests": human_requests,
+            "converted_after_handoff": conversions_after_handoff,
             "failed": failed_runs,
         },
+        top_objections=objection_counts.most_common(8),
+        top_arguments=argument_counts.most_common(8),
+        unanswered_questions=unanswered_questions[:12],
     )
 
 
