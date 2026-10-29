@@ -560,6 +560,7 @@ def _customer_type_from_text(value: str | None) -> str:
         "preciso para empresa",
         "internet para empresa",
         "plano corporativo",
+        "agora e para empresa",
     )
     residential_exact = {
         "casa",
@@ -575,6 +576,7 @@ def _customer_type_from_text(value: str | None) -> str:
         "quero para casa",
         "preciso para casa",
         "internet para casa",
+        "agora e para casa",
     )
 
     if folded in company_exact or any(cue in folded for cue in company_cues):
@@ -1201,6 +1203,24 @@ def _apply_corporate_customer_policy(
     )
     if residential_offer or residential_reply:
         return _show_corporate_catalog(decision)
+
+    concession_in_reply = any(
+        cue in _fold_sales_text(decision.reply_text)
+        for cue in (
+            "mes gratis",
+            "meses gratis",
+            "mensalidade gratis",
+            "mensalidades gratis",
+        )
+    )
+    if decision.free_months > 0 or decision.concession_level > 0 or concession_in_reply:
+        decision = _show_corporate_catalog(decision)
+        decision.reply_text = (
+            "Para os planos corporativos, não tenho desconto ou mensalidade grátis confirmados na base vigente. "
+            "Posso te apresentar as opções oficiais: 200 Mega por R$ 139,00, 250 Mega por R$ 169,00 "
+            "ou 650 Mega por R$ 199,90 mensais. Qual você quer conhecer?"
+        )
+        return decision
 
     decision.concession_level = 0
     decision.free_months = 0
