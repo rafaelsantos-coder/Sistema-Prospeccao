@@ -582,14 +582,43 @@ def _apply_crm_decision(
         if decision.sales_state == "READY_FOR_HUMAN_SALES":
             lead.priority = "ALTA"
 
+    qualification = decision.qualification
+    if qualification.city:
+        lead.city = qualification.city.strip()[:120]
+    if qualification.address:
+        lead.address = qualification.address.strip()[:255]
+
+    memory_parts = [
+        f"Estado={decision.sales_state}",
+        f"intenção={decision.intent}",
+        f"objeção={decision.objection}",
+        f"plano={decision.offer_plan_code or '-'}",
+        f"N{decision.concession_level}",
+        f"meses_gratis={decision.free_months}",
+    ]
+    if qualification.current_provider:
+        memory_parts.append(f"provedor={qualification.current_provider}")
+    if qualification.current_speed:
+        memory_parts.append(f"velocidade_atual={qualification.current_speed}")
+    if qualification.current_price:
+        memory_parts.append(f"preco_atual={qualification.current_price}")
+    if qualification.desired_product:
+        memory_parts.append(f"produto_interesse={qualification.desired_product}")
+    if qualification.pain_points:
+        memory_parts.append(f"dores={', '.join(qualification.pain_points)}")
+    if decision.customer_needs:
+        memory_parts.append(f"necessidades={', '.join(decision.customer_needs)}")
+    if decision.benefits_valued:
+        memory_parts.append(f"beneficios_valorizados={', '.join(decision.benefits_valued)}")
+    if decision.commercial_arguments_used:
+        memory_parts.append(f"argumentos_usados={', '.join(decision.commercial_arguments_used)}")
+    if decision.proposal_summary:
+        memory_parts.append(f"proposta={decision.proposal_summary}")
+
     lead.notes = _append_note(lead.notes, decision.summary)
     lead.potential = _append_note(
         lead.potential,
-        (
-            f"Estado={decision.sales_state}; intenção={decision.intent}; objeção={decision.objection}; "
-            f"plano={decision.offer_plan_code or '-'}; N{decision.concession_level}; "
-            f"meses_gratis={decision.free_months}"
-        ),
+        "Memória comercial: " + "; ".join(memory_parts),
     )
     lead.last_contact_at = utcnow()
     db.add(
@@ -602,6 +631,9 @@ def _apply_crm_decision(
             outcome=decision.sales_state[:120],
             description=(
                 f"IA SDR: {decision.summary}\nPróxima ação: {decision.next_action}\n"
+                f"Argumentos usados: {', '.join(decision.commercial_arguments_used) or '-'}\n"
+                f"Benefícios valorizados: {', '.join(decision.benefits_valued) or '-'}\n"
+                f"Proposta: {decision.proposal_summary or '-'}\n"
                 f"CRM: {' | '.join(decision.crm_notes)}"
             )[:5000],
             completed_at=utcnow(),
