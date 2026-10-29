@@ -18,10 +18,53 @@
 </div>
 
 <div class="ai-agent-kpis top-space">
-  <div><span>Atendimentos analisados</span><strong>{{ training_metrics.runs }}</strong></div>
-  <div><span>Leads com interesse</span><strong>{{ training_metrics.interested }}</strong></div>
-  <div><span>Handoffs</span><strong>{{ training_metrics.handoffs }}</strong></div>
+  <div><span>Leads atendidos</span><strong>{{ training_metrics.attended }}</strong></div>
+  <div><span>Interesse identificado</span><strong>{{ training_metrics.interested }}</strong></div>
+  <div><span>Qualificados</span><strong>{{ training_metrics.qualified }}</strong></div>
+  <div><span>Transferidos</span><strong>{{ training_metrics.handoffs }}</strong></div>
+  <div><span>Pedido de humano</span><strong>{{ training_metrics.human_requests }}</strong></div>
+  <div><span>Conversões pós-handoff</span><strong>{{ training_metrics.converted_after_handoff }}</strong></div>
+  <div><span>Análises realizadas</span><strong>{{ training_metrics.runs }}</strong></div>
   <div><span>Falhas para revisar</span><strong>{{ training_metrics.failed }}</strong></div>
+</div>
+
+<div class="settings-grid top-space">
+  <article class="panel panel-span-4">
+    <div class="panel-header"><div><span class="eyebrow">OBJEÇÕES</span><h3>Mais identificadas</h3></div></div>
+    {% if top_objections %}
+      <div class="queue-flow">
+        {% for name, count in top_objections %}
+        <div><span>{{ count }}</span><p>{{ name }}</p></div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state"><strong>Sem dados ainda</strong><span>As objeções aparecerão conforme a IA atender.</span></div>
+    {% endif %}
+  </article>
+  <article class="panel panel-span-4">
+    <div class="panel-header"><div><span class="eyebrow">ARGUMENTOS</span><h3>Mais utilizados</h3></div></div>
+    {% if top_arguments %}
+      <div class="queue-flow">
+        {% for name, count in top_arguments %}
+        <div><span>{{ count }}</span><p>{{ name }}</p></div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state"><strong>Sem dados ainda</strong><span>Os diferenciais utilizados serão registrados nas próximas conversas.</span></div>
+    {% endif %}
+  </article>
+  <article class="panel panel-span-4">
+    <div class="panel-header"><div><span class="eyebrow">GAPS</span><h3>Perguntas sem resposta segura</h3></div></div>
+    {% if unanswered_questions %}
+      <div class="queue-flow">
+        {% for question in unanswered_questions %}
+        <div><span>?</span><p>{{ question }}</p></div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state"><strong>Nenhum gap registrado</strong><span>Quando faltar conhecimento aprovado, a pergunta aparecerá aqui para revisão.</span></div>
+    {% endif %}
+  </article>
 </div>
 
 <section class="panel top-space">
