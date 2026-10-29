@@ -328,13 +328,26 @@ def _sync_plan_context(
 ) -> None:
     if not state.opportunity_id:
         return
+
     opportunity = client.get_opportunity(state.opportunity_id)
-    plan_id = int(opportunity.get("planId") or 0)
+    raw_plan_id = opportunity.get("planId")
+    if not raw_plan_id:
+        raw_plan_ids = opportunity.get("planIds")
+        if isinstance(raw_plan_ids, list) and raw_plan_ids:
+            raw_plan_id = raw_plan_ids[0]
+    try:
+        plan_id = int(raw_plan_id or 0)
+    except (TypeError, ValueError):
+        plan_id = 0
+
     products = client.products("")
     selected = next(
         (item for item in products if int(item.get("id") or 0) == plan_id),
         None,
     )
+
+    # O nome comercial usado no WhatsApp pode não ser o nome interno do ERP.
+    # Ex.: "Sulmóvel 15GB" -> "Meu Trabalho Comigo 15GB".
     if not selected and state.plan_label:
         query = client.products(state.plan_label)
         exact = [
@@ -345,14 +358,68 @@ def _sync_plan_context(
             selected = exact[0]
         elif len(query) == 1:
             selected = query[0]
+
+    if not selected and state.plan_label and state.offer_price is not None:
+        folded = _norm(state.plan_label).replace(" ", "")
+        capacity_match = re.search(r"(\d{1,3}gb)", folded)
+        capacity = capacity_match.group(1) if capacity_match else ""
+        pool = products
+
+        if capacity:
+            same_capacity = [
+                item for item in pool
+                if capacity in _norm(str(item.get("name") or "")).replace(" ", "")
+            ]
+            if same_capacity:
+                pool = same_capacity
+
+        if "sulmovel" in folded or "movel" in folded:
+            mobile_pool = [
+                item for item in pool
+                if "movel" in _norm(
+                    str(item.get("categoryName") or item.get("name") or "")
+                )
+            ]
+            if mobile_pool:
+                pool = mobile_pool
+
+        try:
+            expected = round(float(state.offer_price), 2)
+        except (TypeError, ValueError):
+            expected = None
+
+        if expected is not None:
+            same_price: list[dict[str, Any]] = []
+            for item in pool:
+                try:
+                    catalog_price = round(float(item.get("monthlyValue")), 2)
+                except (TypeError, ValueError):
+                    continue
+                if abs(catalog_price - expected) < 0.01:
+                    same_price.append(item)
+            if len(same_price) == 1:
+                selected = same_price[0]
+
     if not selected:
         return
-    collected["planId"] = int(selected.get("id") or 0)
-    collected["categoryId"] = int(selected.get("categoryId") or 0)
+
+    resolved_plan_id = int(selected.get("id") or 0)
+    resolved_category_id = int(selected.get("categoryId") or 0)
+    collected["planId"] = resolved_plan_id
+    collected["categoryId"] = resolved_category_id
     collected["categoryName"] = str(selected.get("categoryName") or "")
-    selected_name = str(selected.get("name") or "").strip()
-    if selected_name:
-        state.plan_label = selected_name
+    collected["catalogPlanName"] = str(selected.get("name") or "").strip()
+
+    # Repara oportunidades antigas que receberam o plano apenas pelo fallback
+    # genérico e ainda não expõem product_id no endpoint de captura.
+    if resolved_plan_id and plan_id != resolved_plan_id:
+        client.update_opportunity(
+            state.opportunity_id,
+            {
+                "planId": resolved_plan_id,
+                "planLabel": collected["catalogPlanName"],
+            },
+        )
 
 
 def _persist_mobile_category_form(

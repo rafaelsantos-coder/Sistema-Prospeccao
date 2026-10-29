@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from app.services.ai_seller import (
     MOBILE_SIGNATURE_TYPE,
     _apply_mobile_answer,
@@ -12,6 +14,7 @@ from app.services.ai_seller import (
     _mobile_next_step,
     _mobile_values,
     _redact,
+    _sync_plan_context,
     _yes_no,
 )
 
@@ -186,3 +189,64 @@ def test_mobile_m2m_requires_one_iccid_per_chip():
 
     values["m2m_iccids"] = "8955000000000000001\n8955000000000000002"
     assert _mobile_missing_fields(values) == []
+
+
+
+class _MobilePlanContextClient:
+    def __init__(self):
+        self.updated = []
+
+    def get_opportunity(self, opportunity_id):
+        assert opportunity_id == 11754
+        return {"opportunityId": opportunity_id, "planId": None}
+
+    def products(self, query=""):
+        if query:
+            return []
+        return [
+            {
+                "id": 392,
+                "name": "Meu Trabalho Comigo 15GB",
+                "monthlyValue": 69.80,
+                "categoryId": 83,
+                "categoryName": "TELEFONIA MÓVEL",
+            },
+            {
+                "id": 393,
+                "name": "Meu Trabalho Comigo 20GB",
+                "monthlyValue": 79.80,
+                "categoryId": 83,
+                "categoryName": "TELEFONIA MÓVEL",
+            },
+        ]
+
+    def update_opportunity(self, opportunity_id, payload):
+        self.updated.append((opportunity_id, payload))
+        return {"opportunityId": opportunity_id}
+
+
+def test_sync_plan_context_recovers_mobile_product_after_email():
+    client = _MobilePlanContextClient()
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        offer_price=69.80,
+    )
+    collected = {}
+
+    _sync_plan_context(client, state, collected)
+
+    assert collected["planId"] == 392
+    assert collected["categoryId"] == 83
+    assert collected["categoryName"] == "TELEFONIA MÓVEL"
+    assert collected["catalogPlanName"] == "Meu Trabalho Comigo 15GB"
+    assert state.plan_label == "Sulmóvel 15GB"
+    assert client.updated == [
+        (
+            11754,
+            {
+                "planId": 392,
+                "planLabel": "Meu Trabalho Comigo 15GB",
+            },
+        )
+    ]
