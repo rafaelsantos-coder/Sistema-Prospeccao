@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models import (
     AIAgentProfile,
     AIKnowledgeItem,
+    AIKnowledgeMetadata,
     AIQueueBinding,
     AIRun,
     ServiceQueue,
@@ -34,6 +35,17 @@ EXECUTION_MODES = {
     "SHADOW": "Shadow · analisa sem enviar",
     "APPROVAL": "Aprovação humana",
     "AUTO": "Autônomo",
+}
+
+KNOWLEDGE_CATEGORIES = {
+    "INSTITUCIONAL": "Institucional e história da empresa",
+    "DIFERENCIAIS": "Diferenciais competitivos",
+    "PRODUTOS": "Produtos, planos e benefícios",
+    "ATENDIMENTO": "Atendimento e suporte",
+    "COBERTURA": "Cobertura e regiões atendidas",
+    "ARGUMENTOS_COMERCIAIS": "Argumentos comerciais",
+    "OBJECOES": "Objeções e respostas",
+    "REGRAS_COMERCIAIS": "Regras e restrições comerciais",
 }
 
 
@@ -145,6 +157,79 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         openai_configured=bool(settings.openai_api_key),
         ai_sdr_enabled=settings.ai_sdr_enabled,
         autonomous_enabled=settings.ai_autonomous_enabled,
+    )
+
+
+@router.get("/knowledge")
+def knowledge_dashboard(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+
+    agents = list(
+        db.scalars(
+            select(AIAgentProfile)
+            .options(selectinload(AIAgentProfile.user))
+            .order_by(AIAgentProfile.id)
+        )
+    )
+    items = list(
+        db.scalars(
+            select(AIKnowledgeItem)
+            .options(selectinload(AIKnowledgeItem.agent))
+            .order_by(AIKnowledgeItem.category, AIKnowledgeItem.updated_at.desc())
+            .limit(500)
+        )
+    )
+    metadata_rows = list(db.scalars(select(AIKnowledgeMetadata)))
+    metadata = {row.knowledge_item_id: row for row in metadata_rows}
+
+    category_counts = {
+        key: sum(1 for item in items if item.category == key and item.active)
+        for key in KNOWLEDGE_CATEGORIES
+    }
+    approved_count = sum(
+        1
+        for item in items
+        if item.active
+        and (
+            item.id not in metadata
+            or metadata[item.id].approval_status == "APPROVED"
+        )
+    )
+    recent_runs = list(
+        db.scalars(
+            select(AIRun)
+            .order_by(AIRun.created_at.desc())
+            .limit(250)
+        )
+    )
+    failed_runs = sum(1 for run in recent_runs if run.status == "FALHOU")
+    handoffs = sum(1 for run in recent_runs if run.handoff_recommended)
+    interested = sum(
+        1 for run in recent_runs
+        if run.intent in {"INTEREST", "HIGH_INTENT", "PROPOSAL_REQUEST"}
+    )
+
+    return render(
+        request,
+        "ai/knowledge.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="knowledge",
+        page_title="Conhecimento Sulnet",
+        agents=agents,
+        knowledge=items,
+        metadata=metadata,
+        knowledge_categories=KNOWLEDGE_CATEGORIES,
+        category_counts=category_counts,
+        approved_count=approved_count,
+        training_metrics={
+            "runs": len(recent_runs),
+            "interested": interested,
+            "handoffs": handoffs,
+            "failed": failed_runs,
+        },
     )
 
 
