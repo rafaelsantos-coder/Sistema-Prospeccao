@@ -311,20 +311,44 @@ class ZApiService:
             raise ZApiError("O webhook da Z-API precisa usar HTTPS.")
         try:
             with httpx.Client(timeout=20.0) as client:
-                response = client.put(
+                all_response = client.put(
                     self._url("update-every-webhooks"),
                     headers=self._headers(json_request=True),
                     json={"value": clean_url, "notifySentByMe": True},
                 )
+                if all_response.status_code >= 400:
+                    raise ZApiError(
+                        f"Falha ao configurar webhooks: {self._safe_error(all_response)}"
+                    )
+
+                # Reforça explicitamente o webhook de mensagens recebidas.
+                # A Z-API oferece um endpoint dedicado para esse callback e ele
+                # é crítico para transformar a resposta do cliente em AIJob.
+                received_response = client.put(
+                    self._url("update-webhook-received"),
+                    headers=self._headers(json_request=True),
+                    json={"value": clean_url},
+                )
+                if received_response.status_code >= 400:
+                    raise ZApiError(
+                        "Falha ao configurar webhook de mensagens recebidas: "
+                        f"{self._safe_error(received_response)}"
+                    )
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel configurar os webhooks da Z-API.") from exc
-        if response.status_code >= 400:
-            raise ZApiError(
-                f"Falha ao configurar webhooks: {self._safe_error(response)}"
-            )
+
         try:
-            payload = response.json()
+            all_payload = all_response.json()
         except ValueError:
-            payload = {"ok": True}
-        return {"all": payload, "notify_sent_by_me": True}
+            all_payload = {"ok": True}
+        try:
+            received_payload = received_response.json()
+        except ValueError:
+            received_payload = {"ok": True}
+
+        return {
+            "all": all_payload,
+            "received": received_payload,
+            "notify_sent_by_me": True,
+        }
 
