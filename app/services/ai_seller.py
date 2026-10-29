@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -118,6 +118,28 @@ def _extract_cpf(text: str) -> str | None:
         d = _digits(item)
         if len(d) in {11, 14}:
             return d
+    return None
+
+
+def _extract_birth_date(text: str) -> str | None:
+    value = text or ""
+    patterns = [
+        (r"\b(\d{2}/\d{2}/\d{4})\b", "%d/%m/%Y"),
+        (r"\b(\d{2}-\d{2}-\d{4})\b", "%d-%m-%Y"),
+        (r"\b(\d{2}\.\d{2}\.\d{4})\b", "%d.%m.%Y"),
+        (r"\b(\d{4}-\d{2}-\d{2})\b", "%Y-%m-%d"),
+    ]
+    for pattern, fmt in patterns:
+        match = re.search(pattern, value)
+        if not match:
+            continue
+        try:
+            parsed = datetime.strptime(match.group(1), fmt)
+        except ValueError:
+            continue
+        if parsed > datetime.now():
+            continue
+        return parsed.strftime("%Y-%m-%d")
     return None
 
 
@@ -340,6 +362,8 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         return f"Perfeito! Vamos dar início à contratação do {plan}. Para começar, me confirma seu nome completo?"
     if state.step == "CPF":
         return "Ótimo. Agora preciso do seu CPF para realizar a consulta cadastral e seguir com a contratação."
+    if state.step == "BIRTH_DATE":
+        return "Para concluir a consulta cadastral, preciso também da sua data de nascimento. Pode me enviar no formato DD/MM/AAAA?"
     if state.step == "CEP":
         return "Consulta aprovada! Qual é o CEP do endereço onde será instalada a internet?"
     if state.step == "ADDRESS_NUMBER":
@@ -637,8 +661,40 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     _create_crm_if_ready(db, state=state, conversation=conversation)
                 if not state.opportunity_id:
                     raise CRMIntegrationError("A oportunidade ainda não pôde ser criada no CRM.")
-                client.update_opportunity(state.opportunity_id, {"cpf": cpf})
-                credit = client.consult_credit(state.opportunity_id, cpf)
+                try:
+                    credit = client.consult_credit(state.opportunity_id, cpf)
+                except CRMIntegrationError as exc:
+                    error_key = _norm(str(exc))
+                    if "nascimento" in error_key or "birth" in error_key:
+                        state.step = "BIRTH_DATE"
+                        reply = _prompt_for_step(state, collected)
+                        credit = None
+                    else:
+                        raise
+                if credit is not None:
+                    state.credit_status = str(credit.get("status") or "")
+                    state.credit_analysis_id = int(credit.get("analysisId") or 0) or None
+                    collected["creditStatus"] = state.credit_status
+                    _save_collected(state, collected)
+                    if credit.get("approved"):
+                        state.step = "CEP"
+                        reply = _prompt_for_step(state, collected)
+                    elif credit.get("rejected"):
+                        state.step = "CREDIT_REJECTED"
+                        reply = _prompt_for_step(state, collected)
+                    else:
+                        state.step = "CREDIT_REVIEW"
+                        reply = "Sua consulta ficou em análise. Vou manter a contratação aberta e sigo assim que o CRM liberar o resultado."
+
+        elif state.step == "BIRTH_DATE":
+            birth_date = _extract_birth_date(text)
+            if not birth_date:
+                reply = "Preciso da data de nascimento no formato DD/MM/AAAA para concluir a consulta cadastral."
+            else:
+                credit = client.consult_credit(
+                    state.opportunity_id or 0,
+                    birth_date=birth_date,
+                )
                 state.credit_status = str(credit.get("status") or "")
                 state.credit_analysis_id = int(credit.get("analysisId") or 0) or None
                 collected["creditStatus"] = state.credit_status
