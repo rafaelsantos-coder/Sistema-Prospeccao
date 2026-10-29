@@ -15,16 +15,16 @@ class CRMIntegrationError(RuntimeError):
 @dataclass(slots=True)
 class SulnetCRMClient:
     base_url: str
-    integration_key: str
+    bearer_token: str
     timeout: float = 25.0
 
     @classmethod
     def from_settings(cls) -> "SulnetCRMClient":
-        if not settings.sulnet_crm_base_url or not settings.sulnet_ai_integration_key:
+        if not settings.sulnet_crm_base_url or not settings.sulnet_crm_bearer_token:
             raise CRMIntegrationError("Integração com o CRM Sulnet não configurada.")
         return cls(
             base_url=settings.sulnet_crm_base_url.rstrip("/"),
-            integration_key=settings.sulnet_ai_integration_key,
+            bearer_token=settings.sulnet_crm_bearer_token,
         )
 
     def _request(
@@ -42,7 +42,7 @@ class SulnetCRMClient:
                 timeout=timeout or self.timeout,
                 follow_redirects=False,
                 headers={
-                    "X-Integration-Key": self.integration_key,
+                    "Authorization": f"Bearer {self.bearer_token}",
                     "Accept": "application/json",
                     "User-Agent": "Sulnet-Prospecta-Vendedor-IA/1.0",
                 },
