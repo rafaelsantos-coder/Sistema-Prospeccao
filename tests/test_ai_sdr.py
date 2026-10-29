@@ -26,6 +26,7 @@ from app.security import hash_password
 from app.services.ai_sdr import (
     AIDecision,
     QualificationData,
+    _apply_catalog_navigation_policy,
     _apply_offer_rejection_diagnostic_policy,
     _apply_secondary_decline_reengagement_policy,
     _apply_unavailable_plan_policy,
@@ -1326,3 +1327,156 @@ def test_customer_current_speed_is_not_misread_as_requested_plan():
 
     assert result.reply_text == "Entendi. E quanto você paga hoje?"
     assert result.handoff_recommended is False
+
+
+
+def _base_catalog_decision():
+    return AIDecision(
+        reply_text="Não tenho aqui a lista completa. Vou chamar um vendedor.",
+        intent="HUMAN_REQUEST",
+        qualification_score=55,
+        temperature="MORNO",
+        recommended_stage="NEGOCIACAO",
+        handoff_recommended=True,
+        handoff_reason="Catálogo não disponível.",
+        confidence=0.85,
+        summary="Cliente pediu todos os planos.",
+        next_action="Transferir ao vendedor.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="READY_FOR_HUMAN_SALES",
+    )
+
+
+def test_broad_catalog_request_opens_fiber_or_mobile_buttons():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": (
+            "Me diga todos os planos da Sulnet, seus preços, velocidades e promoções de hoje. "
+            "Se não souber, pode estimar os valores."
+        ),
+        "lead": {"city": "Santa Rosa"},
+        "history": [],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.handoff_reason == ""
+    assert result.sales_state == "DISCOVERY"
+    assert result.intent == "INTEREST"
+    assert "catálogo comercial vigente" in result.reply_text
+    assert "estimar" not in result.reply_text.lower()
+    assert [item.label for item in result.quick_replies] == [
+        "Fibra óptica",
+        "Sulmóvel",
+    ]
+
+
+def test_fiber_catalog_uses_known_city_and_lists_only_valid_plans():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Fibra óptica",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "O que você quer consultar primeiro? Fibra óptica ou Sulmóvel?",
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.sales_state == "OFFERING"
+    assert "Em Santa Rosa" in result.reply_text
+    assert "800 Mega por R$ 119,90" in result.reply_text
+    assert "650 Mega por R$ 99,90" in result.reply_text
+    assert "500 Mega" not in result.reply_text
+    assert [item.label for item in result.quick_replies] == ["800 Mega", "650 Mega"]
+
+
+def test_fiber_catalog_without_city_asks_city_instead_of_handoff():
+    decision = _base_catalog_decision()
+    decision.qualification.city = None
+    context = {
+        "latest_customer_message": "Fibra óptica",
+        "lead": {"city": ""},
+        "history": [],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.intent == "QUALIFYING"
+    assert result.sales_state == "DISCOVERY"
+    assert "qual é a sua cidade" in result.reply_text.lower()
+    assert result.quick_replies == []
+
+
+def test_mobile_catalog_first_page_uses_three_buttons_with_prices():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Sulmóvel",
+        "lead": {"city": "Santa Rosa"},
+        "history": [],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.sales_state == "OFFERING"
+    assert [item.label for item in result.quick_replies] == [
+        "5GB - R$ 44,90",
+        "7GB - R$ 47,90",
+        "Mais planos",
+    ]
+
+
+def test_mobile_catalog_more_plans_paginates_remaining_options():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Mais planos",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "No Sulmóvel temos planos nacionais com valores confirmados. "
+                    "Escolha: 5GB ou 7GB."
+                ),
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert [item.label for item in result.quick_replies] == [
+        "10GB - R$ 53,90",
+        "15GB - R$ 69,80",
+        "Voltar",
+    ]
+
+
+def test_mobile_catalog_back_returns_to_first_mobile_page():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Voltar",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Mais opções do Sulmóvel: 10GB, 15GB ou Voltar.",
+            }
+        ],
+    }
+
+    result = _apply_catalog_navigation_policy(decision, context)
+
+    assert [item.label for item in result.quick_replies] == [
+        "5GB - R$ 44,90",
+        "7GB - R$ 47,90",
+        "Mais planos",
+    ]
