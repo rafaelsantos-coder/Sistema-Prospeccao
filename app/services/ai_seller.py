@@ -736,6 +736,51 @@ def _send_text(
     return message
 
 
+def _send_step_message(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    conversation: Conversation,
+    state: AIClosingState,
+    text: str,
+) -> Message:
+    if state.step != "MOBILE_CONTRACT_TYPE":
+        return _send_text(
+            db,
+            agent=agent,
+            conversation=conversation,
+            text=text,
+        )
+
+    from app.services.conversation_engine import register_message
+    from app.services.zapi_instances import service_for_conversation
+
+    phone = (conversation.contact.phone if conversation.contact else "").strip()
+    if not phone:
+        raise CRMIntegrationError("Contato sem telefone para WhatsApp.")
+    zapi = service_for_conversation(db, conversation.id)
+    result = zapi.send_button_list(
+        phone=phone,
+        message=text,
+        buttons=MOBILE_CONTRACT_BUTTONS,
+    )
+    provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
+    zaap_id = str(result.get("zaapId") or "").strip() or None
+    message = register_message(
+        db,
+        conversation,
+        direction="OUTBOUND",
+        message_type="BUTTONS",
+        body=text,
+        sender_user_id=agent.user_id,
+        provider_message_id=provider_id,
+        provider_zaap_id=zaap_id,
+        status="SENT",
+    )
+    db.flush()
+    return message
+
+
 def _record_activity(
     db: Session,
     *,
@@ -819,13 +864,7 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == "EMAIL":
         return "Certo. Qual e-mail você quer deixar no cadastro e receber as comunicações da contratação?"
     if state.step == "MOBILE_CONTRACT_TYPE":
-        return "Para o Sulmóvel, será número novo, portabilidade de um número que você já usa ou M2M?"
-    if state.step == "MOBILE_NEW_ICCID":
-        return "Certo. Me informe o ICCID do chip da nova linha."
-    if state.step == "MOBILE_NEW_NUMBER":
-        return "Agora me informe o número da nova linha."
-    if state.step == "MOBILE_PORT_ICCID":
-        return "Para a portabilidade, me informe o ICCID do chip."
+        return "Como você quer contratar o Sulmóvel?"
     if state.step == "MOBILE_PORT_NUMBER":
         return "Qual é o número que será portado?"
     if state.step == "MOBILE_PORT_TITULAR":
@@ -834,20 +873,6 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         return "Qual é o nome completo do titular da linha que será portada?"
     if state.step == "MOBILE_PORT_DOC":
         return "Qual é o CPF ou CNPJ do titular da linha que será portada?"
-    if state.step == "MOBILE_PORT_DATE":
-        return "Qual data você deseja para a portabilidade? Pode enviar no formato DD/MM/AAAA."
-    if state.step == "MOBILE_M2M_QTY":
-        return "Quantos chips M2M serão contratados?"
-    if state.step == "MOBILE_M2M_ICCIDS":
-        qty = int(_mobile_values(collected).get("m2m_quantidade") or 0)
-        suffix = f" ({qty} ICCIDs)" if qty else ""
-        return f"Envie os ICCIDs dos chips, um por linha{suffix}."
-    if state.step == "MOBILE_DUE_DAY":
-        return "Qual dia de vencimento você prefere para a fatura?"
-    if state.step == "MOBILE_ACTIVATION_FEE":
-        return "Há taxa de ativação nesta contratação? Responda sim ou não."
-    if state.step == "MOBILE_ACTIVATION_VALUE":
-        return "Qual é o valor da taxa de ativação?"
     if state.step == "MOBILE_PAYMENT_METHOD":
         return "Qual forma de pagamento você prefere: boleto ou débito em conta?"
     if state.step == "MOBILE_INVOICE_DELIVERY":
@@ -1026,7 +1051,13 @@ def start_closing_from_sdr(
         LOG.warning("closer_crm_create_deferred conversation=%s error=%s", conversation.id, exc)
 
     prompt = _prompt_for_step(state, collected)
-    _send_text(db, agent=closer, conversation=conversation, text=prompt)
+    _send_step_message(
+        db,
+        agent=closer,
+        conversation=conversation,
+        state=state,
+        text=prompt,
+    )
     _record_activity(
         db,
         conversation=conversation,
@@ -1382,7 +1413,6 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         state.opportunity_id or 0,
                         {
                             "paymentMethod": values["forma_pagamento"],
-                            "dueDay": values["vencimento"],
                             "invoiceDelivery": ", ".join(values.get("envio_fatura") or []),
                         },
                     )
@@ -1458,7 +1488,13 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
         _save_collected(state, collected)
         if reply:
-            _send_text(db, agent=agent, conversation=conversation, text=reply)
+            _send_step_message(
+                db,
+                agent=agent,
+                conversation=conversation,
+                state=state,
+                text=reply,
+            )
         _record_activity(
             db,
             conversation=conversation,
