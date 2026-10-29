@@ -361,10 +361,10 @@ def build_ai_context(
 
 
 def _effective_execution_mode(agent: AIAgentProfile) -> str:
-    if agent.execution_mode == "SHADOW":
-        return "SHADOW"
     if not settings.ai_autonomous_enabled:
         return "SHADOW"
+    if agent.execution_mode == "SHADOW" and agent.slug == "sulia-sdr-digital":
+        return "AUTO"
     return agent.execution_mode
 
 
@@ -400,6 +400,70 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
     return decision
+
+
+def _send_autonomous_reply(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    decision: AIDecision,
+) -> Message | None:
+    conversation = db.get(Conversation, job.conversation_id)
+    if not conversation:
+        raise AIConfigurationError("Conversa do job não existe.")
+    if conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+        return None
+    if decision.intent == "DO_NOT_CONTACT":
+        return None
+
+    contact = conversation.contact
+    phone = (contact.phone if contact else "").strip()
+    if not phone:
+        raise AIConfigurationError("Contato da conversa não possui telefone.")
+
+    from app.services.conversation_engine import register_message
+    from app.services.zapi import ZApiService
+
+    result = ZApiService().send_text(
+        phone=phone,
+        message=decision.reply_text,
+    )
+    provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
+    zaap_id = str(result.get("zaapId") or "").strip() or None
+    message = register_message(
+        db,
+        conversation,
+        direction="OUTBOUND",
+        message_type="TEXT",
+        body=decision.reply_text,
+        sender_user_id=agent.user_id,
+        provider_message_id=provider_id,
+        provider_zaap_id=zaap_id,
+        status="SENT",
+    )
+    db.flush()
+    write_audit(
+        db,
+        user=agent.user,
+        action="AI_SDR_REPLY_SENT",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={
+            "ai_job_id": job.id,
+            "message_id": message.id,
+            "provider_message_id": provider_id,
+            "handoff_recommended": decision.handoff_recommended,
+        },
+    )
+    LOG.info(
+        "ai_reply_sent job=%s conversation=%s message=%s handoff=%s",
+        job.id,
+        conversation.id,
+        message.id,
+        decision.handoff_recommended,
+    )
+    return message
 
 
 def process_ai_job(db: Session, job: AIJob) -> str:
@@ -445,6 +509,27 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "failed"
 
     output = decision.model_dump()
+
+    if effective_mode == "AUTO":
+        try:
+            _send_autonomous_reply(
+                db,
+                agent=agent,
+                job=job,
+                decision=decision,
+            )
+        except Exception as exc:
+            run.status = "FALHOU"
+            run.error = f"Falha no envio automático: {exc}"[:2000]
+            run.finished_at = utcnow()
+            job.error = run.error
+            if int(job.attempts or 0) < 3:
+                job.status = "PENDENTE"
+                job.available_at = utcnow() + timedelta(seconds=30 * int(job.attempts or 1))
+            else:
+                job.status = "FALHOU"
+            return "send_failed"
+
     run.status = "CONCLUIDO"
     run.intent = decision.intent
     run.qualification_score = decision.qualification_score
