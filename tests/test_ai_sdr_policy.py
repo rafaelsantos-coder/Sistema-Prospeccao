@@ -75,7 +75,7 @@ def test_followup_job_is_persistent_and_cancelled_when_context_changes():
             lead = Lead(
                 business_name="Lead Follow-up",
                 contact_name="Cliente",
-                phone="5555988800011",
+                phone="5555988899011",
                 city="Santa Rosa",
                 source="MANUAL",
                 origin_channel="WHATSAPP",
@@ -178,7 +178,7 @@ def test_autonomous_ai_queue_holds_lead_until_handoff(monkeypatch):
             lead = Lead(
                 business_name="Lead IA",
                 contact_name="Cliente",
-                phone="5555988800012",
+                phone="5555988899012",
                 city="Santa Rosa",
                 source="MANUAL",
                 origin_channel="WHATSAPP",
