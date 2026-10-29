@@ -5,6 +5,7 @@ import re
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import SessionLocal
 from app.main import app
 from app.models import (
@@ -299,6 +300,114 @@ def test_shadow_job_stores_decision_without_sending(monkeypatch):
         finally:
             db.close()
 
+
+
+def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
+    decision = AIDecision(
+        reply_text="Claro! Qual é o principal problema que você enfrenta hoje com a internet?",
+        intent="INTEREST",
+        qualification_score=55,
+        temperature="MORNO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.94,
+        summary="Cliente demonstrou interesse.",
+        next_action="Entender a principal dor.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+    )
+    monkeypatch.setattr(settings, "ai_autonomous_enabled", True)
+    monkeypatch.setattr(
+        "app.services.ai_sdr.run_ai_decision",
+        lambda agent, context: decision,
+    )
+    sent = []
+    monkeypatch.setattr(
+        "app.services.zapi.ZApiService.send_text",
+        lambda self, *, phone, message: (
+            sent.append((phone, message))
+            or {"messageId": "AI-AUTO-OUT-1", "zaapId": "AI-AUTO-ZAAP-1"}
+        ),
+    )
+
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            agent, queue, _human = _create_bound_digital_queue(db, "AUTO")
+            from app.models import Lead, LeadQueuePreference
+            lead = Lead(
+                business_name="Cliente IA Automática",
+                contact_name="Cliente",
+                phone="5555988877333",
+                segment="Empresa",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(
+                LeadQueuePreference(
+                    lead_id=lead.id,
+                    queue_id=queue.id,
+                    source="TEST_AI_AUTO",
+                )
+            )
+            db.commit()
+
+            conversation, _message, created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-AUTO-INBOUND-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "Tenho interesse em conhecer os planos."},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            assert created is True
+
+            job = claim_ai_job(db)
+            assert job is not None
+            db.commit()
+            job = db.get(AIJob, job.id)
+            outcome = process_ai_job(db, job)
+            db.commit()
+
+            assert outcome == "completed"
+            assert sent == [(lead.phone, decision.reply_text)]
+            run = db.scalar(select(AIRun).where(AIRun.job_id == job.id))
+            assert run is not None
+            assert run.execution_mode == "AUTO"
+            outbound = db.scalar(
+                select(Message).where(
+                    Message.conversation_id == conversation.id,
+                    Message.provider_message_id == "AI-AUTO-OUT-1",
+                )
+            )
+            assert outbound is not None
+            assert outbound.direction == "OUTBOUND"
+            assert outbound.sender_user_id == agent.user_id
+            state = db.scalar(
+                select(AIConversationState).where(
+                    AIConversationState.conversation_id == conversation.id
+                )
+            )
+            assert state is not None
+            assert state.state == "AI_ACTIVE"
+        finally:
+            db.close()
 
 def test_seed_binds_sulia_to_all_active_digital_queues():
     with TestClient(app):
