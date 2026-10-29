@@ -22,7 +22,7 @@ from app.constants import (
     TEMPERATURES,
 )
 from app.security import csrf_token, user_to_session_context
-from app.timeutils import utc_to_local
+from app.timeutils import is_past, utc_to_local
 
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
@@ -69,6 +69,7 @@ templates.env.filters["brl"] = brl
 templates.env.filters["datetime_br"] = datetime_br
 templates.env.filters["date_br"] = date_br
 templates.env.filters["phone_br"] = phone_br
+templates.env.filters["is_past"] = is_past
 
 
 def flash(request: Request, message: str, category: str = "success") -> None:
