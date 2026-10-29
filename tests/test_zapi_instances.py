@@ -447,3 +447,50 @@ def test_queue_without_instance_never_falls_back_to_principal():
                 service_for_queue(db, queue.id)
         finally:
             db.close()
+
+
+
+def test_configure_webhooks_explicitly_sets_received_callback(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        def json(self):
+            return {"value": True}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def put(self, url, headers=None, json=None):
+            calls.append((url, headers, json))
+            return FakeResponse()
+
+    monkeypatch.setattr("app.services.zapi.httpx.Client", FakeClient)
+
+    service = ZApiService(
+        base_url="https://api.z-api.io",
+        instance_id="instance-received-hook",
+        instance_token="token-received-hook",
+        client_token="client-received-hook",
+    )
+    result = service.configure_webhooks(
+        "https://app.exemplo.com/webhooks/zapi/instance/abc123"
+    )
+
+    assert [call[0].rsplit("/", 1)[-1] for call in calls] == [
+        "update-every-webhooks",
+        "update-webhook-received",
+    ]
+    assert calls[0][2] == {
+        "value": "https://app.exemplo.com/webhooks/zapi/instance/abc123",
+        "notifySentByMe": True,
+    }
+    assert calls[1][2] == {
+        "value": "https://app.exemplo.com/webhooks/zapi/instance/abc123"
+    }
+    assert result["all"] == {"value": True}
+    assert result["received"] == {"value": True}
