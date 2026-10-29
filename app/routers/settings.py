@@ -15,7 +15,12 @@ from app.security import get_current_user, hash_password, require_roles, validat
 from app.services.audit import write_audit
 from app.services.legacy_adapter import legacy_modules_available, rate_status
 from app.services.queue_routing import queue_summary
-from app.services.zapi import ZApiError, ZApiService
+from app.services.zapi import ZApiError
+from app.services.zapi_instances import (
+    list_zapi_instances,
+    queue_instance,
+    service_for_instance,
+)
 from app.web import flash, render
 
 
@@ -106,26 +111,37 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             .limit(50)
         )
     )
+    zapi_instances = list_zapi_instances(db, active_only=False)
+    active_zapi_instances = [item for item in zapi_instances if item.active]
+    integrations = dict(settings.integrations)
+    integrations["zapi"] = bool(active_zapi_instances)
     zapi_status = {
-        "configured": settings.integrations["zapi"],
+        "configured": bool(active_zapi_instances),
         "connected": False,
         "smartphone_connected": False,
         "error": None,
-        "webhook_ready": bool(settings.zapi_webhook_url),
+        "webhook_ready": bool(settings.app_public_url and active_zapi_instances),
     }
-    if settings.integrations["zapi"]:
+    if active_zapi_instances:
         try:
-            zapi_status.update(ZApiService().status())
+            zapi_status.update(service_for_instance(active_zapi_instances[0]).status())
         except ZApiError as exc:
             zapi_status["error"] = str(exc)
+    queue_instances = {
+        item.id: queue_instance(db, item.id)
+        for item in queues
+    }
     return render(
         request,
         "settings.html",
         user=user,
         active_nav="settings",
         page_title="Configurações",
-        integrations=settings.integrations,
+        integrations=integrations,
         zapi_status=zapi_status,
+        zapi_instances=zapi_instances,
+        active_zapi_instances=active_zapi_instances,
+        queue_instances=queue_instances,
         legacy_available=legacy_modules_available(),
         rate_status=rate_status(),
         branches=branches,
