@@ -473,6 +473,7 @@ def test_configure_webhooks_explicitly_sets_received_callback(monkeypatch):
                 def json(self):
                     return {
                         "receivedCallbackUrl": "https://app.exemplo.com/webhooks/zapi/instance/abc123",
+                        "receivedAndDeliveryCallbackUrl": "https://app.exemplo.com/webhooks/zapi/instance/abc123",
                         "receiveCallbackSentByMe": True,
                         "connected": True,
                     }

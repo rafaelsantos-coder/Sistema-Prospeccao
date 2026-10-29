@@ -395,9 +395,14 @@ class ZApiService:
 
         state = self.webhook_state()
         configured_url = state.get("received_callback_url") or ""
+        combined_url = state.get("received_and_delivery_callback_url") or ""
         if configured_url.rstrip("/") != clean_url.rstrip("/"):
             raise ZApiError(
                 "Webhook de mensagens recebidas nao confirmou a URL configurada."
+            )
+        if combined_url.rstrip("/") != clean_url.rstrip("/"):
+            raise ZApiError(
+                "Webhook combinado de recebimento/envio nao confirmou a URL configurada."
             )
 
         return {
