@@ -22,7 +22,13 @@ from app.models import (
     ZApiInstance,
 )
 from app.security import hash_password
-from app.services.ai_sdr import AIDecision, QualificationData, claim_ai_job, process_ai_job
+from app.services.ai_sdr import (
+    AIDecision,
+    QualificationData,
+    _apply_secondary_decline_reengagement_policy,
+    claim_ai_job,
+    process_ai_job,
+)
 from app.services.conversation_engine import store_received_payload
 from app.services.queue_routing import queue_for_conversation
 from app.services.seed import seed_database
@@ -800,3 +806,106 @@ def test_worker_recovers_recent_inbound_that_missed_ai_job():
             assert queue_for_conversation(db, conversation.id).id == ai_queue.id
         finally:
             db.close()
+
+
+
+def test_secondary_decline_returns_to_main_offer():
+    decision = AIDecision(
+        reply_text=(
+            "Tudo bem! Não vou verificar como funciona o acesso. "
+            "Se quiser saber mais sobre o Sulnet Play, é só me chamar."
+        ),
+        intent="INFORMATION",
+        qualification_score=65,
+        temperature="MORNO",
+        recommended_stage="PROPOSTA",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.95,
+        summary="Cliente recusou apenas informação adicional do Sulnet Play.",
+        next_action="Aguardar cliente.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="WAITING_CUSTOMER",
+    )
+    context = {
+        "latest_customer_message": "Não, obrigado",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "type": "TEXT",
+                "body": (
+                    "Legal! Em Santa Rosa temos o plano de fibra óptica de "
+                    "800 Mega por R$ 119,90 mensais."
+                ),
+            },
+            {
+                "direction": "INBOUND",
+                "type": "TEXT",
+                "body": "O que tem no Sulnet Play?",
+            },
+            {
+                "direction": "OUTBOUND",
+                "type": "BUTTONS",
+                "body": (
+                    "Não tenho detalhes aprovados sobre o conteúdo do Sulnet Play. "
+                    "Quer que eu também confira como funciona o acesso?"
+                ),
+            },
+            {
+                "direction": "INBOUND",
+                "type": "TEXT",
+                "body": "Não, obrigado",
+            },
+        ],
+    }
+
+    result = _apply_secondary_decline_reengagement_policy(decision, context)
+
+    assert result.reply_text == (
+        "Sem problema! Podemos dar andamento à contratação do plano de fibra óptica "
+        "de 800 Mega por R$ 119,90 mensais?"
+    )
+    assert [item.label for item in result.quick_replies] == [
+        "Quero contratar",
+        "Tenho outra dúvida",
+    ]
+    assert result.intent == "INTEREST"
+    assert result.sales_state == "OFFERING"
+    assert result.handoff_recommended is False
+
+
+def test_decline_to_direct_contract_question_is_not_reinterpreted():
+    decision = AIDecision(
+        reply_text="Tudo bem. Posso ajudar com outra informação.",
+        intent="NOT_INTERESTED",
+        qualification_score=40,
+        temperature="FRIO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.9,
+        summary="Cliente recusou a contratação.",
+        next_action="Tratar objeção ou programar follow-up.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="WAITING_CUSTOMER",
+    )
+    context = {
+        "latest_customer_message": "Não, obrigado",
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Quer aproveitar e contratar esse plano agora?",
+            },
+            {
+                "direction": "INBOUND",
+                "body": "Não, obrigado",
+            },
+        ],
+    }
+
+    result = _apply_secondary_decline_reengagement_policy(decision, context)
+    assert result.reply_text == "Tudo bem. Posso ajudar com outra informação."
+    assert result.intent == "NOT_INTERESTED"
