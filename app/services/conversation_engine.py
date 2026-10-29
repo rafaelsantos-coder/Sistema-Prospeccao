@@ -637,6 +637,19 @@ def register_message(
     return message
 
 
+def payload_from_me(payload: dict[str, Any]) -> bool:
+    value = payload.get("fromMe")
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "sim", "on"}
+    return False
+
+
 def store_received_payload(
     db: Session,
     payload: dict[str, Any],
@@ -682,7 +695,7 @@ def store_received_payload(
         zapi_instance_id=zapi_instance_id,
     )
 
-    from_me = bool(payload.get("fromMe"))
+    from_me = payload_from_me(payload)
     direction = "OUTBOUND" if from_me else "INBOUND"
     message = register_message(
         db,
