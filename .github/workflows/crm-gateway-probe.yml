@@ -17,8 +17,24 @@ jobs:
           BASE: https://oil-burton-americas-largely.trycloudflare.com
         run: |
           set -u
-          for path in /health /api/capture/context /api/capture/config /api/capture/login; do
-            echo "===== $path ====="
-            curl -sS -i --max-time 20 "$BASE$path" || true
-            echo
-          done
+          echo "===== /health ====="
+          curl -sS -i --max-time 20 "$BASE/health" || true
+          echo
+
+          echo "===== POST /api/capture/login empty ====="
+          curl -sS -i --max-time 20 \
+            -X POST "$BASE/api/capture/login" \
+            -H 'Content-Type: application/json' \
+            --data '{}' || true
+          echo
+
+          echo "===== POST /api/capture/login username only ====="
+          curl -sS -i --max-time 20 \
+            -X POST "$BASE/api/capture/login" \
+            -H 'Content-Type: application/json' \
+            --data '{"username":"Vendedor IA"}' || true
+          echo
+
+          echo "===== /api/capture/context no token ====="
+          curl -sS -i --max-time 20 "$BASE/api/capture/context" || true
+          echo
