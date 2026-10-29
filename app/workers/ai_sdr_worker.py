@@ -44,12 +44,6 @@ def _recover_stale_jobs() -> int:
             job.error = "Job recuperado após timeout do worker."
             recovered += 1
         db.commit()
-        if states:
-            LOG.info(
-                "closer_crm_recovery_scan candidates=%s recovered=%s",
-                len(states),
-                recovered,
-            )
     finally:
         db.close()
     return recovered
@@ -199,6 +193,12 @@ def _recover_closer_capture_patch_failures() -> int:
             recovered += 1
 
         db.commit()
+        if states:
+            LOG.info(
+                "closer_crm_recovery_scan candidates=%s recovered=%s",
+                len(states),
+                recovered,
+            )
     finally:
         db.close()
     return recovered
