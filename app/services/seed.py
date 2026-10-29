@@ -155,6 +155,81 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         db.add(ai_user)
         db.flush()
 
+    seller_user = db.scalar(select(User).where(User.email == "sulia.vendedor@system.local"))
+    if not seller_user:
+        seller_user = User(
+            name="Vendedor IA Sulnet",
+            email="sulia.vendedor@system.local",
+            password_hash=hash_password(secrets.token_urlsafe(48)),
+            role="CONSULTOR",
+            team="DIGITAL",
+            branch_id=None,
+            active=settings.ai_seller_enabled,
+            must_change_password=False,
+        )
+        db.add(seller_user)
+        db.flush()
+
+    seller_agent = db.scalar(
+        select(AIAgentProfile).where(AIAgentProfile.user_id == seller_user.id)
+    )
+    if not seller_agent:
+        seller_agent = AIAgentProfile(
+            user_id=seller_user.id,
+            name="SulIA Vendedor de Fechamento",
+            slug="sulia-vendedor-fechamento",
+            role_type="CLOSER",
+            execution_mode=(
+                "AUTO"
+                if settings.ai_seller_enabled and settings.ai_autonomous_enabled
+                else "SHADOW"
+            ),
+            model="gpt-6-luna",
+            reasoning_effort="low",
+            active=settings.ai_seller_enabled,
+            public_name="Sulnet",
+            qualification_handoff_score=100,
+            max_history_messages=80,
+            max_knowledge_chars=20000,
+            business_goal=(
+                "Receber o aceite comercial do SDR IA e concluir cadastro, crédito, "
+                "endereço, plano, faturamento, contrato e assinatura."
+            ),
+            system_prompt=(
+                "Você é o Vendedor IA da Sulnet, especializado exclusivamente em fechamento. "
+                "Receba o histórico completo do SDR IA e nunca repita perguntas já respondidas. "
+                "Colete somente o que faltar: nome, telefone, CPF, CEP, número/complemento, "
+                "confirmação do plano, e-mail, forma de faturamento/pagamento e vencimento. "
+                "Toda aprovação de crédito, endereço, plano, pedido e contrato deve vir do CRM real. "
+                "Nunca invente aprovação, preço, cobertura, desconto, protocolo, link ou assinatura. "
+                "No funil SDR IA não peça caixa NAP/ANATEL, coordenadas, técnico, data/hora de instalação, "
+                "metragem, selfie ou foto de documento. "
+                "Venda concluída somente após confirmação do CRM e contrato assinado quando aplicável. "
+                "Prazo de ativação de até 48 horas só pode ser comunicado após a contratação validada. "
+                "Exceções, falhas persistentes e solicitações explícitas de humano devem ser escaladas "
+                "com histórico integral, sem fazer o cliente repetir os dados."
+            ),
+            created_by_id=admin.id,
+        )
+        db.add(seller_agent)
+        db.flush()
+
+    # As flags de ambiente são a trava operacional do closer.
+    seller_user.name = "Vendedor IA Sulnet"
+    seller_user.role = "CONSULTOR"
+    seller_user.team = "DIGITAL"
+    seller_user.active = settings.ai_seller_enabled
+    seller_user.must_change_password = False
+    seller_agent.role_type = "CLOSER"
+    seller_agent.active = settings.ai_seller_enabled
+    seller_agent.execution_mode = (
+        "AUTO"
+        if settings.ai_seller_enabled and settings.ai_autonomous_enabled
+        else "SHADOW"
+    )
+    seller_agent.max_history_messages = max(int(seller_agent.max_history_messages or 40), 80)
+    seller_agent.max_knowledge_chars = max(int(seller_agent.max_knowledge_chars or 12000), 20000)
+
     ai_agent = db.scalar(
         select(AIAgentProfile).where(AIAgentProfile.user_id == ai_user.id)
     )
@@ -188,7 +263,8 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
     ai_agent.business_goal = (
         "Gerar vendas de internet: diagnosticar, ofertar do maior plano elegível para o menor, "
         "tratar objeções, negociar até 3 meses gratuitos em FTTH com fidelidade, manter follow-up "
-        "contínuo e transferir para vendedor da mesma fila quando houver intenção clara de contratação."
+        "contínuo e transferir para o Vendedor IA quando houver intenção clara de contratação; "
+        "pedidos explícitos de atendimento humano continuam sendo encaminhados para uma pessoa."
     )
     ai_agent.qualification_handoff_score = 80
     ai_agent.max_history_messages = max(int(ai_agent.max_history_messages or 24), 40)
