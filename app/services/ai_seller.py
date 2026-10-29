@@ -1903,30 +1903,33 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             )
             return "retry"
 
-        # Guarda a etapa real antes do escalonamento técnico. A recuperação usa
-        # este marcador e nunca tenta adivinhar NAME/CPF/BILLING.
-        collected["_resume_step"] = state.step
-        _save_collected(state, collected)
-        technical_reason = (
-            f"Falha repetida na integração CRM: {exc}"
-            if isinstance(exc, CRMIntegrationError)
-            else f"Falha repetida no envio WhatsApp: {exc}"
+        # Depois das tentativas rápidas, mantém o fechamento com a IA e a etapa
+        # exata salva. Falha técnica não deve jogar o cliente para outro fluxo.
+        if not collected.get("_technical_notice_sent"):
+            notice = (
+                "Tive uma instabilidade momentânea no sistema, mas sua contratação "
+                "continua salva exatamente de onde paramos. Vou seguir por aqui."
+            )
+            try:
+                _send_text(db, agent=agent, conversation=conversation, text=notice)
+                collected["_technical_notice_sent"] = True
+                _save_collected(state, collected)
+            except Exception:
+                LOG.exception("seller_technical_notice_failed conversation=%s", conversation.id)
+
+        run.reply_text = ""
+        job.status = "PENDENTE"
+        job.attempts = 0
+        job.locked_at = None
+        job.available_at = utcnow() + timedelta(minutes=5)
+        LOG.warning(
+            "seller_retry_later conversation=%s job=%s step=%s error=%s",
+            conversation.id,
+            job.id,
+            state.step,
+            str(exc)[:300],
         )
-        _handoff_to_human(
-            db, state=state, conversation=conversation, agent=agent,
-            reason=technical_reason,
-        )
-        reply = (
-            "Tive uma indisponibilidade técnica ao registrar esta etapa. "
-            "Seu histórico ficou salvo para ninguém precisar começar novamente."
-        )
-        try:
-            _send_text(db, agent=agent, conversation=conversation, text=reply)
-        except Exception:
-            LOG.exception("seller_error_reply_failed conversation=%s", conversation.id)
-        run.reply_text = reply
-        job.status = "FALHOU"
-        return "handoff"
+        return "retry_later"
     except Exception as exc:
         LOG.exception("seller_job_failed job=%s", job.id)
         state.last_error = str(exc)[:1200]
