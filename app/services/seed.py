@@ -17,6 +17,7 @@ from app.models import (
     Branch,
     Campaign,
     Lead,
+    LeadQueuePreference,
     ServiceQueue,
     Target,
     User,
@@ -26,6 +27,36 @@ from app.services.followups import initial_next_action
 from app.services.scoring import calculate_sulnet_score
 from app.services.zapi_instances import seed_default_zapi_instance
 from app.timeutils import utcnow
+
+
+def _release_unclaimed_queue_prospecting_leads(db: Session) -> int:
+    activity_exists = (
+        select(Activity.id)
+        .where(Activity.lead_id == Lead.id)
+        .exists()
+    )
+    leads = list(
+        db.scalars(
+            select(Lead)
+            .join(
+                LeadQueuePreference,
+                LeadQueuePreference.lead_id == Lead.id,
+            )
+            .where(
+                LeadQueuePreference.source == "PROSPECTING",
+                Lead.source == "APIFY",
+                Lead.stage == "NOVO",
+                Lead.assigned_user_id.is_not(None),
+                Lead.created_by_id == Lead.assigned_user_id,
+                ~activity_exists,
+            )
+        )
+    )
+    for lead in leads:
+        lead.assigned_user_id = None
+    if leads:
+        db.flush()
+    return len(leads)
 
 
 BRANCHES = [
@@ -175,6 +206,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         )
 
     seed_default_zapi_instance(db, created_by_id=admin.id)
+    _release_unclaimed_queue_prospecting_leads(db)
 
     for team, metric, goal in DEFAULT_TARGETS:
         exists = db.scalar(

@@ -1410,6 +1410,9 @@ button, a { -webkit-tap-highlight-color: transparent; }
   gap: 6px;
   white-space: nowrap;
 }
+.lead-row-actions form {
+  margin: 0;
+}
 .mini-button.transfer {
   border-color: rgba(243,111,33,.24);
   color: #c95d1c;

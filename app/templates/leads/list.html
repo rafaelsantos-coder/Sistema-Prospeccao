@@ -65,7 +65,19 @@
           <td>
             <span class="source-badge {% if lead.is_paid_traffic %}paid{% endif %}">{{ constants.sources.get(lead.source, lead.source) }}</span>
           </td>
-          <td><strong class="subtle-strong">{{ constants.teams.get(lead.team, lead.team) }}</strong><span class="table-subline">{{ lead.assigned_user.name if lead.assigned_user else 'Sem responsável' }}</span></td>
+          {% set lead_queue = lead_queues.get(lead.id) %}
+          <td>
+            <strong class="subtle-strong">{{ lead_queue.name if lead_queue else constants.teams.get(lead.team, lead.team) }}</strong>
+            <span class="table-subline">
+              {% if lead.assigned_user %}
+                {{ lead.assigned_user.name }}
+              {% elif lead_queue %}
+                Disponível para assumir
+              {% else %}
+                Sem responsável
+              {% endif %}
+            </span>
+          </td>
           <td><span class="stage-badge stage-{{ lead.stage|lower }}">{{ constants.stages.get(lead.stage, lead.stage) }}</span></td>
           <td>
             <div class="score-cell"><strong>{{ '%.1f'|format(lead.score) }}</strong><span class="temperature temperature-{{ lead.temperature|lower }}">{{ constants.temperatures.get(lead.temperature, lead.temperature) }}</span></div>
@@ -73,6 +85,13 @@
           <td><strong class="subtle-strong">{{ lead.next_action_at|datetime_br }}</strong>{% if lead.priority == 'ALTA' %}<span class="table-subline text-danger">Prioridade alta</span>{% endif %}</td>
           <td>
             <div class="lead-row-actions">
+              {% if current_user.role == 'CONSULTOR' and not lead.assigned_user_id and lead_queue %}
+              <form action="/leads/{{ lead.id }}/claim" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="return_to" value="{{ current_list_url }}">
+                <button type="submit" class="mini-button success">Assumir</button>
+              </form>
+              {% endif %}
               {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
               <button
                 type="button"

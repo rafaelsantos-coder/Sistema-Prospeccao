@@ -122,6 +122,21 @@ Posso te explicar rapidamente as opções disponíveis?</textarea></label>
       {% if lead.notes %}<div class="notes-box"><strong>Observações</strong><p>{{ lead.notes }}</p></div>{% endif %}
     </article>
 
+    {% if current_user.role == 'CONSULTOR' and not lead.assigned_user_id and preferred_queue %}
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">FILA</span><h3>Oportunidade disponível</h3></div></div>
+      <div class="info-box compact">
+        <strong>{{ preferred_queue.name }}</strong>
+        <p>Esta lead está disponível para os vendedores desta fila. Ao assumir, você passa a ser o responsável individual.</p>
+      </div>
+      <form action="/leads/{{ lead.id }}/claim" method="post" class="top-space">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="/leads/{{ lead.id }}">
+        <button class="button button-primary full-width" type="submit">Assumir esta lead</button>
+      </form>
+    </article>
+    {% endif %}
+
     {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
     <article class="panel">
       <div class="panel-header"><div><span class="eyebrow">DISTRIBUIÇÃO</span><h3>Responsável</h3></div></div>
