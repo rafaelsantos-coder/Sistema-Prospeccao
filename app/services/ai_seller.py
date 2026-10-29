@@ -61,6 +61,7 @@ def active_closer(db: Session) -> AIAgentProfile | None:
         select(AIAgentProfile).where(
             AIAgentProfile.role_type == "CLOSER",
             AIAgentProfile.active.is_(True),
+            AIAgentProfile.execution_mode == "AUTO",
         ).order_by(AIAgentProfile.id.asc())
     )
 
@@ -596,7 +597,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     db.add(run)
     db.flush()
 
-    if not seller_operational():
+    if not seller_operational() or agent.execution_mode != "AUTO":
         _finish_run(
             db, run=run, job=job, state=state, reply="",
             output={"reason": "seller_not_operational"}, status="FALHOU",
@@ -926,7 +927,7 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
             continue
         conversation = db.get(Conversation, state.conversation_id)
         agent = db.get(AIAgentProfile, state.agent_id)
-        if not conversation or not agent or not agent.active:
+        if not conversation or not agent or not agent.active or agent.execution_mode != "AUTO":
             continue
         try:
             status = client.get_status(state.opportunity_id)
