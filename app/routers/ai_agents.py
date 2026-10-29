@@ -68,6 +68,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         db.scalars(
             select(AIAgentProfile)
             .options(selectinload(AIAgentProfile.user))
+            .where(AIAgentProfile.role_type == "SDR")
             .order_by(AIAgentProfile.id)
         )
     )
@@ -292,7 +293,7 @@ def create_knowledge(
     )
     db.commit()
     flash(request, "Conhecimento adicionado à base do SulIA.")
-    return RedirectResponse("/ai", status_code=303)
+    return RedirectResponse("/ai/seller" if agent.role_type == "CLOSER" else "/ai", status_code=303)
 
 
 @router.post("/knowledge/{item_id}/toggle")
@@ -343,6 +344,9 @@ def bind_queue(
     if not queue or not queue.active:
         flash(request, "Fila inválida ou inativa.", "warning")
         return RedirectResponse("/ai", status_code=303)
+    if agent.role_type != "SDR":
+        flash(request, "O Vendedor IA recebe handoffs do SDR e não deve ser ligado como SDR a uma fila.", "warning")
+        return RedirectResponse("/ai/seller", status_code=303)
     if mode not in HANDLING_MODES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
