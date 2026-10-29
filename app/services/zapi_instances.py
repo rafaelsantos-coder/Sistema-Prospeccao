@@ -47,6 +47,29 @@ def service_for_instance(instance: ZApiInstance) -> ZApiService:
     )
 
 
+def format_device_phone(phone: str | None) -> str:
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if digits.startswith("55") and len(digits) in {12, 13}:
+        ddd = digits[2:4]
+        local = digits[4:]
+        if len(local) == 9:
+            return f"+55 ({ddd}) {local[:5]}-{local[5:]}"
+        if len(local) == 8:
+            return f"+55 ({ddd}) {local[:4]}-{local[4:]}"
+    return f"+{digits}" if digits else ""
+
+
+def refresh_instance_device_info(instance: ZApiInstance) -> dict:
+    info = service_for_instance(instance).device()
+    raw_phone = str(info.get("phone") or "").strip()
+    formatted_phone = format_device_phone(raw_phone)
+    if formatted_phone:
+        instance.phone_label = formatted_phone
+    info["phone_raw"] = raw_phone
+    info["phone_label"] = formatted_phone
+    return info
+
+
 def queue_instance(db: Session, queue_id: int | None) -> ZApiInstance | None:
     if not queue_id:
         return None

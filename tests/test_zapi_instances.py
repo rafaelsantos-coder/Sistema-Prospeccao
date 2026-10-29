@@ -16,6 +16,7 @@ from app.models import (
     ServiceQueue,
     ServiceQueueZApiInstance,
     User,
+    ZApiInstance,
 )
 from app.services.secret_store import decrypt_secret
 from app.services.zapi import ZApiNotConfigured, ZApiService
@@ -67,6 +68,126 @@ def _instance(db, suffix: str):
     db.commit()
     db.refresh(item)
     return item
+
+
+def test_connection_test_uses_exact_selected_instance(monkeypatch):
+    sent: list[tuple[str, str, str]] = []
+
+    def fake_status(self):
+        return {
+            "configured": True,
+            "connected": True,
+            "smartphone_connected": True,
+            "error": None,
+        }
+
+    def fake_device(self):
+        suffix = "2002" if self.instance_id.endswith("SECOND") else "1001"
+        return {
+            "phone": f"55559999{suffix}",
+            "name": f"WhatsApp {self.instance_id}",
+            "img_url": "",
+            "about": "",
+            "is_business": True,
+            "original_device": "android",
+            "session_name": "Z-API",
+            "device_model": "Test",
+        }
+
+    def fake_send(self, *, phone, message):
+        sent.append((self.instance_id, phone, message))
+        return {"messageId": "TEST-SELECTED-INSTANCE"}
+
+    monkeypatch.setattr(ZApiService, "status", fake_status)
+    monkeypatch.setattr(ZApiService, "device", fake_device)
+    monkeypatch.setattr(ZApiService, "send_text", fake_send)
+
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            first = _instance(db, "FIRST")
+            second = _instance(db, "SECOND")
+            second_id = second.id
+            second_instance_id = second.instance_id
+        finally:
+            db.close()
+
+        response = client.post(
+            "/settings/zapi/test",
+            data={
+                "csrf_token": token,
+                "zapi_instance_id": str(second_id),
+                "phone": "5555999999999",
+                "message": "Teste da segunda instância",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert sent == [
+            (
+                second_instance_id,
+                "5555999999999",
+                "Teste da segunda instância",
+            )
+        ]
+
+        db = SessionLocal()
+        try:
+            refreshed = db.get(ZApiInstance, second_id)
+            assert refreshed is not None
+            assert refreshed.phone_label == "+55 (55) 9999-2002"
+        finally:
+            db.close()
+
+
+def test_whatsapp_settings_detects_instances_on_same_connected_number(monkeypatch):
+    def fake_status(self):
+        return {
+            "configured": True,
+            "connected": True,
+            "smartphone_connected": True,
+            "error": None,
+        }
+
+    def fake_device(self):
+        return {
+            "phone": "5555999993333",
+            "name": "Sulnet WhatsApp",
+            "img_url": "",
+            "about": "",
+            "is_business": True,
+            "original_device": "android",
+            "session_name": "Z-API",
+            "device_model": "Test",
+        }
+
+    monkeypatch.setattr(ZApiService, "status", fake_status)
+    monkeypatch.setattr(ZApiService, "device", fake_device)
+
+    with TestClient(app) as client:
+        _login_admin(client)
+        db = SessionLocal()
+        try:
+            first = _instance(db, "DUPLICATE-A")
+            second = _instance(db, "DUPLICATE-B")
+            first_id = first.id
+            second_id = second.id
+        finally:
+            db.close()
+
+        page = client.get("/settings/whatsapp")
+        assert page.status_code == 200
+        assert "há instâncias conectadas ao mesmo número" in page.text
+        assert "Mesmo número em outra instância" in page.text
+        assert "+55 (55) 99999-3333" in page.text
+
+        db = SessionLocal()
+        try:
+            assert db.get(ZApiInstance, first_id).phone_label == "+55 (55) 99999-3333"
+            assert db.get(ZApiInstance, second_id).phone_label == "+55 (55) 99999-3333"
+        finally:
+            db.close()
 
 
 def test_zapi_instance_secrets_are_encrypted_at_rest():

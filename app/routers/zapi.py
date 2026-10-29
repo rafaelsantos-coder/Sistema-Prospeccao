@@ -40,6 +40,7 @@ from app.services.zapi_instances import (
     instance_webhook_url,
     list_zapi_instances,
     queue_instance,
+    refresh_instance_device_info,
     service_for_instance,
     service_for_queue,
 )
@@ -380,9 +381,12 @@ def create_zapi_instance_route(
         client_token=client_token,
         created_by_id=user.id,
     )
+    device_info: dict[str, Any] = {}
     try:
         service = service_for_instance(item)
         status_result = service.status()
+        if status_result.get("connected"):
+            device_info = refresh_instance_device_info(item)
         webhook_url = instance_webhook_url(item)
         if webhook_url:
             service.configure_webhooks(webhook_url)
@@ -400,6 +404,7 @@ def create_zapi_instance_route(
             "name": item.name,
             "instance_id": item.instance_id,
             "phone_label": item.phone_label,
+            "device_name": device_info.get("name"),
             "connected": bool(status_result.get("connected")),
         },
     )
@@ -451,12 +456,32 @@ def test_zapi_message(
     validate_csrf(request, csrf_token)
     require_roles(user, "ADMIN", "GESTOR")
     instance = get_zapi_instance(db, zapi_instance_id)
-    service = service_for_instance(instance) if instance else ZApiService()
+    if not instance or not instance.active:
+        flash(
+            request,
+            "A instância selecionada não existe ou está inativa. Nenhuma mensagem foi enviada.",
+            "error",
+        )
+        return RedirectResponse("/settings/whatsapp", status_code=303)
+
+    service = service_for_instance(instance)
+    device_info: dict[str, Any] = {}
     try:
+        device_info = refresh_instance_device_info(instance)
         result = service.send_text(phone=phone, message=message)
     except ZApiError as exc:
         flash(request, str(exc), "error")
         return RedirectResponse("/settings/whatsapp", status_code=303)
+
+    duplicate = None
+    if instance.phone_label:
+        duplicate = db.scalar(
+            select(ZApiInstance).where(
+                ZApiInstance.id != instance.id,
+                ZApiInstance.active.is_(True),
+                ZApiInstance.phone_label == instance.phone_label,
+            )
+        )
     provider_id = _provider_message_id(result)
     write_audit(
         db,
@@ -467,7 +492,25 @@ def test_zapi_message(
         payload={"provider_message_id": provider_id, "zapi_instance_id": instance.id if instance else None},
     )
     db.commit()
-    flash(request, "Mensagem de teste enviada pela Z-API.")
+    source_number = (
+        instance.phone_label
+        or str(device_info.get("phone") or "")
+        or "número não identificado"
+    )
+    if duplicate:
+        flash(
+            request,
+            (
+                f"Teste enviado pela instância {instance.name} · {source_number}. "
+                f"Atenção: a instância {duplicate.name} está conectada ao mesmo número."
+            ),
+            "warning",
+        )
+    else:
+        flash(
+            request,
+            f"Teste enviado pela instância {instance.name} · {source_number}.",
+        )
     return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
