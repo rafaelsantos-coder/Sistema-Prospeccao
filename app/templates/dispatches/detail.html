@@ -52,15 +52,39 @@
 
 <div class="settings-grid top-space">
   <article class="panel panel-span-6">
-    <div class="panel-header"><div><span class="eyebrow">CONFIGURAÇÃO</span><h3>Origem do disparo</h3></div></div>
+    <div class="panel-header">
+      <div><span class="eyebrow">CONFIGURAÇÃO</span><h3>Editar disparo</h3></div>
+      {% if dispatch.status in ['RASCUNHO','PAUSADO'] %}<span class="dispatch-status status-{{ dispatch.status|lower }}">{{ dispatch.status|replace('_',' ') }}</span>{% endif %}
+    </div>
     <dl class="detail-list">
       <div><dt>Campanha</dt><dd>{{ dispatch.campaign.name }}</dd></div>
       <div><dt>Fila de retorno</dt><dd>{{ dispatch.queue.name }} · {{ dispatch.queue.code }}</dd></div>
       <div><dt>Estratégia da fila</dt><dd>{{ dispatch.queue.routing_strategy|replace('_',' ') }}</dd></div>
-      <div><dt>Intervalo</dt><dd>{{ dispatch.interval_seconds }} segundos</dd></div>
-      <div><dt>Limite diário</dt><dd>{{ dispatch.daily_limit }}</dd></div>
       <div><dt>Criado por</dt><dd>{{ dispatch.created_by.name if dispatch.created_by else 'Sistema' }}</dd></div>
     </dl>
+    {% if dispatch.status in ['RASCUNHO','PAUSADO'] %}
+    <form action="/dispatches/{{ dispatch.id }}/configuration" method="post" class="stack-form dispatch-config-form top-space">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field">
+          <span>Intervalo entre envios</span>
+          <input type="number" name="interval_seconds" min="5" max="3600" step="1" value="{{ dispatch.interval_seconds }}" required>
+          <small>Em segundos. Mínimo de 5s e máximo de 3600s.</small>
+        </label>
+        <label class="field">
+          <span>Limite diário</span>
+          <input type="number" name="daily_limit" min="1" max="5000" step="1" value="{{ dispatch.daily_limit }}" required>
+          <small>Quantidade máxima de mensagens enviadas por dia neste disparo.</small>
+        </label>
+      </div>
+      <button class="button button-primary" type="submit">Salvar configuração</button>
+    </form>
+    {% else %}
+    <div class="info-box top-space">
+      <strong>Configuração bloqueada durante o envio</strong>
+      <p>Pause o disparo para alterar o intervalo ou o limite diário.</p>
+    </div>
+    {% endif %}
   </article>
 
   <article class="panel panel-span-6">
@@ -81,59 +105,22 @@
     <div><span class="eyebrow">DESTINATÁRIOS</span><h3>Sequência do disparo</h3></div>
     <span class="panel-note">Exibindo até 500 registros.</span>
   </div>
-  {% if dispatch.status == 'RASCUNHO' %}
-  <div class="info-box dispatch-review-info">
-    <strong>Revisão antes do envio</strong>
-    <p>Você pode corrigir nome, telefone e mensagem individualmente ou remover contatos. Depois de clicar em <strong>Iniciar disparo</strong>, esta edição é bloqueada para preservar o histórico.</p>
-  </div>
-  {% endif %}
   <div class="data-table-wrap">
-    <table class="data-table dispatch-recipient-table {% if dispatch.status == 'RASCUNHO' %}is-editable{% endif %}">
-      <thead><tr><th>#</th><th>Nome</th><th>Telefone</th><th>Status</th><th>Mensagem</th><th>Enviado em</th><th>Erro</th>{% if dispatch.status == 'RASCUNHO' %}<th>Ações</th>{% endif %}</tr></thead>
+    <table class="data-table dispatch-recipient-table">
+      <thead><tr><th>#</th><th>Nome</th><th>Telefone</th><th>Status</th><th>Mensagem</th><th>Enviado em</th><th>Erro</th></tr></thead>
       <tbody>
         {% for item in recipients %}
         <tr>
           <td>{{ loop.index }}</td>
-          {% if dispatch.status == 'RASCUNHO' and item.status == 'PENDENTE' %}
-          <td>
-            <input class="dispatch-inline-input" form="recipient-edit-{{ item.id }}" name="name" value="{{ item.name }}" maxlength="180" aria-label="Nome do destinatário {{ loop.index }}">
-            {% if item.lead_id %}<span class="table-subline">Lead #{{ item.lead_id }}</span>{% endif %}
-          </td>
-          <td>
-            <input class="dispatch-inline-input dispatch-phone-input" form="recipient-edit-{{ item.id }}" name="phone" value="{{ item.phone }}" inputmode="numeric" required aria-label="Telefone do destinatário {{ loop.index }}">
-          </td>
-          {% else %}
           <td><strong>{{ item.name }}</strong>{% if item.lead_id %}<span class="table-subline">Lead #{{ item.lead_id }}</span>{% endif %}</td>
           <td>{{ item.phone|phone_br }}</td>
-          {% endif %}
           <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
-          <td>
-            {% if dispatch.status == 'RASCUNHO' and item.status == 'PENDENTE' %}
-            <textarea class="dispatch-inline-message" form="recipient-edit-{{ item.id }}" name="message_body" rows="4" maxlength="4096" required aria-label="Mensagem do destinatário {{ loop.index }}">{{ item.message_body }}</textarea>
-            <span class="table-subline">Mensagem individual deste contato.</span>
-            {% else %}
-            <span class="dispatch-message-preview">{{ item.message_body }}</span>
-            {% endif %}
-          </td>
+          <td><span class="dispatch-message-preview">{{ item.message_body }}</span></td>
           <td>{{ item.sent_at|datetime_br if item.sent_at else '—' }}</td>
           <td>{% if item.error %}<span class="text-danger">{{ item.error }}</span>{% else %}—{% endif %}</td>
-          {% if dispatch.status == 'RASCUNHO' %}
-          <td class="dispatch-recipient-actions">
-            {% if item.status == 'PENDENTE' %}
-            <form id="recipient-edit-{{ item.id }}" action="/dispatches/{{ dispatch.id }}/recipients/{{ item.id }}/edit" method="post">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="button button-primary dispatch-save-button" type="submit">Salvar</button>
-            </form>
-            <form action="/dispatches/{{ dispatch.id }}/recipients/{{ item.id }}/remove" method="post" onsubmit="return confirm('Remover este destinatário do disparo?');">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="button button-ghost dispatch-remove-button" type="submit">Remover</button>
-            </form>
-            {% else %}—{% endif %}
-          </td>
-          {% endif %}
         </tr>
         {% else %}
-        <tr><td colspan="{{ 8 if dispatch.status == 'RASCUNHO' else 7 }}"><div class="empty-state">Nenhum destinatário.</div></td></tr>
+        <tr><td colspan="7"><div class="empty-state">Nenhum destinatário.</div></td></tr>
         {% endfor %}
       </tbody>
     </table>
