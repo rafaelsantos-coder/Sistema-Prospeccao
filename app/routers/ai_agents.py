@@ -334,7 +334,8 @@ def create_knowledge(
     clean_content = content.strip()
     if not clean_title or not clean_content:
         flash(request, "Informe título e conteúdo do conhecimento.", "warning")
-        return RedirectResponse("/ai", status_code=303)
+        target = redirect_to if redirect_to.startswith("/ai") else "/ai"
+        return RedirectResponse(target, status_code=303)
 
     item = AIKnowledgeItem(
         agent_id=agent.id,
@@ -382,7 +383,8 @@ def create_knowledge(
     )
     db.commit()
     flash(request, "Conhecimento adicionado à base do SulIA.")
-    return RedirectResponse("/ai", status_code=303)
+    target = redirect_to if redirect_to.startswith("/ai") else "/ai"
+    return RedirectResponse(target, status_code=303)
 
 
 @router.post("/knowledge/{item_id}/toggle")
@@ -390,6 +392,7 @@ def toggle_knowledge(
     item_id: int,
     request: Request,
     csrf_token: str = Form(...),
+    redirect_to: str = Form("/ai"),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -408,7 +411,8 @@ def toggle_knowledge(
         entity_id=item.id,
     )
     db.commit()
-    return RedirectResponse("/ai", status_code=303)
+    target = redirect_to if redirect_to.startswith("/ai") else "/ai"
+    return RedirectResponse(target, status_code=303)
 
 
 @router.post("/queues/bind")
