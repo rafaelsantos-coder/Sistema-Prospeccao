@@ -140,7 +140,6 @@ def test_retrieval_ignores_draft_and_expired_knowledge():
             assert draft.title not in titles
             assert expired.title not in titles
 
-            db.delete(db.get(AIKnowledgeMetadata, draft.id))
         finally:
             # Test DB is shared; remove the temporary rows explicitly.
             draft_row = db.scalar(
