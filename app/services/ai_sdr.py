@@ -17,6 +17,7 @@ from app.models import (
     AIConversationState,
     AIJob,
     AIKnowledgeItem,
+    AIKnowledgeMetadata,
     AIQueueBinding,
     AIRun,
     Conversation,
@@ -259,11 +260,36 @@ def retrieve_knowledge(
     if not items:
         return []
 
+    metadata_rows = list(
+        db.scalars(
+            select(AIKnowledgeMetadata).where(
+                AIKnowledgeMetadata.knowledge_item_id.in_([item.id for item in items])
+            )
+        )
+    )
+    metadata = {row.knowledge_item_id: row for row in metadata_rows}
+    now = utcnow()
+
     query_tokens = _tokens(query)
     ranked: list[tuple[int, int, AIKnowledgeItem]] = []
     for item in items:
-        haystack = f"{item.title} {item.category} {item.tags} {item.content}".lower()
-        score = sum(4 if token in (item.title or "").lower() else 1 for token in query_tokens if token in haystack)
+        meta = metadata.get(item.id)
+        if meta and meta.approval_status != "APPROVED":
+            continue
+        if meta and meta.valid_until and meta.valid_until < now:
+            continue
+        haystack = (
+            f"{item.title} {item.category} {item.tags} {item.content} "
+            f"{meta.subject if meta else ''} {meta.product_service if meta else ''} "
+            f"{meta.region if meta else ''}"
+        ).lower()
+        semantic_score = sum(
+            4 if token in (item.title or "").lower() else 1
+            for token in query_tokens
+            if token in haystack
+        )
+        priority_bonus = int((meta.priority if meta else 50) / 20)
+        score = semantic_score + priority_bonus
         ranked.append((score, item.id, item))
 
     ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
