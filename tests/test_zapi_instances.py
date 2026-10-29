@@ -136,7 +136,7 @@ def test_connection_test_uses_exact_selected_instance(monkeypatch):
         try:
             refreshed = db.get(ZApiInstance, second_id)
             assert refreshed is not None
-            assert refreshed.phone_label == "+55 (55) 99992-002"
+            assert refreshed.phone_label == "+55 (55) 9999-2002"
         finally:
             db.close()
 
