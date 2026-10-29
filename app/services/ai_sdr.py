@@ -462,6 +462,10 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Sempre que a mensagem fizer uma pergunta com 2 ou 3 respostas previsíveis, preencha quick_replies com "
         "2 ou 3 botões curtos, com no máximo 20 caracteres por label. Exemplos: Para casa/Para empresa; Sim/Não; "
         "800 Mega/650 Mega; Preço/Lentidão/Quedas. Para pergunta realmente aberta, quick_replies pode ficar vazio. "
+        "Na primeira apresentação de um plano, responda com no máximo duas frases: cidade, fibra óptica, velocidade, preço mensal e CTA direto para contratar. "
+        "Não use a sigla FTTH com o cliente e não mencione espontaneamente fidelidade, multa, instalação, habilitação, upload, roteador ou benefícios. "
+        "Não pergunte automaticamente o provedor atual na mesma mensagem da primeira oferta; primeiro teste o fechamento. "
+        "Esses detalhes só entram se o cliente perguntar, hesitar ou trouxer objeção. "
         "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação ou exceção que exija humano. "
         f"Modo efetivo: {effective_mode}.\n\n"
         + json.dumps(context, ensure_ascii=False, default=str)
