@@ -277,7 +277,7 @@ def retrieve_knowledge(
     now = utcnow()
 
     query_tokens = _tokens(query)
-    ranked: list[tuple[int, int, AIKnowledgeItem]] = []
+    ranked: list[tuple[int, int, int, AIKnowledgeItem]] = []
     for item in items:
         meta = metadata.get(item.id)
         if meta and meta.approval_status != "APPROVED":
@@ -294,17 +294,20 @@ def retrieve_knowledge(
             for token in query_tokens
             if token in haystack
         )
-        priority_bonus = int((meta.priority if meta else 50) / 20)
-        score = semantic_score + priority_bonus
-        ranked.append((score, item.id, item))
+        priority = int(meta.priority if meta else 50)
+        ranked.append((semantic_score, priority, item.id, item))
 
-    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    ranked.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+    if query_tokens:
+        matched = [row for row in ranked if row[0] > 0]
+        pool = matched if matched else ranked
+    else:
+        pool = ranked
+
     selected: list[AIKnowledgeItem] = []
     chars = 0
     max_chars = max(2000, int(agent.max_knowledge_chars or 12000))
-    for score, _item_id, item in ranked:
-        if selected and query_tokens and score <= 0:
-            continue
+    for _score, _priority, _item_id, item in pool:
         size = len(item.content or "") + len(item.title or "")
         if selected and chars + size > max_chars:
             break
@@ -313,8 +316,6 @@ def retrieve_knowledge(
         if len(selected) >= 10:
             break
 
-    if not selected:
-        selected = items[:5]
     return selected
 
 
