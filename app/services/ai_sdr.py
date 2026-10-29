@@ -1093,6 +1093,100 @@ def _apply_unavailable_plan_policy(
     return decision
 
 
+def _apply_router_information_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    router_cues = (
+        "roteador",
+        "roteadores",
+        "wifi",
+        "wi fi",
+        "segundo roteador",
+        "outro roteador",
+        "mais um roteador",
+    )
+    if not any(cue in latest for cue in router_cues):
+        return decision
+
+    explicit_speed = re.search(r"\b(\d{2,4})\s*(?:mega|mb|mbps)\b", latest)
+    if explicit_speed and int(explicit_speed.group(1)) not in {650, 800}:
+        return decision
+
+    plan = _plan_from_sales_context(decision, context)
+    if not plan:
+        speed_match = re.search(r"\b(650|800)\s*mega\b", latest)
+        if speed_match:
+            speed = int(speed_match.group(1))
+            plan = next(
+                (item for item in FTTH_PLANS if int(item["download_mbps"]) == speed),
+                None,
+            )
+    if not plan:
+        return decision
+
+    speed = int(plan["download_mbps"])
+    if speed not in {650, 800}:
+        return decision
+
+    included = int(plan.get("included_router_count") or 1)
+    additional_price = float(plan.get("additional_router_monthly_price") or 29.90)
+    plan_price = float(plan["price_fidelity"])
+    asks_fiber = any(
+        cue in latest
+        for cue in (
+            "e fibra",
+            "é fibra",
+            "internet e fibra",
+            "internet é fibra",
+            "fibra optica",
+            "fibra óptica",
+        )
+    )
+
+    if asks_fiber:
+        opening = (
+            f"Sim, o plano de {speed} Mega é de fibra óptica e inclui "
+            f"{included} roteador em comodato."
+        )
+    else:
+        opening = (
+            f"O plano de {speed} Mega inclui {included} roteador em comodato."
+        )
+
+    decision.reply_text = (
+        f"{opening} Se precisar de outro, cada roteador adicional é locado por "
+        f"R$ {_format_brl(additional_price)} por mês. "
+        f"Quer seguir com o plano de {speed} Mega por R$ {_format_brl(plan_price)} mensais?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="quero_contratar", label="Quero contratar"),
+        QuickReply(id="tenho_duvida", label="Tenho outra dúvida"),
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.recommended_stage = "PROPOSTA"
+    decision.offer_plan_code = str(plan["code"])
+    decision.offer_price = plan_price
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.followup_needed = True
+    decision.objection = "NONE"
+    decision.unanswered_question = None
+    decision.summary = (
+        f"Cliente perguntou sobre roteadores do plano de {speed} Mega; "
+        f"informado {included} incluso e adicional por R$ {_format_brl(additional_price)}/mês."
+    )
+    decision.next_action = "Retomar o fechamento do plano após esclarecer os roteadores."
+    decision.proposal_summary = (
+        f"Fibra {speed} Mega por R$ {_format_brl(plan_price)} mensais; "
+        f"{included} roteador incluso; adicional por R$ {_format_brl(additional_price)}/mês."
+    )
+    return decision
+
+
 def _apply_secondary_decline_reengagement_policy(
     decision: AIDecision,
     context: dict,
@@ -1285,6 +1379,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Não use a sigla FTTH com o cliente e não mencione espontaneamente fidelidade, multa, instalação, habilitação, upload, roteador ou benefícios. "
         "Não pergunte automaticamente o provedor atual na mesma mensagem da primeira oferta; primeiro teste o fechamento. "
         "Esses detalhes só entram se o cliente perguntar, hesitar ou trouxer objeção. "
+        "Nos planos de 800 Mega e 650 Mega há 1 roteador incluso em comodato; cada roteador adicional custa R$ 29,90 por mês. "
+        "Se o cliente perguntar sobre quantidade de roteadores, responda diretamente e nunca diga que precisa validar essa informação. "
         "Se o cliente recusar apenas uma informação secundária com 'não, obrigado', 'agora não' ou equivalente, não encerre a conversa: "
         "aceite a recusa daquele detalhe e volte para a oferta principal com CTA de avanço. Nunca responda apenas 'se quiser, me chame' nesse cenário. "
         "Se o cliente rejeitar a própria oferta de internet sem pedir para parar o contato, também não encerre: mude o ângulo e pergunte se ele já possui conexão "
@@ -1316,6 +1412,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
     decision = _apply_catalog_navigation_policy(decision, context)
     decision = _apply_unavailable_plan_policy(decision, context)
+    decision = _apply_router_information_policy(decision, context)
     decision = _apply_secondary_decline_reengagement_policy(decision, context)
     decision = _apply_offer_rejection_diagnostic_policy(decision, context)
     return _sanitize_unconfirmed_customer_facts(decision, context)
