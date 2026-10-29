@@ -272,13 +272,26 @@ def ensure_open_conversation(
             conversation.team = lead.team
 
         existing_queue = queue_for_conversation(db, conversation.id)
+        # Quando a mensagem entra por uma instância Z-API vinculada a uma fila,
+        # essa fila é a fonte oficial do roteamento de entrada. Isso corrige
+        # conversas antigas que ainda estavam presas a outra fila.
+        explicit_inbound_queue = queue_id if zapi_instance_id and queue_id else None
         queue = resolve_queue(
             db,
             conversation_id=conversation.id,
-            explicit_queue_id=queue_id if not existing_queue else None,
+            explicit_queue_id=(
+                explicit_inbound_queue
+                if explicit_inbound_queue
+                else (queue_id if not existing_queue else None)
+            ),
             lead_id=lead.id if lead else conversation.lead_id,
             team=conversation.team or team,
             branch_id=conversation.branch_id or branch_id,
+        )
+        queue_changed = bool(
+            queue
+            and existing_queue
+            and queue.id != existing_queue.id
         )
         if queue:
             bind_conversation_queue(
@@ -290,6 +303,26 @@ def ensure_open_conversation(
             conversation.team = queue.team
             if queue.branch_id and not conversation.branch_id:
                 conversation.branch_id = queue.branch_id
+
+            # Se a conversa foi realocada pela instância para uma fila reservada
+            # à IA, retire uma atribuição humana antiga. Handoffs já realizados
+            # permanecem humanos.
+            if (
+                queue_changed
+                and _queue_reserved_for_ai(db, queue)
+                and not _conversation_ready_for_human(db, conversation.id)
+                and conversation.assigned_user_id
+            ):
+                conversation.assigned_user_id = None
+                conversation.status = "EM_FILA"
+                db.add(
+                    ConversationAssignment(
+                        conversation_id=conversation.id,
+                        user_id=None,
+                        assigned_by_id=None,
+                        event="AI_QUEUE_REBOUND",
+                    )
+                )
 
         if (
             assign_if_unowned
