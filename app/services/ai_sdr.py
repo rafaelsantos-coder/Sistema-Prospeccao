@@ -28,7 +28,7 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
-from app.services.ai_sdr_policy import FTTH_PLANS, MOBILE_PLANS, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
+from app.services.ai_sdr_policy import CORPORATE_PLANS, FTTH_PLANS, MOBILE_PLANS, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.timeutils import is_past, utcnow
@@ -46,6 +46,7 @@ class QualificationData(BaseModel):
     current_price: str | None = None
     pain_points: list[str] = Field(default_factory=list)
     desired_product: str | None = None
+    customer_type: Literal["RESIDENCIAL", "EMPRESA", "NAO_INFORMADO"] = "NAO_INFORMADO"
     decision_maker: Literal["SIM", "NAO", "NAO_INFORMADO"] = "NAO_INFORMADO"
     timeframe: str | None = None
     city: str | None = None
@@ -377,6 +378,49 @@ def _conversation_messages(
     return list(reversed(rows))
 
 
+def _confirmed_customer_type_from_lead(lead: Lead | None) -> str:
+    if not lead:
+        return ""
+    try:
+        payload = json.loads(lead.raw_data or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    marker = payload.get("ai_customer_type")
+    if not isinstance(marker, dict):
+        return ""
+    if str(marker.get("source") or "").upper() != "INBOUND_CUSTOMER_CONFIRMED":
+        return ""
+    value = str(marker.get("value") or "").upper()
+    return value if value in {"EMPRESA", "RESIDENCIAL"} else ""
+
+
+def _persist_confirmed_customer_type(
+    lead: Lead,
+    customer_type: str,
+    *,
+    conversation_id: int,
+) -> None:
+    value = str(customer_type or "").upper()
+    if value not in {"EMPRESA", "RESIDENCIAL"}:
+        return
+    try:
+        payload = json.loads(lead.raw_data or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["ai_customer_type"] = {
+        "value": value,
+        "source": "INBOUND_CUSTOMER_CONFIRMED",
+        "conversation_id": conversation_id,
+        "updated_at": utcnow().isoformat(),
+    }
+    lead.raw_data = json.dumps(payload, ensure_ascii=False, default=str)
+    lead.segment = "Empresa" if value == "EMPRESA" else "Residencial"
+
+
 def build_ai_context(
     db: Session,
     *,
@@ -431,6 +475,7 @@ def build_ai_context(
             "stage": lead.stage if lead else "",
             "score": lead.score if lead else 0,
             "temperature": lead.temperature if lead else "FRIO",
+            "confirmed_customer_type": _confirmed_customer_type_from_lead(lead),
         },
         "previous_ai_state": {
             "qualification_score": state.qualification_score if state else 0,
@@ -489,6 +534,78 @@ def _fold_sales_text(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+def _customer_type_from_text(value: str | None) -> str:
+    folded = _fold_sales_text(value)
+    if not folded:
+        return ""
+
+    company_exact = {
+        "empresa",
+        "para empresa",
+        "plano empresa",
+        "plano empresarial",
+        "plano para empresa",
+        "corporativo",
+        "pj",
+        "pessoa juridica",
+    }
+    company_cues = (
+        "minha empresa",
+        "nossa empresa",
+        "meu negocio",
+        "meu comercio",
+        "minha loja",
+        "meu escritorio",
+        "quero para empresa",
+        "preciso para empresa",
+        "internet para empresa",
+        "plano corporativo",
+        "agora e para empresa",
+    )
+    residential_exact = {
+        "casa",
+        "para casa",
+        "residencial",
+        "plano residencial",
+        "internet residencial",
+    }
+    residential_cues = (
+        "minha casa",
+        "minha residencia",
+        "meu apartamento",
+        "quero para casa",
+        "preciso para casa",
+        "internet para casa",
+        "agora e para casa",
+    )
+
+    if folded in company_exact or any(cue in folded for cue in company_cues):
+        return "EMPRESA"
+    if folded in residential_exact or any(cue in folded for cue in residential_cues):
+        return "RESIDENCIAL"
+    return ""
+
+
+def _customer_type_from_context(context: dict) -> str:
+    latest_type = _customer_type_from_text(
+        str(context.get("latest_customer_message") or "")
+    )
+    if latest_type:
+        return latest_type
+
+    for row in reversed(context.get("history") or []):
+        if str(row.get("direction") or "").upper() != "INBOUND":
+            continue
+        value = _customer_type_from_text(str(row.get("body") or ""))
+        if value:
+            return value
+
+    confirmed = str(
+        (context.get("lead") or {}).get("confirmed_customer_type") or ""
+    ).upper()
+    return confirmed if confirmed in {"EMPRESA", "RESIDENCIAL"} else ""
+
+
 def _customer_inbound_text(context: dict) -> str:
     parts = []
     for row in context.get("history") or []:
@@ -508,6 +625,10 @@ def _sanitize_unconfirmed_customer_facts(
 ) -> AIDecision:
     inbound = _customer_inbound_text(context)
     qualification = decision.qualification
+    confirmed_customer_type = _customer_type_from_context(context)
+    qualification.customer_type = (
+        confirmed_customer_type if confirmed_customer_type else "NAO_INFORMADO"
+    )
 
     provider = _fold_sales_text(qualification.current_provider)
     if provider and provider not in inbound:
@@ -942,6 +1063,170 @@ def _show_selected_mobile_plan(
     return decision
 
 
+def _show_corporate_catalog(decision: AIDecision) -> AIDecision:
+    option_parts = [
+        f"{int(plan['download_mbps'])} Mega por R$ {_format_brl(float(plan['price']))}"
+        for plan in CORPORATE_PLANS
+    ]
+    decision.reply_text = (
+        "Perfeito. Para empresa temos planos corporativos de fibra óptica com atendimento prioritário: "
+        + ", ".join(option_parts[:-1])
+        + f" e {option_parts[-1]} mensais. Qual você quer conhecer?"
+    )
+    decision.quick_replies = [
+        QuickReply(
+            id=f"corp_{int(plan['download_mbps'])}",
+            label=f"Corp. {int(plan['download_mbps'])} Mega",
+        )
+        for plan in CORPORATE_PLANS
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.recommended_stage = "PROPOSTA"
+    decision.qualification.customer_type = "EMPRESA"
+    decision.qualification.desired_product = "Internet corporativa"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    decision.concession_level = 0
+    decision.free_months = 0
+    decision.followup_needed = True
+    decision.summary = "Cliente confirmou atendimento para empresa e recebeu o catálogo corporativo."
+    decision.next_action = "Cliente escolher entre Corp. 200, Corp. 250 e Corp. 650."
+    decision.proposal_summary = "Planos corporativos: " + "; ".join(option_parts) + "."
+    return decision
+
+
+def _selected_corporate_plan(value: str | None) -> dict | None:
+    folded = _fold_sales_text(value)
+    match = re.search(r"\b(200|250|650)\s*(?:mega|mb|mbps)?\b", folded)
+    if not match:
+        return None
+    speed = int(match.group(1))
+    return next(
+        (
+            plan
+            for plan in CORPORATE_PLANS
+            if int(plan["download_mbps"]) == speed
+        ),
+        None,
+    )
+
+
+def _show_selected_corporate_plan(
+    decision: AIDecision,
+    plan: dict,
+) -> AIDecision:
+    speed = int(plan["download_mbps"])
+    upload = int(plan["upload_mbps"])
+    price = float(plan["price"])
+    benefits = ", ".join(plan.get("benefits") or [])
+    decision.reply_text = (
+        f"O Corp. {speed} Mega custa R$ {_format_brl(price)} mensais, com {speed}/{upload} Mbps, "
+        f"{benefits} e atendimento prioritário. Quer contratar esse plano?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="quero_contratar", label="Quero contratar"),
+        QuickReply(id="ver_outros_corp", label="Ver outros planos"),
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.recommended_stage = "PROPOSTA"
+    decision.qualification.customer_type = "EMPRESA"
+    decision.qualification.desired_product = f"Corporativo {speed} Mega"
+    decision.offer_plan_code = str(plan["code"])
+    decision.offer_price = price
+    decision.concession_level = 0
+    decision.free_months = 0
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.followup_needed = True
+    decision.summary = f"Cliente escolheu o plano corporativo de {speed} Mega."
+    decision.next_action = "Confirmar se o cliente quer contratar o plano corporativo escolhido."
+    decision.proposal_summary = (
+        f"Corp. {speed} Mega por R$ {_format_brl(price)} mensais; {speed}/{upload} Mbps; {benefits}."
+    )
+    return decision
+
+
+def _apply_corporate_customer_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    customer_type = _customer_type_from_context(context)
+    if customer_type == "RESIDENCIAL":
+        decision.qualification.customer_type = "RESIDENCIAL"
+        return decision
+    if customer_type != "EMPRESA":
+        return decision
+
+    decision.qualification.customer_type = "EMPRESA"
+    latest_raw = str(context.get("latest_customer_message") or "")
+    latest = _fold_sales_text(latest_raw)
+    previous = _fold_sales_text(_last_outbound_text(context))
+
+    if _customer_type_from_text(latest_raw) == "EMPRESA":
+        return _show_corporate_catalog(decision)
+
+    if _looks_like_catalog_request(latest_raw):
+        return _show_corporate_catalog(decision)
+
+    if latest == "ver outros planos" and (
+        "corp " in previous
+        or "corporativo" in previous
+        or "empresa temos planos" in previous
+    ):
+        return _show_corporate_catalog(decision)
+
+    selected = _selected_corporate_plan(latest_raw)
+    if selected and (
+        "corp" in latest
+        or "corporativo" in previous
+        or "empresa temos planos" in previous
+        or str((context.get("lead") or {}).get("confirmed_customer_type") or "").upper() == "EMPRESA"
+    ):
+        return _show_selected_corporate_plan(decision, selected)
+
+    offer_code = str(decision.offer_plan_code or "").upper()
+    residential_offer = offer_code.startswith("FTTH_")
+    residential_reply = any(
+        cue in _fold_sales_text(decision.reply_text)
+        for cue in (
+            "800 mega por r 119 90",
+            "650 mega por r 99 90",
+            "250 mega por r 89 90",
+            "500 mega por r 119 90",
+        )
+    )
+    if residential_offer or residential_reply:
+        return _show_corporate_catalog(decision)
+
+    concession_in_reply = any(
+        cue in _fold_sales_text(decision.reply_text)
+        for cue in (
+            "mes gratis",
+            "meses gratis",
+            "mensalidade gratis",
+            "mensalidades gratis",
+        )
+    )
+    if decision.free_months > 0 or decision.concession_level > 0 or concession_in_reply:
+        decision = _show_corporate_catalog(decision)
+        decision.reply_text = (
+            "Para os planos corporativos, não tenho desconto ou mensalidade grátis confirmados na base vigente. "
+            "Posso te apresentar as opções oficiais: 200 Mega por R$ 139,00, 250 Mega por R$ 169,00 "
+            "ou 650 Mega por R$ 199,90 mensais. Qual você quer conhecer?"
+        )
+        return decision
+
+    decision.concession_level = 0
+    decision.free_months = 0
+    return decision
+
+
 def _apply_catalog_navigation_policy(
     decision: AIDecision,
     context: dict,
@@ -1022,6 +1307,9 @@ def _apply_unavailable_plan_policy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
+    if _customer_type_from_context(context) == "EMPRESA":
+        return decision
+
     requested_speed = _requested_plan_speed(
         str(context.get("latest_customer_message") or "")
     )
@@ -1097,6 +1385,9 @@ def _apply_router_information_policy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
+    if _customer_type_from_context(context) == "EMPRESA":
+        return decision
+
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
     router_cues = (
         "roteador",
@@ -1191,6 +1482,9 @@ def _apply_secondary_decline_reengagement_policy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
+    if _customer_type_from_context(context) == "EMPRESA":
+        return decision
+
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
     if latest not in _SECONDARY_DECLINES:
         return decision
@@ -1264,6 +1558,8 @@ _EXPLICIT_CONTACT_STOP_CUES = (
 
 
 def _is_company_context(context: dict) -> bool:
+    if _customer_type_from_context(context) == "EMPRESA":
+        return True
     company_terms = (
         "minha empresa",
         "nossa empresa",
@@ -1285,6 +1581,8 @@ def _is_company_context(context: dict) -> bool:
 
 
 def _is_residential_context(context: dict) -> bool:
+    if _customer_type_from_context(context) == "RESIDENCIAL":
+        return True
     residential_terms = (
         "minha casa",
         "para casa",
@@ -1385,8 +1683,11 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "aceite a recusa daquele detalhe e volte para a oferta principal com CTA de avanço. Nunca responda apenas 'se quiser, me chame' nesse cenário. "
         "Se o cliente rejeitar a própria oferta de internet sem pedir para parar o contato, também não encerre: mude o ângulo e pergunte se ele já possui conexão "
         "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
+        "Quando o cliente confirmar que é para empresa/PJ, preserve esse segmento como memória confirmada e use apenas o catálogo corporativo: "
+        "Corp. 200 Mega R$ 139,00; Corp. 250 Mega R$ 169,00; Corp. 650 Mega R$ 199,90, todos com IP Fixo, Wi-Fi 6, ativação gratuita e atendimento prioritário; "
+        "250 inclui Sulnet Play e 650 inclui Sulnet Monitora. Não aplique promoções residenciais ao corporativo sem regra aprovada. "
         "Quando o cliente pedir todos os planos, catálogo, preços ou velocidades de forma ampla, nunca diga que não possui a lista e nunca estime valores: "
-        "ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
+        "se o segmento confirmado for Empresa, liste os corporativos; caso contrário, ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
         "Se o cliente pedir uma velocidade/plano que não esteja disponível na cidade, isso NÃO é motivo de handoff: informe que aquela opção não está disponível, "
         "apresente somente os planos válidos do catálogo para a cidade e continue a venda até o cliente escolher uma opção. Se a cidade ainda não estiver confirmada, pergunte a cidade. "
         "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação em uma oferta válida ou exceção real que exija humano. "
@@ -1413,6 +1714,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = _apply_catalog_navigation_policy(decision, context)
     decision = _apply_unavailable_plan_policy(decision, context)
     decision = _apply_router_information_policy(decision, context)
+    decision = _apply_corporate_customer_policy(decision, context)
     decision = _apply_secondary_decline_reengagement_policy(decision, context)
     decision = _apply_offer_rejection_diagnostic_policy(decision, context)
     return _sanitize_unconfirmed_customer_facts(decision, context)
@@ -1541,6 +1843,12 @@ def _apply_crm_decision(
         lead.city = qualification.city.strip()[:120]
     if qualification.address:
         lead.address = qualification.address.strip()[:255]
+    if qualification.customer_type in {"EMPRESA", "RESIDENCIAL"}:
+        _persist_confirmed_customer_type(
+            lead,
+            qualification.customer_type,
+            conversation_id=conversation.id,
+        )
 
     memory_parts = [
         f"Estado={decision.sales_state}",
@@ -1549,6 +1857,7 @@ def _apply_crm_decision(
         f"plano={decision.offer_plan_code or '-'}",
         f"N{decision.concession_level}",
         f"meses_gratis={decision.free_months}",
+        f"segmento_confirmado={qualification.customer_type}",
     ]
     if qualification.current_provider:
         memory_parts.append(f"provedor={qualification.current_provider}")
@@ -1628,6 +1937,7 @@ def _perform_handoff(
 
     handoff_summary = (
         f"Resumo SDR: {decision.summary}\n"
+        f"Segmento confirmado: {decision.qualification.customer_type}\n"
         f"Plano/serviço: {decision.offer_plan_code or decision.qualification.desired_product or '-'}\n"
         f"Condição: N{decision.concession_level}; meses grátis={decision.free_months}; "
         f"preço ofertado={decision.offer_price if decision.offer_price is not None else '-'}\n"

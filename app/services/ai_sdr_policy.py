@@ -17,7 +17,7 @@ CORE_COMMERCIAL_POLICY = {
         ),
         "concession": {
             "type": "FREE_MONTHS",
-            "eligible": "Novo cliente FTTH com fidelidade de 12 meses",
+            "eligible": "Novo cliente FTTH residencial com fidelidade de 12 meses",
             "progressive_levels": [0, 1, 2, 3],
             "maximum_free_months": 3,
             "starts_at": "SERVICE_ACTIVATION",
@@ -171,6 +171,43 @@ FTTH_PLANS = [
 ]
 
 
+CORPORATE_PLANS = [
+    {
+        "code": "CORP_200",
+        "name": "Corp. 200 Mega",
+        "download_mbps": 200,
+        "upload_mbps": 80,
+        "price": 139.00,
+        "fixed_ip": True,
+        "wifi6_router": True,
+        "free_activation": True,
+        "benefits": ["IP Fixo", "Roteador Wi-Fi 6", "Ativação gratuita"],
+    },
+    {
+        "code": "CORP_250",
+        "name": "Corp. 250 Mega",
+        "download_mbps": 250,
+        "upload_mbps": 80,
+        "price": 169.00,
+        "fixed_ip": True,
+        "wifi6_router": True,
+        "free_activation": True,
+        "benefits": ["IP Fixo", "Sulnet Play", "Roteador Wi-Fi 6", "Ativação gratuita"],
+    },
+    {
+        "code": "CORP_650",
+        "name": "Corp. 650 Mega",
+        "download_mbps": 650,
+        "upload_mbps": 200,
+        "price": 199.90,
+        "fixed_ip": True,
+        "wifi6_router": True,
+        "free_activation": True,
+        "benefits": ["IP Fixo", "Sulnet Monitora", "Roteador Wi-Fi 6", "Ativação gratuita"],
+    },
+]
+
+
 MOBILE_PLANS = [
     {
         "code": "SULMOVEL_5GB",
@@ -298,10 +335,35 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "category": "ARGUMENTOS_COMERCIAIS",
         "tags": "desconto,gratuidade,n0,n1,n2,n3,meses gratis",
         "content": (
-            "Todos os novos clientes FTTH com fidelidade de 12 meses são elegíveis a até 3 mensalidades gratuitas. Aplicar de "
+            "Todos os novos clientes FTTH residenciais com fidelidade de 12 meses são elegíveis a até 3 mensalidades gratuitas. Aplicar de "
             "forma progressiva: N0 sem gratuidade, N1 1 mês, N2 2 meses, N3 3 meses. O benefício começa na ativação. A mensalidade "
             "contratual não muda. Silêncio não aumenta desconto; só avançar quando existir objeção real e potencial de fechamento. "
             "800 Mega: 1/2/3 meses equivalem a R$119,90/R$239,80/R$359,70 de benefício. 650 Mega: R$99,90/R$199,80/R$299,70."
+        ),
+    },
+    {
+        "title": "Planos corporativos de fibra óptica para empresas",
+        "category": "PRODUTOS",
+        "tags": "empresa,pj,corporativo,corp,200 mega,250 mega,650 mega,ip fixo,sla,wifi6",
+        "content": (
+            "Para clientes PJ de pequeno e médio porte, a Sulnet possui planos corporativos de fibra óptica com atendimento prioritário. "
+            "Corp. 200 Mega: R$139,00/mês, 200 Mbps download / 80 Mbps upload, IP Fixo, roteador Wi-Fi 6 e ativação gratuita. "
+            "Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, roteador Wi-Fi 6 e ativação gratuita. "
+            "Corp. 650 Mega: R$199,90/mês, 650/200 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
+            "Quando o cliente confirmar que a internet é para empresa, não apresentar os planos residenciais como oferta principal. "
+            "Apresentar os três planos corporativos e permitir escolha por botões. A viabilidade técnica no endereço continua sujeita à consulta. "
+            "Não aplicar automaticamente descontos, meses grátis ou condições promocionais residenciais aos planos corporativos sem regra específica aprovada."
+        ),
+    },
+    {
+        "title": "Memória de segmento residencial ou empresa",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "empresa,residencial,pj,segmento,memoria,casa,crm",
+        "content": (
+            "Quando o próprio cliente confirmar 'Para empresa', 'minha empresa', 'PJ', 'corporativo' ou equivalente, registrar o segmento como Empresa/PJ "
+            "na memória comercial e manter esse contexto nas próximas mensagens. Enquanto essa escolha estiver confirmada, toda oferta de internet deve usar "
+            "o catálogo corporativo, salvo se o cliente disser explicitamente que agora está falando de uma residência. "
+            "Da mesma forma, se o cliente confirmar 'Para casa' ou residencial, registrar Residencial. Nunca inferir Empresa apenas porque o SulIA mencionou empresa."
         ),
     },
     {
@@ -650,6 +712,20 @@ Quando o cliente pedir "todos os planos", "quais planos vocês têm", "catálogo
 - por limite do WhatsApp/Z-API, use até 3 botões por mensagem: primeiro 5GB / 7GB / Mais planos; depois 10GB / 15GB / Voltar;
 - promoções e condições especiais só podem ser informadas quando estiverem confirmadas na base vigente.
 Depois que o cliente escolher um plano, continue a venda normalmente e teste o fechamento.
+
+SEGMENTO EMPRESA / MEMÓRIA PJ
+Quando o cliente confirmar que a internet é para empresa, PJ, comércio, loja, escritório ou negócio próprio:
+- trate essa escolha como um fato confirmado pelo cliente e preserve na memória comercial;
+- NÃO volte a oferecer plano residencial enquanto o cliente não mudar explicitamente o contexto;
+- use o catálogo corporativo de fibra óptica;
+- apresente os três planos com botões: Corp. 200 / Corp. 250 / Corp. 650;
+- Corp. 200 Mega: R$139,00/mês, 200/80 Mbps, IP Fixo, roteador Wi-Fi 6, ativação gratuita;
+- Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, roteador Wi-Fi 6, ativação gratuita;
+- Corp. 650 Mega: R$199,90/mês, 650/200 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
+- os planos corporativos são destinados a PJ de pequeno e médio porte e possuem atendimento prioritário;
+- não prometa cobertura no endereço antes da consulta técnica;
+- não aplique meses grátis, descontos ou promoções dos planos residenciais ao corporativo sem regra específica aprovada.
+Se o cliente confirmar que é para casa/residência, grave Residencial e use o catálogo residencial.
 
 ESTRATÉGIA DE OFERTA
 Sempre começar pelo MAIOR plano elegível na cidade.
