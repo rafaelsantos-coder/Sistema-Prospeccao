@@ -313,6 +313,14 @@ def create_knowledge(
     category: str = Form("GERAL"),
     tags: str = Form(""),
     content: str = Form(...),
+    subject: str = Form(""),
+    product_service: str = Form(""),
+    region: str = Form(""),
+    source_reference: str = Form(""),
+    priority: int = Form(50),
+    valid_until: str = Form(""),
+    approval_status: str = Form("APPROVED"),
+    redirect_to: str = Form("/ai"),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
