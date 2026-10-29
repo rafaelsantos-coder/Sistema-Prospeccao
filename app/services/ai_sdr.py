@@ -48,6 +48,7 @@ class QualificationData(BaseModel):
     decision_maker: Literal["SIM", "NAO", "NAO_INFORMADO"] = "NAO_INFORMADO"
     timeframe: str | None = None
     city: str | None = None
+    address: str | None = None
 
 
 class AIDecision(BaseModel):
@@ -115,6 +116,11 @@ class AIDecision(BaseModel):
     free_months: int = Field(default=0, ge=0, le=3)
     customer_commitment: bool = False
     followup_needed: bool = True
+    customer_needs: list[str] = Field(default_factory=list)
+    benefits_valued: list[str] = Field(default_factory=list)
+    commercial_arguments_used: list[str] = Field(default_factory=list)
+    proposal_summary: str = Field(default="", max_length=800)
+    unanswered_question: str | None = Field(default=None, max_length=500)
 
 
 class AIConfigurationError(RuntimeError):
