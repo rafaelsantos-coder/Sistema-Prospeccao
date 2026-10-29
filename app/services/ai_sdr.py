@@ -423,9 +423,9 @@ def _send_autonomous_reply(
         raise AIConfigurationError("Contato da conversa não possui telefone.")
 
     from app.services.conversation_engine import register_message
-    from app.services.zapi import ZApiService
+    from app.services.zapi_instances import service_for_conversation
 
-    result = ZApiService().send_text(
+    result = service_for_conversation(db, conversation.id).send_text(
         phone=phone,
         message=decision.reply_text,
     )
