@@ -72,7 +72,7 @@ def _run_job(job_id: int) -> None:
                     potential=item.get("potential", ""),
                     raw_data=json.dumps(item.get("raw_data", {}), ensure_ascii=False, default=str),
                     branch_id=job.branch_id,
-                    assigned_user_id=job.created_by_id,
+                    assigned_user_id=None if service_queue else job.created_by_id,
                     created_by_id=job.created_by_id,
                     next_action_at=initial_next_action(job.team),
                 )
