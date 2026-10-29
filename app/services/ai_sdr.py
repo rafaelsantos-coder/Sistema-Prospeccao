@@ -844,6 +844,104 @@ def _show_fiber_catalog(
     return decision
 
 
+def _selected_fiber_plan(value: str | None, city: str) -> dict | None:
+    folded = _fold_sales_text(value)
+    match = re.search(r"\b(\d{2,4})\s*(?:mega|mb|mbps)\b", folded)
+    if not match:
+        return None
+    speed = int(match.group(1))
+    return next(
+        (
+            plan
+            for plan in _eligible_plans_for_city(city)
+            if int(plan["download_mbps"]) == speed
+        ),
+        None,
+    )
+
+
+def _selected_mobile_plan(value: str | None) -> dict | None:
+    folded = _fold_sales_text(value)
+    match = re.search(r"\b(5|7|10|15)\s*gb\b", folded)
+    if not match:
+        return None
+    data_gb = int(match.group(1))
+    return next(
+        (plan for plan in MOBILE_PLANS if int(plan["data_gb"]) == data_gb),
+        None,
+    )
+
+
+def _show_selected_fiber_plan(
+    decision: AIDecision,
+    context: dict,
+    plan: dict,
+) -> AIDecision:
+    city = _city_from_sales_context(decision, context)
+    price = float(plan["price_fidelity"])
+    speed = int(plan["download_mbps"])
+    decision.reply_text = (
+        f"Legal! Em {city} temos o plano de fibra óptica de {speed} Mega "
+        f"por R$ {_format_brl(price)} mensais. Quer aproveitar e contratar esse plano agora?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="quero_contratar", label="Quero contratar"),
+        QuickReply(id="ver_outros_fibra", label="Ver outros planos"),
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.recommended_stage = "PROPOSTA"
+    decision.offer_plan_code = str(plan["code"])
+    decision.offer_price = price
+    decision.qualification.city = city
+    decision.qualification.desired_product = f"Fibra {speed} Mega"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.followup_needed = True
+    decision.summary = f"Cliente escolheu o plano de fibra de {speed} Mega em {city}."
+    decision.next_action = "Confirmar se o cliente quer contratar o plano escolhido."
+    decision.proposal_summary = (
+        f"Fibra {speed} Mega em {city} por R$ {_format_brl(price)} mensais."
+    )
+    return decision
+
+
+def _show_selected_mobile_plan(
+    decision: AIDecision,
+    plan: dict,
+) -> AIDecision:
+    data_gb = int(plan["data_gb"])
+    price = float(plan["price"])
+    apps = ", ".join(plan.get("unlimited_apps") or [])
+    details = f" com {apps} ilimitado" if apps else ""
+    decision.reply_text = (
+        f"Legal! O Sulmóvel {data_gb}GB custa R$ {_format_brl(price)} mensais, "
+        f"com {int(plan['minutes'])} minutos e {int(plan['sms'])} SMS{details}. "
+        "Quer contratar esse plano?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="quero_contratar", label="Quero contratar"),
+        QuickReply(id="ver_outros_movel", label="Ver outros planos"),
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.recommended_stage = "PROPOSTA"
+    decision.offer_plan_code = str(plan["code"])
+    decision.offer_price = price
+    decision.qualification.desired_product = f"Sulmóvel {data_gb}GB"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.followup_needed = True
+    decision.summary = f"Cliente escolheu o plano Sulmóvel {data_gb}GB."
+    decision.next_action = "Confirmar se o cliente quer contratar o plano móvel escolhido."
+    decision.proposal_summary = (
+        f"Sulmóvel {data_gb}GB por R$ {_format_brl(price)} mensais."
+    )
+    return decision
+
+
 def _apply_catalog_navigation_policy(
     decision: AIDecision,
     context: dict,
@@ -879,12 +977,43 @@ def _apply_catalog_navigation_policy(
     if latest == "voltar" and "sulmovel" in previous:
         return _show_mobile_catalog_page(decision, page=1)
 
+    if latest == "ver outros planos":
+        if "sulmovel" in previous:
+            return _show_mobile_catalog_page(decision, page=1)
+        if "fibra optica" in previous:
+            return _show_fiber_catalog(decision, context)
+
     if (
         "qual e a sua cidade" in previous
         and "planos de fibra" in previous
         and _city_from_sales_context(decision, context)
     ):
         return _show_fiber_catalog(decision, context)
+
+    mobile_plan = _selected_mobile_plan(latest_raw)
+    if mobile_plan:
+        mobile_gb = int(mobile_plan["data_gb"])
+        mobile_compact = latest in {f"{mobile_gb}gb", f"{mobile_gb} gb"}
+        mobile_button_label = (
+            latest.startswith(f"{mobile_gb}gb r ")
+            or latest.startswith(f"{mobile_gb} gb r ")
+        )
+        if "sulmovel" in previous or mobile_compact or mobile_button_label:
+            return _show_selected_mobile_plan(decision, mobile_plan)
+
+    city = _city_from_sales_context(decision, context)
+    if city:
+        fiber_plan = _selected_fiber_plan(latest_raw, city)
+        if fiber_plan and (
+            "planos de fibra" in previous
+            or "fibra optica" in previous
+            or latest in {
+                f"{int(fiber_plan['download_mbps'])} mega",
+                f"{int(fiber_plan['download_mbps'])} mb",
+                f"{int(fiber_plan['download_mbps'])} mbps",
+            }
+        ):
+            return _show_selected_fiber_plan(decision, context, fiber_plan)
 
     return decision
 
