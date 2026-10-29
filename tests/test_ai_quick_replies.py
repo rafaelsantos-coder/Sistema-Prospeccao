@@ -81,3 +81,12 @@ def test_explicit_contact_stop_is_opt_out():
     assert _is_explicit_opt_out("Não quero mais mensagens") is True
     assert _is_explicit_opt_out("Por favor, não me contate novamente") is True
     assert _is_explicit_opt_out("Me remova da lista") is True
+
+
+def test_infers_yes_no_buttons_from_explicit_closed_question():
+    assert infer_quick_replies(
+        "Deseja unificar esta fatura com outras faturas Sulnet? Responda sim ou não."
+    ) == [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ]
