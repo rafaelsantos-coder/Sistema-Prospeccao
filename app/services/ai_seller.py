@@ -470,6 +470,179 @@ def _mobile_next_step(values: dict[str, Any]) -> str | None:
         return "MOBILE_UNIFY_REASON"
     return None
 
+def _apply_mobile_answer(
+    step: str,
+    text: str,
+    values: dict[str, Any],
+) -> tuple[bool, str]:
+    if step == "MOBILE_CONTRACT_TYPE":
+        contract_type = _extract_mobile_contract_type(text)
+        if not contract_type:
+            return False, "Me diga se será número novo, portabilidade ou M2M."
+        previous = str(values.get("tipo_contratacao") or "")
+        values["tipo_contratacao"] = contract_type
+        if previous and previous != contract_type:
+            for key in (
+                "novo_iccid", "numero_novo", "port_iccid", "numero_portado",
+                "port_titular", "port_nome_titular", "port_cpf_cnpj", "port_data",
+                "m2m_quantidade", "m2m_iccids",
+            ):
+                values.pop(key, None)
+        return True, ""
+
+    if step in {"MOBILE_NEW_ICCID", "MOBILE_PORT_ICCID"}:
+        iccid = _extract_iccid(text)
+        if not iccid:
+            return False, "Preciso do ICCID completo do chip."
+        values["novo_iccid" if step == "MOBILE_NEW_ICCID" else "port_iccid"] = iccid
+        return True, ""
+
+    if step in {"MOBILE_NEW_NUMBER", "MOBILE_PORT_NUMBER"}:
+        number = _extract_mobile_number(text)
+        if not number:
+            return False, "Preciso do número completo com DDD."
+        values["numero_novo" if step == "MOBILE_NEW_NUMBER" else "numero_portado"] = number
+        return True, ""
+
+    if step == "MOBILE_PORT_TITULAR":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não: a portabilidade está em nome do titular desta contratação?"
+        values["port_titular"] = "Sim" if answer == "SIM" else "Não"
+        return True, ""
+
+    if step == "MOBILE_PORT_NAME":
+        name = re.sub(r"\s+", " ", (text or "").strip())
+        if len(name) < 5:
+            return False, "Informe o nome completo do titular da linha."
+        values["port_nome_titular"] = name[:160]
+        return True, ""
+
+    if step == "MOBILE_PORT_DOC":
+        document = _extract_cpf(text)
+        if not document:
+            return False, "Informe o CPF ou CNPJ completo do titular da linha."
+        values["port_cpf_cnpj"] = document
+        return True, ""
+
+    if step == "MOBILE_PORT_DATE":
+        date_value = _extract_generic_date(text)
+        if not date_value:
+            return False, "Informe a data da portabilidade no formato DD/MM/AAAA."
+        values["port_data"] = date_value
+        return True, ""
+
+    if step == "MOBILE_M2M_QTY":
+        qty = _extract_positive_int(text)
+        if not qty:
+            return False, "Informe a quantidade de chips M2M."
+        values["m2m_quantidade"] = qty
+        return True, ""
+
+    if step == "MOBILE_M2M_ICCIDS":
+        qty = int(values.get("m2m_quantidade") or 0)
+        iccids = re.findall(r"(?<!\d)\d{18,22}(?!\d)", text or "")
+        if qty <= 0:
+            return False, "Primeiro preciso da quantidade de chips M2M."
+        if len(iccids) != qty:
+            return False, f"Preciso de {qty} ICCID(s), um por linha."
+        values["m2m_iccids"] = "\n".join(iccids)
+        return True, ""
+
+    if step == "MOBILE_DUE_DAY":
+        day = _extract_due_day(text)
+        if not day:
+            return False, "Informe um dia de vencimento entre 1 e 31."
+        values["vencimento"] = day
+        return True, ""
+
+    if step == "MOBILE_ACTIVATION_FEE":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não para a taxa de ativação."
+        values["taxa_ativacao"] = "Sim" if answer == "SIM" else "Não"
+        if answer == "NAO":
+            values.pop("taxa_valor", None)
+        return True, ""
+
+    if step == "MOBILE_ACTIVATION_VALUE":
+        amount = _extract_money(text)
+        if amount is None:
+            return False, "Informe o valor da taxa de ativação."
+        values["taxa_valor"] = amount
+        return True, ""
+
+    if step == "MOBILE_PAYMENT_METHOD":
+        method = _extract_mobile_payment(text)
+        if not method:
+            return False, "Escolha boleto ou débito em conta."
+        values["forma_pagamento"] = method
+        if method == "Boleto":
+            for key in ("debito_banco", "debito_agencia", "debito_conta", "debito_titular"):
+                values.pop(key, None)
+        else:
+            values.pop("envio_fatura", None)
+        return True, ""
+
+    if step == "MOBILE_INVOICE_DELIVERY":
+        delivery = _extract_invoice_delivery(text)
+        if not delivery:
+            return False, "Escolha WhatsApp, e-mail ou ambos para receber a fatura."
+        values["envio_fatura"] = delivery
+        return True, ""
+
+    text_value = re.sub(r"\s+", " ", (text or "").strip())
+    if step in {"MOBILE_DEBIT_BANK", "MOBILE_DEBIT_AGENCY", "MOBILE_DEBIT_ACCOUNT", "MOBILE_DEBIT_HOLDER"}:
+        if not text_value:
+            return False, "Preciso dessa informação para configurar o débito em conta."
+        field = {
+            "MOBILE_DEBIT_BANK": "debito_banco",
+            "MOBILE_DEBIT_AGENCY": "debito_agencia",
+            "MOBILE_DEBIT_ACCOUNT": "debito_conta",
+            "MOBILE_DEBIT_HOLDER": "debito_titular",
+        }[step]
+        values[field] = text_value[:160]
+        return True, ""
+
+    if step == "MOBILE_UNIFY":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não para unificar as faturas."
+        values["unificar_faturas"] = "Sim" if answer == "SIM" else "Não"
+        if answer == "SIM":
+            values.pop("unificar_motivo", None)
+        return True, ""
+
+    if step == "MOBILE_UNIFY_REASON":
+        if len(text_value) < 3:
+            return False, "Informe o motivo para não unificar as faturas."
+        values["unificar_motivo"] = text_value[:300]
+        return True, ""
+
+    return False, "Não consegui interpretar esta etapa da contratação móvel."
+
+
+def _finish_sale_contract(client: SulnetCRMClient, state: AIClosingState) -> str:
+    won = client.mark_won(state.opportunity_id or 0)
+    contract = won.get("contract") or {}
+    state.contract_status = str(contract.get("status") or "aguardando_backoffice")
+    state.step = "WAITING_CONTRACT"
+    try:
+        started = client.start_contract(state.opportunity_id or 0)
+    except CRMIntegrationError:
+        started = contract
+    sign_url = str(started.get("signUrl") or "").strip()
+    state.contract_status = str(started.get("status") or state.contract_status)
+    if sign_url:
+        state.sign_url = sign_url
+        state.step = "WAITING_SIGNATURE"
+        return (
+            "Seu cadastro foi concluído e o contrato já está pronto para assinatura. "
+            f"Você pode assinar por este link: {sign_url}"
+        )
+    return _prompt_for_step(state, {})
+
+
 
 def _seller_knowledge(db: Session, agent: AIAgentProfile) -> str:
     items = list(
