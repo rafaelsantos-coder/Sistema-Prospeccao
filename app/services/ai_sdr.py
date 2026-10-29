@@ -27,7 +27,7 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
-from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
+from app.services.ai_sdr_policy import FTTH_PLANS, SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.timeutils import is_past, utcnow
