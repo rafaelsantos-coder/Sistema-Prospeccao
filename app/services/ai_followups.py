@@ -466,6 +466,14 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                 previous_messages=previous_outbound,
             )
 
+        # O cliente pode ter respondido enquanto o modelo gerava a mensagem.
+        # Revalida imediatamente antes do envio para não atropelar a resposta.
+        allowed_now, reason_now = _followup_allowed(db, job)
+        if not allowed_now:
+            job.status = "CANCELADO"
+            job.error = reason_now
+            return "cancelled"
+
         conversation = db.get(Conversation, job.conversation_id)
         if not conversation or not conversation.contact or not conversation.contact.phone:
             raise RuntimeError("Conversa sem telefone para follow-up.")
