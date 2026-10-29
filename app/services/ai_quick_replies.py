@@ -65,6 +65,13 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
             {"id": "plano_650", "label": "650 Mega"},
         ]
 
+    if "principal problema" in text or "mais incomoda" in text or "o que incomoda" in text:
+        return [
+            {"id": "quedas", "label": "Internet cai"},
+            {"id": "lentidao", "label": "Está lenta"},
+            {"id": "preco", "label": "Preço alto"},
+        ]
+
     if all(term in text for term in ("preço", "velocidade")):
         options = [
             {"id": "preco", "label": "Preço"},
