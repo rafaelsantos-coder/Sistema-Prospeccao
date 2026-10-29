@@ -145,6 +145,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         "ai/index.html",
         user=actor,
         active_nav="ai",
+        ai_section="agent",
         page_title="IA & Agentes",
         agents=agents,
         queues=queues,
