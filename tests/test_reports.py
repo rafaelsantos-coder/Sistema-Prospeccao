@@ -72,6 +72,8 @@ def test_whatsapp_reports_page(monkeypatch):
         assert "Mensagem para relatório de atendimento." in response.text
         assert "PDF gerencial" in response.text
         assert "CSV mensagens" in response.text
+        assert 'name="queue_id"' in response.text
+        assert "<span>Fila</span>" in response.text
 
 
 def test_whatsapp_reports_csv_exports(monkeypatch):
