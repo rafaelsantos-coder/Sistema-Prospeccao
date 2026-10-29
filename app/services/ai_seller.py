@@ -1262,22 +1262,45 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             answer = _yes_no(text)
             interpreted = SellerInterpretation()
             if answer == "NAO_INFORMADO" or answer == "NAO":
-                interpreted = _interpret_ambiguous(db, agent=agent, step=state.step, message=text, plan_label=state.plan_label)
+                interpreted = _interpret_ambiguous(
+                    db,
+                    agent=agent,
+                    step=state.step,
+                    message=text,
+                    plan_label=state.plan_label,
+                )
                 if answer == "NAO_INFORMADO":
                     answer = interpreted.confirmation
             if interpreted.human_requested:
-                _handoff_to_human(db, state=state, conversation=conversation, agent=agent, reason="Cliente pediu atendente durante confirmação do plano.")
+                _handoff_to_human(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    reason="Cliente pediu atendente durante confirmação do plano.",
+                )
                 reply = "Certo. Encaminhei a conversa para um atendente com todo o histórico."
             elif answer == "SIM":
                 try:
-                    client.update_opportunity(state.opportunity_id or 0, {"planLabel": state.plan_label})
+                    client.update_opportunity(
+                        state.opportunity_id or 0,
+                        {"planLabel": state.plan_label},
+                    )
                 except CRMIntegrationError:
                     products = client.products(state.plan_label)
                     if len(products) == 1:
-                        client.update_opportunity(state.opportunity_id or 0, {"planId": products[0].get("id"), "planLabel": products[0].get("name")})
+                        client.update_opportunity(
+                            state.opportunity_id or 0,
+                            {
+                                "planId": products[0].get("id"),
+                                "planLabel": products[0].get("name"),
+                            },
+                        )
                         state.plan_label = str(products[0].get("name") or state.plan_label)
                     else:
                         raise
+                _sync_plan_context(client, state, collected)
+                _save_collected(state, collected)
                 state.step = "EMAIL"
                 reply = _prompt_for_step(state, collected)
             elif answer == "NAO":
@@ -1286,7 +1309,15 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     products = client.products(requested)
                     if len(products) == 1:
                         state.plan_label = str(products[0].get("name") or requested)
-                        client.update_opportunity(state.opportunity_id or 0, {"planId": products[0].get("id"), "planLabel": state.plan_label})
+                        client.update_opportunity(
+                            state.opportunity_id or 0,
+                            {
+                                "planId": products[0].get("id"),
+                                "planLabel": state.plan_label,
+                            },
+                        )
+                        _sync_plan_context(client, state, collected)
+                        _save_collected(state, collected)
                         state.step = "EMAIL"
                         reply = f"Certo, alterei para {state.plan_label}. " + _prompt_for_step(state, collected)
                     else:
@@ -1302,10 +1333,54 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 reply = "Preciso de um e-mail válido para concluir o cadastro. Pode me informar?"
             else:
                 collected["email"] = email
-                client.update_opportunity(state.opportunity_id or 0, {"clientEmail": email})
+                client.update_opportunity(
+                    state.opportunity_id or 0,
+                    {"clientEmail": email},
+                )
+                _sync_plan_context(client, state, collected)
+                if _is_mobile_plan(state, collected):
+                    values = _mobile_values(collected)
+                    collected["mobileCategoryValues"] = values
+                    _persist_mobile_category_form(client, state, collected)
+                    state.step = _mobile_next_step(values) or "MOBILE_CONTRACT_TYPE"
+                else:
+                    state.step = "BILLING"
                 _save_collected(state, collected)
-                state.step = "BILLING"
                 reply = _prompt_for_step(state, collected)
+
+        elif state.step.startswith("MOBILE_"):
+            values = _mobile_values(collected)
+            accepted, error_reply = _apply_mobile_answer(
+                state.step,
+                text,
+                values,
+            )
+            if not accepted:
+                reply = error_reply
+            else:
+                collected["mobileCategoryValues"] = values
+                _persist_mobile_category_form(client, state, collected)
+                next_step = _mobile_next_step(values)
+                if next_step:
+                    state.step = next_step
+                    reply = _prompt_for_step(state, collected)
+                else:
+                    missing = _mobile_missing_fields(values)
+                    if missing:
+                        raise CRMIntegrationError(
+                            "Checklist de Telefonia Móvel incompleto: " + ", ".join(missing)
+                        )
+                    client.update_opportunity(
+                        state.opportunity_id or 0,
+                        {
+                            "paymentMethod": values["forma_pagamento"],
+                            "dueDay": values["vencimento"],
+                            "invoiceDelivery": ", ".join(values.get("envio_fatura") or []),
+                        },
+                    )
+                    _persist_mobile_category_form(client, state, collected)
+                    reply = _finish_sale_contract(client, state)
+                _save_collected(state, collected)
 
         elif state.step == "BILLING":
             billing = _billing_local(text)
@@ -1333,25 +1408,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 collected.update(billing)
                 client.update_opportunity(state.opportunity_id or 0, billing)
                 _save_collected(state, collected)
-                won = client.mark_won(state.opportunity_id or 0)
-                contract = won.get("contract") or {}
-                state.contract_status = str(contract.get("status") or "aguardando_backoffice")
-                state.step = "WAITING_CONTRACT"
-                try:
-                    started = client.start_contract(state.opportunity_id or 0)
-                except CRMIntegrationError:
-                    started = contract
-                sign_url = str(started.get("signUrl") or "").strip()
-                state.contract_status = str(started.get("status") or state.contract_status)
-                if sign_url:
-                    state.sign_url = sign_url
-                    state.step = "WAITING_SIGNATURE"
-                    reply = (
-                        "Seu cadastro foi concluído e o contrato já está pronto para assinatura. "
-                        f"Você pode assinar por este link: {sign_url}"
-                    )
-                else:
-                    reply = _prompt_for_step(state, collected)
+                reply = _finish_sale_contract(client, state)
 
         elif state.step in {"WAITING_CONTRACT", "WAITING_SIGNATURE"}:
             status = client.get_status(state.opportunity_id or 0)
