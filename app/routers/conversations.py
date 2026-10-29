@@ -35,7 +35,8 @@ from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
 from app.services.queue_routing import queue_for_conversation, queue_member_user_ids
 from app.services.whatsapp_presence import is_user_whatsapp_online, online_user_ids
-from app.services.zapi import ZApiError, ZApiService
+from app.services.zapi import ZApiError
+from app.services.zapi_instances import service_for_conversation
 from app.timeutils import utcnow
 from app.web import flash, render
 
@@ -314,7 +315,10 @@ def send_message(
         flash(request, "Digite uma mensagem antes de enviar.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     try:
-        result = ZApiService().send_text(phone=conversation.contact.phone, message=clean_message)
+        result = service_for_conversation(db, conversation.id).send_text(
+            phone=conversation.contact.phone,
+            message=clean_message,
+        )
     except ZApiError as exc:
         flash(request, str(exc), "error")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
@@ -436,7 +440,7 @@ async def send_media(
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     clean_caption = caption.strip()
-    service = ZApiService()
+    service = service_for_conversation(db, conversation.id)
     try:
         if kind == "IMAGE":
             result = service.send_image(
