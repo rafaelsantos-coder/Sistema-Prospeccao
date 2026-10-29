@@ -6,15 +6,20 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import (
+    AIConversationState,
+    AIQueueBinding,
     Contact,
     Conversation,
     ConversationAssignment,
+    ConversationQueueLink,
     ConversationZApiInstance,
     Lead,
     Message,
     MessageEvent,
     ServiceQueue,
+    ServiceQueueMember,
     User,
 )
 from app.services.queue_routing import (
@@ -118,6 +123,28 @@ def _presence_timestamp(value) -> float:
         from datetime import timezone
         value = value.replace(tzinfo=timezone.utc)
     return value.timestamp()
+
+
+def _queue_reserved_for_ai(db: Session, queue: ServiceQueue | None) -> bool:
+    if not queue or not settings.ai_sdr_enabled or not settings.ai_autonomous_enabled:
+        return False
+    binding = db.scalar(
+        select(AIQueueBinding).where(
+            AIQueueBinding.queue_id == queue.id,
+            AIQueueBinding.active.is_(True),
+            AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY"}),
+        )
+    )
+    return binding is not None
+
+
+def _conversation_ready_for_human(db: Session, conversation_id: int) -> bool:
+    state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == conversation_id
+        )
+    )
+    return bool(state and state.state in {"HANDOFF", "HUMAN_ACTIVE"})
 
 
 def choose_assignee(
@@ -264,7 +291,11 @@ def ensure_open_conversation(
             if queue.branch_id and not conversation.branch_id:
                 conversation.branch_id = queue.branch_id
 
-        if assign_if_unowned and not conversation.assigned_user_id:
+        if (
+            assign_if_unowned
+            and not conversation.assigned_user_id
+            and (not _queue_reserved_for_ai(db, queue) or _conversation_ready_for_human(db, conversation.id))
+        ):
             owner = choose_assignee(db, contact, lead, queue=queue)
             if owner:
                 conversation.assigned_user_id = owner.id
@@ -290,9 +321,10 @@ def ensure_open_conversation(
         team=team,
         branch_id=branch_id,
     )
+    ai_reserved = _queue_reserved_for_ai(db, queue)
     owner = (
         choose_assignee(db, contact, lead, queue=queue)
-        if assign_if_unowned
+        if assign_if_unowned and not ai_reserved
         else None
     )
     conversation = Conversation(
@@ -386,6 +418,8 @@ def distribute_waiting_conversations(
                     queue.id,
                     origin="AUTO_QUEUE",
                 )
+        if _queue_reserved_for_ai(db, queue) and not _conversation_ready_for_human(db, conversation.id):
+            continue
         owner = choose_assignee(db, contact, lead, queue=queue)
         if not owner:
             continue
@@ -416,6 +450,23 @@ def apply_conversation_scope(stmt, user: User):
         if user.branch_id:
             return stmt.where(Conversation.branch_id == user.branch_id)
         return stmt.where(Conversation.team == user.team)
+    if user.role == "CONSULTOR":
+        member_queue_ids = select(ServiceQueueMember.queue_id).where(
+            ServiceQueueMember.user_id == user.id,
+            ServiceQueueMember.active.is_(True),
+        )
+        visible_unassigned_ids = select(ConversationQueueLink.conversation_id).where(
+            ConversationQueueLink.queue_id.in_(member_queue_ids)
+        )
+        return stmt.where(
+            or_(
+                Conversation.assigned_user_id == user.id,
+                (
+                    Conversation.assigned_user_id.is_(None)
+                    & Conversation.id.in_(visible_unassigned_ids)
+                ),
+            )
+        )
     return stmt.where(Conversation.assigned_user_id == user.id)
 
 

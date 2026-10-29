@@ -774,3 +774,40 @@ class AIConversationState(Base):
     conversation: Mapped[Conversation] = relationship()
     agent: Mapped[AIAgentProfile] = relationship()
     last_run: Mapped[AIRun | None] = relationship(foreign_keys=[last_run_id])
+
+
+class AIFollowupJob(Base):
+    __tablename__ = "ai_followup_jobs"
+    __table_args__ = (
+        Index("ix_ai_followup_jobs_worker", "status", "due_at", "created_at"),
+        Index("ix_ai_followup_jobs_conversation", "conversation_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("ai_agent_profiles.id"), index=True)
+    queue_id: Mapped[int] = mapped_column(ForeignKey("service_queues.id"), index=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    source_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    step: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    theme: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="PENDENTE", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    agent: Mapped[AIAgentProfile] = relationship()
+    queue: Mapped[ServiceQueue] = relationship()
+    conversation: Mapped[Conversation] = relationship()
+    source_message: Mapped[Message | None] = relationship()
+

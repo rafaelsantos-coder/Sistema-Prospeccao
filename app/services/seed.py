@@ -23,6 +23,7 @@ from app.models import (
     User,
 )
 from app.security import hash_password
+from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT
 from app.services.followups import initial_next_action
 from app.services.scoring import calculate_sulnet_score
 from app.services.zapi_instances import seed_default_zapi_instance
@@ -131,52 +132,42 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         db.add(ai_agent)
         db.flush()
 
-    if not db.scalar(
-        select(AIKnowledgeItem.id).where(AIKnowledgeItem.agent_id == ai_agent.id).limit(1)
-    ):
-        db.add_all(
-            [
-                AIKnowledgeItem(
-                    agent_id=ai_agent.id,
-                    title="Objetivo do SulIA SDR",
-                    category="PROCESSO",
-                    tags="sdr,qualificacao,handoff",
-                    content=(
-                        "O SulIA atua no topo do funil comercial. Deve entender a necessidade, "
-                        "identificar dores e sinais de intenção, qualificar o prospect e recomendar "
-                        "transferência para um vendedor humano quando houver intenção real de proposta, "
-                        "contratação ou negociação."
-                    ),
-                    created_by_id=admin.id,
-                ),
-                AIKnowledgeItem(
-                    agent_id=ai_agent.id,
-                    title="Regras comerciais seguras",
-                    category="REGRAS",
-                    tags="preco,cobertura,promocao,seguranca",
-                    content=(
-                        "Nunca inventar preço, promoção, cobertura, prazo de instalação, desconto ou "
-                        "condição comercial. Se a informação não estiver na base de conhecimento, informar "
-                        "que um consultor da Sulnet confirmará. Pedido de desconto, proposta ou contratação "
-                        "deve gerar recomendação de handoff."
-                    ),
-                    created_by_id=admin.id,
-                ),
-                AIKnowledgeItem(
-                    agent_id=ai_agent.id,
-                    title="Dados mínimos de qualificação",
-                    category="QUALIFICACAO",
-                    tags="provedor,velocidade,preco,dor,decisor,prazo",
-                    content=(
-                        "Quando fizer sentido na conversa, buscar de forma natural: provedor atual, "
-                        "velocidade atual, valor aproximado, principais dores, uso da conexão, produto de "
-                        "interesse, se a pessoa participa da decisão e prazo para mudança. Fazer uma pergunta "
-                        "por vez e não transformar a conversa em interrogatório."
-                    ),
-                    created_by_id=admin.id,
-                ),
-            ]
+    if not ai_agent.system_prompt or "OBJETIVO" not in ai_agent.system_prompt:
+        ai_agent.system_prompt = SULIA_SYSTEM_PROMPT
+    ai_agent.business_goal = (
+        "Gerar vendas de internet: diagnosticar, ofertar do maior plano elegível para o menor, "
+        "tratar objeções, negociar até 3 meses gratuitos em FTTH com fidelidade, manter follow-up "
+        "contínuo e transferir para vendedor da mesma fila quando houver intenção clara de contratação."
+    )
+    ai_agent.qualification_handoff_score = 80
+    ai_agent.max_history_messages = max(int(ai_agent.max_history_messages or 24), 40)
+    ai_agent.max_knowledge_chars = max(int(ai_agent.max_knowledge_chars or 12000), 20000)
+
+    for knowledge_data in SYSTEM_KNOWLEDGE_ITEMS:
+        item = db.scalar(
+            select(AIKnowledgeItem).where(
+                AIKnowledgeItem.agent_id == ai_agent.id,
+                AIKnowledgeItem.title == knowledge_data["title"],
+            )
         )
+        if not item:
+            item = AIKnowledgeItem(
+                agent_id=ai_agent.id,
+                title=knowledge_data["title"],
+                category=knowledge_data["category"],
+                tags=knowledge_data["tags"],
+                content=knowledge_data["content"],
+                source_type="SULNET_POLICY_V1",
+                active=True,
+                created_by_id=admin.id,
+            )
+            db.add(item)
+        else:
+            item.category = knowledge_data["category"]
+            item.tags = knowledge_data["tags"]
+            item.content = knowledge_data["content"]
+            item.source_type = "SULNET_POLICY_V1"
+            item.active = True
 
     digital_queues = list(
         db.scalars(
