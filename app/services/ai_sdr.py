@@ -28,7 +28,7 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
-from app.services.ai_sdr_policy import FTTH_PLANS, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
+from app.services.ai_sdr_policy import FTTH_PLANS, MOBILE_PLANS, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.timeutils import is_past, utcnow
@@ -601,7 +601,17 @@ def _city_from_sales_context(decision: AIDecision, context: dict) -> str:
     lead_city = str((context.get("lead") or {}).get("city") or "").strip()
     if lead_city:
         return lead_city
-    return str(decision.qualification.city or "").strip()
+
+    qualification_city = str(decision.qualification.city or "").strip()
+    if qualification_city:
+        return qualification_city
+
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    for service_city in SERVICE_CITIES:
+        city_key = _normalized_city(service_city)
+        if latest == city_key or city_key in latest:
+            return service_city
+    return ""
 
 
 def _plan_available_in_city(plan: dict, city: str) -> bool:
@@ -675,6 +685,208 @@ def _requested_plan_speed(value: str | None) -> int | None:
 
 def _format_brl(value: float) -> str:
     return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _last_outbound_text(context: dict) -> str:
+    for row in reversed(context.get("history") or []):
+        if str(row.get("direction") or "").upper() == "OUTBOUND":
+            return str(row.get("body") or "")
+    return ""
+
+
+def _looks_like_catalog_request(value: str | None) -> bool:
+    folded = _fold_sales_text(value)
+    if not folded:
+        return False
+    cues = (
+        "todos os planos",
+        "todos planos",
+        "quais planos",
+        "lista de planos",
+        "catalogo",
+        "planos disponiveis",
+        "opcoes de planos",
+        "planos da sulnet",
+        "planos voces tem",
+        "planos que voces tem",
+    )
+    if any(cue in folded for cue in cues):
+        return True
+    return (
+        "planos" in folded
+        and ("precos" in folded or "preco" in folded)
+        and ("velocidades" in folded or "velocidade" in folded or "promocoes" in folded)
+    )
+
+
+def _reset_catalog_handoff(decision: AIDecision) -> None:
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    decision.concession_level = 0
+    decision.free_months = 0
+    decision.followup_needed = True
+
+
+def _show_catalog_root(decision: AIDecision) -> AIDecision:
+    decision.reply_text = (
+        "Claro! Tenho o catálogo comercial vigente da Sulnet com os valores confirmados. "
+        "O que você quer consultar primeiro?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="catalogo_fibra", label="Fibra óptica"),
+        QuickReply(id="catalogo_sulmovel", label="Móvel"),
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.summary = "Cliente solicitou o catálogo de planos da Sulnet."
+    decision.next_action = "Cliente escolher entre Fibra óptica e Sulmóvel."
+    _reset_catalog_handoff(decision)
+    return decision
+
+
+def _show_mobile_catalog_page(
+    decision: AIDecision,
+    *,
+    page: int,
+) -> AIDecision:
+    decision.qualification.desired_product = "Sulmóvel"
+    if page <= 1:
+        plans = MOBILE_PLANS[:2]
+        decision.reply_text = (
+            "No Sulmóvel temos planos nacionais com valores confirmados. "
+            "Escolha uma opção para continuar:"
+        )
+        decision.quick_replies = [
+            QuickReply(
+                id=f"mobile_{int(plan['data_gb'])}gb",
+                label=f"{int(plan['data_gb'])}GB - R$ {_format_brl(float(plan['price']))}",
+            )
+            for plan in plans
+        ] + [QuickReply(id="mobile_mais", label="Mais planos")]
+        decision.next_action = "Cliente escolher 5GB, 7GB ou abrir mais planos móveis."
+    else:
+        plans = MOBILE_PLANS[2:4]
+        decision.reply_text = "Mais opções do Sulmóvel:"
+        decision.quick_replies = [
+            QuickReply(
+                id=f"mobile_{int(plan['data_gb'])}gb",
+                label=f"{int(plan['data_gb'])}GB - R$ {_format_brl(float(plan['price']))}",
+            )
+            for plan in plans
+        ] + [QuickReply(id="mobile_voltar", label="Voltar")]
+        decision.next_action = "Cliente escolher 10GB, 15GB ou voltar aos primeiros planos."
+
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.recommended_stage = "PROPOSTA"
+    decision.summary = "Cliente está consultando o catálogo Sulmóvel."
+    _reset_catalog_handoff(decision)
+    return decision
+
+
+def _show_fiber_catalog(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    city = _city_from_sales_context(decision, context)
+    decision.qualification.desired_product = "Fibra óptica"
+    if not city:
+        decision.reply_text = (
+            "Claro! Para eu mostrar somente os planos de fibra óptica disponíveis, "
+            "qual é a sua cidade?"
+        )
+        decision.quick_replies = []
+        decision.intent = "QUALIFYING"
+        decision.sales_state = "DISCOVERY"
+        decision.recommended_stage = "CONTATO_REALIZADO"
+        decision.summary = "Cliente escolheu consultar os planos de fibra óptica."
+        decision.next_action = "Confirmar a cidade para listar os planos de fibra válidos."
+        _reset_catalog_handoff(decision)
+        return decision
+
+    eligible = _eligible_plans_for_city(city)
+    if not eligible:
+        return decision
+
+    decision.qualification.city = city
+    option_parts = [
+        f"{int(plan['download_mbps'])} Mega por R$ {_format_brl(float(plan['price_fidelity']))}"
+        for plan in eligible
+    ]
+    if len(option_parts) == 1:
+        options_text = option_parts[0]
+    else:
+        options_text = ", ".join(option_parts[:-1]) + f" e {option_parts[-1]}"
+    decision.reply_text = (
+        f"Em {city}, os planos de fibra óptica disponíveis são {options_text} mensais. "
+        "Qual você quer conhecer?"
+    )
+    decision.quick_replies = [
+        QuickReply(
+            id=f"plano_{int(plan['download_mbps'])}",
+            label=f"{int(plan['download_mbps'])} Mega",
+        )
+        for plan in eligible[:3]
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.recommended_stage = "PROPOSTA"
+    decision.summary = f"Cliente está consultando os planos de fibra disponíveis em {city}."
+    decision.next_action = "Cliente escolher um plano de fibra válido para avançar."
+    decision.proposal_summary = (
+        f"Planos de fibra válidos em {city}: " + "; ".join(option_parts) + "."
+    )
+    _reset_catalog_handoff(decision)
+    return decision
+
+
+def _apply_catalog_navigation_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    latest_raw = str(context.get("latest_customer_message") or "")
+    latest = _fold_sales_text(latest_raw)
+    previous = _fold_sales_text(_last_outbound_text(context))
+
+    if _looks_like_catalog_request(latest_raw):
+        return _show_catalog_root(decision)
+
+    if latest in {
+        "fibra",
+        "fibra optica",
+        "planos de fibra",
+        "internet fibra",
+        "internet de fibra",
+    }:
+        return _show_fiber_catalog(decision, context)
+
+    if latest in {
+        "movel",
+        "sulmovel",
+        "planos moveis",
+        "plano movel",
+        "celular",
+    }:
+        return _show_mobile_catalog_page(decision, page=1)
+
+    if latest in {"mais planos", "ver mais", "mais opcoes"}:
+        return _show_mobile_catalog_page(decision, page=2)
+
+    if latest == "voltar" and "sulmovel" in previous:
+        return _show_mobile_catalog_page(decision, page=1)
+
+    if (
+        "qual e a sua cidade" in previous
+        and "planos de fibra" in previous
+        and _city_from_sales_context(decision, context)
+    ):
+        return _show_fiber_catalog(decision, context)
+
+    return decision
 
 
 def _apply_unavailable_plan_policy(
@@ -948,6 +1160,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "aceite a recusa daquele detalhe e volte para a oferta principal com CTA de avanço. Nunca responda apenas 'se quiser, me chame' nesse cenário. "
         "Se o cliente rejeitar a própria oferta de internet sem pedir para parar o contato, também não encerre: mude o ângulo e pergunte se ele já possui conexão "
         "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
+        "Quando o cliente pedir todos os planos, catálogo, preços ou velocidades de forma ampla, nunca diga que não possui a lista e nunca estime valores: "
+        "ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
         "Se o cliente pedir uma velocidade/plano que não esteja disponível na cidade, isso NÃO é motivo de handoff: informe que aquela opção não está disponível, "
         "apresente somente os planos válidos do catálogo para a cidade e continue a venda até o cliente escolher uma opção. Se a cidade ainda não estiver confirmada, pergunte a cidade. "
         "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação em uma oferta válida ou exceção real que exija humano. "
@@ -971,6 +1185,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
+    decision = _apply_catalog_navigation_policy(decision, context)
     decision = _apply_unavailable_plan_policy(decision, context)
     decision = _apply_secondary_decline_reengagement_policy(decision, context)
     decision = _apply_offer_rejection_diagnostic_policy(decision, context)

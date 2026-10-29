@@ -167,6 +167,46 @@ FTTH_PLANS = [
 ]
 
 
+MOBILE_PLANS = [
+    {
+        "code": "SULMOVEL_5GB",
+        "name": "Sulmóvel 5GB",
+        "data_gb": 5,
+        "price": 44.90,
+        "minutes": 1000,
+        "sms": 20,
+        "unlimited_apps": ["WhatsApp"],
+    },
+    {
+        "code": "SULMOVEL_7GB",
+        "name": "Sulmóvel 7GB",
+        "data_gb": 7,
+        "price": 47.90,
+        "minutes": 1000,
+        "sms": 20,
+        "unlimited_apps": ["WhatsApp", "Waze/Maps"],
+    },
+    {
+        "code": "SULMOVEL_10GB",
+        "name": "Sulmóvel 10GB",
+        "data_gb": 10,
+        "price": 53.90,
+        "minutes": 1000,
+        "sms": 20,
+        "unlimited_apps": ["WhatsApp", "Waze/Maps"],
+    },
+    {
+        "code": "SULMOVEL_15GB",
+        "name": "Sulmóvel 15GB",
+        "data_gb": 15,
+        "price": 69.80,
+        "minutes": 1000,
+        "sms": 20,
+        "unlimited_apps": ["WhatsApp", "Waze/Maps"],
+    },
+]
+
+
 SERVICE_CITIES = [
     "Santa Rosa",
     "Santo Ângelo",
@@ -379,6 +419,20 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         ),
     },
     {
+        "title": "Catálogo por botões - Fibra ou Sulmóvel",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "catalogo,todos os planos,precos,velocidades,fibra,sulmovel,botoes",
+        "content": (
+            "Quando o cliente pedir todos os planos, catálogo, preços, velocidades ou opções da Sulnet de forma ampla, "
+            "não diga que não possui a lista e não estime valores. O catálogo estruturado é a fonte oficial. Primeiro pergunte "
+            "o que deseja consultar, com botões 'Fibra óptica' e 'Móvel'. Se escolher Fibra óptica, use a cidade já conhecida; "
+            "se a cidade não estiver confirmada, pergunte a cidade. Depois mostre somente os planos de fibra válidos naquela cidade, "
+            "com preço mensal confirmado e botões de escolha. Se escolher Sulmóvel, apresente os planos confirmados em botões. "
+            "Como o canal aceita no máximo 3 botões por mensagem, pagine o Sulmóvel: 5GB, 7GB e 'Mais planos'; depois 10GB, 15GB e 'Voltar'. "
+            "Ao escolher um plano, continue a venda e teste o fechamento. Promoções só podem ser citadas quando estiverem confirmadas na base vigente."
+        ),
+    },
+    {
         "title": "Sulmóvel - planos confirmados por contrato",
         "category": "PRODUTOS",
         "tags": "sulmovel,portabilidade,5gb,7gb,10gb,15gb,nacional",
@@ -568,6 +622,19 @@ Não obrigue o cliente a digitar quando um botão resolver.
 Os botões devem ter labels curtos, com no máximo 20 caracteres.
 Se a pergunta for realmente aberta, como "qual é seu provedor atual?" ou "quanto você paga hoje?", permita resposta em texto.
 Mesmo quando houver botões, a IA deve continuar interpretando normalmente qualquer texto livre que o cliente enviar.
+
+CATÁLOGO POR BOTÕES
+Quando o cliente pedir "todos os planos", "quais planos vocês têm", "catálogo", preços/velocidades em geral ou equivalente:
+- NÃO diga que não possui a lista;
+- NÃO estime preços ou velocidades;
+- use o catálogo estruturado vigente;
+- primeiro ofereça botões "Fibra óptica" / "Móvel";
+- se escolher Fibra óptica, use a cidade já conhecida; se a cidade não estiver confirmada, pergunte a cidade;
+- depois mostre somente os planos de fibra válidos naquela cidade, com preço mensal e botões para escolher;
+- se escolher Sulmóvel, mostre os planos confirmados em botões;
+- por limite do WhatsApp/Z-API, use até 3 botões por mensagem: primeiro 5GB / 7GB / Mais planos; depois 10GB / 15GB / Voltar;
+- promoções e condições especiais só podem ser informadas quando estiverem confirmadas na base vigente.
+Depois que o cliente escolher um plano, continue a venda normalmente e teste o fechamento.
 
 ESTRATÉGIA DE OFERTA
 Sempre começar pelo MAIOR plano elegível na cidade.
