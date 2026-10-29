@@ -32,12 +32,15 @@ from app.services.ai_sdr import (
     _apply_catalog_navigation_policy,
     _apply_corporate_customer_policy,
     _apply_offer_rejection_diagnostic_policy,
+    _apply_prospecting_entry_policy,
     _apply_router_information_policy,
     _apply_secondary_decline_reengagement_policy,
     _apply_unavailable_plan_policy,
     _confirmed_customer_type_from_lead,
+    _confirmed_existing_customer_from_lead,
     _is_company_context,
     _persist_confirmed_customer_type,
+    _persist_confirmed_existing_customer,
     _show_corporate_differentials,
     _sanitize_unconfirmed_customer_facts,
     build_ai_context,
@@ -2134,3 +2137,299 @@ def test_ver_planos_after_corporate_differentials_returns_corporate_catalog():
         "Corp. 250 Mega",
         "Corp. 650 Mega",
     ]
+
+
+
+def _base_prospecting_entry_decision():
+    return AIDecision(
+        reply_text="Em Santa Rosa temos 800 Mega por R$ 119,90.",
+        intent="INTEREST",
+        qualification_score=45,
+        temperature="MORNO",
+        recommended_stage="PROPOSTA",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.9,
+        summary="Cliente demonstrou interesse.",
+        next_action="Apresentar oferta.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="OFFERING",
+        offer_plan_code="FTTH_800",
+        offer_price=119.90,
+    )
+
+
+def test_first_prospecting_question_is_existing_customer_before_any_offer():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Quero saber os planos de internet",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {
+                "direction": "INBOUND",
+                "body": "Quero saber os planos de internet",
+            }
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "NAO_INFORMADO"
+    assert result.offer_plan_code is None
+    assert result.offer_price is None
+    assert result.sales_state == "DISCOVERY"
+    assert result.reply_text == "Antes de te mostrar as opções, você já é cliente Sulnet?"
+    assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+
+
+def test_existing_customer_confirmation_routes_to_mobile_or_new_connection():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Sim",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Antes de te mostrar as opções, você já é cliente Sulnet?",
+            },
+            {"direction": "INBOUND", "body": "Sim"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "CLIENTE"
+    assert result.offer_plan_code is None
+    assert "Telefonia Móvel" in result.reply_text
+    assert "outro endereço" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Telefonia Móvel",
+        "Nova conexão",
+    ]
+
+
+def test_new_customer_confirmation_routes_to_internet_or_mobile():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Não",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Antes de te mostrar as opções, você já é cliente Sulnet?",
+            },
+            {"direction": "INBOUND", "body": "Não"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "NAO_CLIENTE"
+    assert result.offer_plan_code is None
+    assert "planos de internet ou Telefonia Móvel" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Internet",
+        "Telefonia Móvel",
+    ]
+
+
+def test_new_customer_internet_choice_asks_home_or_company():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Internet",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "NAO_CLIENTE",
+            "confirmed_customer_type": "",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "O que você quer conhecer: planos de internet ou Telefonia Móvel?",
+            },
+            {"direction": "INBOUND", "body": "Internet"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "NAO_CLIENTE"
+    assert result.qualification.desired_product == "Internet"
+    assert result.reply_text == "A internet é para sua casa ou empresa?"
+    assert [item.label for item in result.quick_replies] == [
+        "Para casa",
+        "Para empresa",
+    ]
+
+
+def test_existing_customer_new_connection_asks_home_or_company_for_new_address():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Nova conexão",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "CLIENTE",
+            "confirmed_customer_type": "RESIDENCIAL",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Para uma nova contratação, você quer Telefonia Móvel "
+                    "ou uma nova conexão para outro endereço?"
+                ),
+            },
+            {"direction": "INBOUND", "body": "Nova conexão"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "CLIENTE"
+    assert result.qualification.desired_product == "Nova conexão de internet"
+    assert "outro endereço" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Para casa",
+        "Para empresa",
+    ]
+
+
+def test_existing_customer_mobile_choice_opens_mobile_catalog():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Telefonia Móvel",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "CLIENTE",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Para uma nova contratação, você quer Telefonia Móvel "
+                    "ou uma nova conexão para outro endereço?"
+                ),
+            }
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "CLIENTE"
+    assert result.qualification.desired_product == "Sulmóvel"
+    assert result.sales_state == "OFFERING"
+    assert [item.label for item in result.quick_replies] == [
+        "5GB - R$ 44,90",
+        "7GB - R$ 47,90",
+        "Mais planos",
+    ]
+
+
+def test_existing_customer_memory_is_persisted_without_overwriting_other_raw_data():
+    lead = Lead(
+        business_name="",
+        contact_name="Cliente",
+        phone="5555999999999",
+        segment="Residencial",
+        city="Santa Rosa",
+        source="MANUAL",
+        origin_channel="WHATSAPP",
+        team="DIGITAL",
+        stage="NOVO",
+        score=0,
+        temperature="FRIO",
+        priority="NORMAL",
+        raw_data='{"origem":"campanha"}',
+    )
+
+    _persist_confirmed_existing_customer(
+        lead,
+        "CLIENTE",
+        conversation_id=321,
+    )
+
+    assert _confirmed_existing_customer_from_lead(lead) == "CLIENTE"
+    assert '"origem": "campanha"' in lead.raw_data
+    assert '"source": "INBOUND_CUSTOMER_CONFIRMED"' in lead.raw_data
+
+
+def test_simple_no_without_customer_question_does_not_confirm_not_customer():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Não",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Quer que eu te explique os benefícios?",
+            },
+            {"direction": "INBOUND", "body": "Não"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "NAO_INFORMADO"
+    assert result.reply_text == "Antes de te mostrar as opções, você já é cliente Sulnet?"
+
+
+def test_competitor_customer_phrase_is_not_misread_as_sulnet_customer():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Sou cliente da Vivo hoje",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {"direction": "INBOUND", "body": "Sou cliente da Vivo hoje"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "NAO_INFORMADO"
+    assert result.reply_text == "Antes de te mostrar as opções, você já é cliente Sulnet?"
+
+
+def test_opt_out_is_not_overridden_by_prospecting_customer_gate():
+    decision = AIDecision(
+        reply_text="Tudo bem. Não enviaremos novas mensagens.",
+        intent="DO_NOT_CONTACT",
+        qualification_score=0,
+        temperature="FRIO",
+        recommended_stage="NAO_CONTATAR",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.99,
+        summary="Cliente pediu para não receber mais mensagens.",
+        next_action="Encerrar contato.",
+        qualification=QualificationData(),
+        crm_notes=[],
+        sales_state="OPT_OUT",
+        followup_needed=False,
+    )
+    context = {
+        "latest_customer_message": "Não quero mais mensagens",
+        "lead": {"confirmed_existing_customer": ""},
+        "history": [],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.intent == "DO_NOT_CONTACT"
+    assert result.sales_state == "OPT_OUT"
+    assert result.reply_text == "Tudo bem. Não enviaremos novas mensagens."
