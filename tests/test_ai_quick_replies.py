@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.services.ai_quick_replies import infer_quick_replies, quick_replies_for_message
-from app.services.conversation_engine import payload_message_content
+from app.services.conversation_engine import payload_from_me, payload_message_content
 
 
 def test_infers_casa_empresa_buttons():
@@ -52,3 +52,18 @@ def test_button_response_is_read_as_customer_text():
     assert body == "Para casa"
     assert media_url is None
     assert mime_type is None
+
+
+
+def test_from_me_string_false_is_inbound():
+    assert payload_from_me({"fromMe": False}) is False
+    assert payload_from_me({"fromMe": "false"}) is False
+    assert payload_from_me({"fromMe": "False"}) is False
+    assert payload_from_me({"fromMe": "0"}) is False
+    assert payload_from_me({}) is False
+
+
+def test_from_me_string_true_is_outbound():
+    assert payload_from_me({"fromMe": True}) is True
+    assert payload_from_me({"fromMe": "true"}) is True
+    assert payload_from_me({"fromMe": "1"}) is True
