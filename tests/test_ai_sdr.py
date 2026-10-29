@@ -1369,7 +1369,7 @@ def test_broad_catalog_request_opens_fiber_or_mobile_buttons():
     assert "estimar" not in result.reply_text.lower()
     assert [item.label for item in result.quick_replies] == [
         "Fibra óptica",
-        "Sulmóvel",
+        "Móvel",
     ]
 
 
