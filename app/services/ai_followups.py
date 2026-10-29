@@ -17,6 +17,7 @@ from app.models import (
     Lead,
     Message,
 )
+from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT, followup_spec, next_business_time
 from app.services.audit import write_audit
 from app.timeutils import utcnow
@@ -27,6 +28,7 @@ LOG = logging.getLogger("sulnet_ai_followups")
 
 class FollowupDecision(BaseModel):
     reply_text: str = Field(min_length=1, max_length=1200)
+    quick_replies: list[QuickReply] = Field(default_factory=list, max_length=3)
     rationale: str = Field(default="", max_length=500)
 
 
@@ -220,6 +222,8 @@ def _generate_followup(
         "Ela deve retomar a conversa com naturalidade, usar o contexto real, ter um motivo comercial e "
         "estimular resposta. Não repita mensagens anteriores. Não aumente desconto por silêncio. "
         "Não invente urgência. Não diga 'viu minha mensagem?'. Faça no máximo uma pergunta principal. "
+        "Quando essa pergunta tiver 2 ou 3 respostas previsíveis, retorne quick_replies com botões curtos "
+        "(máximo 20 caracteres). Se a resposta exigir texto livre, quick_replies pode ficar vazio. "
         "Se a base não sustentar uma afirmação, não a use.\n\n"
         f"OBJETIVO DESTA ETAPA: {job.theme}\n\n"
         f"CONTEXTO: {json.dumps(context, ensure_ascii=False, default=str)}\n\n"
@@ -271,17 +275,31 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         from app.services.conversation_engine import register_message
         from app.services.zapi_instances import service_for_conversation
 
-        result = service_for_conversation(db, conversation.id).send_text(
-            phone=conversation.contact.phone,
-            message=decision.reply_text,
+        zapi = service_for_conversation(db, conversation.id)
+        quick_replies = quick_replies_for_message(
+            decision.reply_text,
+            decision.quick_replies,
         )
+        if quick_replies:
+            result = zapi.send_button_list(
+                phone=conversation.contact.phone,
+                message=decision.reply_text,
+                buttons=quick_replies,
+            )
+            message_type = "BUTTONS"
+        else:
+            result = zapi.send_text(
+                phone=conversation.contact.phone,
+                message=decision.reply_text,
+            )
+            message_type = "TEXT"
         provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
         zaap_id = str(result.get("zaapId") or "").strip() or None
         message = register_message(
             db,
             conversation,
             direction="OUTBOUND",
-            message_type="TEXT",
+            message_type=message_type,
             body=decision.reply_text,
             sender_user_id=agent.user_id,
             provider_message_id=provider_id,
@@ -304,6 +322,7 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                 "step": job.step,
                 "theme": job.theme,
                 "message_id": message.id,
+                "quick_reply_count": len(quick_replies),
             },
         )
 

@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+from app.services.ai_quick_replies import infer_quick_replies, quick_replies_for_message
+from app.services.conversation_engine import payload_message_content
+
+
+def test_infers_casa_empresa_buttons():
+    buttons = infer_quick_replies(
+        "Boa tarde! Você está buscando internet para sua casa ou empresa?"
+    )
+    assert buttons == [
+        {"id": "para_casa", "label": "Para casa"},
+        {"id": "para_empresa", "label": "Para empresa"},
+    ]
+
+
+def test_infers_common_pain_buttons():
+    buttons = infer_quick_replies(
+        "Hoje, qual é o principal problema com sua internet?"
+    )
+    assert buttons == [
+        {"id": "quedas", "label": "Internet cai"},
+        {"id": "lentidao", "label": "Está lenta"},
+        {"id": "preco", "label": "Preço alto"},
+    ]
+
+
+def test_explicit_buttons_take_priority_over_inference():
+    buttons = quick_replies_for_message(
+        "Você quer conhecer a condição?",
+        [
+            {"id": "quero", "label": "Quero conhecer"},
+            {"id": "agora_nao", "label": "Agora não"},
+        ],
+    )
+    assert buttons == [
+        {"id": "quero", "label": "Quero conhecer"},
+        {"id": "agora_nao", "label": "Agora não"},
+    ]
+
+
+def test_button_response_is_read_as_customer_text():
+    message_type, body, media_url, mime_type = payload_message_content(
+        {
+            "buttonsResponseMessage": {
+                "selectedDisplayText": "Para casa",
+                "selectedButtonId": "para_casa",
+            }
+        }
+    )
+    assert message_type == "TEXT"
+    assert body == "Para casa"
+    assert media_url is None
+    assert mime_type is None
