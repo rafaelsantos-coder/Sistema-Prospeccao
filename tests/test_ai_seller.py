@@ -59,3 +59,28 @@ def test_redact_removes_sensitive_customer_data():
     assert "[DOCUMENTO]" in text
     assert "[CEP]" in text
     assert "[EMAIL]" in text
+
+
+def test_seller_dashboard_is_available_to_admin():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        login_page = client.get("/login")
+        assert login_page.status_code == 200
+        csrf = login_page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+        response = client.post(
+            "/login",
+            data={
+                "email": "admin@sulnet.local",
+                "password": "Sulnet@2026!",
+                "csrf_token": csrf,
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code in {302, 303}
+        page = client.get("/ai/seller")
+        assert page.status_code == 200
+        assert "Vendedor IA Sulnet" in page.text
+        assert "Etapas do fechamento" in page.text
