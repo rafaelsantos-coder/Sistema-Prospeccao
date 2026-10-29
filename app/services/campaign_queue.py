@@ -11,7 +11,8 @@ from app.services.audit import write_audit
 from app.services.conversation_engine import ensure_contact, ensure_open_conversation, register_message
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.queue_routing import queue_for_campaign
-from app.services.zapi import ZApiError, ZApiService
+from app.services.zapi import ZApiError
+from app.services.zapi_instances import queue_instance, service_for_queue
 from app.timeutils import local_day_start_utc, utcnow
 
 
@@ -203,10 +204,17 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         recipient.error = "Lead bloqueado, encerrado ou sem telefone."
         return "skipped"
 
+    service_queue = queue_for_campaign(db, campaign.id)
+    if not service_queue:
+        recipient.status = "FALHOU"
+        recipient.error = "Campanha sem fila de atendimento configurada."
+        return "failed"
+
     recipient.attempts = int(recipient.attempts or 0) + 1
     quick_replies = campaign_quick_replies(campaign)
+    zapi_instance = queue_instance(db, service_queue.id)
+    zapi = service_for_queue(db, service_queue.id)
     try:
-        zapi = ZApiService()
         if quick_replies:
             result = zapi.send_button_list(
                 phone=lead.phone,
@@ -224,12 +232,6 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
             recipient.scheduled_at = utcnow() + timedelta(minutes=5 * recipient.attempts)
         return "failed"
 
-    service_queue = queue_for_campaign(db, campaign.id)
-    if not service_queue:
-        recipient.status = "FALHOU"
-        recipient.error = "Campanha sem fila de atendimento configurada."
-        return "failed"
-
     contact = ensure_contact(db, lead.phone, lead=lead)
     conversation = ensure_open_conversation(
         db,
@@ -239,6 +241,7 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         queue_id=service_queue.id,
         queue_origin="CAMPAIGN",
         assign_if_unowned=False,
+        zapi_instance_id=zapi_instance.id if zapi_instance else None,
     )
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
@@ -259,7 +262,6 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
     attachments = campaign_media_attachments(campaign)
     if attachments:
         storage = MediaStorage()
-        zapi = ZApiService()
         for attachment in attachments:
             kind = str(attachment.get("type") or "")
             storage_uri = str(attachment.get("storage_uri") or "")
@@ -343,6 +345,7 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
             "conversation_id": conversation.id,
             "provider_message_id": provider_id,
             "queue_id": service_queue.id,
+            "zapi_instance_id": zapi_instance.id if zapi_instance else None,
             "quick_reply_count": len(quick_replies),
             "media_sent": media_sent,
             "media_errors": media_errors,
