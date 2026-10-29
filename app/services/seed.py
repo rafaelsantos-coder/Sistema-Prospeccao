@@ -254,6 +254,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         or "RECUSAS PARCIAIS E CONTINUIDADE DA VENDA" not in ai_agent.system_prompt
         or "REJEIÇÃO DA OFERTA E NOVO GATILHO DE DIAGNÓSTICO" not in ai_agent.system_prompt
         or "PLANO SOLICITADO INDISPONÍVEL" not in ai_agent.system_prompt
+        or "CATÁLOGO POR BOTÕES" not in ai_agent.system_prompt
         or "tentativa 1 após 60 segundos" not in ai_agent.system_prompt
         or "ORIGEM DOS FATOS E ISOLAMENTO DE CONVERSA" not in ai_agent.system_prompt
     ):
