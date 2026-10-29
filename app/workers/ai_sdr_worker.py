@@ -13,6 +13,7 @@ from app.models import AIFollowupJob, AIConversationState, AIJob, Conversation, 
 from app.services.ai_followups import claim_followup_job, process_followup_job
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import poll_pending_contracts
+from app.services.ai_sdr_policy import followup_spec, next_business_time
 from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utcnow
@@ -72,6 +73,34 @@ def _recover_stale_followups() -> int:
     finally:
         db.close()
     return recovered
+
+
+def _reschedule_initial_pending_followups() -> int:
+    db = SessionLocal()
+    updated = 0
+    try:
+        now = utcnow()
+        jobs = list(
+            db.scalars(
+                select(AIFollowupJob).where(
+                    AIFollowupJob.status == "PENDENTE",
+                    AIFollowupJob.step <= 6,
+                )
+            )
+        )
+        for job in jobs:
+            delay, theme = followup_spec(int(job.step or 1))
+            job.theme = theme
+            job.due_at = next_business_time(
+                now + delay,
+                settings.default_timezone,
+            )
+            job.locked_at = None
+            updated += 1
+        db.commit()
+    finally:
+        db.close()
+    return updated
 
 
 def _recover_recent_unqueued_inbounds() -> int:
@@ -210,6 +239,12 @@ def run() -> None:
     )
     _recover_stale_jobs()
     _recover_stale_followups()
+    rescheduled_followups = _reschedule_initial_pending_followups()
+    if rescheduled_followups:
+        LOG.info(
+            "Follow-ups pendentes reagendados para a nova cadencia=%s",
+            rescheduled_followups,
+        )
     recovered_recent = _recover_recent_unqueued_inbounds()
     if recovered_recent:
         LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)

@@ -47,9 +47,9 @@ CORE_COMMERCIAL_POLICY = {
     },
     "followup": {
         "rule": (
-            "Silêncio não encerra a oportunidade. Após uma resposta da IA, se o cliente não responder, iniciar reativação em 60 segundos. "
-            "Fazer até 3 tentativas rápidas com intervalo de 60 segundos, depois espaçar para 30 minutos, 2 horas, 6 horas e seguir "
-            "em cadência progressiva até venda, opt-out, handoff ou restrição do canal. Após 20 tentativas, entrar em reativação mensal contínua."
+            "Silêncio não encerra a oportunidade. Após uma resposta da IA, se o cliente não responder, a primeira reativação ocorre após 10 minutos. "
+            "Se continuar sem resposta, a próxima ocorre 30 minutos depois e a terceira 2 horas depois; depois seguir com 6 horas e cadência progressiva. "
+            "Cada follow-up deve mudar o ângulo, a pergunta ou a CTA e nunca repetir uma mensagem anterior. Após 20 tentativas, entrar em reativação mensal contínua."
         ),
         "never": [
             "repetir a mesma mensagem",
@@ -236,26 +236,26 @@ SERVICE_CITIES = [
 
 
 FOLLOWUP_CADENCE = [
-    (1, timedelta(seconds=60), "reativação rápida 1: retomar exatamente a pergunta/CTA pendente em uma frase curta"),
-    (2, timedelta(seconds=60), "reativação rápida 2: mudar o ângulo e facilitar a resposta, preferindo botões quando houver escolha previsível"),
-    (3, timedelta(seconds=60), "reativação rápida 3: última tentativa imediata, curta e diferente das anteriores, buscando uma resposta simples"),
-    (4, timedelta(minutes=30), "retomar a conversa com novo ângulo comercial, sem repetir as três tentativas rápidas"),
-    (5, timedelta(hours=2), "reativar usando o contexto já coletado e uma pergunta objetiva"),
-    (6, timedelta(hours=6), "nova tentativa no mesmo ciclo, explorando necessidade, dor ou comparação relevante"),
-    (7, timedelta(days=1), "reabrir com pergunta curta sobre a situação atual do cliente"),
-    (8, timedelta(days=2), "explorar provedor, velocidade ou preço atual ainda não descobertos"),
-    (9, timedelta(days=3), "reposicionar valor do plano apresentado"),
-    (10, timedelta(days=4), "trazer comparação objetiva com o que o cliente informou pagar/usar"),
-    (11, timedelta(days=7), "retomar a principal dor mencionada pelo cliente"),
-    (12, timedelta(days=7), "perguntar o que ainda impede a troca"),
-    (13, timedelta(days=10), "reapresentar a melhor oferta elegível de forma curta"),
-    (14, timedelta(days=14), "reativação por curiosidade: verificar se algo mudou no provedor atual"),
-    (15, timedelta(days=14), "testar interesse em melhorar velocidade, preço ou qualidade"),
-    (16, timedelta(days=21), "retomar contexto anterior e perguntar se agora é um momento melhor"),
-    (17, timedelta(days=21), "relembrar benefício relevante do plano sem criar urgência falsa"),
-    (18, timedelta(days=30), "nova tentativa com ângulo de custo-benefício"),
-    (19, timedelta(days=30), "nova tentativa com ângulo de experiência/qualidade"),
-    (20, timedelta(days=30), "última etapa da cadência inicial; tentar reabrir a conversa sem pressão"),
+    (1, timedelta(minutes=10), "reativação 1: retomar o contexto com uma pergunta curta e diferente da mensagem anterior"),
+    (2, timedelta(minutes=30), "reativação 2: mudar o ângulo comercial e facilitar a resposta, preferindo botões quando fizer sentido"),
+    (3, timedelta(hours=2), "reativação 3: usar outro argumento ou pergunta, sem repetir frase, pergunta ou CTA já enviada"),
+    (4, timedelta(hours=6), "retomar a conversa com novo ângulo comercial e sem pressão"),
+    (5, timedelta(days=1), "reabrir com pergunta curta sobre a situação atual do cliente"),
+    (6, timedelta(days=2), "explorar provedor, velocidade ou preço atual ainda não descobertos"),
+    (7, timedelta(days=3), "reposicionar valor do plano apresentado"),
+    (8, timedelta(days=4), "trazer comparação objetiva com o que o cliente informou pagar/usar"),
+    (9, timedelta(days=7), "retomar a principal dor mencionada pelo cliente"),
+    (10, timedelta(days=7), "perguntar o que ainda impede a troca"),
+    (11, timedelta(days=10), "reapresentar a melhor oferta elegível de forma curta"),
+    (12, timedelta(days=14), "reativação por curiosidade: verificar se algo mudou no provedor atual"),
+    (13, timedelta(days=14), "testar interesse em melhorar velocidade, preço ou qualidade"),
+    (14, timedelta(days=21), "retomar contexto anterior e perguntar se agora é um momento melhor"),
+    (15, timedelta(days=21), "relembrar benefício relevante do plano sem criar urgência falsa"),
+    (16, timedelta(days=30), "nova tentativa com ângulo de custo-benefício"),
+    (17, timedelta(days=30), "nova tentativa com ângulo de experiência/qualidade"),
+    (18, timedelta(days=30), "reativar com pergunta nova sobre prioridade atual do cliente"),
+    (19, timedelta(days=30), "reativar com ângulo diferente dos anteriores, sem repetir CTA"),
+    (20, timedelta(days=30), "última etapa da cadência inicial; tentar reabrir a conversa sem pressão e sem repetir mensagens"),
 ]
 
 
@@ -421,15 +421,15 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         ),
     },
     {
-        "title": "Cadência rápida de follow-up do SulIA",
+        "title": "Cadência de follow-up do SulIA",
         "category": "REGRAS_COMERCIAIS",
-        "tags": "follow-up,60 segundos,reativacao,silencio,30 minutos,2 horas,cadencia",
+        "tags": "follow-up,10 minutos,30 minutos,2 horas,reativacao,silencio,cadencia",
         "content": (
-            "Se o cliente parar de responder durante uma oportunidade ativa, o SulIA não deve deixar o atendimento parado. "
-            "A primeira reativação ocorre após 60 segundos; a segunda, 60 segundos depois; a terceira, mais 60 segundos depois. "
-            "Se continuar sem resposta, tentar novamente após 30 minutos, depois 2 horas, depois 6 horas e então seguir a cadência "
-            "progressiva de dias. Cada mensagem deve variar o ângulo e retomar o contexto; nunca repetir a mesma frase ou apenas perguntar "
-            "'viu minha mensagem?'. Quando houver respostas previsíveis, usar botões. Qualquer nova mensagem do cliente cancela imediatamente "
+            "Se o cliente parar de responder durante uma oportunidade ativa, a primeira reativação ocorre após 10 minutos. "
+            "Se continuar sem resposta, a segunda ocorre 30 minutos depois e a terceira 2 horas depois; a próxima ocorre após 6 horas "
+            "e então segue a cadência progressiva de dias. Cada mensagem deve trazer um ângulo, pergunta ou CTA diferente das anteriores. "
+            "É proibido repetir a mesma mensagem, repetir a mesma pergunta em sequência ou enviar variações quase idênticas. "
+            "Não usar apenas 'viu minha mensagem?'. Quando houver respostas previsíveis, usar botões. Qualquer nova mensagem do cliente cancela imediatamente "
             "os follow-ups pendentes. Interromper também em venda/fechamento, handoff ativo, opt-out explícito ou restrição legal/do canal."
         ),
     },
@@ -745,14 +745,13 @@ Só trate como opt-out quando houver pedido explícito para não receber mais me
 FOLLOW-UP
 Silêncio não é perda e o lead não pode ficar parado.
 Após uma resposta do SulIA, se o cliente não responder:
-- tentativa 1 após 60 segundos;
-- tentativa 2 após mais 60 segundos;
-- tentativa 3 após mais 60 segundos;
-- depois 30 minutos;
-- depois 2 horas;
-- depois 6 horas;
+- tentativa 1 após 10 minutos;
+- tentativa 2 após mais 30 minutos;
+- tentativa 3 após mais 2 horas;
+- tentativa 4 após mais 6 horas;
 - depois seguir a cadência progressiva de dias e reativação mensal.
-As três tentativas rápidas devem ser curtas, diferentes entre si e conectadas ao contexto; não repetir a mesma frase ou a mesma pergunta.
+Cada tentativa deve mudar claramente o ângulo, a pergunta ou a CTA.
+É proibido repetir a mesma mensagem, repetir a mesma pergunta em sequência ou enviar variações quase idênticas das mensagens anteriores.
 Sempre facilitar resposta com botões quando houver 2 ou 3 opções previsíveis.
 Se o cliente responder em qualquer momento, cancelar imediatamente todos os follow-ups pendentes e retomar a conversa normal.
 Enquanto não houver venda, opt-out ou handoff humano ativo, a oportunidade continua em cadência. Não aumente desconto por silêncio. Não use mensagens genéricas repetidas. Cada follow-up deve ter motivo comercial e retomar o contexto.

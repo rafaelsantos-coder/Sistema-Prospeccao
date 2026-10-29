@@ -23,6 +23,8 @@ from app.models import (
     ZApiInstance,
 )
 from app.security import hash_password
+from app.services.ai_followups import _followup_is_repetitive, _unique_followup_fallback
+from app.services.ai_sdr_policy import followup_spec
 from app.services.ai_sdr import (
     AIDecision,
     QualificationData,
@@ -1774,3 +1776,49 @@ def test_router_question_with_unsupported_explicit_speed_keeps_unavailable_plan_
 
     assert "850 Mega não está disponível" in result.reply_text
     assert "1 roteador" not in result.reply_text
+
+
+
+def test_followup_initial_cadence_is_10m_30m_2h_then_6h():
+    assert followup_spec(1)[0].total_seconds() == 10 * 60
+    assert followup_spec(2)[0].total_seconds() == 30 * 60
+    assert followup_spec(3)[0].total_seconds() == 2 * 60 * 60
+    assert followup_spec(4)[0].total_seconds() == 6 * 60 * 60
+
+
+def test_followup_duplicate_detection_blocks_same_message():
+    previous = [
+        "Quer seguir com o plano de 650 Mega por R$ 99,90 mensais?",
+        "Posso te explicar os benefícios do plano?",
+    ]
+
+    assert _followup_is_repetitive(
+        "Quer seguir com o plano de 650 Mega por R$ 99,90 mensais?",
+        previous,
+    ) is True
+
+
+def test_followup_duplicate_detection_blocks_near_identical_message():
+    previous = [
+        "Quer seguir com o plano de 650 Mega por R$ 99,90 mensais?",
+    ]
+
+    assert _followup_is_repetitive(
+        "Quer seguir com o plano de 650 Mega por R$ 99,90 por mês?",
+        previous,
+    ) is True
+
+
+def test_followup_unique_fallback_avoids_recent_messages():
+    previous = [
+        "Posso te ajudar por outro ângulo: qual ponto é mais importante para você decidir?",
+        "Ficou alguma dúvida específica que eu possa esclarecer para facilitar sua decisão?",
+    ]
+
+    result = _unique_followup_fallback(
+        step=1,
+        previous_messages=previous,
+    )
+
+    assert result.reply_text not in previous
+    assert _followup_is_repetitive(result.reply_text, previous) is False
