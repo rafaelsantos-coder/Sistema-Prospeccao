@@ -29,11 +29,14 @@ from app.services.ai_sdr import (
     AIDecision,
     QualificationData,
     _apply_catalog_navigation_policy,
+    _apply_corporate_customer_policy,
     _apply_offer_rejection_diagnostic_policy,
     _apply_router_information_policy,
     _apply_secondary_decline_reengagement_policy,
     _apply_unavailable_plan_policy,
+    _confirmed_customer_type_from_lead,
     _is_company_context,
+    _persist_confirmed_customer_type,
     _sanitize_unconfirmed_customer_facts,
     build_ai_context,
     claim_ai_job,
@@ -1822,3 +1825,162 @@ def test_followup_unique_fallback_avoids_recent_messages():
 
     assert result.reply_text not in previous
     assert _followup_is_repetitive(result.reply_text, previous) is False
+
+
+
+def _base_corporate_decision():
+    return AIDecision(
+        reply_text="Temos o plano residencial de 800 Mega por R$ 119,90.",
+        intent="INTEREST",
+        qualification_score=50,
+        temperature="MORNO",
+        recommended_stage="PROPOSTA",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.9,
+        summary="Cliente busca internet.",
+        next_action="Apresentar oferta.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="OFFERING",
+        offer_plan_code="FTTH_800",
+        offer_price=119.90,
+    )
+
+
+def test_company_selection_opens_corporate_catalog_and_blocks_residential_offer():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "Para empresa",
+        "lead": {"city": "Santa Rosa", "confirmed_customer_type": ""},
+        "history": [
+            {"direction": "INBOUND", "body": "Para empresa"},
+        ],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert result.qualification.customer_type == "EMPRESA"
+    assert result.qualification.desired_product == "Internet corporativa"
+    assert result.offer_plan_code is None
+    assert result.offer_price is None
+    assert result.free_months == 0
+    assert "planos corporativos de fibra óptica" in result.reply_text
+    assert "200 Mega por R$ 139,00" in result.reply_text
+    assert "250 Mega por R$ 169,00" in result.reply_text
+    assert "650 Mega por R$ 199,90" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Corp. 200 Mega",
+        "Corp. 250 Mega",
+        "Corp. 650 Mega",
+    ]
+
+
+def test_selecting_corporate_650_uses_business_price_and_benefits():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "Corp. 650 Mega",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Para empresa temos planos corporativos de fibra óptica: "
+                    "200 Mega, 250 Mega e 650 Mega."
+                ),
+            },
+            {"direction": "INBOUND", "body": "Corp. 650 Mega"},
+        ],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert result.qualification.customer_type == "EMPRESA"
+    assert result.offer_plan_code == "CORP_650"
+    assert result.offer_price == 199.90
+    assert result.free_months == 0
+    assert result.concession_level == 0
+    assert "650/200 Mbps" in result.reply_text
+    assert "IP Fixo" in result.reply_text
+    assert "Sulnet Monitora" in result.reply_text
+    assert "Roteador Wi-Fi 6" in result.reply_text
+    assert "Ativação gratuita" in result.reply_text
+    assert "R$ 199,90" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Quero contratar",
+        "Ver outros planos",
+    ]
+
+
+def test_confirmed_company_memory_reuses_corporate_catalog_on_future_plan_request():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "Quais planos vocês têm?",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [
+            {"direction": "INBOUND", "body": "Quais planos vocês têm?"},
+        ],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert result.qualification.customer_type == "EMPRESA"
+    assert "R$ 139,00" in result.reply_text
+    assert "R$ 169,00" in result.reply_text
+    assert "R$ 199,90" in result.reply_text
+    assert "R$ 119,90" not in result.reply_text
+    assert "R$ 99,90" not in result.reply_text
+
+
+def test_persist_confirmed_company_type_updates_crm_segment_and_raw_memory():
+    lead = Lead(
+        business_name="",
+        contact_name="Cliente Empresa",
+        phone="5555999999999",
+        segment="Não informado",
+        city="Santa Rosa",
+        source="MANUAL",
+        origin_channel="WHATSAPP",
+        team="DIGITAL",
+        stage="NOVO",
+        score=0,
+        temperature="FRIO",
+        priority="NORMAL",
+        raw_data='{"origem":"teste"}',
+    )
+
+    _persist_confirmed_customer_type(
+        lead,
+        "EMPRESA",
+        conversation_id=123,
+    )
+
+    assert lead.segment == "Empresa"
+    assert _confirmed_customer_type_from_lead(lead) == "EMPRESA"
+    assert '"origem": "teste"' in lead.raw_data
+    assert '"source": "INBOUND_CUSTOMER_CONFIRMED"' in lead.raw_data
+
+
+def test_residential_confirmation_can_replace_previous_company_context():
+    decision = _base_corporate_decision()
+    context = {
+        "latest_customer_message": "Agora é para casa",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_customer_type": "EMPRESA",
+        },
+        "history": [
+            {"direction": "INBOUND", "body": "Para empresa"},
+            {"direction": "INBOUND", "body": "Agora é para casa"},
+        ],
+    }
+
+    result = _apply_corporate_customer_policy(decision, context)
+
+    assert result.qualification.customer_type == "RESIDENCIAL"
