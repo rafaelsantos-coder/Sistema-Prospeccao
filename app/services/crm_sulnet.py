@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import re
 import unicodedata
 from typing import Any
 
@@ -276,6 +277,51 @@ class SulnetCRMClient:
                             same_price.append(item)
                     if len(same_price) == 1:
                         selected_product = same_price[0]
+
+            if not selected_product and expected_value_float is not None:
+                # O nome comercial usado no WhatsApp pode ser diferente do nome
+                # cadastrado no ERP. Ex.: "Sulmóvel 15GB" pode estar no catálogo
+                # como outro nome comercial, mas com o mesmo pacote de dados.
+                all_products = self.products("")
+                folded_label = self._fold_catalog_text(plan_label).replace(" ", "")
+                capacity_match = re.search(r"(\d{1,3}gb)", folded_label)
+                capacity = capacity_match.group(1) if capacity_match else ""
+
+                pool = all_products
+                if capacity:
+                    same_capacity = [
+                        item
+                        for item in all_products
+                        if capacity
+                        in self._fold_catalog_text(str(item.get("name") or "")).replace(" ", "")
+                    ]
+                    if same_capacity:
+                        pool = same_capacity
+
+                # Se o rótulo indica móvel, privilegia a categoria móvel do catálogo,
+                # sem depender de um ID fixo (ele varia entre ambientes).
+                if "movel" in folded_label or "sulmovel" in folded_label:
+                    mobile_pool = [
+                        item
+                        for item in pool
+                        if "movel"
+                        in self._fold_catalog_text(
+                            str(item.get("categoryName") or item.get("name") or "")
+                        )
+                    ]
+                    if mobile_pool:
+                        pool = mobile_pool
+
+                same_price = []
+                for item in pool:
+                    try:
+                        catalog_value = round(float(item.get("monthlyValue")), 2)
+                    except (TypeError, ValueError):
+                        continue
+                    if abs(catalog_value - expected_value_float) < 0.01:
+                        same_price.append(item)
+                if len(same_price) == 1:
+                    selected_product = same_price[0]
 
             if selected_product:
                 generic["planIds"] = [int(selected_product.get("id") or 0)]

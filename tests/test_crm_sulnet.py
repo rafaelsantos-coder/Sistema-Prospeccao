@@ -274,11 +274,11 @@ class PlanDisambiguationClient:
             response.status_code = 200
             response.payload = [
                 {
-                    "category_id": 13,
+                    "category_id": 83,
                     "category_name": "TELEFONIA MÓVEL",
                     "products": [
-                        {"id": 501, "name": "Sulmóvel 15GB Básico", "monthlyValue": 59.80},
-                        {"id": 502, "name": "Sulmóvel 15GB", "monthlyValue": 69.80},
+                        {"id": 392, "name": "Meu Trabalho Comigo 15GB", "monthlyValue": 69.80},
+                        {"id": 393, "name": "Meu Trabalho Comigo 15GB Plus", "monthlyValue": 79.80},
                     ],
                 }
             ]
@@ -310,5 +310,6 @@ def test_plan_resolution_uses_expected_value_only_as_disambiguation(monkeypatch)
         if item["method"] == "PATCH"
         and item["url"].endswith("/api/opportunities/1234")
     )
-    assert patch["json"]["planIds"] == [502]
+    assert patch["json"]["planIds"] == [392]
+    assert patch["json"]["categoryId"] == 83
     assert patch["json"]["monthlyValue"] == 69.80

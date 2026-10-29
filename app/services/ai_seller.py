@@ -209,7 +209,6 @@ def _billing_local(text: str) -> dict[str, Any]:
     return result
 
 
-MOBILE_CATEGORY_ID = 13
 MOBILE_SIGNATURE_TYPE = "Assinatura Digital IA"
 
 
@@ -312,10 +311,14 @@ def _mobile_values(collected: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_mobile_plan(state: AIClosingState, collected: dict[str, Any]) -> bool:
-    if int(collected.get("categoryId") or 0) == MOBILE_CATEGORY_ID:
-        return True
-    label = _norm(str(collected.get("categoryName") or state.plan_label or ""))
-    return "telefonia movel" in label or "sulmovel" in label or "movel" in label
+    category = _norm(str(collected.get("categoryName") or ""))
+    label = _norm(str(state.plan_label or ""))
+    return (
+        "telefonia movel" in category
+        or "sulmovel" in label
+        or "telefonia movel" in label
+        or " movel " in f" {label} "
+    )
 
 
 def _sync_plan_context(
@@ -361,11 +364,17 @@ def _persist_mobile_category_form(
         raise CRMIntegrationError("Oportunidade do CRM não disponível para gravar Telefonia Móvel.")
     values = _mobile_values(collected)
     collected["mobileCategoryValues"] = values
+    category_id = int(collected.get("categoryId") or 0)
+    plan_id = int(collected.get("planId") or 0)
+    if not category_id or not plan_id:
+        raise CRMIntegrationError(
+            "Plano/categoria de Telefonia Móvel ainda não foi resolvido no catálogo do CRM."
+        )
     client.update_category_form(
         state.opportunity_id,
         values,
-        category_id=int(collected.get("categoryId") or MOBILE_CATEGORY_ID),
-        plan_id=int(collected.get("planId") or 0) or None,
+        category_id=category_id,
+        plan_id=plan_id,
     )
 
 
