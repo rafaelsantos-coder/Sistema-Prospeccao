@@ -588,25 +588,32 @@ def _existing_customer_from_text(
     if not folded:
         return ""
 
-    negative_cues = (
+    negative_exact = {
         "nao sou cliente",
-        "nao sou cliente sulnet",
         "ainda nao sou cliente",
-        "nao tenho sulnet",
         "nunca fui cliente",
+    }
+    negative_sulnet_cues = (
+        "nao sou cliente sulnet",
+        "nao sou cliente da sulnet",
+        "nao tenho sulnet",
         "nao sou da sulnet",
     )
-    positive_cues = (
+    positive_exact = {
         "sou cliente",
+        "ja sou cliente",
+    }
+    positive_sulnet_cues = (
         "sou cliente sulnet",
         "sou cliente da sulnet",
-        "ja sou cliente",
+        "ja sou cliente sulnet",
+        "ja sou cliente da sulnet",
         "ja tenho sulnet",
         "tenho sulnet",
     )
-    if any(cue in folded for cue in negative_cues):
+    if folded in negative_exact or any(cue in folded for cue in negative_sulnet_cues):
         return "NAO_CLIENTE"
-    if any(cue in folded for cue in positive_cues):
+    if folded in positive_exact or any(cue in folded for cue in positive_sulnet_cues):
         return "CLIENTE"
 
     status_question = any(
