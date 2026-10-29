@@ -50,7 +50,7 @@ def seller_operational() -> bool:
         and settings.ai_autonomous_enabled
         and settings.openai_api_key
         and settings.sulnet_crm_base_url
-        and settings.sulnet_ai_integration_key
+        and settings.sulnet_crm_bearer_token
     )
 
 
