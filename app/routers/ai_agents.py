@@ -376,6 +376,10 @@ def update_agent(
     agent.business_goal = business_goal.strip()
     agent.system_prompt = system_prompt.strip()
     agent.active = active
+    if agent.role_type == "CLOSER" and agent.user:
+        # O Vendedor IA possui identidade comercial própria. O cadastro de
+        # usuário acompanha o status do agente para relatórios/atribuições.
+        agent.user.active = active
 
     write_audit(
         db,
