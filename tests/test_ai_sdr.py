@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import re
 
 from fastapi.testclient import TestClient
@@ -317,7 +318,7 @@ def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
         qualification=QualificationData(city="Santa Rosa"),
         crm_notes=[],
     )
-    monkeypatch.setattr(settings, "ai_autonomous_enabled", True)
+    monkeypatch.setattr("app.services.ai_sdr.settings", replace(settings, ai_autonomous_enabled=True))
     monkeypatch.setattr(
         "app.services.ai_sdr.run_ai_decision",
         lambda agent, context: decision,
