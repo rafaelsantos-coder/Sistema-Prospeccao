@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import RedirectResponse
@@ -14,6 +15,8 @@ from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.campaign_queue import campaign_queue_counts, enqueue_campaign
 from app.services.legacy_adapter import generate_message, rate_status
+from app.services.media_processing import MediaProcessingError, normalize_audio
+from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.queue_routing import available_queues_for_user, bind_campaign_queue, get_queue, queue_for_campaign
 from app.timeutils import utcnow
 from app.web import flash, render
@@ -73,7 +76,7 @@ def list_campaigns(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("")
-def create_campaign(
+async def create_campaign(
     request: Request,
     csrf_token: str = Form(...),
     name: str = Form(...),
@@ -84,6 +87,7 @@ def create_campaign(
     message: str = Form(...),
     queue_id: int | None = Form(None),
     branch_id: int | None = Form(None),
+    media: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
 ):
     user, redirect = _auth(request, db)
@@ -101,12 +105,6 @@ def create_campaign(
     if not clean_message:
         flash(request, "Informe a mensagem inicial da campanha.", "warning")
         return RedirectResponse("/campaigns", status_code=303)
-    sequence = [
-        {"day": 1, "label": "Abordagem inicial", "message": clean_message},
-        {"day": 3, "label": "Follow-up de valor"},
-        {"day": 10, "label": "Retomada consultiva"},
-        {"day": 20, "label": "Última tentativa"},
-    ]
     limit = max(1, min(daily_limit, 200 if channel == "EMAIL" else 30))
     campaign = Campaign(
         name=name.strip(),
@@ -117,10 +115,83 @@ def create_campaign(
         branch_id=branch_id if user.role in {"ADMIN", "GESTOR"} else user.branch_id,
         created_by_id=user.id,
         status="RASCUNHO",
-        sequence_json=json.dumps(sequence, ensure_ascii=False),
+        sequence_json="[]",
     )
     db.add(campaign)
     db.flush()
+
+    attachments: list[dict[str, str]] = []
+    storage = MediaStorage()
+    allowed_extensions = {
+        ".jpg", ".jpeg", ".png", ".webp", ".gif",
+        ".mp4", ".mov", ".m4v", ".3gp",
+        ".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".amr",
+    }
+    for upload in media:
+        if not upload or not upload.filename:
+            continue
+        filename = Path(upload.filename).name
+        extension = Path(filename).suffix.lower()
+        mime_type = (upload.content_type or "application/octet-stream").split(";")[0].strip().lower()
+        if not (
+            mime_type.startswith("image/")
+            or mime_type.startswith("video/")
+            or mime_type.startswith("audio/")
+            or extension in allowed_extensions
+        ):
+            db.rollback()
+            flash(request, f"O arquivo {filename} não é uma imagem, vídeo ou áudio permitido.", "error")
+            return RedirectResponse("/campaigns", status_code=303)
+
+        raw = await upload.read()
+        kind = (
+            "IMAGE" if mime_type.startswith("image/") or extension in {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+            else "VIDEO" if mime_type.startswith("video/") or extension in {".mp4", ".mov", ".m4v", ".3gp"}
+            else "AUDIO"
+        )
+        if kind == "AUDIO":
+            try:
+                raw, filename, mime_type = normalize_audio(
+                    raw,
+                    filename=filename,
+                    mime_type=mime_type,
+                )
+            except MediaProcessingError as exc:
+                db.rollback()
+                flash(request, str(exc), "error")
+                return RedirectResponse("/campaigns", status_code=303)
+        try:
+            storage_uri, safe_name = storage.upload_campaign_bytes(
+                data=raw,
+                campaign_id=campaign.id,
+                filename=filename,
+                mime_type=mime_type,
+            )
+        except MediaStorageError as exc:
+            db.rollback()
+            flash(request, str(exc), "error")
+            return RedirectResponse("/campaigns", status_code=303)
+        attachments.append(
+            {
+                "type": kind,
+                "storage_uri": storage_uri,
+                "file_name": safe_name,
+                "mime_type": mime_type,
+            }
+        )
+
+    sequence = [
+        {
+            "day": 1,
+            "label": "Abordagem inicial",
+            "message": clean_message,
+            "media": attachments,
+        },
+        {"day": 3, "label": "Follow-up de valor"},
+        {"day": 10, "label": "Retomada consultiva"},
+        {"day": 20, "label": "Última tentativa"},
+    ]
+    campaign.sequence_json = json.dumps(sequence, ensure_ascii=False)
     if selected_queue:
         bind_campaign_queue(db, campaign.id, selected_queue.id)
     write_audit(
@@ -133,6 +204,7 @@ def create_campaign(
             "channel": channel,
             "daily_limit": limit,
             "queue_id": selected_queue.id if selected_queue else None,
+            "media_count": len(attachments),
         },
     )
     db.commit()

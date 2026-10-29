@@ -68,7 +68,7 @@
 <div class="modal-backdrop" id="campaign-modal" aria-hidden="true">
   <div class="modal-card">
     <div class="modal-header"><div><span class="eyebrow">NOVA CAMPANHA</span><h3>Configuração inicial</h3></div><button type="button" class="icon-button" data-modal-close>×</button></div>
-    <form action="/campaigns" method="post" class="stack-form">
+    <form action="/campaigns" method="post" enctype="multipart/form-data" class="stack-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label class="field"><span>Nome da campanha</span><input name="name" required placeholder="Ex.: Clínicas de Santa Rosa — Fibra + Voz"></label>
       <label class="field"><span>Segmento</span><input name="segment" placeholder="Ex.: clínicas, mercados, indústrias"></label>
@@ -77,6 +77,7 @@
 Aqui é da Sulnet. Estamos conversando com empresas de {{ '{{segmento}}' }} em {{ '{{cidade}}' }} e gostaria de entender como está a conectividade da {{ '{{empresa}}' }}.
 
 Posso te fazer duas perguntas rápidas?"></textarea><small>Variáveis disponíveis: {{ '{{nome}}' }}, {{ '{{empresa}}' }}, {{ '{{cidade}}' }}, {{ '{{segmento}}' }}</small></label>
+      <label class="field"><span>Mídias da campanha</span><input type="file" name="media" accept="image/*,video/*,audio/*" multiple><small>Opcional. Você pode adicionar várias imagens, vídeos e áudios. As mídias serão enviadas junto da abordagem inicial no WhatsApp.</small></label>
       <div class="form-grid">
         <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
         <label class="field"><span>Canal</span><select name="channel"><option value="WHATSAPP">WhatsApp</option><option value="EMAIL">E-mail</option></select></label>
