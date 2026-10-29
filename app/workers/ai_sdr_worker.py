@@ -9,10 +9,10 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import AIFollowupJob, AIConversationState, AIJob, Conversation, Message
+from app.models import AIFollowupJob, AIClosingState, AIConversationState, AIJob, Conversation, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
-from app.services.ai_seller import poll_pending_contracts
+from app.services.ai_seller import active_closer, poll_pending_contracts
 from app.services.ai_sdr_policy import followup_spec, next_business_time
 from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
@@ -101,6 +101,96 @@ def _reschedule_initial_pending_followups() -> int:
     finally:
         db.close()
     return updated
+
+
+def _recover_closer_capture_patch_failures() -> int:
+    db = SessionLocal()
+    recovered = 0
+    try:
+        closer = active_closer(db)
+        if not closer:
+            return 0
+
+        states = list(
+            db.scalars(
+                select(AIClosingState)
+                .where(
+                    AIClosingState.step == "ESCALATED",
+                    AIClosingState.last_error.ilike("%Rota de captura%"),
+                )
+                .order_by(AIClosingState.updated_at.desc())
+                .limit(50)
+            )
+        )
+        for state in states:
+            conversation = db.get(Conversation, state.conversation_id)
+            if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+                continue
+
+            try:
+                import json
+                collected = json.loads(state.collected_json or "{}")
+                if not isinstance(collected, dict):
+                    collected = {}
+            except Exception:
+                collected = {}
+
+            credit = str(state.credit_status or "").lower()
+            if any(token in credit for token in ("aprovado", "liberado", "pre-aprovado")):
+                if not collected.get("cep"):
+                    state.step = "CEP"
+                elif not collected.get("number"):
+                    state.step = "ADDRESS_NUMBER"
+                elif not collected.get("email"):
+                    state.step = "PLAN_CONFIRM"
+                elif not collected.get("paymentMethod") or not collected.get("dueDay"):
+                    state.step = "BILLING"
+                else:
+                    state.step = "BILLING"
+            else:
+                state.step = "CPF"
+
+            state.agent_id = closer.id
+            state.last_error = ""
+            conversation.assigned_user_id = closer.user_id
+            conversation.status = "EM_ATENDIMENTO"
+            if conversation.lead:
+                conversation.lead.assigned_user_id = closer.user_id
+
+            ai_state = db.scalar(
+                select(AIConversationState).where(
+                    AIConversationState.conversation_id == conversation.id
+                )
+            )
+            if ai_state:
+                ai_state.agent_id = closer.id
+                ai_state.state = "CLOSING"
+
+            failed_job = db.scalar(
+                select(AIJob)
+                .where(
+                    AIJob.conversation_id == conversation.id,
+                    AIJob.status == "FALHOU",
+                    AIJob.error.ilike("%Rota de captura%"),
+                )
+                .order_by(AIJob.id.desc())
+                .limit(1)
+            )
+            if not failed_job:
+                continue
+
+            failed_job.agent_id = closer.id
+            failed_job.status = "PENDENTE"
+            failed_job.attempts = 0
+            failed_job.available_at = utcnow()
+            failed_job.locked_at = None
+            failed_job.error = None
+            recovered += 1
+
+        db.commit()
+    finally:
+        db.close()
+    return recovered
 
 
 def _recover_recent_unqueued_inbounds() -> int:
@@ -239,6 +329,12 @@ def run() -> None:
     )
     _recover_stale_jobs()
     _recover_stale_followups()
+    recovered_closer = _recover_closer_capture_patch_failures()
+    if recovered_closer:
+        LOG.info(
+            "Fechamentos do Vendedor IA recuperados apos correcao de PATCH CRM=%s",
+            recovered_closer,
+        )
     rescheduled_followups = _reschedule_initial_pending_followups()
     if rescheduled_followups:
         LOG.info(

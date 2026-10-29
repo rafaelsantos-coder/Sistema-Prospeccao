@@ -13,7 +13,9 @@ LOG = logging.getLogger("sulnet_crm_client")
 
 
 class CRMIntegrationError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(slots=True)
@@ -71,7 +73,8 @@ class SulnetCRMClient:
             payload = response.json()
         except ValueError as exc:
             raise CRMIntegrationError(
-                f"CRM Sulnet retornou resposta inválida (HTTP {response.status_code})."
+                f"CRM Sulnet retornou resposta inválida (HTTP {response.status_code}).",
+                status_code=response.status_code,
             ) from exc
 
         if response.status_code >= 400:
@@ -80,7 +83,10 @@ class SulnetCRMClient:
                 if isinstance(payload, dict)
                 else None
             ) or f"Falha no CRM Sulnet (HTTP {response.status_code})."
-            raise CRMIntegrationError(str(message)[:600])
+            raise CRMIntegrationError(
+                str(message)[:600],
+                status_code=response.status_code,
+            )
         return payload
 
     def context(self) -> dict[str, Any]:
@@ -149,13 +155,147 @@ class SulnetCRMClient:
             return normalized
         return result
 
-    def update_opportunity(self, opportunity_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    def _data_stage_id(self) -> int | None:
+        try:
+            context = self.context()
+        except CRMIntegrationError:
+            return None
+        stages = context.get("stages")
+        if not isinstance(stages, list):
+            return None
+        for item in stages:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip().lower()
+            if "dados e plano" in name:
+                try:
+                    return int(item.get("id"))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _fallback_update_opportunity(
+        self,
+        opportunity_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        current: dict[str, Any] = {}
+        try:
+            current = self.get_opportunity(opportunity_id)
+        except CRMIntegrationError:
+            current = {}
+
+        generic: dict[str, Any] = {}
+        direct_keys = {
+            "clientName",
+            "clientPhone",
+            "clientEmail",
+            "cep",
+            "city",
+            "uf",
+            "state",
+            "street",
+            "number",
+            "addressNumber",
+            "neighborhood",
+            "complement",
+        }
+        for key in direct_keys:
+            if key in payload:
+                generic[key] = payload[key]
+
+        if payload.get("cpf") not in (None, ""):
+            generic["clientCpf"] = payload["cpf"]
+        if payload.get("clientCpf") not in (None, ""):
+            generic["clientCpf"] = payload["clientCpf"]
+
+        ai_closing = current.get("aiClosing")
+        if not isinstance(ai_closing, dict):
+            ai_closing = {}
+        else:
+            ai_closing = dict(ai_closing)
+
+        for key in ("planLabel", "paymentMethod", "dueDay", "invoiceDelivery"):
+            if payload.get(key) not in (None, ""):
+                ai_closing[key] = payload[key]
+
+        selected_product: dict[str, Any] | None = None
+        plan_id = payload.get("planId")
+        if plan_id not in (None, ""):
+            try:
+                target_id = int(plan_id)
+            except (TypeError, ValueError):
+                target_id = 0
+            if target_id:
+                products = self.products("")
+                selected_product = next(
+                    (
+                        item
+                        for item in products
+                        if int(item.get("id") or 0) == target_id
+                    ),
+                    None,
+                )
+                generic["planIds"] = [target_id]
+
+        plan_label = str(payload.get("planLabel") or "").strip()
+        if not selected_product and plan_label:
+            products = self.products(plan_label)
+            if len(products) == 1:
+                selected_product = products[0]
+                generic["planIds"] = [int(selected_product.get("id") or 0)]
+            elif "planIds" not in generic:
+                raise CRMIntegrationError(
+                    "Plano não localizado de forma inequívoca no catálogo do CRM.",
+                    status_code=409,
+                )
+
+        if selected_product:
+            if selected_product.get("categoryId") not in (None, ""):
+                generic["categoryId"] = selected_product.get("categoryId")
+            if selected_product.get("monthlyValue") not in (None, ""):
+                generic["monthlyValue"] = selected_product.get("monthlyValue")
+            if not plan_label:
+                ai_closing["planLabel"] = str(selected_product.get("name") or "")
+
+        if ai_closing:
+            generic["productInfo"] = {"aiClosing": ai_closing}
+
+        if any(
+            key in payload
+            for key in ("planId", "planLabel", "paymentMethod", "dueDay", "invoiceDelivery")
+        ):
+            stage_id = self._data_stage_id()
+            if stage_id:
+                generic["stageId"] = stage_id
+
+        if not generic:
+            return {}
+
+        LOG.warning(
+            "crm_patch_fallback opportunity_id=%s keys=%s",
+            opportunity_id,
+            sorted(generic.keys()),
+        )
         result = self._request(
             "PATCH",
-            f"/api/capture/leads/{opportunity_id}",
-            json_body=payload,
+            f"/api/opportunities/{opportunity_id}",
+            json_body=generic,
         )
         return result if isinstance(result, dict) else {}
+
+    def update_opportunity(self, opportunity_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = self._request(
+                "PATCH",
+                f"/api/capture/leads/{opportunity_id}",
+                json_body=payload,
+            )
+            return result if isinstance(result, dict) else {}
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+            return self._fallback_update_opportunity(opportunity_id, payload)
 
     def get_opportunity(self, opportunity_id: int) -> dict[str, Any]:
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}")
