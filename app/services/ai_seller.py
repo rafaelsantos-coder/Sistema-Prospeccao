@@ -77,6 +77,7 @@ def _digits(value: str) -> str:
 
 def _redact(value: str) -> str:
     text = value or ""
+    text = re.sub(r"(?<!\d)\d{15,22}(?!\d)", "[DADO_MOVEL]", text)
     text = re.sub(r"(?<!\d)\d{11,14}(?!\d)", "[DOCUMENTO]", text)
     text = re.sub(r"(?<!\d)\d{5}-?\d{3}(?!\d)", "[CEP]", text)
     text = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[EMAIL]", text)
