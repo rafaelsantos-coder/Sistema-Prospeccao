@@ -26,8 +26,7 @@ from app.services.ai_sdr import AIDecision, QualificationData, claim_ai_job, pro
 from app.services.conversation_engine import store_received_payload
 from app.services.seed import seed_database
 from app.services.whatsapp_presence import join_whatsapp
-from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
-from app.services.zapi_instances import create_zapi_instance, queue_instance
+from app.services.zapi_instances import bind_queue_instance, create_zapi_instance, queue_instance
 
 
 def _csrf(html: str) -> str:
@@ -540,3 +539,134 @@ def test_ai_dashboard_shows_queue_whatsapp_instance():
         assert page.status_code == 200
         assert "Fila IA" in page.text
         assert "WhatsApp: Fila IA" in page.text
+
+
+
+def test_auto_mode_uses_buttons_for_casa_or_empresa_question(monkeypatch):
+    decision = AIDecision(
+        reply_text="Boa tarde! Você está buscando internet para sua casa ou empresa?",
+        intent="QUALIFYING",
+        qualification_score=20,
+        temperature="FRIO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.98,
+        summary="Início da qualificação do cliente.",
+        next_action="Identificar se o uso é residencial ou empresarial.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+    )
+    monkeypatch.setattr(
+        "app.services.ai_sdr.settings",
+        replace(settings, ai_autonomous_enabled=True),
+    )
+    monkeypatch.setattr(
+        "app.services.ai_sdr.run_ai_decision",
+        lambda agent, context: decision,
+    )
+
+    sent_buttons = []
+
+    def fake_send_button_list(self, *, phone, message, buttons):
+        sent_buttons.append((phone, message, buttons))
+        return {
+            "messageId": "AI-BUTTONS-OUT-1",
+            "zaapId": "AI-BUTTONS-ZAAP-1",
+        }
+
+    def fail_send_text(self, *, phone, message):
+        raise AssertionError("Pergunta casa/empresa deve ser enviada com botões.")
+
+    monkeypatch.setattr(
+        "app.services.zapi.ZApiService.send_button_list",
+        fake_send_button_list,
+    )
+    monkeypatch.setattr(
+        "app.services.zapi.ZApiService.send_text",
+        fail_send_text,
+    )
+
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(
+                select(AIJob).where(AIJob.status == "PENDENTE")
+            ):
+                stale_job.status = "IGNORADO"
+            db.flush()
+
+            agent, queue, _human = _create_bound_digital_queue(db, "BUTTONS")
+            agent.execution_mode = "AUTO"
+            db.commit()
+
+            from app.models import Lead, LeadQueuePreference
+
+            lead = Lead(
+                business_name="Cliente Botões IA",
+                contact_name="Cliente",
+                phone="5555988877444",
+                segment="Residencial",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(
+                LeadQueuePreference(
+                    lead_id=lead.id,
+                    queue_id=queue.id,
+                    source="TEST_AI_BUTTONS",
+                )
+            )
+            db.commit()
+
+            conversation, _message, created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-BUTTONS-INBOUND-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "Oi, queria informações."},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            assert created is True
+
+            job = claim_ai_job(db)
+            assert job is not None
+            db.commit()
+            job = db.get(AIJob, job.id)
+
+            outcome = process_ai_job(db, job)
+            db.commit()
+
+            assert outcome == "completed"
+            assert sent_buttons == [
+                (
+                    lead.phone,
+                    decision.reply_text,
+                    [
+                        {"id": "para_casa", "label": "Para casa"},
+                        {"id": "para_empresa", "label": "Para empresa"},
+                    ],
+                )
+            ]
+            outbound = db.scalar(
+                select(Message).where(
+                    Message.conversation_id == conversation.id,
+                    Message.provider_message_id == "AI-BUTTONS-OUT-1",
+                )
+            )
+            assert outbound is not None
+            assert outbound.message_type == "BUTTONS"
+        finally:
+            db.close()
