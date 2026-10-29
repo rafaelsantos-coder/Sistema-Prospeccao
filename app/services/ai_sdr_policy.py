@@ -87,6 +87,8 @@ FTTH_PLANS = [
         "upload_mbps": 250,
         "price_fidelity": 119.90,
         "price_no_fidelity": 159.90,
+        "included_router_count": 1,
+        "additional_router_monthly_price": 29.90,
         "cities": [
             "Santa Rosa",
             "Santo Ângelo",
@@ -123,6 +125,8 @@ FTTH_PLANS = [
         "upload_mbps": 200,
         "price_fidelity": 99.90,
         "price_no_fidelity": 129.90,
+        "included_router_count": 1,
+        "additional_router_monthly_price": 29.90,
         "cities": "ALL_20",
         "benefits": [
             "Sulnet Play - 1 acesso / 1 tela simultânea",
@@ -342,6 +346,17 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "Guarani das Missões, Sete de Setembro, Caibaté, Mato Queimado, Santo Cristo, Horizontina, Boa Vista do Buricá, "
             "Dr. Maurício Cardoso, Nova Candelária, São José do Inhacorá, Tuparendi, Crissiumal e Senador Salgado Filho. "
             "Cidade atendida não garante viabilidade técnica no endereço. Nunca prometer cobertura de endereço sem consulta."
+        ),
+    },
+    {
+        "title": "Roteadores inclusos nos planos 800 e 650 Mega",
+        "category": "PRODUTOS",
+        "tags": "roteador,roteadores,800 mega,650 mega,wifi 6,adicional,29,90",
+        "content": (
+            "Nos planos residenciais de fibra óptica de 800 Mega e 650 Mega está incluído 1 roteador em comodato. "
+            "Se o cliente precisar de um segundo roteador, ou outro roteador adicional, ele pode ser locado por R$ 29,90 por mês por unidade adicional. "
+            "Quando o cliente perguntar quantos roteadores estão incluídos, responder diretamente: 1 roteador incluso. "
+            "Não dizer que precisa validar essa informação, pois esta regra está confirmada na base comercial vigente."
         ),
     },
     {
@@ -652,6 +667,15 @@ Esses dados continuam disponíveis na base para responder quando o cliente pergu
 Formato preferencial: 'Legal! Em {cidade} temos o plano de fibra óptica de {velocidade} Mega por R$ {preço} mensais. Quer aproveitar e contratar esse plano agora?'
 Depois da oferta, priorize CTA de fechamento. Não pergunte automaticamente o provedor atual nessa mesma mensagem.
 Se o cliente quiser saber mais, hesitar ou trouxer objeção, aí sim aprofunde o diagnóstico e apresente somente as informações necessárias.
+
+ROTEADORES NOS PLANOS 800 E 650 MEGA
+Nos planos de fibra óptica de 800 Mega e 650 Mega:
+- está incluído 1 roteador em comodato;
+- se o cliente precisar de mais um roteador, cada unidade adicional é locada por R$ 29,90 por mês;
+- se perguntarem "vem um ou mais roteadores?", responda diretamente que vem 1 roteador incluso;
+- se perguntarem se a internet é fibra, confirme que esses planos são de fibra óptica;
+- NÃO diga que precisa validar ou confirmar a quantidade de roteadores;
+- depois de responder, retome o avanço comercial com uma CTA curta quando fizer sentido.
 
 NEGOCIAÇÃO
 Novos clientes FTTH com fidelidade de 12 meses podem receber até 3 mensalidades gratuitas a partir da ativação.
