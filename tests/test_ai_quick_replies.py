@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.routers.zapi import _is_explicit_opt_out
 from app.services.ai_quick_replies import infer_quick_replies, quick_replies_for_message
 from app.services.conversation_engine import payload_from_me, payload_message_content
 
@@ -67,3 +68,16 @@ def test_from_me_string_true_is_outbound():
     assert payload_from_me({"fromMe": True}) is True
     assert payload_from_me({"fromMe": "true"}) is True
     assert payload_from_me({"fromMe": "1"}) is True
+
+
+
+def test_polite_decline_is_not_global_opt_out():
+    assert _is_explicit_opt_out("Não, obrigado") is False
+    assert _is_explicit_opt_out("Não quero saber como acessa o Sulnet Play") is False
+    assert _is_explicit_opt_out("Agora não") is False
+
+
+def test_explicit_contact_stop_is_opt_out():
+    assert _is_explicit_opt_out("Não quero mais mensagens") is True
+    assert _is_explicit_opt_out("Por favor, não me contate novamente") is True
+    assert _is_explicit_opt_out("Me remova da lista") is True
