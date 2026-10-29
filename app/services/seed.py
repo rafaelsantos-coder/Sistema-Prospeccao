@@ -176,7 +176,11 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         db.add(ai_agent)
         db.flush()
 
-    if not ai_agent.system_prompt or "OBJETIVO" not in ai_agent.system_prompt:
+    if (
+        not ai_agent.system_prompt
+        or "OBJETIVO" not in ai_agent.system_prompt
+        or "BOTÕES E RESPOSTAS RÁPIDAS" not in ai_agent.system_prompt
+    ):
         ai_agent.system_prompt = SULIA_SYSTEM_PROMPT
     ai_agent.business_goal = (
         "Gerar vendas de internet: diagnosticar, ofertar do maior plano elegível para o menor, "
