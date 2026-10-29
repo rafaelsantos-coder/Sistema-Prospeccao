@@ -65,6 +65,7 @@ def _render_user_edit(
         "user_edit.html",
         user=actor,
         active_nav="settings",
+        settings_section="users",
         page_title=f"Editar usuário · {target.name}",
         target_user=target,
         branches=list(db.scalars(select(Branch).order_by(Branch.city))),
@@ -73,17 +74,16 @@ def _render_user_edit(
     )
 
 
-@router.get("")
-def settings_page(request: Request, db: Session = Depends(get_db)):
+def _settings_actor(request: Request, db: Session):
     user = get_current_user(request, db)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return None, RedirectResponse("/login", status_code=303)
     if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
-        return RedirectResponse("/dashboard", status_code=303)
-    branches = list(db.scalars(select(Branch).order_by(Branch.city)))
-    users = list(db.scalars(select(User).order_by(User.name)))
-    human_users = [item for item in users if item.role != "AI_SDR"]
-    targets = list(db.scalars(select(Target).order_by(Target.team)))
+        return None, RedirectResponse("/dashboard", status_code=303)
+    return user, None
+
+
+def _visible_queues(db: Session, user: User) -> list[ServiceQueue]:
     queues = list(
         db.scalars(
             select(ServiceQueue)
@@ -96,25 +96,128 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     )
     if user.role == "SUPERVISOR":
         if user.branch_id:
-            queues = [
+            return [
                 item for item in queues
                 if item.branch_id in {None, user.branch_id}
             ]
-        else:
-            queues = [item for item in queues if item.team == user.team]
-    queue_stats = {item.id: queue_summary(db, item) for item in queues}
-    audit_logs = list(
-        db.scalars(
-            select(AuditLog)
-            .options(selectinload(AuditLog.user))
-            .order_by(AuditLog.created_at.desc())
-            .limit(50)
+        return [item for item in queues if item.team == user.team]
+    return queues
+
+
+def _routing_strategies() -> dict[str, str]:
+    return {
+        "ROUND_ROBIN": "Carrossel / rodízio",
+        "LEAST_OPEN": "Menor número de atendimentos pendentes",
+        "MANUAL": "Somente distribuição manual",
+    }
+
+
+@router.get("")
+def settings_page(request: Request, db: Session = Depends(get_db)):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+
+    users = list(db.scalars(select(User).order_by(User.name)))
+    branches = list(db.scalars(select(Branch).order_by(Branch.city)))
+    queues = _visible_queues(db, user)
+    targets = list(db.scalars(select(Target).order_by(Target.team)))
+    zapi_instances = (
+        list_zapi_instances(db, active_only=False)
+        if user.role in {"ADMIN", "GESTOR"}
+        else []
+    )
+    audit_count = len(
+        list(
+            db.scalars(
+                select(AuditLog.id)
+                .order_by(AuditLog.created_at.desc())
+                .limit(50)
+            )
         )
     )
+
+    return render(
+        request,
+        "settings.html",
+        user=user,
+        active_nav="settings",
+        page_title="Configurações",
+        settings_stats={
+            "users": len(users),
+            "queues": len(queues),
+            "zapi_instances": len(zapi_instances),
+            "targets": len(targets),
+            "branches": len(branches),
+            "audit": audit_count,
+        },
+        environment=settings.app_env,
+    )
+
+
+@router.get("/users")
+def settings_users_page(request: Request, db: Session = Depends(get_db)):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+
+    branches = list(db.scalars(select(Branch).order_by(Branch.city)))
+    users = list(db.scalars(select(User).order_by(User.name)))
+    return render(
+        request,
+        "settings_users.html",
+        user=user,
+        active_nav="settings",
+        settings_section="users",
+        page_title="Usuários e acessos",
+        branches=branches,
+        users=users,
+    )
+
+
+@router.get("/queues")
+def settings_queues_page(request: Request, db: Session = Depends(get_db)):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+
+    branches = list(db.scalars(select(Branch).order_by(Branch.city)))
+    users = list(db.scalars(select(User).order_by(User.name)))
+    human_users = [item for item in users if item.role != "AI_SDR"]
+    queues = _visible_queues(db, user)
+    active_zapi_instances = list_zapi_instances(db)
+    queue_stats = {item.id: queue_summary(db, item) for item in queues}
+    queue_instances = {
+        item.id: queue_instance(db, item.id)
+        for item in queues
+    }
+
+    return render(
+        request,
+        "settings_queues.html",
+        user=user,
+        active_nav="settings",
+        settings_section="queues",
+        page_title="Filas de atendimento",
+        branches=branches,
+        human_users=human_users,
+        queues=queues,
+        queue_stats=queue_stats,
+        queue_instances=queue_instances,
+        active_zapi_instances=active_zapi_instances,
+        routing_strategies=_routing_strategies(),
+    )
+
+
+@router.get("/whatsapp")
+def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+    require_roles(user, "ADMIN", "GESTOR")
+
     zapi_instances = list_zapi_instances(db, active_only=False)
     active_zapi_instances = [item for item in zapi_instances if item.active]
-    integrations = dict(settings.integrations)
-    integrations["zapi"] = bool(active_zapi_instances)
     zapi_status = {
         "configured": bool(active_zapi_instances),
         "connected": False,
@@ -127,36 +230,84 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             zapi_status.update(service_for_instance(active_zapi_instances[0]).status())
         except ZApiError as exc:
             zapi_status["error"] = str(exc)
-    queue_instances = {
-        item.id: queue_instance(db, item.id)
-        for item in queues
-    }
+
     return render(
         request,
-        "settings.html",
+        "settings_whatsapp.html",
         user=user,
         active_nav="settings",
-        page_title="Configurações",
-        integrations=integrations,
+        settings_section="whatsapp",
+        page_title="Números e conexões Z-API",
         zapi_status=zapi_status,
         zapi_instances=zapi_instances,
         active_zapi_instances=active_zapi_instances,
-        queue_instances=queue_instances,
+    )
+
+
+@router.get("/operations")
+def settings_operations_page(request: Request, db: Session = Depends(get_db)):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+
+    branches = list(db.scalars(select(Branch).order_by(Branch.city)))
+    targets = list(db.scalars(select(Target).order_by(Target.team)))
+    return render(
+        request,
+        "settings_operations.html",
+        user=user,
+        active_nav="settings",
+        settings_section="operations",
+        page_title="Metas e unidades",
+        branches=branches,
+        targets=targets,
+    )
+
+
+@router.get("/integrations")
+def settings_integrations_page(request: Request, db: Session = Depends(get_db)):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+
+    integrations = dict(settings.integrations)
+    integrations["zapi"] = bool(list_zapi_instances(db))
+    return render(
+        request,
+        "settings_integrations.html",
+        user=user,
+        active_nav="settings",
+        settings_section="integrations",
+        page_title="Integrações e ambiente",
+        integrations=integrations,
         legacy_available=legacy_modules_available(),
         rate_status=rate_status(),
-        branches=branches,
-        users=users,
-        human_users=human_users,
-        targets=targets,
-        queues=queues,
-        queue_stats=queue_stats,
-        routing_strategies={
-            "ROUND_ROBIN": "Carrossel / rodízio",
-            "LEAST_OPEN": "Menor número de atendimentos pendentes",
-            "MANUAL": "Somente distribuição manual",
-        },
-        audit_logs=audit_logs,
         environment=settings.app_env,
+    )
+
+
+@router.get("/audit")
+def settings_audit_page(request: Request, db: Session = Depends(get_db)):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+
+    audit_logs = list(
+        db.scalars(
+            select(AuditLog)
+            .options(selectinload(AuditLog.user))
+            .order_by(AuditLog.created_at.desc())
+            .limit(100)
+        )
+    )
+    return render(
+        request,
+        "settings_audit.html",
+        user=user,
+        active_nav="settings",
+        settings_section="audit",
+        page_title="Auditoria",
+        audit_logs=audit_logs,
     )
 
 
@@ -185,12 +336,12 @@ def create_user(
     clean_email = email.strip().lower()
     if db.scalar(select(User).where(User.email == clean_email)):
         flash(request, "Ja existe um usuario com este e-mail.", "warning")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/users", status_code=303)
     try:
         password_hash = hash_password(password)
     except ValueError as exc:
         flash(request, str(exc), "error")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/users", status_code=303)
     branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
     created = User(
         name=name.strip(),
@@ -214,7 +365,7 @@ def create_user(
     )
     db.commit()
     flash(request, f"Usuario {created.name} criado. A troca de senha sera exigida no primeiro acesso.")
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings/users", status_code=303)
 
 
 @router.get("/users/{user_id}/edit")
@@ -389,7 +540,7 @@ def toggle_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if target.id == actor.id:
         flash(request, "Voce nao pode desativar o proprio acesso.", "warning")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/users", status_code=303)
     if actor.role != "ADMIN" and target.role in {"ADMIN", "GESTOR"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     target.active = not target.active
@@ -401,4 +552,4 @@ def toggle_user(
         entity_id=target.id,
     )
     db.commit()
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings/users", status_code=303)

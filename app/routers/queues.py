@@ -129,16 +129,16 @@ def create_queue(
     strategy = routing_strategy.strip().upper()
     if not clean_name or not clean_code:
         flash(request, "Informe nome e código da fila.", "warning")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/queues", status_code=303)
     if strategy not in ROUTING_STRATEGIES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
     if db.scalar(select(ServiceQueue.id).where(ServiceQueue.code == clean_code)):
         flash(request, "Já existe uma fila com este código.", "warning")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/queues", status_code=303)
     zapi_instance = get_zapi_instance(db, zapi_instance_id)
     if not zapi_instance or not zapi_instance.active:
         flash(request, "Selecione uma instância WhatsApp ativa para a fila.", "warning")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/queues", status_code=303)
 
     branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
     queue = ServiceQueue(
@@ -190,9 +190,9 @@ def queue_detail(
     queue = _queue_or_404(db, queue_id)
     if actor.role == "SUPERVISOR":
         if actor.branch_id and queue.branch_id not in {None, actor.branch_id}:
-            return RedirectResponse("/settings", status_code=303)
+            return RedirectResponse("/settings/queues", status_code=303)
         if not actor.branch_id and queue.team != actor.team:
-            return RedirectResponse("/settings", status_code=303)
+            return RedirectResponse("/settings/queues", status_code=303)
     users = [item for item in _scoped_users(db, queue) if item.role != "AI_SDR"]
     if actor.role == "SUPERVISOR":
         if actor.branch_id:
@@ -208,6 +208,7 @@ def queue_detail(
         "queue_detail.html",
         user=actor,
         active_nav="settings",
+        settings_section="queues",
         page_title=f"Fila · {queue.name}",
         queue=queue,
         users=users,

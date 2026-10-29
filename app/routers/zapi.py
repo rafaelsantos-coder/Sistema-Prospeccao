@@ -323,7 +323,7 @@ def configure_zapi_webhook(
     require_roles(user, "ADMIN", "GESTOR")
     if not settings.app_public_url:
         flash(request, "Defina APP_PUBLIC_URL no Railway.", "warning")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/whatsapp", status_code=303)
     configured = 0
     errors: list[str] = []
     for instance in list_zapi_instances(db):
@@ -346,7 +346,7 @@ def configure_zapi_webhook(
         payload={"configured": configured, "errors": errors},
     )
     db.commit()
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
 @router.post("/settings/zapi/instances")
@@ -369,7 +369,7 @@ def create_zapi_instance_route(
     clean_instance_id = instance_id.strip()
     if db.scalar(select(ZApiInstance.id).where(ZApiInstance.instance_id == clean_instance_id)):
         flash(request, "Esta instância Z-API já está cadastrada.", "warning")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/whatsapp", status_code=303)
     item = create_zapi_instance(
         db,
         name=name,
@@ -389,7 +389,7 @@ def create_zapi_instance_route(
     except ZApiError as exc:
         db.rollback()
         flash(request, f"Não foi possível validar a instância: {exc}", "error")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/whatsapp", status_code=303)
     write_audit(
         db,
         user=user,
@@ -405,7 +405,7 @@ def create_zapi_instance_route(
     )
     db.commit()
     flash(request, f"Instância {item.name} cadastrada e webhook configurado.")
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
 @router.post("/settings/zapi/instances/{instance_db_id}/configure-webhook")
@@ -426,14 +426,14 @@ def configure_instance_webhook(
     url = instance_webhook_url(instance)
     if not url:
         flash(request, "Defina APP_PUBLIC_URL antes de configurar o webhook.", "warning")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/whatsapp", status_code=303)
     try:
         service_for_instance(instance).configure_webhooks(url)
     except ZApiError as exc:
         flash(request, str(exc), "error")
     else:
         flash(request, f"Webhook da instância {instance.name} atualizado.")
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
 @router.post("/settings/zapi/test")
@@ -456,7 +456,7 @@ def test_zapi_message(
         result = service.send_text(phone=phone, message=message)
     except ZApiError as exc:
         flash(request, str(exc), "error")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings/whatsapp", status_code=303)
     provider_id = _provider_message_id(result)
     write_audit(
         db,
@@ -468,7 +468,7 @@ def test_zapi_message(
     )
     db.commit()
     flash(request, "Mensagem de teste enviada pela Z-API.")
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
 @router.post("/leads/{lead_id}/whatsapp")

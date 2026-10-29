@@ -52,6 +52,18 @@
       <a href="/settings" class="nav-item {% if active_nav == 'settings' %}active{% endif %}">
         <span class="nav-icon">⚙</span><span>Configurações</span>
       </a>
+      {% if active_nav == 'settings' %}
+      <div class="nav-submenu">
+        {% if current_user.role in ['ADMIN','GESTOR'] %}
+        <a href="/settings/whatsapp" class="{% if settings_section == 'whatsapp' %}active{% endif %}">Números e Z-API</a>
+        {% endif %}
+        <a href="/settings/queues" class="{% if settings_section == 'queues' %}active{% endif %}">Filas de atendimento</a>
+        <a href="/settings/users" class="{% if settings_section == 'users' %}active{% endif %}">Usuários e acessos</a>
+        <a href="/settings/operations" class="{% if settings_section == 'operations' %}active{% endif %}">Metas e unidades</a>
+        <a href="/settings/integrations" class="{% if settings_section == 'integrations' %}active{% endif %}">Integrações</a>
+        <a href="/settings/audit" class="{% if settings_section == 'audit' %}active{% endif %}">Auditoria</a>
+      </div>
+      {% endif %}
       {% endif %}
     </nav>
 

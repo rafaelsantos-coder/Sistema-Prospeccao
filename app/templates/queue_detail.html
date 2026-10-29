@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-lead split">
+{% include "_settings_nav.html" %}
+<div class="page-lead split settings-section-lead">
   <div>
     <span class="eyebrow">FILA DE ATENDIMENTO</span>
     <h2>{{ queue.name }}</h2>
     <p>{{ queue.code }} · {{ constants.teams.get(queue.team, queue.team) }} · {{ queue.branch.city if queue.branch else 'Corporativo / todas as unidades' }}</p>
   </div>
-  <a class="button button-secondary" href="/settings">Voltar às configurações</a>
+  <a class="button button-secondary" href="/settings/queues">← Filas de atendimento</a>
 </div>
 
 <div class="queue-overview-grid">
