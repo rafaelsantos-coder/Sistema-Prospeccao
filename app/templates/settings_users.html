@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_settings_nav.html" %}
+
+<div class="page-lead split settings-section-lead">
+  <div>
+    <span class="eyebrow">CONFIGURAÇÕES · ACESSOS</span>
+    <h2>Usuários e acessos</h2>
+    <p>Gerencie quem acessa o ambiente, perfil, equipe, unidade e situação do usuário.</p>
+  </div>
+  <a class="button button-secondary" href="/settings">← Configurações</a>
+</div>
+
+<div class="settings-grid">
+  {% if current_user.role in ['ADMIN','GESTOR'] %}
+  <article class="panel panel-span-12">
+    <div class="panel-header">
+      <div><span class="eyebrow">NOVO USUÁRIO</span><h3>Liberar acesso</h3></div>
+      <span class="panel-note">Senha provisória · troca obrigatória no primeiro acesso</span>
+    </div>
+    <form action="/settings/users" method="post" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Nome</span><input name="name" required placeholder="Nome completo"></label>
+      <label class="field"><span>E-mail</span><input name="email" type="email" required placeholder="nome@sulnet.com.br"></label>
+      <label class="field"><span>Senha provisória</span><input name="password" type="password" minlength="10" required autocomplete="new-password"></label>
+      <label class="field"><span>Perfil</span><select name="role" required>
+        <option value="CONSULTOR">Consultor</option>
+        <option value="SUPERVISOR">Supervisor</option>
+        {% if current_user.role == 'ADMIN' %}<option value="GESTOR">Gestor</option><option value="ADMIN">Administrador</option>{% endif %}
+      </select></label>
+      <label class="field"><span>Equipe</span><select name="team" required>{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Todas / corporativo</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
+      <div class="field field-span-2"><button class="button button-primary" type="submit">Criar usuário e liberar acesso</button></div>
+    </form>
+  </article>
+  {% endif %}
+
+  <article class="panel panel-span-12">
+    <div class="panel-header"><div><span class="eyebrow">USUÁRIOS</span><h3>Acessos do ambiente</h3></div><span class="count-badge">{{ users|length }}</span></div>
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Unidade</th><th>Status</th>{% if current_user.role in ['ADMIN','GESTOR'] %}<th>Ação</th>{% endif %}</tr></thead>
+        <tbody>
+        {% for item in users %}
+          <tr>
+            <td><strong>{{ item.name }}</strong></td>
+            <td>{{ item.email }}</td>
+            <td>{{ constants.roles.get(item.role, item.role) }}</td>
+            <td>{{ constants.teams.get(item.team, item.team) }}</td>
+            <td>{{ item.branch.city if item.branch else 'Todas' }}</td>
+            <td><span class="connection-status {% if item.active %}on{% endif %}">{{ 'Ativo' if item.active else 'Inativo' }}</span></td>
+            {% if current_user.role in ['ADMIN','GESTOR'] %}
+            <td>
+              {% if item.role == 'AI_SDR' %}
+                <span class="panel-note">Gerenciado em IA & Agentes</span>
+              {% elif current_user.role == 'GESTOR' and item.role in ['ADMIN','GESTOR'] %}
+                <span class="panel-note">Acesso restrito</span>
+              {% else %}
+                <div class="table-actions">
+                  <a class="button button-secondary" href="/settings/users/{{ item.id }}/edit">Editar</a>
+                  {% if item.id != current_user.id %}
+                  <form action="/settings/users/{{ item.id }}/toggle" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="button button-ghost" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button>
+                  </form>
+                  {% else %}
+                  <span class="panel-note">Você</span>
+                  {% endif %}
+                </div>
+              {% endif %}
+            </td>
+            {% endif %}
+          </tr>
+        {% else %}
+          <tr><td colspan="7"><div class="empty-state">Nenhum usuário cadastrado.</div></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</div>
+{% endblock %}
