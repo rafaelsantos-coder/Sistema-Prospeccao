@@ -16,6 +16,7 @@ from app.models import (
     Contact,
     Conversation,
     ConversationAssignment,
+    ConversationQueueLink,
     Message,
     MessageEvent,
     User,
@@ -49,6 +50,7 @@ class ChatReportFilters:
     direction: str = ""
     message_type: str = ""
     channel_phone: str = ""
+    queue_id: int | None = None
 
     @classmethod
     def defaults(cls) -> "ChatReportFilters":
@@ -81,6 +83,7 @@ class ChatReportFilters:
             "direction": self.direction,
             "message_type": self.message_type,
             "channel_phone": self.channel_phone,
+            "queue_id": str(self.queue_id or ""),
         }
         return {key: value for key, value in values.items() if value}
 
@@ -330,6 +333,15 @@ def _conversation_query(
     if filters.channel_phone:
         stmt = stmt.where(
             _channel_phone_exists(filters.channel_phone, start, end)
+        )
+    if filters.queue_id:
+        stmt = stmt.where(
+            exists(
+                select(ConversationQueueLink.id).where(
+                    ConversationQueueLink.conversation_id == Conversation.id,
+                    ConversationQueueLink.queue_id == filters.queue_id,
+                )
+            )
         )
 
     return (
