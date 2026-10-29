@@ -77,6 +77,7 @@ def _digits(value: str) -> str:
 
 def _redact(value: str) -> str:
     text = value or ""
+    text = re.sub(r"(?<!\d)\d{15,22}(?!\d)", "[DADO_MOVEL]", text)
     text = re.sub(r"(?<!\d)\d{11,14}(?!\d)", "[DOCUMENTO]", text)
     text = re.sub(r"(?<!\d)\d{5}-?\d{3}(?!\d)", "[CEP]", text)
     text = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[EMAIL]", text)
@@ -206,6 +207,442 @@ def _billing_local(text: str) -> dict[str, Any]:
     elif "whatsapp" in n or "whats" in n:
         result["invoiceDelivery"] = "WhatsApp"
     return result
+
+
+MOBILE_CATEGORY_ID = 13
+MOBILE_SIGNATURE_TYPE = "Assinatura Digital IA"
+
+
+def _extract_generic_date(text: str) -> str | None:
+    value = text or ""
+    patterns = [
+        (r"\b(\d{2}/\d{2}/\d{4})\b", "%d/%m/%Y"),
+        (r"\b(\d{2}-\d{2}-\d{4})\b", "%d-%m-%Y"),
+        (r"\b(\d{2}\.\d{2}\.\d{4})\b", "%d.%m.%Y"),
+        (r"\b(\d{4}-\d{2}-\d{2})\b", "%Y-%m-%d"),
+    ]
+    for pattern, fmt in patterns:
+        match = re.search(pattern, value)
+        if not match:
+            continue
+        try:
+            parsed = datetime.strptime(match.group(1), fmt)
+        except ValueError:
+            continue
+        return parsed.strftime("%Y-%m-%d")
+    return None
+
+
+def _extract_money(text: str) -> float | None:
+    match = re.search(r"(\d{1,6}(?:[.,]\d{1,2})?)", text or "")
+    if not match:
+        return None
+    try:
+        return round(float(match.group(1).replace(",", ".")), 2)
+    except ValueError:
+        return None
+
+
+def _extract_due_day(text: str) -> int | None:
+    match = re.search(r"\b(?:dia|vencimento\s*(?:dia)?)?\s*(\d{1,2})\b", _norm(text))
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if 1 <= value <= 31 else None
+
+
+def _extract_mobile_contract_type(text: str) -> str | None:
+    n = _norm(text)
+    if "m2m" in n:
+        return "M2M"
+    if "port" in n:
+        return "Número Portabilidade"
+    if "novo" in n or "nova linha" in n or "linha nova" in n:
+        return "Número novo"
+    return None
+
+
+def _extract_iccid(text: str) -> str | None:
+    for candidate in re.findall(r"\d{18,22}", _digits(text)):
+        if 18 <= len(candidate) <= 22:
+            return candidate
+    digits = _digits(text)
+    return digits if 18 <= len(digits) <= 22 else None
+
+
+def _extract_mobile_number(text: str) -> str | None:
+    digits = _digits(text)
+    return digits if 10 <= len(digits) <= 13 else None
+
+
+def _extract_positive_int(text: str) -> int | None:
+    match = re.search(r"\b(\d{1,4})\b", text or "")
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if value > 0 else None
+
+
+def _extract_invoice_delivery(text: str) -> list[str]:
+    n = _norm(text)
+    values: list[str] = []
+    if "whatsapp" in n or "whats" in n:
+        values.append("WhatsApp")
+    if "email" in n or "e-mail" in n:
+        values.append("E-mail")
+    if any(token in n for token in ("ambos", "os dois", "duas formas")):
+        values = ["WhatsApp", "E-mail"]
+    return values
+
+
+def _extract_mobile_payment(text: str) -> str | None:
+    n = _norm(text)
+    if "boleto" in n:
+        return "Boleto"
+    if "debito" in n:
+        return "Débito em Conta"
+    return None
+
+
+def _mobile_values(collected: dict[str, Any]) -> dict[str, Any]:
+    raw = collected.get("mobileCategoryValues")
+    values = dict(raw) if isinstance(raw, dict) else {}
+    values["tipo_assinatura_contrato"] = MOBILE_SIGNATURE_TYPE
+    return values
+
+
+def _is_mobile_plan(state: AIClosingState, collected: dict[str, Any]) -> bool:
+    if int(collected.get("categoryId") or 0) == MOBILE_CATEGORY_ID:
+        return True
+    label = _norm(str(collected.get("categoryName") or state.plan_label or ""))
+    return "telefonia movel" in label or "sulmovel" in label or "movel" in label
+
+
+def _sync_plan_context(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> None:
+    if not state.opportunity_id:
+        return
+    opportunity = client.get_opportunity(state.opportunity_id)
+    plan_id = int(opportunity.get("planId") or 0)
+    products = client.products("")
+    selected = next(
+        (item for item in products if int(item.get("id") or 0) == plan_id),
+        None,
+    )
+    if not selected and state.plan_label:
+        query = client.products(state.plan_label)
+        exact = [
+            item for item in query
+            if _norm(str(item.get("name") or "")) == _norm(state.plan_label)
+        ]
+        if len(exact) == 1:
+            selected = exact[0]
+        elif len(query) == 1:
+            selected = query[0]
+    if not selected:
+        return
+    collected["planId"] = int(selected.get("id") or 0)
+    collected["categoryId"] = int(selected.get("categoryId") or 0)
+    collected["categoryName"] = str(selected.get("categoryName") or "")
+    selected_name = str(selected.get("name") or "").strip()
+    if selected_name:
+        state.plan_label = selected_name
+
+
+def _persist_mobile_category_form(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> None:
+    if not state.opportunity_id:
+        raise CRMIntegrationError("Oportunidade do CRM não disponível para gravar Telefonia Móvel.")
+    values = _mobile_values(collected)
+    collected["mobileCategoryValues"] = values
+    client.update_category_form(
+        state.opportunity_id,
+        values,
+        category_id=int(collected.get("categoryId") or MOBILE_CATEGORY_ID),
+        plan_id=int(collected.get("planId") or 0) or None,
+    )
+
+
+def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
+    required = [
+        "tipo_contratacao",
+        "vencimento",
+        "taxa_ativacao",
+        "forma_pagamento",
+        "unificar_faturas",
+        "tipo_assinatura_contrato",
+    ]
+    contract_type = str(values.get("tipo_contratacao") or "")
+    if contract_type == "Número novo":
+        required += ["novo_iccid", "numero_novo"]
+    elif contract_type == "Número Portabilidade":
+        required += [
+            "port_iccid",
+            "numero_portado",
+            "port_titular",
+            "port_nome_titular",
+            "port_cpf_cnpj",
+            "port_data",
+        ]
+    elif contract_type == "M2M":
+        required += ["m2m_quantidade", "m2m_iccids"]
+
+    if values.get("taxa_ativacao") == "Sim":
+        required.append("taxa_valor")
+    if values.get("forma_pagamento") == "Boleto":
+        required.append("envio_fatura")
+    elif values.get("forma_pagamento") == "Débito em Conta":
+        required += ["debito_banco", "debito_agencia", "debito_conta", "debito_titular"]
+    if values.get("unificar_faturas") == "Não":
+        required.append("unificar_motivo")
+
+    missing: list[str] = []
+    for field in required:
+        value = values.get(field)
+        if value in (None, "", []):
+            missing.append(field)
+
+    if contract_type == "M2M" and "m2m_quantidade" not in missing and "m2m_iccids" not in missing:
+        qty = int(values.get("m2m_quantidade") or 0)
+        iccids = [line.strip() for line in str(values.get("m2m_iccids") or "").splitlines() if line.strip()]
+        if qty <= 0 or len(iccids) != qty:
+            missing.append("m2m_iccids")
+    return missing
+
+
+def _mobile_next_step(values: dict[str, Any]) -> str | None:
+    contract_type = str(values.get("tipo_contratacao") or "")
+    if not contract_type:
+        return "MOBILE_CONTRACT_TYPE"
+    if contract_type == "Número novo":
+        if not values.get("novo_iccid"):
+            return "MOBILE_NEW_ICCID"
+        if not values.get("numero_novo"):
+            return "MOBILE_NEW_NUMBER"
+    elif contract_type == "Número Portabilidade":
+        order = [
+            ("port_iccid", "MOBILE_PORT_ICCID"),
+            ("numero_portado", "MOBILE_PORT_NUMBER"),
+            ("port_titular", "MOBILE_PORT_TITULAR"),
+            ("port_nome_titular", "MOBILE_PORT_NAME"),
+            ("port_cpf_cnpj", "MOBILE_PORT_DOC"),
+            ("port_data", "MOBILE_PORT_DATE"),
+        ]
+        for field, step in order:
+            if not values.get(field):
+                return step
+    elif contract_type == "M2M":
+        if not values.get("m2m_quantidade"):
+            return "MOBILE_M2M_QTY"
+        qty = int(values.get("m2m_quantidade") or 0)
+        iccids = [line.strip() for line in str(values.get("m2m_iccids") or "").splitlines() if line.strip()]
+        if not values.get("m2m_iccids") or len(iccids) != qty:
+            return "MOBILE_M2M_ICCIDS"
+
+    if not values.get("vencimento"):
+        return "MOBILE_DUE_DAY"
+    if not values.get("taxa_ativacao"):
+        return "MOBILE_ACTIVATION_FEE"
+    if values.get("taxa_ativacao") == "Sim" and values.get("taxa_valor") in (None, ""):
+        return "MOBILE_ACTIVATION_VALUE"
+    if not values.get("forma_pagamento"):
+        return "MOBILE_PAYMENT_METHOD"
+    if values.get("forma_pagamento") == "Boleto":
+        if not values.get("envio_fatura"):
+            return "MOBILE_INVOICE_DELIVERY"
+    else:
+        for field, step in [
+            ("debito_banco", "MOBILE_DEBIT_BANK"),
+            ("debito_agencia", "MOBILE_DEBIT_AGENCY"),
+            ("debito_conta", "MOBILE_DEBIT_ACCOUNT"),
+            ("debito_titular", "MOBILE_DEBIT_HOLDER"),
+        ]:
+            if not values.get(field):
+                return step
+    if not values.get("unificar_faturas"):
+        return "MOBILE_UNIFY"
+    if values.get("unificar_faturas") == "Não" and not values.get("unificar_motivo"):
+        return "MOBILE_UNIFY_REASON"
+    return None
+
+def _apply_mobile_answer(
+    step: str,
+    text: str,
+    values: dict[str, Any],
+) -> tuple[bool, str]:
+    if step == "MOBILE_CONTRACT_TYPE":
+        contract_type = _extract_mobile_contract_type(text)
+        if not contract_type:
+            return False, "Me diga se será número novo, portabilidade ou M2M."
+        previous = str(values.get("tipo_contratacao") or "")
+        values["tipo_contratacao"] = contract_type
+        if previous and previous != contract_type:
+            for key in (
+                "novo_iccid", "numero_novo", "port_iccid", "numero_portado",
+                "port_titular", "port_nome_titular", "port_cpf_cnpj", "port_data",
+                "m2m_quantidade", "m2m_iccids",
+            ):
+                values.pop(key, None)
+        return True, ""
+
+    if step in {"MOBILE_NEW_ICCID", "MOBILE_PORT_ICCID"}:
+        iccid = _extract_iccid(text)
+        if not iccid:
+            return False, "Preciso do ICCID completo do chip."
+        values["novo_iccid" if step == "MOBILE_NEW_ICCID" else "port_iccid"] = iccid
+        return True, ""
+
+    if step in {"MOBILE_NEW_NUMBER", "MOBILE_PORT_NUMBER"}:
+        number = _extract_mobile_number(text)
+        if not number:
+            return False, "Preciso do número completo com DDD."
+        values["numero_novo" if step == "MOBILE_NEW_NUMBER" else "numero_portado"] = number
+        return True, ""
+
+    if step == "MOBILE_PORT_TITULAR":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não: a portabilidade está em nome do titular desta contratação?"
+        values["port_titular"] = "Sim" if answer == "SIM" else "Não"
+        return True, ""
+
+    if step == "MOBILE_PORT_NAME":
+        name = re.sub(r"\s+", " ", (text or "").strip())
+        if len(name) < 5:
+            return False, "Informe o nome completo do titular da linha."
+        values["port_nome_titular"] = name[:160]
+        return True, ""
+
+    if step == "MOBILE_PORT_DOC":
+        document = _extract_cpf(text)
+        if not document:
+            return False, "Informe o CPF ou CNPJ completo do titular da linha."
+        values["port_cpf_cnpj"] = document
+        return True, ""
+
+    if step == "MOBILE_PORT_DATE":
+        date_value = _extract_generic_date(text)
+        if not date_value:
+            return False, "Informe a data da portabilidade no formato DD/MM/AAAA."
+        values["port_data"] = date_value
+        return True, ""
+
+    if step == "MOBILE_M2M_QTY":
+        qty = _extract_positive_int(text)
+        if not qty:
+            return False, "Informe a quantidade de chips M2M."
+        values["m2m_quantidade"] = qty
+        return True, ""
+
+    if step == "MOBILE_M2M_ICCIDS":
+        qty = int(values.get("m2m_quantidade") or 0)
+        iccids = re.findall(r"(?<!\d)\d{18,22}(?!\d)", text or "")
+        if qty <= 0:
+            return False, "Primeiro preciso da quantidade de chips M2M."
+        if len(iccids) != qty:
+            return False, f"Preciso de {qty} ICCID(s), um por linha."
+        values["m2m_iccids"] = "\n".join(iccids)
+        return True, ""
+
+    if step == "MOBILE_DUE_DAY":
+        day = _extract_due_day(text)
+        if not day:
+            return False, "Informe um dia de vencimento entre 1 e 31."
+        values["vencimento"] = day
+        return True, ""
+
+    if step == "MOBILE_ACTIVATION_FEE":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não para a taxa de ativação."
+        values["taxa_ativacao"] = "Sim" if answer == "SIM" else "Não"
+        if answer == "NAO":
+            values.pop("taxa_valor", None)
+        return True, ""
+
+    if step == "MOBILE_ACTIVATION_VALUE":
+        amount = _extract_money(text)
+        if amount is None:
+            return False, "Informe o valor da taxa de ativação."
+        values["taxa_valor"] = amount
+        return True, ""
+
+    if step == "MOBILE_PAYMENT_METHOD":
+        method = _extract_mobile_payment(text)
+        if not method:
+            return False, "Escolha boleto ou débito em conta."
+        values["forma_pagamento"] = method
+        if method == "Boleto":
+            for key in ("debito_banco", "debito_agencia", "debito_conta", "debito_titular"):
+                values.pop(key, None)
+        else:
+            values.pop("envio_fatura", None)
+        return True, ""
+
+    if step == "MOBILE_INVOICE_DELIVERY":
+        delivery = _extract_invoice_delivery(text)
+        if not delivery:
+            return False, "Escolha WhatsApp, e-mail ou ambos para receber a fatura."
+        values["envio_fatura"] = delivery
+        return True, ""
+
+    text_value = re.sub(r"\s+", " ", (text or "").strip())
+    if step in {"MOBILE_DEBIT_BANK", "MOBILE_DEBIT_AGENCY", "MOBILE_DEBIT_ACCOUNT", "MOBILE_DEBIT_HOLDER"}:
+        if not text_value:
+            return False, "Preciso dessa informação para configurar o débito em conta."
+        field = {
+            "MOBILE_DEBIT_BANK": "debito_banco",
+            "MOBILE_DEBIT_AGENCY": "debito_agencia",
+            "MOBILE_DEBIT_ACCOUNT": "debito_conta",
+            "MOBILE_DEBIT_HOLDER": "debito_titular",
+        }[step]
+        values[field] = text_value[:160]
+        return True, ""
+
+    if step == "MOBILE_UNIFY":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não para unificar as faturas."
+        values["unificar_faturas"] = "Sim" if answer == "SIM" else "Não"
+        if answer == "SIM":
+            values.pop("unificar_motivo", None)
+        return True, ""
+
+    if step == "MOBILE_UNIFY_REASON":
+        if len(text_value) < 3:
+            return False, "Informe o motivo para não unificar as faturas."
+        values["unificar_motivo"] = text_value[:300]
+        return True, ""
+
+    return False, "Não consegui interpretar esta etapa da contratação móvel."
+
+
+def _finish_sale_contract(client: SulnetCRMClient, state: AIClosingState) -> str:
+    won = client.mark_won(state.opportunity_id or 0)
+    contract = won.get("contract") or {}
+    state.contract_status = str(contract.get("status") or "aguardando_backoffice")
+    state.step = "WAITING_CONTRACT"
+    try:
+        started = client.start_contract(state.opportunity_id or 0)
+    except CRMIntegrationError:
+        started = contract
+    sign_url = str(started.get("signUrl") or "").strip()
+    state.contract_status = str(started.get("status") or state.contract_status)
+    if sign_url:
+        state.sign_url = sign_url
+        state.step = "WAITING_SIGNATURE"
+        return (
+            "Seu cadastro foi concluído e o contrato já está pronto para assinatura. "
+            f"Você pode assinar por este link: {sign_url}"
+        )
+    return _prompt_for_step(state, {})
+
 
 
 def _seller_knowledge(db: Session, agent: AIAgentProfile) -> str:
@@ -365,6 +802,8 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == "BIRTH_DATE":
         return "Para concluir a consulta cadastral, preciso também da sua data de nascimento. Pode me enviar no formato DD/MM/AAAA?"
     if state.step == "CEP":
+        if _is_mobile_plan(state, collected):
+            return "Consulta aprovada! Qual é o CEP do seu endereço de cadastro?"
         return "Consulta aprovada! Qual é o CEP do endereço onde será instalada a internet?"
     if state.step == "ADDRESS_NUMBER":
         street = str(collected.get("street") or "").strip()
@@ -377,6 +816,52 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         return f"Perfeito. O plano negociado ficou {plan}. Confirma que seguimos com ele?"
     if state.step == "EMAIL":
         return "Certo. Qual e-mail você quer deixar no cadastro e receber as comunicações da contratação?"
+    if state.step == "MOBILE_CONTRACT_TYPE":
+        return "Para o Sulmóvel, será número novo, portabilidade de um número que você já usa ou M2M?"
+    if state.step == "MOBILE_NEW_ICCID":
+        return "Certo. Me informe o ICCID do chip da nova linha."
+    if state.step == "MOBILE_NEW_NUMBER":
+        return "Agora me informe o número da nova linha."
+    if state.step == "MOBILE_PORT_ICCID":
+        return "Para a portabilidade, me informe o ICCID do chip."
+    if state.step == "MOBILE_PORT_NUMBER":
+        return "Qual é o número que será portado?"
+    if state.step == "MOBILE_PORT_TITULAR":
+        return "A portabilidade está em nome do titular desta contratação? Responda sim ou não."
+    if state.step == "MOBILE_PORT_NAME":
+        return "Qual é o nome completo do titular da linha que será portada?"
+    if state.step == "MOBILE_PORT_DOC":
+        return "Qual é o CPF ou CNPJ do titular da linha que será portada?"
+    if state.step == "MOBILE_PORT_DATE":
+        return "Qual data você deseja para a portabilidade? Pode enviar no formato DD/MM/AAAA."
+    if state.step == "MOBILE_M2M_QTY":
+        return "Quantos chips M2M serão contratados?"
+    if state.step == "MOBILE_M2M_ICCIDS":
+        qty = int(_mobile_values(collected).get("m2m_quantidade") or 0)
+        suffix = f" ({qty} ICCIDs)" if qty else ""
+        return f"Envie os ICCIDs dos chips, um por linha{suffix}."
+    if state.step == "MOBILE_DUE_DAY":
+        return "Qual dia de vencimento você prefere para a fatura?"
+    if state.step == "MOBILE_ACTIVATION_FEE":
+        return "Há taxa de ativação nesta contratação? Responda sim ou não."
+    if state.step == "MOBILE_ACTIVATION_VALUE":
+        return "Qual é o valor da taxa de ativação?"
+    if state.step == "MOBILE_PAYMENT_METHOD":
+        return "Qual forma de pagamento você prefere: boleto ou débito em conta?"
+    if state.step == "MOBILE_INVOICE_DELIVERY":
+        return "Como quer receber a fatura: WhatsApp, e-mail ou ambos?"
+    if state.step == "MOBILE_DEBIT_BANK":
+        return "Para o débito em conta, qual é o banco?"
+    if state.step == "MOBILE_DEBIT_AGENCY":
+        return "Qual é a agência?"
+    if state.step == "MOBILE_DEBIT_ACCOUNT":
+        return "Qual é a conta?"
+    if state.step == "MOBILE_DEBIT_HOLDER":
+        return "Qual é o nome do titular da conta bancária?"
+    if state.step == "MOBILE_UNIFY":
+        return "Deseja unificar esta fatura com outras faturas Sulnet? Responda sim ou não."
+    if state.step == "MOBILE_UNIFY_REASON":
+        return "Qual é o motivo para não unificar as faturas?"
     if state.step == "BILLING":
         return "Agora falta o faturamento: como prefere pagar/receber a fatura e qual dia de vencimento você prefere?"
     if state.step == "CREDIT_REJECTED":
@@ -778,22 +1263,45 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             answer = _yes_no(text)
             interpreted = SellerInterpretation()
             if answer == "NAO_INFORMADO" or answer == "NAO":
-                interpreted = _interpret_ambiguous(db, agent=agent, step=state.step, message=text, plan_label=state.plan_label)
+                interpreted = _interpret_ambiguous(
+                    db,
+                    agent=agent,
+                    step=state.step,
+                    message=text,
+                    plan_label=state.plan_label,
+                )
                 if answer == "NAO_INFORMADO":
                     answer = interpreted.confirmation
             if interpreted.human_requested:
-                _handoff_to_human(db, state=state, conversation=conversation, agent=agent, reason="Cliente pediu atendente durante confirmação do plano.")
+                _handoff_to_human(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    reason="Cliente pediu atendente durante confirmação do plano.",
+                )
                 reply = "Certo. Encaminhei a conversa para um atendente com todo o histórico."
             elif answer == "SIM":
                 try:
-                    client.update_opportunity(state.opportunity_id or 0, {"planLabel": state.plan_label})
+                    client.update_opportunity(
+                        state.opportunity_id or 0,
+                        {"planLabel": state.plan_label},
+                    )
                 except CRMIntegrationError:
                     products = client.products(state.plan_label)
                     if len(products) == 1:
-                        client.update_opportunity(state.opportunity_id or 0, {"planId": products[0].get("id"), "planLabel": products[0].get("name")})
+                        client.update_opportunity(
+                            state.opportunity_id or 0,
+                            {
+                                "planId": products[0].get("id"),
+                                "planLabel": products[0].get("name"),
+                            },
+                        )
                         state.plan_label = str(products[0].get("name") or state.plan_label)
                     else:
                         raise
+                _sync_plan_context(client, state, collected)
+                _save_collected(state, collected)
                 state.step = "EMAIL"
                 reply = _prompt_for_step(state, collected)
             elif answer == "NAO":
@@ -802,7 +1310,15 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     products = client.products(requested)
                     if len(products) == 1:
                         state.plan_label = str(products[0].get("name") or requested)
-                        client.update_opportunity(state.opportunity_id or 0, {"planId": products[0].get("id"), "planLabel": state.plan_label})
+                        client.update_opportunity(
+                            state.opportunity_id or 0,
+                            {
+                                "planId": products[0].get("id"),
+                                "planLabel": state.plan_label,
+                            },
+                        )
+                        _sync_plan_context(client, state, collected)
+                        _save_collected(state, collected)
                         state.step = "EMAIL"
                         reply = f"Certo, alterei para {state.plan_label}. " + _prompt_for_step(state, collected)
                     else:
@@ -818,10 +1334,54 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 reply = "Preciso de um e-mail válido para concluir o cadastro. Pode me informar?"
             else:
                 collected["email"] = email
-                client.update_opportunity(state.opportunity_id or 0, {"clientEmail": email})
+                client.update_opportunity(
+                    state.opportunity_id or 0,
+                    {"clientEmail": email},
+                )
+                _sync_plan_context(client, state, collected)
+                if _is_mobile_plan(state, collected):
+                    values = _mobile_values(collected)
+                    collected["mobileCategoryValues"] = values
+                    _persist_mobile_category_form(client, state, collected)
+                    state.step = _mobile_next_step(values) or "MOBILE_CONTRACT_TYPE"
+                else:
+                    state.step = "BILLING"
                 _save_collected(state, collected)
-                state.step = "BILLING"
                 reply = _prompt_for_step(state, collected)
+
+        elif state.step.startswith("MOBILE_"):
+            values = _mobile_values(collected)
+            accepted, error_reply = _apply_mobile_answer(
+                state.step,
+                text,
+                values,
+            )
+            if not accepted:
+                reply = error_reply
+            else:
+                collected["mobileCategoryValues"] = values
+                _persist_mobile_category_form(client, state, collected)
+                next_step = _mobile_next_step(values)
+                if next_step:
+                    state.step = next_step
+                    reply = _prompt_for_step(state, collected)
+                else:
+                    missing = _mobile_missing_fields(values)
+                    if missing:
+                        raise CRMIntegrationError(
+                            "Checklist de Telefonia Móvel incompleto: " + ", ".join(missing)
+                        )
+                    client.update_opportunity(
+                        state.opportunity_id or 0,
+                        {
+                            "paymentMethod": values["forma_pagamento"],
+                            "dueDay": values["vencimento"],
+                            "invoiceDelivery": ", ".join(values.get("envio_fatura") or []),
+                        },
+                    )
+                    _persist_mobile_category_form(client, state, collected)
+                    reply = _finish_sale_contract(client, state)
+                _save_collected(state, collected)
 
         elif state.step == "BILLING":
             billing = _billing_local(text)
@@ -849,25 +1409,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 collected.update(billing)
                 client.update_opportunity(state.opportunity_id or 0, billing)
                 _save_collected(state, collected)
-                won = client.mark_won(state.opportunity_id or 0)
-                contract = won.get("contract") or {}
-                state.contract_status = str(contract.get("status") or "aguardando_backoffice")
-                state.step = "WAITING_CONTRACT"
-                try:
-                    started = client.start_contract(state.opportunity_id or 0)
-                except CRMIntegrationError:
-                    started = contract
-                sign_url = str(started.get("signUrl") or "").strip()
-                state.contract_status = str(started.get("status") or state.contract_status)
-                if sign_url:
-                    state.sign_url = sign_url
-                    state.step = "WAITING_SIGNATURE"
-                    reply = (
-                        "Seu cadastro foi concluído e o contrato já está pronto para assinatura. "
-                        f"Você pode assinar por este link: {sign_url}"
-                    )
-                else:
-                    reply = _prompt_for_step(state, collected)
+                reply = _finish_sale_contract(client, state)
 
         elif state.step in {"WAITING_CONTRACT", "WAITING_SIGNATURE"}:
             status = client.get_status(state.opportunity_id or 0)

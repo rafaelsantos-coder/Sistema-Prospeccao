@@ -301,6 +301,41 @@ class SulnetCRMClient:
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}")
         return result if isinstance(result, dict) else {}
 
+    def update_category_form(
+        self,
+        opportunity_id: int,
+        values: dict[str, Any],
+        *,
+        category_id: int | None = None,
+        plan_id: int | None = None,
+    ) -> dict[str, Any]:
+        current = self.get_opportunity(opportunity_id)
+        ai_closing = current.get("aiClosing")
+        if not isinstance(ai_closing, dict):
+            ai_closing = {}
+
+        payload: dict[str, Any] = {
+            "productInfo": {
+                "aiClosing": dict(ai_closing),
+                "categoryForm": {
+                    "values": dict(values),
+                    # No funil SDR IA, documentos/selfie não são coletados no chat.
+                    "files": {},
+                },
+            }
+        }
+        if category_id:
+            payload["categoryId"] = int(category_id)
+        if plan_id:
+            payload["planIds"] = [int(plan_id)]
+
+        result = self._request(
+            "PATCH",
+            f"/api/opportunities/{opportunity_id}",
+            json_body=payload,
+        )
+        return result if isinstance(result, dict) else {}
+
     def consult_credit(
         self,
         opportunity_id: int,

@@ -16,6 +16,7 @@ from app.models import (
     AIJob,
     AIQueueBinding,
     AIRun,
+    Lead,
     Message,
     ServiceQueue,
     ServiceQueueMember,
