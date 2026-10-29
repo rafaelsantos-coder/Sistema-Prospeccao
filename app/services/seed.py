@@ -219,7 +219,14 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
     seller_user.role = "CONSULTOR"
     seller_user.team = "DIGITAL"
     seller_user.must_change_password = False
+    seller_user.active = settings.ai_seller_enabled
     seller_agent.role_type = "CLOSER"
+    seller_agent.active = settings.ai_seller_enabled
+    seller_agent.execution_mode = (
+        "AUTO"
+        if settings.ai_seller_enabled and settings.ai_autonomous_enabled
+        else "SHADOW"
+    )
     seller_agent.max_history_messages = max(int(seller_agent.max_history_messages or 40), 80)
     seller_agent.max_knowledge_chars = max(int(seller_agent.max_knowledge_chars or 12000), 20000)
 
