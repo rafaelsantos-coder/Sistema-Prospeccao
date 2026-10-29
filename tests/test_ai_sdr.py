@@ -318,7 +318,7 @@ def test_shadow_job_stores_decision_without_sending(monkeypatch):
 
 def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
     decision = AIDecision(
-        reply_text="Claro! Qual é o principal problema que você enfrenta hoje com a internet?",
+        reply_text="Claro! Qual é o seu provedor atual?",
         intent="INTEREST",
         qualification_score=55,
         temperature="MORNO",
@@ -327,7 +327,7 @@ def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
         handoff_reason="",
         confidence=0.94,
         summary="Cliente demonstrou interesse.",
-        next_action="Entender a principal dor.",
+        next_action="Entender o provedor atual.",
         qualification=QualificationData(city="Santa Rosa"),
         crm_notes=[],
     )
