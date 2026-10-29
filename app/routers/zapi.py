@@ -10,7 +10,7 @@ from starlette.responses import RedirectResponse
 
 from app.config import settings
 from app.database import SessionLocal, get_db
-from app.models import Activity, ConversationAssignment, Lead, Message
+from app.models import Activity, ConversationAssignment, Lead, Message, ZApiInstance
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.conversation_engine import (
@@ -32,6 +32,17 @@ from app.services.queue_routing import (
 from app.services.scoring import normalize_phone
 from app.services.whatsapp_presence import is_user_whatsapp_online
 from app.services.zapi import ZApiError, ZApiService
+from app.services.zapi_instances import (
+    create_zapi_instance,
+    default_queue_for_instance,
+    get_zapi_instance,
+    instance_by_webhook_key,
+    instance_webhook_url,
+    list_zapi_instances,
+    queue_instance,
+    service_for_instance,
+    service_for_queue,
+)
 from app.timeutils import utcnow
 from app.web import flash
 
@@ -129,25 +140,20 @@ def _archive_message_media(message_id: int) -> None:
         db.close()
 
 
-@router.post("/webhooks/zapi/{webhook_secret}")
-async def zapi_webhook(
-    webhook_secret: str,
-    request: Request,
+def _process_zapi_payload(
+    payload: dict[str, Any],
+    *,
+    db: Session,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    expected_instance_id: str | None = None,
+    queue_id: int | None = None,
+    zapi_instance_id: int | None = None,
 ):
-    expected = settings.zapi_webhook_secret
-    if not expected or not secrets.compare_digest(webhook_secret, expected):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    try:
-        payload = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json") from exc
     if not isinstance(payload, dict):
         return {"ok": True, "ignored": "payload"}
-    if settings.zapi_instance_id and payload.get("instanceId") not in {
+    if expected_instance_id and payload.get("instanceId") not in {
         None,
-        settings.zapi_instance_id,
+        expected_instance_id,
     }:
         return {"ok": True, "ignored": "instance"}
     if payload.get("isGroup") or payload.get("isNewsletter"):
@@ -160,13 +166,22 @@ async def zapi_webhook(
             user=None,
             action="ZAPI_MESSAGE_STATUS",
             entity_type="integration",
-            entity_id="zapi",
-            payload={"status": payload.get("status"), "updated": updated},
+            entity_id=str(zapi_instance_id or "zapi"),
+            payload={
+                "status": payload.get("status"),
+                "updated": updated,
+                "zapi_instance_id": zapi_instance_id,
+            },
         )
         db.commit()
         return {"ok": True, "status_updated": updated}
 
-    conversation, message, created = store_received_payload(db, payload)
+    conversation, message, created = store_received_payload(
+        db,
+        payload,
+        queue_id=queue_id,
+        zapi_instance_id=zapi_instance_id,
+    )
     if not conversation or not message:
         db.commit()
         return {"ok": True, "ignored": "unsupported_or_unmatched"}
@@ -214,6 +229,8 @@ async def zapi_webhook(
                 "message_id": message.id,
                 "provider_message_id": message.provider_message_id,
                 "opt_out": opt_out,
+                "zapi_instance_id": zapi_instance_id,
+                "queue_id": queue_id,
             },
         )
     elif created:
@@ -226,6 +243,7 @@ async def zapi_webhook(
             payload={
                 "message_id": message.id,
                 "provider_message_id": message.provider_message_id,
+                "zapi_instance_id": zapi_instance_id,
             },
         )
     db.commit()
@@ -241,7 +259,55 @@ async def zapi_webhook(
         "message_id": message.id,
         "created": created,
         "opt_out": opt_out,
+        "zapi_instance_id": zapi_instance_id,
     }
+
+
+@router.post("/webhooks/zapi/{webhook_secret}")
+async def zapi_webhook(
+    webhook_secret: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    expected = settings.zapi_webhook_secret
+    if not expected or not secrets.compare_digest(webhook_secret, expected):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json") from exc
+    return _process_zapi_payload(
+        payload,
+        db=db,
+        background_tasks=background_tasks,
+        expected_instance_id=settings.zapi_instance_id or None,
+    )
+
+
+@router.post("/webhooks/zapi/instance/{webhook_key}")
+async def zapi_instance_webhook(
+    webhook_key: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    instance = instance_by_webhook_key(db, webhook_key)
+    if not instance:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json") from exc
+    default_queue = default_queue_for_instance(db, instance.id)
+    return _process_zapi_payload(
+        payload,
+        db=db,
+        background_tasks=background_tasks,
+        expected_instance_id=instance.instance_id,
+        queue_id=default_queue.id if default_queue else None,
+        zapi_instance_id=instance.id,
+    )
 
 
 @router.post("/settings/zapi/configure-webhook")
@@ -255,23 +321,118 @@ def configure_zapi_webhook(
         return redirect
     validate_csrf(request, csrf_token)
     require_roles(user, "ADMIN", "GESTOR")
-    if not settings.zapi_webhook_url:
-        flash(request, "Defina APP_PUBLIC_URL e ZAPI_WEBHOOK_SECRET no Railway.", "warning")
+    if not settings.app_public_url:
+        flash(request, "Defina APP_PUBLIC_URL no Railway.", "warning")
+        return RedirectResponse("/settings", status_code=303)
+    configured = 0
+    errors: list[str] = []
+    for instance in list_zapi_instances(db):
+        url = instance_webhook_url(instance)
+        try:
+            service_for_instance(instance).configure_webhooks(url)
+            configured += 1
+        except ZApiError as exc:
+            errors.append(f"{instance.name}: {exc}")
+    if errors:
+        flash(request, "Algumas instâncias falharam: " + " | ".join(errors[:3]), "error")
+    else:
+        flash(request, f"Webhooks atualizados em {configured} instância(s).")
+    write_audit(
+        db,
+        user=user,
+        action="ZAPI_WEBHOOKS_CONFIGURED",
+        entity_type="integration",
+        entity_id="zapi",
+        payload={"configured": configured, "errors": errors},
+    )
+    db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/zapi/instances")
+def create_zapi_instance_route(
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(...),
+    phone_label: str = Form(""),
+    base_url: str = Form("https://api.z-api.io"),
+    instance_id: str = Form(...),
+    instance_token: str = Form(...),
+    client_token: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR")
+    clean_instance_id = instance_id.strip()
+    if db.scalar(select(ZApiInstance.id).where(ZApiInstance.instance_id == clean_instance_id)):
+        flash(request, "Esta instância Z-API já está cadastrada.", "warning")
+        return RedirectResponse("/settings", status_code=303)
+    item = create_zapi_instance(
+        db,
+        name=name,
+        phone_label=phone_label,
+        base_url=base_url,
+        instance_id=clean_instance_id,
+        instance_token=instance_token,
+        client_token=client_token,
+        created_by_id=user.id,
+    )
+    try:
+        service = service_for_instance(item)
+        status_result = service.status()
+        webhook_url = instance_webhook_url(item)
+        if webhook_url:
+            service.configure_webhooks(webhook_url)
+    except ZApiError as exc:
+        db.rollback()
+        flash(request, f"Não foi possível validar a instância: {exc}", "error")
+        return RedirectResponse("/settings", status_code=303)
+    write_audit(
+        db,
+        user=user,
+        action="ZAPI_INSTANCE_CREATED",
+        entity_type="zapi_instance",
+        entity_id=item.id,
+        payload={
+            "name": item.name,
+            "instance_id": item.instance_id,
+            "phone_label": item.phone_label,
+            "connected": bool(status_result.get("connected")),
+        },
+    )
+    db.commit()
+    flash(request, f"Instância {item.name} cadastrada e webhook configurado.")
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/zapi/instances/{instance_db_id}/configure-webhook")
+def configure_instance_webhook(
+    instance_db_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR")
+    instance = get_zapi_instance(db, instance_db_id)
+    if not instance or not instance.active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    url = instance_webhook_url(instance)
+    if not url:
+        flash(request, "Defina APP_PUBLIC_URL antes de configurar o webhook.", "warning")
         return RedirectResponse("/settings", status_code=303)
     try:
-        ZApiService().configure_webhooks(settings.zapi_webhook_url)
+        service_for_instance(instance).configure_webhooks(url)
     except ZApiError as exc:
         flash(request, str(exc), "error")
     else:
-        write_audit(
-            db,
-            user=user,
-            action="ZAPI_WEBHOOK_CONFIGURED",
-            entity_type="integration",
-            entity_id="zapi",
-        )
-        db.commit()
-        flash(request, "Webhooks da Z-API configurados com sucesso.")
+        flash(request, f"Webhook da instância {instance.name} atualizado.")
     return RedirectResponse("/settings", status_code=303)
 
 
@@ -281,6 +442,7 @@ def test_zapi_message(
     csrf_token: str = Form(...),
     phone: str = Form(...),
     message: str = Form(...),
+    zapi_instance_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ):
     user, redirect = _current_user_or_redirect(request, db)
@@ -288,8 +450,10 @@ def test_zapi_message(
         return redirect
     validate_csrf(request, csrf_token)
     require_roles(user, "ADMIN", "GESTOR")
+    instance = get_zapi_instance(db, zapi_instance_id)
+    service = service_for_instance(instance) if instance else ZApiService()
     try:
-        result = ZApiService().send_text(phone=phone, message=message)
+        result = service.send_text(phone=phone, message=message)
     except ZApiError as exc:
         flash(request, str(exc), "error")
         return RedirectResponse("/settings", status_code=303)
@@ -300,7 +464,7 @@ def test_zapi_message(
         action="ZAPI_TEST_SENT",
         entity_type="integration",
         entity_id="zapi",
-        payload={"provider_message_id": provider_id},
+        payload={"provider_message_id": provider_id, "zapi_instance_id": instance.id if instance else None},
     )
     db.commit()
     flash(request, "Mensagem de teste enviada pela Z-API.")
@@ -344,8 +508,12 @@ def send_lead_whatsapp(
         flash(request, "Selecione uma fila de atendimento válida para este envio.", "warning")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
     clean_message = message.strip()
+    instance = queue_instance(db, service_queue.id)
     try:
-        result = ZApiService().send_text(phone=lead.phone, message=clean_message)
+        result = service_for_queue(db, service_queue.id).send_text(
+            phone=lead.phone,
+            message=clean_message,
+        )
     except ZApiError as exc:
         flash(request, str(exc), "error")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
@@ -369,6 +537,7 @@ def send_lead_whatsapp(
         queue_id=service_queue.id,
         queue_origin="MANUAL_SEND",
         assign_if_unowned=False,
+        zapi_instance_id=instance.id if instance else None,
     )
     if (
         user.role == "CONSULTOR"
@@ -430,6 +599,7 @@ def send_lead_whatsapp(
             "provider_message_id": provider_id,
             "message_id": stored.id,
             "queue_id": service_queue.id,
+            "zapi_instance_id": instance.id if instance else None,
         },
     )
     db.commit()
