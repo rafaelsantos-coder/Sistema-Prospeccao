@@ -364,6 +364,14 @@ def build_ai_context(
         limit=int(agent.max_history_messages or 24),
     )
     knowledge = retrieve_knowledge(db, agent=agent, query=message.body or "")
+    knowledge_meta_rows = list(
+        db.scalars(
+            select(AIKnowledgeMetadata).where(
+                AIKnowledgeMetadata.knowledge_item_id.in_([item.id for item in knowledge])
+            )
+        )
+    ) if knowledge else []
+    knowledge_meta = {row.knowledge_item_id: row for row in knowledge_meta_rows}
 
     return {
         "agent": {
@@ -411,6 +419,16 @@ def build_ai_context(
                 "title": item.title,
                 "category": item.category,
                 "content": item.content,
+                "subject": knowledge_meta[item.id].subject if item.id in knowledge_meta else "",
+                "product_service": knowledge_meta[item.id].product_service if item.id in knowledge_meta else "",
+                "region": knowledge_meta[item.id].region if item.id in knowledge_meta else "",
+                "source": knowledge_meta[item.id].source_reference if item.id in knowledge_meta else item.source_type,
+                "priority": knowledge_meta[item.id].priority if item.id in knowledge_meta else 50,
+                "valid_until": (
+                    knowledge_meta[item.id].valid_until.isoformat()
+                    if item.id in knowledge_meta and knowledge_meta[item.id].valid_until
+                    else None
+                ),
             }
             for item in knowledge
         ],
