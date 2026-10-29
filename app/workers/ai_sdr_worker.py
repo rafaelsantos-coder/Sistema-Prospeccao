@@ -7,7 +7,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from app.config import settings
-from app.database import SessionLocal
+from app.database import Base, SessionLocal, engine
 from app.models import AIFollowupJob, AIJob
 from app.services.ai_followups import claim_followup_job, process_followup_job
 from app.services.ai_sdr import claim_ai_job, process_ai_job
@@ -71,6 +71,7 @@ def _recover_stale_followups() -> int:
 
 
 def run() -> None:
+    Base.metadata.create_all(bind=engine)
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
         "SulIA SDR worker iniciado. enabled=%s openai_configured=%s poll=%ss",
