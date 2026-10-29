@@ -970,7 +970,7 @@ def test_offer_rejection_opens_residential_diagnostic_instead_of_goodbye():
     result = _apply_offer_rejection_diagnostic_policy(decision, context)
 
     assert result.reply_text == (
-        "Entendi. Hoje você já possui conexão de internet na sua casa?"
+        "Entendi. Hoje você já possui conexão de internet?"
     )
     assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
     assert result.intent == "QUALIFYING"
@@ -989,6 +989,10 @@ def test_offer_rejection_uses_company_diagnostic_for_business_lead():
             "city": "Santa Rosa",
         },
         "history": [
+            {
+                "direction": "INBOUND",
+                "body": "Estou vendo isso para minha empresa.",
+            },
             {
                 "direction": "OUTBOUND",
                 "body": "Podemos avançar com o plano de 800 Mega?",
@@ -1136,7 +1140,7 @@ def test_ai_context_does_not_feed_cross_conversation_ai_memory_back_as_fact():
             lead = Lead(
                 business_name="Empresa Antiga do CRM",
                 contact_name="Cliente",
-                phone="5555988877991",
+                phone="5555988877999",
                 segment="Empresa",
                 city="Santa Rosa",
                 source="MANUAL",
