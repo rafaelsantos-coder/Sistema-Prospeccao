@@ -319,7 +319,8 @@ def toggle_knowledge(
         entity_id=item.id,
     )
     db.commit()
-    return RedirectResponse("/ai", status_code=303)
+    agent = db.get(AIAgentProfile, item.agent_id)
+    return RedirectResponse("/ai/seller" if agent and agent.role_type == "CLOSER" else "/ai", status_code=303)
 
 
 @router.post("/queues/bind")
