@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
+import unicodedata
 from typing import Any
 
 import httpx
@@ -413,13 +415,100 @@ class SulnetCRMClient:
         result = self._request("GET", f"/api/capture/cep/{cep}")
         return result if isinstance(result, dict) else {}
 
+    @staticmethod
+    def _fold_catalog_text(value: str) -> str:
+        text = unicodedata.normalize("NFD", str(value or "").casefold())
+        return "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+
+    def _catalog_products_fallback(self, query: str = "") -> list[dict[str, Any]]:
+        result = self._request("GET", "/api/catalog/products")
+        if not isinstance(result, list):
+            return []
+
+        products: list[dict[str, Any]] = []
+        for row in result:
+            if not isinstance(row, dict):
+                continue
+
+            # Algumas versões do CRM retornam catálogo plano.
+            if row.get("id") not in (None, "") and row.get("name"):
+                products.append(
+                    {
+                        "id": row.get("id"),
+                        "name": row.get("name"),
+                        "monthlyValue": row.get("monthlyValue", row.get("monthly_value")),
+                        "categoryId": row.get("categoryId", row.get("category_id")),
+                        "categoryName": row.get("categoryName", row.get("category_name")),
+                    }
+                )
+                continue
+
+            # Versão atual agrupa por categoria e serializa products.
+            raw_products = row.get("products")
+            if isinstance(raw_products, str):
+                try:
+                    raw_products = json.loads(raw_products)
+                except json.JSONDecodeError:
+                    raw_products = []
+            if not isinstance(raw_products, list):
+                continue
+
+            category_id = row.get("category_id", row.get("categoryId"))
+            category_name = row.get("category_name", row.get("categoryName"))
+            for product in raw_products:
+                if not isinstance(product, dict):
+                    continue
+                products.append(
+                    {
+                        "id": product.get("id"),
+                        "name": product.get("name"),
+                        "monthlyValue": product.get(
+                            "monthlyValue",
+                            product.get("monthly_value"),
+                        ),
+                        "categoryId": product.get(
+                            "categoryId",
+                            product.get("category_id", category_id),
+                        ),
+                        "categoryName": product.get(
+                            "categoryName",
+                            product.get("category_name", category_name),
+                        ),
+                    }
+                )
+
+        if not query:
+            return products
+
+        tokens = [
+            token
+            for token in self._fold_catalog_text(query).split()
+            if len(token) >= 2
+        ]
+        if not tokens:
+            return products
+        return [
+            item
+            for item in products
+            if all(
+                token in self._fold_catalog_text(str(item.get("name") or ""))
+                for token in tokens
+            )
+        ]
+
     def products(self, query: str = "") -> list[dict[str, Any]]:
-        result = self._request(
-            "GET",
-            "/api/capture/products",
-            params={"q": query} if query else None,
-        )
-        return result if isinstance(result, list) else []
+        try:
+            result = self._request(
+                "GET",
+                "/api/capture/products",
+                params={"q": query} if query else None,
+            )
+            return result if isinstance(result, list) else []
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+            LOG.warning("crm_products_fallback source=catalog query_present=%s", bool(query))
+            return self._catalog_products_fallback(query)
 
     def mark_won(self, opportunity_id: int) -> dict[str, Any]:
         result = self._request(
