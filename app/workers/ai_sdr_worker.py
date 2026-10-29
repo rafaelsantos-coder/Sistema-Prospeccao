@@ -12,7 +12,11 @@ from app.database import Base, SessionLocal, engine
 from app.models import AIFollowupJob, AIClosingState, AIConversationState, AIJob, Conversation, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
-from app.services.ai_seller import active_closer, poll_pending_contracts
+from app.services.ai_seller import (
+    active_closer,
+    poll_pending_contracts,
+    resume_simplified_mobile_states,
+)
 from app.services.ai_sdr_policy import followup_spec, next_business_time
 from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
@@ -340,6 +344,19 @@ def run() -> None:
     )
     _recover_stale_jobs()
     _recover_stale_followups()
+    resumed_mobile = 0
+    db = SessionLocal()
+    try:
+        resumed_mobile = resume_simplified_mobile_states(db)
+        db.commit()
+    finally:
+        db.close()
+    if resumed_mobile:
+        LOG.info(
+            "Fechamentos moveis reposicionados apos simplificacao do fluxo=%s",
+            resumed_mobile,
+        )
+
     recovered_closer = _recover_closer_capture_patch_failures()
     if recovered_closer:
         LOG.info(
