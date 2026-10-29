@@ -14,12 +14,16 @@ from starlette.responses import RedirectResponse, Response
 
 from app.constants import PIPELINE_STAGES
 from app.database import get_db
-from app.models import Activity, Branch, Lead, User
+from app.models import Activity, Branch, Lead, LeadQueuePreference, ServiceQueue, User
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.followups import initial_next_action, next_followup_after
 from app.services.metrics import apply_user_scope
-from app.services.queue_routing import available_queues_for_user, preferred_queue_for_lead
+from app.services.queue_routing import (
+    available_queues_for_user,
+    is_queue_member,
+    preferred_queue_for_lead,
+)
 from app.services.scoring import calculate_sulnet_score, normalize_phone
 from app.timeutils import local_input_to_utc, utcnow
 from app.web import flash, render
@@ -121,6 +125,25 @@ def list_leads(
     stmt = apply_user_scope(stmt, user)
     leads = list(db.scalars(stmt))
 
+    lead_queues: dict[int, ServiceQueue] = {}
+    lead_ids = [item.id for item in leads]
+    if lead_ids:
+        queue_rows = db.execute(
+            select(LeadQueuePreference.lead_id, ServiceQueue)
+            .join(
+                ServiceQueue,
+                ServiceQueue.id == LeadQueuePreference.queue_id,
+            )
+            .where(
+                LeadQueuePreference.lead_id.in_(lead_ids),
+                ServiceQueue.active.is_(True),
+            )
+        ).all()
+        lead_queues = {
+            int(lead_id): queue
+            for lead_id, queue in queue_rows
+        }
+
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
     sellers_stmt = select(User).where(
         User.active.is_(True),
@@ -147,6 +170,7 @@ def list_leads(
         active_nav="leads",
         page_title="Leads e oportunidades",
         leads=leads,
+        lead_queues=lead_queues,
         branches=branches,
         sellers=sellers,
         current_list_url=current_list_url,
@@ -416,6 +440,70 @@ def add_activity(
     db.commit()
     flash(request, "Atividade registrada.")
     return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+
+
+@router.post("/{lead_id}/claim")
+def claim_lead(
+    lead_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    return_to: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    if user.role != "CONSULTOR":
+        flash(request, "Somente vendedores podem assumir leads da fila.", "warning")
+        return RedirectResponse("/leads", status_code=303)
+
+    lead = db.scalar(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .with_for_update()
+    )
+    if not lead:
+        return RedirectResponse("/leads", status_code=303)
+
+    queue = preferred_queue_for_lead(db, lead.id)
+    if not queue or not is_queue_member(db, queue.id, user.id):
+        flash(request, "Esta lead não pertence a uma fila da qual você participa.", "error")
+        return RedirectResponse("/leads", status_code=303)
+
+    if lead.assigned_user_id:
+        if lead.assigned_user_id == user.id:
+            flash(request, "Esta lead já está com você.")
+        else:
+            flash(request, "Esta lead já foi assumida por outro vendedor.", "warning")
+        destination = return_to.strip()
+        if not destination.startswith("/leads"):
+            destination = f"/leads/{lead.id}"
+        return RedirectResponse(destination, status_code=303)
+
+    lead.assigned_user_id = user.id
+    if not lead.branch_id and user.branch_id:
+        lead.branch_id = user.branch_id
+
+    write_audit(
+        db,
+        user=user,
+        action="LEAD_CLAIMED",
+        entity_type="lead",
+        entity_id=lead.id,
+        payload={
+            "queue_id": queue.id,
+            "queue_name": queue.name,
+            "assigned_user_id": user.id,
+        },
+    )
+    db.commit()
+    flash(request, f"Lead {lead.business_name} assumida por você.")
+
+    destination = return_to.strip()
+    if not destination.startswith("/leads"):
+        destination = f"/leads/{lead.id}"
+    return RedirectResponse(destination, status_code=303)
 
 
 @router.post("/{lead_id}/assign")
