@@ -52,7 +52,7 @@ from app.web import flash
 
 
 router = APIRouter()
-LOG = logging.getLogger("sulnet_zapi_webhooks")
+LOG = logging.getLogger("uvicorn.error")
 OPT_OUT_TERMS = (
     "nao quero",
     "não quero",
