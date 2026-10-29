@@ -387,6 +387,86 @@ def create_knowledge(
     return RedirectResponse(target, status_code=303)
 
 
+@router.post("/knowledge/{item_id}")
+def update_knowledge(
+    item_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    title: str = Form(...),
+    category: str = Form("GERAL"),
+    tags: str = Form(""),
+    content: str = Form(...),
+    subject: str = Form(""),
+    product_service: str = Form(""),
+    region: str = Form(""),
+    source_reference: str = Form(""),
+    priority: int = Form(50),
+    valid_until: str = Form(""),
+    approval_status: str = Form("APPROVED"),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(actor, "ADMIN", "GESTOR")
+
+    item = db.get(AIKnowledgeItem, item_id)
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    clean_title = title.strip()
+    clean_content = content.strip()
+    if not clean_title or not clean_content:
+        flash(request, "Informe título e conteúdo do conhecimento.", "warning")
+        return RedirectResponse("/ai/knowledge", status_code=303)
+
+    item.title = clean_title[:180]
+    item.category = (category.strip().upper() or "GERAL")[:80]
+    item.tags = tags.strip()[:500]
+    item.content = clean_content
+
+    meta = db.scalar(
+        select(AIKnowledgeMetadata).where(
+            AIKnowledgeMetadata.knowledge_item_id == item.id
+        )
+    )
+    if not meta:
+        meta = AIKnowledgeMetadata(knowledge_item_id=item.id)
+        db.add(meta)
+
+    meta.subject = subject.strip()[:120]
+    meta.product_service = product_service.strip()[:120]
+    meta.region = region.strip()[:180]
+    meta.source_reference = source_reference.strip()[:500]
+    meta.priority = max(0, min(100, priority))
+    clean_status = approval_status.strip().upper()
+    meta.approval_status = clean_status if clean_status in {"APPROVED", "DRAFT", "REVIEW"} else "APPROVED"
+    meta.valid_until = None
+    if valid_until.strip():
+        try:
+            meta.valid_until = datetime.fromisoformat(valid_until.strip()).replace(tzinfo=timezone.utc)
+        except ValueError:
+            meta.valid_until = None
+
+    write_audit(
+        db,
+        user=actor,
+        action="AI_KNOWLEDGE_UPDATED",
+        entity_type="ai_knowledge",
+        entity_id=item.id,
+        payload={
+            "title": item.title,
+            "category": item.category,
+            "priority": meta.priority,
+            "approval_status": meta.approval_status,
+        },
+    )
+    db.commit()
+    flash(request, "Conhecimento atualizado.")
+    return RedirectResponse("/ai/knowledge", status_code=303)
+
+
 @router.post("/knowledge/{item_id}/toggle")
 def toggle_knowledge(
     item_id: int,
