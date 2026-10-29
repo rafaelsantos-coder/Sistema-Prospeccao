@@ -1,5 +1,5 @@
 from app.models import Campaign, Lead
-from app.services.campaign_queue import campaign_message_template, personalize_message
+from app.services.campaign_queue import campaign_media_attachments, campaign_message_template, personalize_message
 
 
 def test_campaign_personalization():
@@ -24,6 +24,19 @@ def test_campaign_reads_first_message_from_sequence():
     assert campaign_message_template(campaign) == "Mensagem inicial"
 
 
+
+def test_campaign_reads_media_from_initial_step():
+    campaign = Campaign(
+        name="Teste mídia",
+        channel="WHATSAPP",
+        sequence_json='[{"day":1,"message":"Olá","media":[{"type":"IMAGE","storage_uri":"s3://bucket/campaigns/1/foto.jpg","file_name":"foto.jpg","mime_type":"image/jpeg"}]}]',
+    )
+    media = campaign_media_attachments(campaign)
+    assert len(media) == 1
+    assert media[0]["type"] == "IMAGE"
+    assert media[0]["file_name"] == "foto.jpg"
+
+
 def test_campaign_template_page_renders():
     import re
     from fastapi.testclient import TestClient
@@ -40,3 +53,5 @@ def test_campaign_template_page_renders():
         assert page.status_code == 200
         assert "Mensagem inicial" in page.text
         assert "{{nome}}" in page.text
+        assert 'name="media"' in page.text
+        assert 'accept="image/*,video/*,audio/*"' in page.text
