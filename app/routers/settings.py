@@ -335,17 +335,13 @@ def reset_user_password(
     temporary_password = _temporary_password()
     target.password_hash = hash_password(temporary_password)
     target.must_change_password = True
-    target.active = True
     write_audit(
         db,
         user=actor,
         action="USER_PASSWORD_RESET",
         entity_type="user",
         entity_id=target.id,
-        payload={
-            "must_change_password": True,
-            "reactivated": True,
-        },
+        payload={"must_change_password": True},
     )
     db.commit()
     response = _render_user_edit(
