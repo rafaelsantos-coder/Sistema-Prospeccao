@@ -6,7 +6,7 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.constants import DEFAULT_TARGETS, PIPELINE_STAGES, STAGES, TEAMS
-from app.models import Activity, Lead, Target, User
+from app.models import Activity, Lead, LeadQueuePreference, ServiceQueue, ServiceQueueMember, Target, User
 from app.timeutils import local_day_start_utc, utcnow
 
 
@@ -19,6 +19,32 @@ def apply_user_scope(stmt, user: User):
         return stmt
     if user.role == "SUPERVISOR":
         return stmt.where(Lead.branch_id == user.branch_id)
+    if user.role == "CONSULTOR":
+        queue_lead_ids = (
+            select(LeadQueuePreference.lead_id)
+            .join(
+                ServiceQueueMember,
+                ServiceQueueMember.queue_id == LeadQueuePreference.queue_id,
+            )
+            .join(
+                ServiceQueue,
+                ServiceQueue.id == LeadQueuePreference.queue_id,
+            )
+            .where(
+                ServiceQueueMember.user_id == user.id,
+                ServiceQueueMember.active.is_(True),
+                ServiceQueue.active.is_(True),
+            )
+        )
+        return stmt.where(
+            or_(
+                Lead.assigned_user_id == user.id,
+                and_(
+                    Lead.assigned_user_id.is_(None),
+                    Lead.id.in_(queue_lead_ids),
+                ),
+            )
+        )
     return stmt.where(Lead.assigned_user_id == user.id)
 
 
