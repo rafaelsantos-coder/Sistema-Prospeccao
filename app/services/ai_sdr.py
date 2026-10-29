@@ -30,7 +30,7 @@ from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
-from app.timeutils import utcnow
+from app.timeutils import is_past, utcnow
 
 
 LOG = logging.getLogger("sulnet_ai_sdr")
@@ -276,7 +276,7 @@ def retrieve_knowledge(
         meta = metadata.get(item.id)
         if meta and meta.approval_status != "APPROVED":
             continue
-        if meta and meta.valid_until and meta.valid_until < now:
+        if meta and is_past(meta.valid_until, now):
             continue
         haystack = (
             f"{item.title} {item.category} {item.tags} {item.content} "
