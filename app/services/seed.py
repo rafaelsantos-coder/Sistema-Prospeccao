@@ -214,7 +214,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
             item.active = True
 
     seed_default_zapi_instance(db, created_by_id=admin.id)
-    _ensure_dedicated_ai_queue(db, admin=admin)
+    dedicated_ai_queue = _ensure_dedicated_ai_queue(db, admin=admin)
 
     digital_queues = list(
         db.scalars(
@@ -226,6 +226,13 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
             .order_by(ServiceQueue.id.asc())
         )
     )
+    if (
+        dedicated_ai_queue
+        and dedicated_ai_queue.active
+        and all(item.id != dedicated_ai_queue.id for item in digital_queues)
+    ):
+        digital_queues.append(dedicated_ai_queue)
+
     for digital_queue in digital_queues:
         if db.scalar(
             select(AIQueueBinding.id).where(
