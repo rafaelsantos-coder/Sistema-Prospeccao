@@ -339,6 +339,8 @@ def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
                 stale_job.status = "IGNORADO"
             db.flush()
             agent, queue, _human = _create_bound_digital_queue(db, "AUTO")
+            agent.execution_mode = "AUTO"
+            db.commit()
             from app.models import Lead, LeadQueuePreference
             lead = Lead(
                 business_name="Cliente IA Automática",
