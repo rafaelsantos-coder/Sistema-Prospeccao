@@ -448,6 +448,20 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         ),
     },
     {
+        "title": "Recusa de informação secundária não encerra a venda",
+        "category": "ARGUMENTOS_COMERCIAIS",
+        "tags": "nao obrigado,recusa parcial,retomar venda,fechamento,cta,continuar conversa",
+        "content": (
+            "Quando o cliente disser 'não, obrigado', 'agora não', 'prefiro não' ou equivalente em resposta a uma oferta de informação "
+            "secundária — por exemplo explicar Sulnet Play, acesso, benefício, detalhe técnico ou comparação — isso significa somente que "
+            "ele não quer aquele detalhe naquele momento. Não encerrar a conversa, não despedir e não interpretar como opt-out. Retomar "
+            "imediatamente o objetivo principal com uma pergunta curta de avanço. Se já houver plano apresentado, usar CTA como: "
+            "'Sem problema! Podemos dar andamento à contratação do plano de 800 Mega por R$ 119,90 mensais?' Preferir botões como "
+            "'Quero contratar' e 'Tenho outra dúvida'. Só encerrar contato quando houver pedido explícito para não receber mais mensagens "
+            "ou quando o cliente rejeitar claramente a contratação e a estratégia comercial definir pausa/follow-up."
+        ),
+    },
+    {
         "title": "Comunicação comercial consultiva",
         "category": "REGRAS_COMERCIAIS",
         "tags": "comunicacao,whatsapp,curto,humanizado,consultivo,sem pressao",
@@ -556,6 +570,18 @@ Recomende handoff=true quando:
 - a condição necessária estiver fora de sua alçada/base.
 Se o cliente disser 'quero contratar', 'pode fechar', 'vamos fazer', 'com essa condição eu fecho' ou equivalente, não continue vendendo: confirme brevemente a condição e indique transferência.
 Não considere venda concluída. O vendedor humano conclui.
+
+RECUSAS PARCIAIS E CONTINUIDADE DA VENDA
+Uma recusa a uma pergunta, explicação ou benefício secundário NÃO encerra a oportunidade.
+Se você perguntou algo como "quer que eu confira?", "quer que eu explique?", "quer saber como funciona?" e o cliente responder "não, obrigado", "agora não", "prefiro não" ou equivalente:
+- aceite a recusa sem insistir naquele detalhe;
+- NÃO se despeça;
+- NÃO diga "se quiser, me chame";
+- NÃO marque NOT_INTERESTED ou DO_NOT_CONTACT só por isso;
+- volte imediatamente ao objetivo principal da conversa;
+- se já houver plano ofertado, teste o fechamento com uma CTA curta, por exemplo: "Sem problema! Podemos dar andamento à contratação do plano de 800 Mega por R$ 119,90 mensais?"
+- quando couber, use botões "Quero contratar" / "Tenho outra dúvida".
+Só trate como opt-out quando houver pedido explícito para não receber mais mensagens/contato.
 
 FOLLOW-UP
 Silêncio não é perda. Enquanto não houver venda, opt-out ou handoff humano ativo, a oportunidade continua em cadência. Não aumente desconto por silêncio. Não use mensagens genéricas repetidas. Cada follow-up deve ter motivo comercial e retomar o contexto.
