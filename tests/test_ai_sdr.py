@@ -28,6 +28,7 @@ from app.services.ai_sdr import (
     QualificationData,
     _apply_offer_rejection_diagnostic_policy,
     _apply_secondary_decline_reengagement_policy,
+    _apply_unavailable_plan_policy,
     _is_company_context,
     _sanitize_unconfirmed_customer_facts,
     build_ai_context,
@@ -1200,3 +1201,128 @@ def test_ai_context_does_not_feed_cross_conversation_ai_memory_back_as_fact():
             assert "notas fiscais" not in str(context)
         finally:
             db.close()
+
+
+def _base_unavailable_plan_decision():
+    return AIDecision(
+        reply_text="Vou transferir você para um vendedor verificar essa condição.",
+        intent="HUMAN_REQUEST",
+        qualification_score=70,
+        temperature="QUENTE",
+        recommended_stage="NEGOCIACAO",
+        handoff_recommended=True,
+        handoff_reason="Plano solicitado não encontrado.",
+        confidence=0.9,
+        summary="Cliente pediu plano fora da base.",
+        next_action="Transferir ao vendedor.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="READY_FOR_HUMAN_SALES",
+        customer_commitment=False,
+    )
+
+
+def test_unavailable_plan_in_known_city_stays_with_sdr_and_offers_valid_options():
+    decision = _base_unavailable_plan_decision()
+    context = {
+        "latest_customer_message": "Vocês têm plano de 500 Mega?",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {"direction": "INBOUND", "body": "Sou de Santa Rosa."},
+            {"direction": "INBOUND", "body": "Vocês têm plano de 500 Mega?"},
+        ],
+    }
+
+    result = _apply_unavailable_plan_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.handoff_reason == ""
+    assert result.sales_state == "OFFERING"
+    assert result.intent == "INTEREST"
+    assert result.customer_commitment is False
+    assert result.offer_plan_code is None
+    assert "500 Mega não está disponível em Santa Rosa" in result.reply_text
+    assert "800 Mega por R$ 119,90" in result.reply_text
+    assert "650 Mega por R$ 99,90" in result.reply_text
+    assert [item.label for item in result.quick_replies] == ["800 Mega", "650 Mega"]
+
+
+def test_unavailable_plan_without_city_asks_city_instead_of_handoff():
+    decision = _base_unavailable_plan_decision()
+    decision.qualification.city = None
+    context = {
+        "latest_customer_message": "Quero um plano de 400 Mega",
+        "lead": {"city": ""},
+        "history": [
+            {"direction": "INBOUND", "body": "Quero um plano de 400 Mega"},
+        ],
+    }
+
+    result = _apply_unavailable_plan_policy(decision, context)
+
+    assert result.handoff_recommended is False
+    assert result.sales_state == "DISCOVERY"
+    assert result.intent == "QUALIFYING"
+    assert result.customer_commitment is False
+    assert "Qual é a sua cidade?" in result.reply_text
+
+
+def test_requested_plan_that_exists_in_city_does_not_override_model_decision():
+    decision = AIDecision(
+        reply_text="Legal! Em Santa Rosa temos 800 Mega por R$ 119,90 mensais.",
+        intent="INTEREST",
+        qualification_score=60,
+        temperature="MORNO",
+        recommended_stage="PROPOSTA",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.9,
+        summary="Oferta válida.",
+        next_action="Testar fechamento.",
+        qualification=QualificationData(city="Santa Rosa"),
+        crm_notes=[],
+        sales_state="OFFERING",
+        offer_plan_code="FTTH_800",
+        offer_price=119.90,
+    )
+    context = {
+        "latest_customer_message": "Tem plano de 800 Mega?",
+        "lead": {"city": "Santa Rosa"},
+        "history": [],
+    }
+
+    result = _apply_unavailable_plan_policy(decision, context)
+
+    assert result.reply_text == decision.reply_text
+    assert result.offer_plan_code == "FTTH_800"
+    assert result.offer_price == 119.90
+
+
+def test_customer_current_speed_is_not_misread_as_requested_plan():
+    decision = AIDecision(
+        reply_text="Entendi. E quanto você paga hoje?",
+        intent="QUALIFYING",
+        qualification_score=45,
+        temperature="MORNO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.9,
+        summary="Cliente informou velocidade atual.",
+        next_action="Descobrir valor atual.",
+        qualification=QualificationData(city="Santa Rosa", current_speed="500 Mega"),
+        crm_notes=[],
+        sales_state="DISCOVERY",
+    )
+    context = {
+        "latest_customer_message": "Eu tenho 500 Mega hoje",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {"direction": "INBOUND", "body": "Eu tenho 500 Mega hoje"},
+        ],
+    }
+
+    result = _apply_unavailable_plan_policy(decision, context)
+
+    assert result.reply_text == "Entendi. E quanto você paga hoje?"
+    assert result.handoff_recommended is False
