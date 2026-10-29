@@ -13,6 +13,7 @@ from app.models import (
     CampaignDispatch,
     CampaignDispatchRecipient,
     ConversationQueueLink,
+    Message,
     ServiceQueue,
 )
 from app.services.dispatch_queue import (
@@ -21,6 +22,7 @@ from app.services.dispatch_queue import (
     parse_dispatch_csv,
     process_dispatch_recipient,
 )
+from app.services.media_storage import MediaStorage
 from app.services.zapi import ZApiService
 
 
@@ -216,6 +218,118 @@ def test_dispatch_sends_via_zapi_and_preserves_queue(monkeypatch):
             counts = dispatch_counts(db, dispatch_id)
             assert counts["sent"] == 1
             assert counts["pending"] == 1
+        finally:
+            db.close()
+
+
+def test_dispatch_inherits_campaign_buttons_and_image(monkeypatch):
+    calls: list[tuple] = []
+
+    def send_button_list(self, *, phone, message, buttons):
+        calls.append(("buttons", phone, message, buttons))
+        return {
+            "messageId": "DISPATCH-BUTTONS-1",
+            "zaapId": "DISPATCH-BUTTONS-ZAAP-1",
+        }
+
+    def send_image(self, *, phone, image_url, caption=""):
+        calls.append(("image", phone, image_url, caption))
+        return {
+            "messageId": "DISPATCH-IMAGE-1",
+            "zaapId": "DISPATCH-IMAGE-ZAAP-1",
+        }
+
+    def fail_plain_text(self, *, phone, message):
+        raise AssertionError("Disparo com botões não deve usar send_text.")
+
+    monkeypatch.setattr(ZApiService, "send_button_list", send_button_list)
+    monkeypatch.setattr(ZApiService, "send_image", send_image)
+    monkeypatch.setattr(ZApiService, "send_text", fail_plain_text)
+    monkeypatch.setattr(
+        MediaStorage,
+        "presigned_download_url",
+        lambda self, value, **kwargs: "https://signed.example/oferta.jpg",
+    )
+
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "MEDIA-BUTTON")
+            campaign.sequence_json = json.dumps(
+                [
+                    {
+                        "message": "Oferta especial",
+                        "quick_replies": [
+                            {"id": "interesse", "label": "Tenho interesse"},
+                            {"id": "agora_nao", "label": "Agora não"},
+                        ],
+                        "media": [
+                            {
+                                "type": "IMAGE",
+                                "storage_uri": "s3://campaignmedia/oferta.jpg",
+                                "file_name": "oferta.jpg",
+                                "mime_type": "image/jpeg",
+                            }
+                        ],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id,
+                queue_id=queue.id,
+                status="ATIVO",
+                interval_seconds=30,
+                daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+
+            from app.services.dispatch_queue import ensure_dispatch_lead
+
+            lead = ensure_dispatch_lead(
+                db,
+                name="Cliente Botão",
+                phone="5555999991601",
+                queue=queue,
+                created_by_id=None,
+            )
+            recipient = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id,
+                lead_id=lead.id,
+                name="Cliente Botão",
+                phone=lead.phone,
+                message_body="Oferta especial",
+                status="ENVIANDO",
+            )
+            db.add(recipient)
+            db.commit()
+
+            result = process_dispatch_recipient(db, recipient)
+            db.commit()
+
+            assert result == "sent"
+            assert calls[0][0] == "buttons"
+            assert calls[0][3] == [
+                {"id": "interesse", "label": "Tenho interesse"},
+                {"id": "agora_nao", "label": "Agora não"},
+            ]
+            assert calls[1] == (
+                "image",
+                "5555999991601",
+                "https://signed.example/oferta.jpg",
+                "",
+            )
+
+            messages = list(
+                db.scalars(
+                    select(Message)
+                    .where(Message.conversation_id == recipient.conversation_id)
+                    .order_by(Message.id)
+                )
+            )
+            assert [item.message_type for item in messages] == ["BUTTONS", "IMAGE"]
+            assert messages[1].media_url == "s3://campaignmedia/oferta.jpg"
         finally:
             db.close()
 
