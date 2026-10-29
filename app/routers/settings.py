@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import secrets
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -7,16 +9,63 @@ from starlette.responses import RedirectResponse
 
 from app.config import settings
 from app.database import get_db
+from app.constants import ROLES, TEAMS
 from app.models import AuditLog, Branch, ServiceQueue, ServiceQueueMember, Target, User
 from app.security import get_current_user, hash_password, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.legacy_adapter import legacy_modules_available, rate_status
 from app.services.queue_routing import queue_summary
 from app.services.zapi import ZApiError, ZApiService
-from app.web import render
+from app.web import flash, render
 
 
 router = APIRouter(prefix="/settings")
+
+
+def _temporary_password(length: int = 16) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
+    while True:
+        password = "".join(secrets.choice(alphabet) for _ in range(length))
+        if (
+            any(ch.isupper() for ch in password)
+            and any(ch.islower() for ch in password)
+            and any(ch.isdigit() for ch in password)
+            and any(ch in "!@#$%" for ch in password)
+        ):
+            return password
+
+
+def _editable_user_or_404(db: Session, actor: User, user_id: int) -> User:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if target.role == "AI_SDR":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    if actor.role != "ADMIN" and target.role in {"ADMIN", "GESTOR"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return target
+
+
+def _render_user_edit(
+    request: Request,
+    db: Session,
+    actor: User,
+    target: User,
+    *,
+    temporary_password: str | None = None,
+    status_code: int = 200,
+):
+    return render(
+        request,
+        "user_edit.html",
+        user=actor,
+        active_nav="settings",
+        page_title=f"Editar usuário · {target.name}",
+        target_user=target,
+        branches=list(db.scalars(select(Branch).order_by(Branch.city))),
+        temporary_password=temporary_password,
+        status_code=status_code,
+    )
 
 
 @router.get("")
@@ -119,13 +168,11 @@ def create_user(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     clean_email = email.strip().lower()
     if db.scalar(select(User).where(User.email == clean_email)):
-        from app.web import flash
         flash(request, "Ja existe um usuario com este e-mail.", "warning")
         return RedirectResponse("/settings", status_code=303)
     try:
         password_hash = hash_password(password)
     except ValueError as exc:
-        from app.web import flash
         flash(request, str(exc), "error")
         return RedirectResponse("/settings", status_code=303)
     branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
@@ -150,9 +197,163 @@ def create_user(
         payload={"role": created.role, "team": created.team, "branch_id": created.branch_id},
     )
     db.commit()
-    from app.web import flash
     flash(request, f"Usuario {created.name} criado. A troca de senha sera exigida no primeiro acesso.")
     return RedirectResponse("/settings", status_code=303)
+
+
+@router.get("/users/{user_id}/edit")
+def edit_user_page(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    actor = get_current_user(request, db)
+    if not actor:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(actor, "ADMIN", "GESTOR")
+    target = _editable_user_or_404(db, actor, user_id)
+    return _render_user_edit(request, db, actor, target)
+
+
+@router.post("/users/{user_id}/edit")
+def update_user(
+    user_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(...),
+    email: str = Form(...),
+    role: str = Form(...),
+    team: str = Form(...),
+    branch_id: str = Form(""),
+    active: bool = Form(False),
+    db: Session = Depends(get_db),
+):
+    actor = get_current_user(request, db)
+    if not actor:
+        return RedirectResponse("/login", status_code=303)
+    validate_csrf(request, csrf_token)
+    require_roles(actor, "ADMIN", "GESTOR")
+    target = _editable_user_or_404(db, actor, user_id)
+
+    clean_name = name.strip()
+    clean_email = email.strip().lower()
+    clean_role = role.strip().upper()
+    clean_team = team.strip().upper()
+    if not clean_name:
+        flash(request, "Informe o nome do usuário.", "warning")
+        return _render_user_edit(request, db, actor, target, status_code=422)
+    if "@" not in clean_email:
+        flash(request, "Informe um e-mail válido.", "warning")
+        return _render_user_edit(request, db, actor, target, status_code=422)
+    duplicate = db.scalar(
+        select(User.id).where(
+            User.email == clean_email,
+            User.id != target.id,
+        )
+    )
+    if duplicate:
+        flash(request, "Já existe outro usuário com este e-mail.", "warning")
+        return _render_user_edit(request, db, actor, target, status_code=422)
+
+    allowed_roles = {"ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR"}
+    if clean_role not in allowed_roles:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+    if actor.role != "ADMIN" and clean_role in {"ADMIN", "GESTOR"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    if clean_team not in TEAMS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+
+    branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
+    if branch_value and not db.get(Branch, branch_value):
+        flash(request, "A unidade selecionada não existe.", "warning")
+        return _render_user_edit(request, db, actor, target, status_code=422)
+
+    before = {
+        "name": target.name,
+        "email": target.email,
+        "role": target.role,
+        "team": target.team,
+        "branch_id": target.branch_id,
+        "active": target.active,
+    }
+    target.name = clean_name
+    target.email = clean_email
+    target.team = clean_team
+    target.branch_id = branch_value
+    if target.id != actor.id:
+        target.role = clean_role
+        target.active = active
+    else:
+        target.role = before["role"]
+        target.active = True
+
+    write_audit(
+        db,
+        user=actor,
+        action="USER_UPDATED",
+        entity_type="user",
+        entity_id=target.id,
+        payload={
+            "before": before,
+            "after": {
+                "name": target.name,
+                "email": target.email,
+                "role": target.role,
+                "team": target.team,
+                "branch_id": target.branch_id,
+                "active": target.active,
+            },
+        },
+    )
+    db.commit()
+    flash(request, f"Usuário {target.name} atualizado.")
+    return RedirectResponse(f"/settings/users/{target.id}/edit", status_code=303)
+
+
+@router.post("/users/{user_id}/reset-password")
+def reset_user_password(
+    user_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor = get_current_user(request, db)
+    if not actor:
+        return RedirectResponse("/login", status_code=303)
+    validate_csrf(request, csrf_token)
+    require_roles(actor, "ADMIN", "GESTOR")
+    target = _editable_user_or_404(db, actor, user_id)
+
+    if target.id == actor.id:
+        flash(
+            request,
+            "Para sua própria conta, use a opção Alterar senha no menu do usuário.",
+            "warning",
+        )
+        return RedirectResponse(f"/settings/users/{target.id}/edit", status_code=303)
+
+    temporary_password = _temporary_password()
+    target.password_hash = hash_password(temporary_password)
+    target.must_change_password = True
+    write_audit(
+        db,
+        user=actor,
+        action="USER_PASSWORD_RESET",
+        entity_type="user",
+        entity_id=target.id,
+        payload={"must_change_password": True},
+    )
+    db.commit()
+    response = _render_user_edit(
+        request,
+        db,
+        actor,
+        target,
+        temporary_password=temporary_password,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @router.post("/users/{user_id}/toggle")
@@ -171,7 +372,6 @@ def toggle_user(
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if target.id == actor.id:
-        from app.web import flash
         flash(request, "Voce nao pode desativar o proprio acesso.", "warning")
         return RedirectResponse("/settings", status_code=303)
     if actor.role != "ADMIN" and target.role in {"ADMIN", "GESTOR"}:

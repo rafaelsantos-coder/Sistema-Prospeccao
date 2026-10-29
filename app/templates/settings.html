@@ -160,7 +160,37 @@
     <div class="panel-header"><div><span class="eyebrow">USUÁRIOS</span><h3>Acessos do ambiente</h3></div><span class="count-badge">{{ users|length }}</span></div>
     <div class="data-table-wrap">
       <table class="data-table"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Unidade</th><th>Status</th>{% if current_user.role in ['ADMIN','GESTOR'] %}<th>Ação</th>{% endif %}</tr></thead><tbody>
-        {% for item in users %}<tr><td><strong>{{ item.name }}</strong></td><td>{{ item.email }}</td><td>{{ constants.roles.get(item.role, item.role) }}</td><td>{{ constants.teams.get(item.team, item.team) }}</td><td>{{ item.branch.city if item.branch else 'Todas' }}</td><td><span class="connection-status {% if item.active %}on{% endif %}">{% if item.active %}Ativo{% else %}Inativo{% endif %}</span></td>{% if current_user.role in ['ADMIN','GESTOR'] %}<td>{% if item.id != current_user.id %}<form action="/settings/users/{{ item.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-ghost" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button></form>{% else %}<span class="panel-note">Você</span>{% endif %}</td>{% endif %}</tr>{% endfor %}
+        {% for item in users %}
+        <tr>
+          <td><strong>{{ item.name }}</strong></td>
+          <td>{{ item.email }}</td>
+          <td>{{ constants.roles.get(item.role, item.role) }}</td>
+          <td>{{ constants.teams.get(item.team, item.team) }}</td>
+          <td>{{ item.branch.city if item.branch else 'Todas' }}</td>
+          <td><span class="connection-status {% if item.active %}on{% endif %}">{% if item.active %}Ativo{% else %}Inativo{% endif %}</span></td>
+          {% if current_user.role in ['ADMIN','GESTOR'] %}
+          <td>
+            {% if item.role == 'AI_SDR' %}
+              <span class="panel-note">Gerenciado em IA & Agentes</span>
+            {% elif current_user.role == 'GESTOR' and item.role in ['ADMIN','GESTOR'] %}
+              <span class="panel-note">Acesso restrito</span>
+            {% else %}
+              <div class="table-actions">
+                <a class="button button-secondary" href="/settings/users/{{ item.id }}/edit">Editar</a>
+                {% if item.id != current_user.id %}
+                <form action="/settings/users/{{ item.id }}/toggle" method="post">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="button button-ghost" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button>
+                </form>
+                {% else %}
+                <span class="panel-note">Você</span>
+                {% endif %}
+              </div>
+            {% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
       </tbody></table>
     </div>
   </article>
