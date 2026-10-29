@@ -452,17 +452,31 @@ def _send_autonomous_reply(
     from app.services.conversation_engine import register_message
     from app.services.zapi_instances import service_for_conversation
 
-    result = service_for_conversation(db, conversation.id).send_text(
-        phone=phone,
-        message=decision.reply_text,
+    zapi = service_for_conversation(db, conversation.id)
+    quick_replies = quick_replies_for_message(
+        decision.reply_text,
+        decision.quick_replies,
     )
+    if quick_replies:
+        result = zapi.send_button_list(
+            phone=phone,
+            message=decision.reply_text,
+            buttons=quick_replies,
+        )
+        message_type = "BUTTONS"
+    else:
+        result = zapi.send_text(
+            phone=phone,
+            message=decision.reply_text,
+        )
+        message_type = "TEXT"
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
     message = register_message(
         db,
         conversation,
         direction="OUTBOUND",
-        message_type="TEXT",
+        message_type=message_type,
         body=decision.reply_text,
         sender_user_id=agent.user_id,
         provider_message_id=provider_id,
@@ -481,14 +495,16 @@ def _send_autonomous_reply(
             "message_id": message.id,
             "provider_message_id": provider_id,
             "handoff_recommended": decision.handoff_recommended,
+            "quick_reply_count": len(quick_replies),
         },
     )
     LOG.info(
-        "ai_reply_sent job=%s conversation=%s message=%s handoff=%s",
+        "ai_reply_sent job=%s conversation=%s message=%s handoff=%s buttons=%s",
         job.id,
         conversation.id,
         message.id,
         decision.handoff_recommended,
+        len(quick_replies),
     )
     return message
 
