@@ -19,6 +19,7 @@ from app.security import hash_password
 from app.services.conversation_engine import ensure_contact, ensure_open_conversation, register_message, store_received_payload
 from app.services.queue_routing import assign_queue_user, bind_conversation_queue, queue_for_conversation
 from app.services.whatsapp_presence import join_whatsapp
+from app.services.zapi_instances import create_zapi_instance
 from app.timeutils import utcnow
 
 
@@ -70,8 +71,20 @@ def test_create_queue_from_settings():
         try:
             u1 = _user(db, "fila-criar-1@sulnet.local", "Fila Criar 1")
             u2 = _user(db, "fila-criar-2@sulnet.local", "Fila Criar 2")
+            admin = db.scalar(select(User).where(User.email == "admin@sulnet.local"))
+            instance = create_zapi_instance(
+                db,
+                name="WhatsApp Teste Filas",
+                phone_label="Teste",
+                base_url="https://api.z-api.io",
+                instance_id="instance-service-queue-test",
+                instance_token="token-service-queue-test",
+                client_token="client-service-queue-test",
+                created_by_id=admin.id if admin else None,
+            )
             db.commit()
             ids = [u1.id, u2.id]
+            instance_id = instance.id
         finally:
             db.close()
 
@@ -83,6 +96,7 @@ def test_create_queue_from_settings():
                 "code": "DIGITAL-TESTE-CONFIG",
                 "team": "DIGITAL",
                 "routing_strategy": "ROUND_ROBIN",
+                "zapi_instance_id": str(instance_id),
                 "member_user_ids": [str(ids[0]), str(ids[1])],
             },
             follow_redirects=False,

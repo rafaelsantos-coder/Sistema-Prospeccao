@@ -45,6 +45,7 @@
     {% if integrations.zapi %}
     <form action="/settings/zapi/test" method="post" class="stack-form compact">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Instância WhatsApp</span><select name="zapi_instance_id" required>{% for instance in active_zapi_instances %}<option value="{{ instance.id }}">{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>{% endfor %}</select></label>
       <label class="field"><span>Número interno para teste</span><input name="phone" required placeholder="5555999999999" inputmode="numeric"></label>
       <label class="field"><span>Mensagem</span><textarea name="message" rows="4" maxlength="4096" required>Teste de integração do Sulnet Prospecta com a Z-API.</textarea></label>
       <button class="button button-primary full-width" type="submit">Enviar mensagem de teste</button>
@@ -57,6 +58,61 @@
     {% else %}
     <div class="empty-state"><strong>Z-API ainda não configurada</strong><span>Cadastre as credenciais no Railway para liberar a homologação.</span></div>
     {% endif %}
+  </article>
+  {% endif %}
+
+  {% if current_user.role in ['ADMIN','GESTOR'] %}
+  <article class="panel panel-span-12">
+    <div class="panel-header">
+      <div><span class="eyebrow">INSTÂNCIAS WHATSAPP</span><h3>Números e conexões Z-API</h3></div>
+      <span class="count-badge">{{ zapi_instances|length }}</span>
+    </div>
+    <p class="panel-note">Cadastre quantos números precisar. Cada fila pode ser vinculada a uma instância diferente, mantendo atendentes, regras e IA independentes.</p>
+    <div class="data-table-wrap top-space">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>Número / identificação</th><th>Instância</th><th>Origem</th><th>Status</th><th>Webhook</th></tr></thead>
+        <tbody>
+        {% for instance in zapi_instances %}
+          <tr>
+            <td><strong>{{ instance.name }}</strong></td>
+            <td>{{ instance.phone_label or 'Não informado' }}</td>
+            <td><span class="table-subline">…{{ instance.instance_id[-8:] }}</span></td>
+            <td>{{ 'Railway / atual' if instance.source_type == 'ENV' else 'Cadastro interno' }}</td>
+            <td><span class="connection-status {% if instance.active %}on{% endif %}">{{ 'Ativa' if instance.active else 'Inativa' }}</span></td>
+            <td>
+              {% if instance.active %}
+              <form action="/settings/zapi/instances/{{ instance.id }}/configure-webhook" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="button button-ghost" type="submit">Atualizar webhook</button>
+              </form>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6"><div class="empty-state"><strong>Nenhuma instância cadastrada</strong><span>Cadastre uma instância Z-API para vinculá-la às filas.</span></div></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="queue-create-box">
+      <div class="panel-header">
+        <div><span class="eyebrow">NOVA INSTÂNCIA</span><h3>Adicionar número WhatsApp</h3></div>
+        <span class="panel-note">As credenciais ficam protegidas e não são exibidas depois.</span>
+      </div>
+      <form action="/settings/zapi/instances" method="post" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label class="field"><span>Nome da instância</span><input name="name" required placeholder="Ex.: WhatsApp B2B"></label>
+          <label class="field"><span>Número / identificação</span><input name="phone_label" placeholder="Ex.: (55) 99999-0000"></label>
+          <label class="field field-span-2"><span>URL da Z-API</span><input name="base_url" value="https://api.z-api.io" required></label>
+          <label class="field"><span>Instance ID</span><input name="instance_id" required autocomplete="off"></label>
+          <label class="field"><span>Instance Token</span><input name="instance_token" type="password" required autocomplete="new-password"></label>
+          <label class="field field-span-2"><span>Client Token</span><input name="client_token" type="password" autocomplete="new-password"><small>Preencha quando sua conta Z-API utilizar Client-Token.</small></label>
+        </div>
+        <button class="button button-primary" type="submit">Validar e cadastrar instância</button>
+      </form>
+    </div>
   </article>
   {% endif %}
 
@@ -83,13 +139,15 @@
     </div>
     <div class="data-table-wrap">
       <table class="data-table queue-table">
-        <thead><tr><th>Fila</th><th>Equipe / Unidade</th><th>Distribuição</th><th>Membros</th><th>Online</th><th>Pendentes</th><th>Padrão</th><th>Ação</th></tr></thead>
+        <thead><tr><th>Fila</th><th>Equipe / Unidade</th><th>WhatsApp</th><th>Distribuição</th><th>Membros</th><th>Online</th><th>Pendentes</th><th>Padrão</th><th>Ação</th></tr></thead>
         <tbody>
         {% for queue in queues %}
           {% set qs = queue_stats.get(queue.id, {}) %}
           <tr>
             <td><strong>{{ queue.name }}</strong><span class="table-subline">{{ queue.code }}</span></td>
             <td>{{ constants.teams.get(queue.team, queue.team) }}<span class="table-subline">{{ queue.branch.city if queue.branch else 'Corporativo / todas' }}</span></td>
+            {% set qi = queue_instances.get(queue.id) %}
+            <td><strong>{{ qi.name if qi else 'Sem instância' }}</strong><span class="table-subline">{{ qi.phone_label if qi and qi.phone_label else '—' }}</span></td>
             <td>{{ routing_strategies.get(queue.routing_strategy, queue.routing_strategy) }}</td>
             <td>{{ qs.get('members', 0) }}</td>
             <td><span class="connection-status {% if qs.get('online', 0) %}on{% endif %}">{{ qs.get('online', 0) }} online</span></td>
@@ -98,7 +156,7 @@
             <td><a class="button button-ghost" href="/settings/queues/{{ queue.id }}">Configurar</a></td>
           </tr>
         {% else %}
-          <tr><td colspan="8"><div class="empty-state"><strong>Nenhuma fila criada</strong><span>Crie uma fila para controlar a distribuição das respostas do WhatsApp.</span></div></td></tr>
+          <tr><td colspan="9"><div class="empty-state"><strong>Nenhuma fila criada</strong><span>Crie uma fila para controlar a distribuição das respostas do WhatsApp.</span></div></td></tr>
         {% endfor %}
         </tbody>
       </table>
@@ -114,7 +172,8 @@
           <label class="field"><span>Código</span><input name="code" required placeholder="Ex.: DIGITAL"></label>
           <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
           <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Corporativo / todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
-          <label class="field field-span-2"><span>Estratégia de distribuição</span><select name="routing_strategy">{% for key, label in routing_strategies.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+          <label class="field"><span>Instância WhatsApp</span><select name="zapi_instance_id" required><option value="">Selecione a instância</option>{% for instance in active_zapi_instances %}<option value="{{ instance.id }}">{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>{% endfor %}</select><small>Define qual número enviará e receberá as mensagens desta fila.</small></label>
+          <label class="field"><span>Estratégia de distribuição</span><select name="routing_strategy">{% for key, label in routing_strategies.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
           <div class="field field-span-2">
             <span>Usuários da fila</span>
             <div class="queue-create-user-grid">

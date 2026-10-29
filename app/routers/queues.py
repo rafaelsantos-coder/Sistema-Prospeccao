@@ -13,6 +13,12 @@ from app.security import get_current_user, require_roles, validate_csrf
 from app.services.ai_sdr import queue_ai_binding
 from app.services.audit import write_audit
 from app.services.queue_routing import queue_summary
+from app.services.zapi_instances import (
+    bind_queue_instance,
+    get_zapi_instance,
+    list_zapi_instances,
+    queue_instance,
+)
 from app.web import flash, render
 
 
@@ -108,6 +114,7 @@ def create_queue(
     branch_id: str = Form(""),
     routing_strategy: str = Form("ROUND_ROBIN"),
     is_default_inbound: bool = Form(False),
+    zapi_instance_id: int = Form(...),
     member_user_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
@@ -128,6 +135,10 @@ def create_queue(
     if db.scalar(select(ServiceQueue.id).where(ServiceQueue.code == clean_code)):
         flash(request, "Já existe uma fila com este código.", "warning")
         return RedirectResponse("/settings", status_code=303)
+    zapi_instance = get_zapi_instance(db, zapi_instance_id)
+    if not zapi_instance or not zapi_instance.active:
+        flash(request, "Selecione uma instância WhatsApp ativa para a fila.", "warning")
+        return RedirectResponse("/settings", status_code=303)
 
     branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
     queue = ServiceQueue(
@@ -142,6 +153,7 @@ def create_queue(
     )
     db.add(queue)
     db.flush()
+    bind_queue_instance(db, queue.id, zapi_instance.id)
     for user_id in sorted(set(member_user_ids)):
         user = db.get(User, user_id)
         if user and user.active:
@@ -158,6 +170,7 @@ def create_queue(
             "team": queue.team,
             "routing_strategy": queue.routing_strategy,
             "members": sorted(set(member_user_ids)),
+            "zapi_instance_id": zapi_instance.id,
         },
     )
     db.commit()
@@ -202,6 +215,8 @@ def queue_detail(
         branches=branches,
         queue_stats=queue_summary(db, queue),
         ai_binding=queue_ai_binding(db, queue.id),
+        zapi_instances=list_zapi_instances(db),
+        selected_zapi_instance=queue_instance(db, queue.id),
         routing_strategies=ROUTING_STRATEGIES,
     )
 
@@ -217,6 +232,7 @@ def update_queue(
     routing_strategy: str = Form("ROUND_ROBIN"),
     is_default_inbound: bool = Form(False),
     active: bool = Form(False),
+    zapi_instance_id: int = Form(...),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -230,6 +246,10 @@ def update_queue(
     strategy = routing_strategy.strip().upper()
     if strategy not in ROUTING_STRATEGIES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+    zapi_instance = get_zapi_instance(db, zapi_instance_id)
+    if not zapi_instance or not zapi_instance.active:
+        flash(request, "Selecione uma instância WhatsApp ativa para a fila.", "warning")
+        return RedirectResponse(f"/settings/queues/{queue.id}", status_code=303)
 
     queue.name = name.strip() or queue.name
     queue.team = team.strip().upper()
@@ -237,6 +257,7 @@ def update_queue(
     queue.routing_strategy = strategy
     queue.is_default_inbound = is_default_inbound
     queue.active = active
+    bind_queue_instance(db, queue.id, zapi_instance.id)
 
     _unset_other_defaults(db, queue)
     write_audit(
@@ -251,6 +272,7 @@ def update_queue(
             "active": queue.active,
             "default_inbound": queue.is_default_inbound,
             "members_managed_separately": True,
+            "zapi_instance_id": zapi_instance.id,
         },
     )
     db.commit()

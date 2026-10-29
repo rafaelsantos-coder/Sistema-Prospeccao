@@ -14,7 +14,8 @@ from app.config import settings, validate_production_settings
 from app.database import Base, SessionLocal, engine
 from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, zapi
 from app.services.seed import seed_database
-from app.services.zapi import ZApiError, ZApiService
+from app.services.zapi import ZApiError
+from app.services.zapi_instances import instance_webhook_url, list_zapi_instances, service_for_instance
 from app.web import render
 
 
@@ -46,17 +47,30 @@ async def initialize_database(max_attempts: int = 12) -> None:
 
 
 async def configure_zapi_webhooks() -> None:
-    if not settings.integrations["zapi"] or not settings.zapi_webhook_url:
+    if not settings.app_public_url:
         return
+    db = SessionLocal()
     try:
-        await asyncio.to_thread(
-            ZApiService().configure_webhooks,
-            settings.zapi_webhook_url,
-        )
-    except ZApiError as exc:
-        LOG.warning("Z-API configurada, mas o webhook nao foi atualizado: %s", exc)
-    else:
-        LOG.info("Webhooks da Z-API configurados com sucesso.")
+        instances = list_zapi_instances(db)
+        for instance in instances:
+            webhook_url = instance_webhook_url(instance)
+            if not webhook_url:
+                continue
+            try:
+                await asyncio.to_thread(
+                    service_for_instance(instance).configure_webhooks,
+                    webhook_url,
+                )
+            except ZApiError as exc:
+                LOG.warning(
+                    "Z-API %s configurada, mas o webhook nao foi atualizado: %s",
+                    instance.name,
+                    exc,
+                )
+            else:
+                LOG.info("Webhooks da Z-API %s configurados com sucesso.", instance.name)
+    finally:
+        db.close()
 
 
 @asynccontextmanager
