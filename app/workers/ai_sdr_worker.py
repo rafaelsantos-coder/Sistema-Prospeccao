@@ -363,17 +363,13 @@ def run() -> None:
             "Fechamentos moveis reposicionados apos simplificacao do fluxo=%s",
             resumed_mobile,
         )
-    rescheduled_followups = _reschedule_initial_pending_followups()
-    if rescheduled_followups:
-        LOG.info(
-            "Follow-ups pendentes reagendados para a nova cadencia=%s",
-            rescheduled_followups,
-        )
     recovered_recent = _recover_recent_unqueued_inbounds()
     if recovered_recent:
         LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
 
     missing_key_logged = False
+    last_inbound_recovery = time.monotonic()
+    last_stale_recovery = time.monotonic()
     while True:
         if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
             time.sleep(max(10, poll))
@@ -387,6 +383,30 @@ def run() -> None:
             time.sleep(max(15, poll))
             continue
         missing_key_logged = False
+
+        now_mono = time.monotonic()
+        if now_mono - last_inbound_recovery >= 60:
+            try:
+                recovered_recent = _recover_recent_unqueued_inbounds()
+                if recovered_recent:
+                    LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
+            except Exception:
+                LOG.exception("Falha na recuperação periódica de mensagens sem job.")
+            last_inbound_recovery = now_mono
+
+        if now_mono - last_stale_recovery >= 300:
+            try:
+                stale_jobs = _recover_stale_jobs()
+                stale_followups = _recover_stale_followups()
+                if stale_jobs or stale_followups:
+                    LOG.info(
+                        "Recuperação periódica stale jobs=%s followups=%s",
+                        stale_jobs,
+                        stale_followups,
+                    )
+            except Exception:
+                LOG.exception("Falha na recuperação periódica de jobs.")
+            last_stale_recovery = now_mono
 
         db = SessionLocal()
         job_id = None
@@ -408,28 +428,30 @@ def run() -> None:
                         outcome,
                         job.attempts,
                     )
-            else:
-                followup = claim_followup_job(db)
-                if not followup:
-                    contract_updates = poll_pending_contracts(db)
+
+            # Follow-up tem cota própria em toda volta do worker. Assim ele não
+            # fica eternamente atrás de novas mensagens inbound.
+            followup = claim_followup_job(db)
+            if followup:
+                followup_id = followup.id
+                db.commit()
+                followup = db.get(AIFollowupJob, followup_id)
+                if followup:
+                    outcome = process_followup_job(db, followup)
                     db.commit()
-                    if contract_updates:
-                        LOG.info("ai_closer_contract_updates=%s", contract_updates)
-                else:
-                    followup_id = followup.id
-                    db.commit()
-                    followup = db.get(AIFollowupJob, followup_id)
-                    if followup:
-                        outcome = process_followup_job(db, followup)
-                        db.commit()
-                        LOG.info(
-                            "ai_followup=%s conversation=%s step=%s outcome=%s attempts=%s",
-                            followup.id,
-                            followup.conversation_id,
-                            followup.step,
-                            outcome,
-                            followup.attempts,
-                        )
+                    LOG.info(
+                        "ai_followup=%s conversation=%s step=%s outcome=%s attempts=%s",
+                        followup.id,
+                        followup.conversation_id,
+                        followup.step,
+                        outcome,
+                        followup.attempts,
+                    )
+            elif not job:
+                contract_updates = poll_pending_contracts(db)
+                db.commit()
+                if contract_updates:
+                    LOG.info("ai_closer_contract_updates=%s", contract_updates)
         except Exception:
             db.rollback()
             LOG.exception(
