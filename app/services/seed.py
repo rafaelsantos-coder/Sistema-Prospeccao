@@ -146,18 +146,23 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
             ]
         )
 
-    digital_queue = db.scalar(
-        select(ServiceQueue)
-        .where(
-            ServiceQueue.team == "DIGITAL",
-            ServiceQueue.active.is_(True),
+    digital_queues = list(
+        db.scalars(
+            select(ServiceQueue)
+            .where(
+                ServiceQueue.team == "DIGITAL",
+                ServiceQueue.active.is_(True),
+            )
+            .order_by(ServiceQueue.id.asc())
         )
-        .order_by(ServiceQueue.id.asc())
-        .limit(1)
     )
-    if digital_queue and not db.scalar(
-        select(AIQueueBinding.id).where(AIQueueBinding.queue_id == digital_queue.id)
-    ):
+    for digital_queue in digital_queues:
+        if db.scalar(
+            select(AIQueueBinding.id).where(
+                AIQueueBinding.queue_id == digital_queue.id
+            )
+        ):
+            continue
         db.add(
             AIQueueBinding(
                 queue_id=digital_queue.id,
