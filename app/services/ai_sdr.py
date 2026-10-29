@@ -672,6 +672,36 @@ def _perform_handoff(
             conversation.lead.stage = "NEGOCIACAO"
             conversation.lead.priority = "ALTA"
 
+    handoff_summary = (
+        f"Resumo SDR: {decision.summary}\n"
+        f"Plano/serviço: {decision.offer_plan_code or decision.qualification.desired_product or '-'}\n"
+        f"Condição: N{decision.concession_level}; meses grátis={decision.free_months}; "
+        f"preço ofertado={decision.offer_price if decision.offer_price is not None else '-'}\n"
+        f"Provedor atual: {decision.qualification.current_provider or '-'}; "
+        f"velocidade atual: {decision.qualification.current_speed or '-'}; "
+        f"valor atual: {decision.qualification.current_price or '-'}\n"
+        f"Necessidades: {', '.join(decision.customer_needs) or '-'}\n"
+        f"Dores: {', '.join(decision.qualification.pain_points) or '-'}\n"
+        f"Benefícios valorizados: {', '.join(decision.benefits_valued) or '-'}\n"
+        f"Objeção atual: {decision.objection}\n"
+        f"Argumentos já usados: {', '.join(decision.commercial_arguments_used) or '-'}\n"
+        f"Proposta: {decision.proposal_summary or '-'}\n"
+        f"Pendência/próxima ação: {decision.next_action}"
+    )
+    if conversation.lead:
+        db.add(
+            Activity(
+                lead_id=conversation.lead.id,
+                user_id=agent.user_id,
+                kind="HANDOFF_IA",
+                status="CONCLUIDA",
+                channel="WHATSAPP",
+                outcome="PRONTO_PARA_FECHAMENTO",
+                description=handoff_summary[:5000],
+                completed_at=utcnow(),
+            )
+        )
+
     from app.services.ai_followups import cancel_pending_followups
     cancel_pending_followups(db, conversation.id, reason="HANDOFF_HUMANO")
 
@@ -688,6 +718,12 @@ def _perform_handoff(
             "reason": decision.handoff_reason,
             "offer_plan_code": decision.offer_plan_code,
             "free_months": decision.free_months,
+            "qualification": decision.qualification.model_dump(),
+            "customer_needs": decision.customer_needs,
+            "benefits_valued": decision.benefits_valued,
+            "commercial_arguments_used": decision.commercial_arguments_used,
+            "proposal_summary": decision.proposal_summary,
+            "next_action": decision.next_action,
         },
     )
 
