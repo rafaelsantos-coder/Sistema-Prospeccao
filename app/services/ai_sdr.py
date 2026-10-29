@@ -403,6 +403,9 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Use o histórico, o CRM e a base de conhecimento abaixo. "
         "Produza a decisão estruturada do SDR. Além da resposta, classifique objeção, estado comercial, "
         "plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
+        "Sempre que a mensagem fizer uma pergunta com 2 ou 3 respostas previsíveis, preencha quick_replies com "
+        "2 ou 3 botões curtos, com no máximo 20 caracteres por label. Exemplos: Para casa/Para empresa; Sim/Não; "
+        "800 Mega/650 Mega; Preço/Lentidão/Quedas. Para pergunta realmente aberta, quick_replies pode ficar vazio. "
         "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação ou exceção que exija humano. "
         f"Modo efetivo: {effective_mode}.\n\n"
         + json.dumps(context, ensure_ascii=False, default=str)
