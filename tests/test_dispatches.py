@@ -379,3 +379,136 @@ def test_started_dispatch_recipient_cannot_be_edited():
             assert recipient.message_body == "Mensagem original"
         finally:
             db.close()
+
+
+def test_draft_dispatch_configuration_can_be_updated():
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "CONFIG")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id,
+                queue_id=queue.id,
+                status="RASCUNHO",
+                interval_seconds=10,
+                daily_limit=300,
+                import_summary_json=json.dumps({"imported": 5}),
+            )
+            db.add(dispatch)
+            db.flush()
+            for index in range(5):
+                db.add(
+                    CampaignDispatchRecipient(
+                        dispatch_id=dispatch.id,
+                        name=f"Empresa Config {index}",
+                        phone=f"5555999982{index:03d}",
+                        message_body=f"Mensagem {index}",
+                        status="PENDENTE",
+                    )
+                )
+            db.commit()
+            dispatch_id = dispatch.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/dispatches/{dispatch_id}/configuration",
+            data={
+                "csrf_token": token,
+                "interval_seconds": "45",
+                "daily_limit": "120",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/dispatches/{dispatch_id}"
+
+        db = SessionLocal()
+        try:
+            dispatch = db.get(CampaignDispatch, dispatch_id)
+            assert dispatch.interval_seconds == 45
+            assert dispatch.daily_limit == 120
+            summary = json.loads(dispatch.import_summary_json)
+            assert summary["estimated_duration_seconds"] == 180
+        finally:
+            db.close()
+
+
+def test_paused_dispatch_configuration_can_be_updated():
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "CONFIG-PAUSED")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id,
+                queue_id=queue.id,
+                status="PAUSADO",
+                interval_seconds=30,
+                daily_limit=100,
+            )
+            db.add(dispatch)
+            db.commit()
+            dispatch_id = dispatch.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/dispatches/{dispatch_id}/configuration",
+            data={
+                "csrf_token": token,
+                "interval_seconds": "60",
+                "daily_limit": "250",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        db = SessionLocal()
+        try:
+            dispatch = db.get(CampaignDispatch, dispatch_id)
+            assert dispatch.interval_seconds == 60
+            assert dispatch.daily_limit == 250
+            assert dispatch.next_send_at is None
+        finally:
+            db.close()
+
+
+def test_active_dispatch_configuration_is_locked():
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "CONFIG-LOCKED")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id,
+                queue_id=queue.id,
+                status="ATIVO",
+                interval_seconds=10,
+                daily_limit=300,
+            )
+            db.add(dispatch)
+            db.commit()
+            dispatch_id = dispatch.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/dispatches/{dispatch_id}/configuration",
+            data={
+                "csrf_token": token,
+                "interval_seconds": "90",
+                "daily_limit": "10",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        db = SessionLocal()
+        try:
+            dispatch = db.get(CampaignDispatch, dispatch_id)
+            assert dispatch.interval_seconds == 10
+            assert dispatch.daily_limit == 300
+        finally:
+            db.close()
