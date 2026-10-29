@@ -85,6 +85,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         db.scalars(
             select(AIAgentProfile)
             .options(selectinload(AIAgentProfile.user))
+            .where(AIAgentProfile.role_type == "SDR")
             .order_by(AIAgentProfile.id)
         )
     )
@@ -163,6 +164,47 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         openai_configured=bool(settings.openai_api_key),
         ai_sdr_enabled=settings.ai_sdr_enabled,
         autonomous_enabled=settings.ai_autonomous_enabled,
+    )
+
+
+@router.get("/seller")
+def seller_dashboard(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+
+    agent = db.scalar(
+        select(AIAgentProfile)
+        .options(selectinload(AIAgentProfile.user))
+        .where(AIAgentProfile.role_type == "CLOSER")
+        .order_by(AIAgentProfile.id)
+    )
+    knowledge = []
+    metrics = {}
+    if agent:
+        knowledge = list(
+            db.scalars(
+                select(AIKnowledgeItem)
+                .where(AIKnowledgeItem.agent_id == agent.id)
+                .order_by(AIKnowledgeItem.updated_at.desc(), AIKnowledgeItem.id.desc())
+            )
+        )
+        metrics = ai_metrics(db, agent.id)
+
+    return render(
+        request,
+        "ai/seller.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="seller",
+        page_title="Vendedor IA · Fechamento",
+        agent=agent,
+        knowledge=knowledge,
+        metrics=metrics,
+        execution_modes=EXECUTION_MODES,
+        autonomous_enabled=settings.ai_autonomous_enabled,
+        seller_enabled=settings.ai_seller_enabled,
+        crm_configured=bool(settings.sulnet_crm_base_url and settings.sulnet_ai_integration_key),
     )
 
 
@@ -351,7 +393,7 @@ def update_agent(
     )
     db.commit()
     flash(request, f"Agente {agent.name} atualizado.")
-    return RedirectResponse("/ai", status_code=303)
+    return RedirectResponse("/ai/seller" if agent.role_type == "CLOSER" else "/ai", status_code=303)
 
 
 @router.post("/knowledge")
@@ -567,6 +609,13 @@ def bind_queue(
     if not queue or not queue.active:
         flash(request, "Fila inválida ou inativa.", "warning")
         return RedirectResponse("/ai", status_code=303)
+    if agent.role_type != "SDR":
+        flash(
+            request,
+            "O Vendedor IA recebe handoff do SDR e não pode ser vinculado como agente inicial de uma fila.",
+            "warning",
+        )
+        return RedirectResponse("/ai/seller", status_code=303)
     if mode not in HANDLING_MODES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 

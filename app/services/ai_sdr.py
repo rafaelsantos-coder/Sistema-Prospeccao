@@ -156,10 +156,51 @@ def enqueue_ai_job(
     conversation: Conversation,
     message: Message,
 ) -> AIJob | None:
-    if not settings.ai_sdr_enabled:
+    if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
         return None
     if message.direction != "INBOUND" or message.message_type != "TEXT":
         return None
+
+    existing = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
+    if existing:
+        return existing
+
+    # Depois do handoff, a conversa pertence ao Vendedor IA e não volta ao SDR.
+    closing_state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == conversation.id,
+            AIConversationState.state == "CLOSING",
+        )
+    )
+    if closing_state and settings.ai_seller_enabled:
+        closer = db.get(AIAgentProfile, closing_state.agent_id)
+        queue = queue_for_conversation(db, conversation.id)
+        if closer and closer.active and closer.role_type == "CLOSER" and queue:
+            from app.services.ai_followups import cancel_pending_followups
+            cancel_pending_followups(db, conversation.id, reason="CLIENTE_RESPONDEU_CLOSER")
+            job = AIJob(
+                agent_id=closer.id,
+                queue_id=queue.id,
+                conversation_id=conversation.id,
+                message_id=message.id,
+                status="PENDENTE",
+                available_at=utcnow(),
+            )
+            db.add(job)
+            db.flush()
+            LOG.info(
+                "ai_closer_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s",
+                job.id,
+                conversation.id,
+                message.id,
+                queue.id,
+                closer.id,
+            )
+            return job
+
+    if not settings.ai_sdr_enabled:
+        return None
+
     binding = binding_for_conversation(db, conversation.id)
     if not binding:
         queue = queue_for_conversation(db, conversation.id)
@@ -191,10 +232,6 @@ def enqueue_ai_job(
         conversation.id,
         reason="CLIENTE_RESPONDEU",
     )
-
-    existing = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
-    if existing:
-        return existing
 
     job = AIJob(
         agent_id=binding.agent_id,
@@ -760,6 +797,10 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         job.error = "Agente inexistente ou inativo."
         return "skipped"
 
+    if agent.role_type == "CLOSER":
+        from app.services.ai_seller import process_seller_job
+        return process_seller_job(db, job, agent)
+
     context = build_ai_context(db, job=job, agent=agent)
     effective_mode = _effective_execution_mode(agent)
     run = AIRun(
@@ -796,6 +837,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "failed"
 
     output = decision.model_dump()
+    closer_started = False
 
     if effective_mode == "AUTO":
         try:
@@ -805,23 +847,50 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 job=job,
                 decision=decision,
             )
-            sent_message = _send_autonomous_reply(
-                db,
-                agent=agent,
-                job=job,
-                decision=decision,
+            sent_message = None
+            wants_closer = (
+                decision.intent not in {"DO_NOT_CONTACT", "HUMAN_REQUEST"}
+                and decision.sales_state != "OPT_OUT"
+                and (
+                    decision.customer_commitment
+                    or decision.sales_state == "PURCHASE_INTENT"
+                )
             )
+            if wants_closer:
+                from app.services.ai_seller import start_closing_from_sdr
+                closer_started = start_closing_from_sdr(
+                    db,
+                    sdr_agent=agent,
+                    job=job,
+                    decision=decision,
+                )
+
+            if not closer_started:
+                sent_message = _send_autonomous_reply(
+                    db,
+                    agent=agent,
+                    job=job,
+                    decision=decision,
+                )
+
             if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
-            elif decision.handoff_recommended or decision.sales_state == "READY_FOR_HUMAN_SALES":
+            elif not closer_started and (
+                decision.handoff_recommended
+                or decision.sales_state == "READY_FOR_HUMAN_SALES"
+            ):
                 _perform_handoff(
                     db,
                     agent=agent,
                     job=job,
                     decision=decision,
                 )
-            elif decision.followup_needed and sent_message is not None:
+            elif (
+                not closer_started
+                and decision.followup_needed
+                and sent_message is not None
+            ):
                 from app.services.ai_followups import schedule_followup
                 schedule_followup(
                     db,
@@ -860,27 +929,32 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             AIConversationState.conversation_id == job.conversation_id
         )
     )
-    if not state:
-        state = AIConversationState(
-            conversation_id=job.conversation_id,
-            agent_id=agent.id,
-        )
-        db.add(state)
-    state.agent_id = agent.id
-    if effective_mode == "SHADOW":
-        state.state = "SHADOW_REVIEW"
-    elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
-        state.state = "OPT_OUT"
-    elif decision.handoff_recommended or decision.sales_state == "READY_FOR_HUMAN_SALES":
-        state.state = "HANDOFF"
-        state.handoff_at = utcnow()
+    if closer_started:
+        # start_closing_from_sdr já transferiu a propriedade do estado ao closer.
+        if state and not state.summary:
+            state.summary = decision.summary
     else:
-        state.state = "AI_ACTIVE"
-    state.summary = decision.summary
-    state.qualification_score = decision.qualification_score
-    state.temperature = decision.temperature
-    state.last_intent = decision.intent
-    state.last_run_id = run.id
+        if not state:
+            state = AIConversationState(
+                conversation_id=job.conversation_id,
+                agent_id=agent.id,
+            )
+            db.add(state)
+        state.agent_id = agent.id
+        if effective_mode == "SHADOW":
+            state.state = "SHADOW_REVIEW"
+        elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
+            state.state = "OPT_OUT"
+        elif decision.handoff_recommended or decision.sales_state == "READY_FOR_HUMAN_SALES":
+            state.state = "HANDOFF"
+            state.handoff_at = utcnow()
+        else:
+            state.state = "AI_ACTIVE"
+        state.summary = decision.summary
+        state.qualification_score = decision.qualification_score
+        state.temperature = decision.temperature
+        state.last_intent = decision.intent
+        state.last_run_id = run.id
 
     job.status = "CONCLUIDO"
     job.error = None

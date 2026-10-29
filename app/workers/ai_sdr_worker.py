@@ -12,6 +12,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import AIFollowupJob, AIConversationState, AIJob, Conversation, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
+from app.services.ai_seller import poll_pending_contracts
 from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utcnow
@@ -201,8 +202,9 @@ def run() -> None:
     Base.metadata.create_all(bind=engine)
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
-        "SulIA SDR worker iniciado. enabled=%s openai_configured=%s poll=%ss",
+        "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s openai_configured=%s poll=%ss",
         settings.ai_sdr_enabled,
+        settings.ai_seller_enabled,
         bool(settings.openai_api_key),
         poll,
     )
@@ -214,7 +216,7 @@ def run() -> None:
 
     missing_key_logged = False
     while True:
-        if not settings.ai_sdr_enabled:
+        if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
             time.sleep(max(10, poll))
             continue
         if not settings.openai_api_key:
@@ -250,7 +252,10 @@ def run() -> None:
             else:
                 followup = claim_followup_job(db)
                 if not followup:
+                    contract_updates = poll_pending_contracts(db)
                     db.commit()
+                    if contract_updates:
+                        LOG.info("ai_closer_contract_updates=%s", contract_updates)
                 else:
                     followup_id = followup.id
                     db.commit()
