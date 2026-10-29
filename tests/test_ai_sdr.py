@@ -12,6 +12,7 @@ from app.main import app
 from app.models import (
     AIAgentProfile,
     AIConversationState,
+    AIFollowupJob,
     AIJob,
     AIQueueBinding,
     AIRun,
@@ -339,6 +340,7 @@ def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
         next_action="Entender o provedor atual.",
         qualification=QualificationData(city="Santa Rosa"),
         crm_notes=[],
+        followup_needed=False,
     )
     monkeypatch.setattr("app.services.ai_sdr.settings", replace(settings, ai_autonomous_enabled=True))
     monkeypatch.setattr(
@@ -431,6 +433,15 @@ def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
             )
             assert state is not None
             assert state.state == "AI_ACTIVE"
+
+            followup = db.scalar(
+                select(AIFollowupJob).where(
+                    AIFollowupJob.conversation_id == conversation.id,
+                    AIFollowupJob.status == "PENDENTE",
+                )
+            )
+            assert followup is not None
+            assert followup.step == 1
         finally:
             db.close()
 

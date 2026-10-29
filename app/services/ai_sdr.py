@@ -1105,9 +1105,13 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 )
             elif (
                 not closer_started
-                and decision.followup_needed
                 and sent_message is not None
+                and decision.intent not in {"DO_NOT_CONTACT", "HUMAN_REQUEST"}
+                and decision.sales_state != "OPT_OUT"
             ):
+                # Toda conversa comercial ativa recebe follow-up persistente.
+                # O agendamento não depende mais de o modelo lembrar de marcar
+                # followup_needed=True, evitando leads parados por silêncio.
                 from app.services.ai_followups import schedule_followup
                 schedule_followup(
                     db,

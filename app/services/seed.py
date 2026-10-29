@@ -253,6 +253,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         or "APRESENTAÇÃO INICIAL DO PLANO" not in ai_agent.system_prompt
         or "RECUSAS PARCIAIS E CONTINUIDADE DA VENDA" not in ai_agent.system_prompt
         or "REJEIÇÃO DA OFERTA E NOVO GATILHO DE DIAGNÓSTICO" not in ai_agent.system_prompt
+        or "tentativa 1 após 60 segundos" not in ai_agent.system_prompt
     ):
         ai_agent.system_prompt = SULIA_SYSTEM_PROMPT
     ai_agent.business_goal = (
