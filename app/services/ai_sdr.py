@@ -28,7 +28,7 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
-from app.services.ai_sdr_policy import FTTH_PLANS, SULIA_SYSTEM_PROMPT
+from app.services.ai_sdr_policy import FTTH_PLANS, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.timeutils import is_past, utcnow
@@ -593,6 +593,165 @@ def _plan_from_sales_context(decision: AIDecision, context: dict):
     return None
 
 
+def _normalized_city(value: str | None) -> str:
+    return _fold_sales_text(value)
+
+
+def _city_from_sales_context(decision: AIDecision, context: dict) -> str:
+    lead_city = str((context.get("lead") or {}).get("city") or "").strip()
+    if lead_city:
+        return lead_city
+    return str(decision.qualification.city or "").strip()
+
+
+def _plan_available_in_city(plan: dict, city: str) -> bool:
+    city_key = _normalized_city(city)
+    if not city_key:
+        return False
+
+    service_city_keys = {_normalized_city(item) for item in SERVICE_CITIES}
+    if city_key not in service_city_keys:
+        return False
+
+    cities = plan.get("cities")
+    if cities == "ALL_20":
+        return True
+    return city_key in {_normalized_city(str(item)) for item in (cities or [])}
+
+
+def _eligible_plans_for_city(city: str) -> list[dict]:
+    plans = [plan for plan in FTTH_PLANS if _plan_available_in_city(plan, city)]
+    return sorted(plans, key=lambda item: int(item["download_mbps"]), reverse=True)
+
+
+def _requested_plan_speed(value: str | None) -> int | None:
+    folded = _fold_sales_text(value)
+    if not folded:
+        return None
+
+    match = re.search(r"\b(\d{2,4})\s*(?:mega|mb|mbps)\b", folded)
+    if not match:
+        return None
+
+    speed = int(match.group(1))
+    request_cues = (
+        "quero",
+        "queria",
+        "gostaria",
+        "interesse",
+        "preciso",
+        "tem ",
+        "voces tem",
+        "plano",
+        "contratar",
+        "oferece",
+        "disponivel",
+        "trabalham com",
+    )
+    current_plan_cues = (
+        "eu tenho",
+        "tenho hoje",
+        "uso ",
+        "meu plano",
+        "minha internet",
+        "atualmente",
+        "hoje tenho",
+    )
+
+    if any(cue in folded for cue in current_plan_cues) and not any(
+        cue in folded for cue in request_cues
+    ):
+        return None
+
+    compact = folded in {
+        f"{speed} mega",
+        f"{speed} mb",
+        f"{speed} mbps",
+    }
+    if compact or any(cue in folded for cue in request_cues):
+        return speed
+    return None
+
+
+def _format_brl(value: float) -> str:
+    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _apply_unavailable_plan_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    requested_speed = _requested_plan_speed(
+        str(context.get("latest_customer_message") or "")
+    )
+    if requested_speed is None:
+        return decision
+
+    city = _city_from_sales_context(decision, context)
+    if not city:
+        decision.reply_text = (
+            f"A disponibilidade do plano de {requested_speed} Mega varia por cidade. "
+            "Qual é a sua cidade? Aí te passo as opções corretas e seguimos."
+        )
+        decision.quick_replies = []
+        decision.intent = "QUALIFYING"
+        decision.sales_state = "DISCOVERY"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+        decision.customer_commitment = False
+        decision.offer_plan_code = None
+        decision.offer_price = None
+        decision.followup_needed = True
+        decision.next_action = "Confirmar a cidade para apresentar somente planos válidos."
+        return decision
+
+    eligible = _eligible_plans_for_city(city)
+    if not eligible:
+        return decision
+
+    if any(
+        int(plan["download_mbps"]) == requested_speed
+        for plan in eligible
+    ):
+        return decision
+
+    option_parts = [
+        f"{plan['download_mbps']} Mega por R$ {_format_brl(float(plan['price_fidelity']))}"
+        for plan in eligible
+    ]
+    if len(option_parts) == 1:
+        options_text = option_parts[0]
+    else:
+        options_text = ", ".join(option_parts[:-1]) + f" ou {option_parts[-1]}"
+
+    decision.reply_text = (
+        f"O plano de {requested_speed} Mega não está disponível em {city}. "
+        f"Hoje temos {options_text} mensais. Qual opção você prefere?"
+    )
+    decision.quick_replies = [
+        QuickReply(
+            id=f"plano_{int(plan['download_mbps'])}",
+            label=f"{int(plan['download_mbps'])} Mega",
+        )
+        for plan in eligible[:3]
+    ]
+    decision.intent = "INTEREST"
+    decision.sales_state = "OFFERING"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    decision.concession_level = 0
+    decision.free_months = 0
+    decision.followup_needed = True
+    decision.next_action = "Cliente escolher uma das opções comerciais válidas para a cidade."
+    decision.proposal_summary = (
+        f"Alternativas válidas em {city}: " + "; ".join(option_parts) + "."
+    )
+    return decision
+
+
 def _apply_secondary_decline_reengagement_policy(
     decision: AIDecision,
     context: dict,
@@ -789,7 +948,9 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "aceite a recusa daquele detalhe e volte para a oferta principal com CTA de avanço. Nunca responda apenas 'se quiser, me chame' nesse cenário. "
         "Se o cliente rejeitar a própria oferta de internet sem pedir para parar o contato, também não encerre: mude o ângulo e pergunte se ele já possui conexão "
         "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
-        "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação ou exceção que exija humano. "
+        "Se o cliente pedir uma velocidade/plano que não esteja disponível na cidade, isso NÃO é motivo de handoff: informe que aquela opção não está disponível, "
+        "apresente somente os planos válidos do catálogo para a cidade e continue a venda até o cliente escolher uma opção. Se a cidade ainda não estiver confirmada, pergunte a cidade. "
+        "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação em uma oferta válida ou exceção real que exija humano. "
         f"Modo efetivo: {effective_mode}.\n\n"
         + json.dumps(context, ensure_ascii=False, default=str)
     )
@@ -810,6 +971,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
+    decision = _apply_unavailable_plan_policy(decision, context)
     decision = _apply_secondary_decline_reengagement_policy(decision, context)
     decision = _apply_offer_rejection_diagnostic_policy(decision, context)
     return _sanitize_unconfirmed_customer_facts(decision, context)

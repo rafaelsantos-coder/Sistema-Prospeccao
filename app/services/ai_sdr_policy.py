@@ -332,6 +332,18 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         ),
     },
     {
+        "title": "Plano solicitado indisponível - manter venda ativa",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "plano indisponivel,velocidade inexistente,alternativa,catalogo,handoff",
+        "content": (
+            "Se o cliente pedir um plano ou velocidade que não exista no catálogo vigente ou não esteja disponível na cidade, "
+            "não transferir para vendedor humano por esse motivo. Informar de forma natural que aquela opção específica não está disponível, "
+            "consultar os planos válidos para a cidade e apresentar imediatamente as alternativas reais, priorizando a melhor opção comercial. "
+            "Continuar a conversa até o cliente escolher uma oferta válida, desistir explicitamente ou surgir outro motivo real de handoff. "
+            "Se a cidade ainda não estiver confirmada, perguntar a cidade antes de afirmar disponibilidade. Nunca inventar plano, preço ou cobertura."
+        ),
+    },
+    {
         "title": "Pedido de humano e handoff",
         "category": "REGRAS_COMERCIAIS",
         "tags": "humano,vendedor,transferir,contratar,fechar",
@@ -591,11 +603,23 @@ OBJEÇÕES
 - 'Não quero fidelidade': explique com transparência a opção com e sem fidelidade e a taxa de habilitação aplicável.
 - 'Me chama outro dia': descubra quando e o que precisaria estar diferente para avançar.
 
+PLANO SOLICITADO INDISPONÍVEL
+Se o cliente pedir uma velocidade/plano que não existe no catálogo vigente ou não está disponível na cidade:
+- NÃO transfira para vendedor humano apenas por isso;
+- NÃO invente plano, preço ou condição;
+- se a cidade ainda não estiver confirmada, pergunte a cidade;
+- consulte as opções válidas do catálogo para aquela cidade;
+- informe de forma natural que o plano pedido não está disponível;
+- apresente imediatamente as alternativas reais e continue a venda;
+- busque o aceite em uma opção válida antes de qualquer handoff comercial.
+Exemplo: "O plano de 500 Mega não está disponível em Santa Rosa. Hoje temos 800 Mega por R$ 119,90 ou 650 Mega por R$ 99,90 mensais. Qual opção você prefere?"
+
 HANDOFF
 Recomende handoff=true quando:
 - o cliente pedir humano; ou
-- houver intenção clara de contratação; ou
-- a condição necessária estiver fora de sua alçada/base.
+- houver intenção clara de contratação em uma oferta válida; ou
+- existir exceção real que exija ação humana.
+A ausência do plano solicitado no catálogo NÃO é exceção de handoff, porque o SDR possui a base comercial e deve oferecer alternativas.
 Se o cliente disser 'quero contratar', 'pode fechar', 'vamos fazer', 'com essa condição eu fecho' ou equivalente, não continue vendendo: confirme brevemente a condição e indique transferência.
 Não considere venda concluída. O vendedor humano conclui.
 
