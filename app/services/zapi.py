@@ -366,6 +366,17 @@ class ZApiService:
                         "Falha ao configurar webhook de mensagens recebidas: "
                         f"{self._safe_error(received_response)}"
                     )
+
+                received_delivery_response = client.put(
+                    self._url("update-webhook-received-delivery"),
+                    headers=self._headers(json_request=True),
+                    json={"value": clean_url},
+                )
+                if received_delivery_response.status_code >= 400:
+                    raise ZApiError(
+                        "Falha ao configurar webhook combinado de recebimento/envio: "
+                        f"{self._safe_error(received_delivery_response)}"
+                    )
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel configurar os webhooks da Z-API.") from exc
 
@@ -377,6 +388,10 @@ class ZApiService:
             received_payload = received_response.json()
         except ValueError:
             received_payload = {"ok": True}
+        try:
+            received_delivery_payload = received_delivery_response.json()
+        except ValueError:
+            received_delivery_payload = {"ok": True}
 
         state = self.webhook_state()
         configured_url = state.get("received_callback_url") or ""
@@ -388,6 +403,7 @@ class ZApiService:
         return {
             "all": all_payload,
             "received": received_payload,
+            "received_delivery": received_delivery_payload,
             "notify_sent_by_me": True,
             "webhook_state": state,
         }
