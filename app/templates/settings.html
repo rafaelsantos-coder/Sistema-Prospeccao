@@ -1,279 +1,51 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-lead">
+<div class="page-lead split">
   <div>
     <span class="eyebrow">ADMINISTRAÇÃO</span>
-    <h2>Estrutura, integrações e metas</h2>
-    <p>Visão operacional do ambiente interno da Sulnet.</p>
+    <h2>Configurações do ambiente</h2>
+    <p>Escolha uma área para configurar. Cada seção agora possui sua própria tela.</p>
   </div>
+  <span class="environment-badge">{{ environment|upper }}</span>
 </div>
 
-<div class="settings-grid">
-  <article class="panel panel-span-7">
-    <div class="panel-header"><div><span class="eyebrow">INTEGRAÇÕES</span><h3>Conectividade do sistema</h3></div><span class="environment-badge">{{ environment|upper }}</span></div>
-    <div class="integration-list">
-      <div class="integration-row"><div class="integration-logo">A</div><div><strong>Apify</strong><span>Busca de empresas no Google Maps</span></div><span class="connection-status {% if integrations.apify %}on{% endif %}">{% if integrations.apify %}Conectado{% else %}Pendente{% endif %}</span></div>
-      <div class="integration-row"><div class="integration-logo">Z</div><div><strong>Z-API</strong><span>Envio e recebimento de mensagens no WhatsApp</span></div><span class="connection-status {% if zapi_status.connected %}on{% endif %}">{% if zapi_status.connected %}Conectado{% elif zapi_status.configured %}Desconectado{% else %}Pendente{% endif %}</span></div>
-      <div class="integration-row"><div class="integration-logo">R</div><div><strong>Resend</strong><span>Envio de e-mails comerciais</span></div><span class="connection-status {% if integrations.email %}on{% endif %}">{% if integrations.email %}Conectado{% else %}Pendente{% endif %}</span></div>
-      <div class="integration-row"><div class="integration-logo">AI</div><div><strong>OpenAI / SulIA</strong><span>Agente SDR em Shadow Mode</span></div><span class="connection-status {% if integrations.ai_sdr %}on{% endif %}">{% if integrations.ai_sdr %}Conectado{% elif integrations.openai %}Configurado{% else %}Pendente{% endif %}</span></div>
-      <div class="integration-row"><div class="integration-logo">L</div><div><strong>Motor legado</strong><span>Scripts originais do repositório</span></div><span class="connection-status {% if legacy_available %}on{% endif %}">{% if legacy_available %}Disponível{% else %}Modo compatível{% endif %}</span></div>
-    </div>
-    {% if zapi_status.configured %}
-    <div class="info-box compact">
-      <strong>Status do WhatsApp</strong>
-      <p>{% if zapi_status.connected %}Instância conectada{% else %}Instância sem conexão{% endif %} · {% if zapi_status.smartphone_connected %}celular online{% else %}celular não confirmado{% endif %} · {% if zapi_status.webhook_ready %}webhook preparado{% else %}webhook pendente{% endif %}.</p>
-      {% if zapi_status.error %}<p>{{ zapi_status.error }}</p>{% endif %}
-    </div>
-    {% endif %}
-    <div class="info-box"><strong>Segurança das chaves</strong><p>Tokens e credenciais são lidos por variáveis de ambiente. Nenhum segredo é exibido ou gravado pela interface.</p></div>
-  </article>
-
-  <article class="panel panel-span-5">
-    <div class="panel-header"><div><span class="eyebrow">LIMITES</span><h3>Envios de hoje</h3></div></div>
-    {% for channel, data in rate_status.channels.items() %}
-    <div class="capacity-row">
-      <div class="capacity-head"><span>{{ channel|upper }}</span><strong>{{ data.sent_today }}/{{ data.limit }}</strong></div>
-      <div class="progress-track"><span style="width: {{ (data.sent_today / data.limit * 100) if data.limit else 0 }}%"></span></div>
-      <small>{{ data.remaining }} restantes</small>
-    </div>
-    {% endfor %}
-  </article>
-
-  {% if current_user.role in ['ADMIN', 'GESTOR'] %}
-  <article class="panel panel-span-6">
-    <div class="panel-header"><div><span class="eyebrow">Z-API</span><h3>Homologação do WhatsApp</h3></div></div>
-    {% if integrations.zapi %}
-    <form action="/settings/zapi/test" method="post" class="stack-form compact">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label class="field"><span>Instância WhatsApp</span><select name="zapi_instance_id" required>{% for instance in active_zapi_instances %}<option value="{{ instance.id }}">{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>{% endfor %}</select></label>
-      <label class="field"><span>Número interno para teste</span><input name="phone" required placeholder="5555999999999" inputmode="numeric"></label>
-      <label class="field"><span>Mensagem</span><textarea name="message" rows="4" maxlength="4096" required>Teste de integração do Sulnet Prospecta com a Z-API.</textarea></label>
-      <button class="button button-primary full-width" type="submit">Enviar mensagem de teste</button>
-    </form>
-    <form action="/settings/zapi/configure-webhook" method="post" class="stack-form compact" style="margin-top: 12px;">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="button button-secondary full-width" type="submit">Registrar webhooks novamente</button>
-    </form>
-    <div class="info-box compact"><strong>Fase piloto</strong><p>Os envios em massa continuam bloqueados. Nesta etapa, o sistema permite somente testes internos e mensagens individuais registradas no CRM.</p></div>
-    {% else %}
-    <div class="empty-state"><strong>Z-API ainda não configurada</strong><span>Cadastre as credenciais no Railway para liberar a homologação.</span></div>
-    {% endif %}
-  </article>
-  {% endif %}
-
+<div class="settings-hub-grid">
   {% if current_user.role in ['ADMIN','GESTOR'] %}
-  <article class="panel panel-span-12">
-    <div class="panel-header">
-      <div><span class="eyebrow">INSTÂNCIAS WHATSAPP</span><h3>Números e conexões Z-API</h3></div>
-      <span class="count-badge">{{ zapi_instances|length }}</span>
-    </div>
-    <p class="panel-note">Cadastre quantos números precisar. Cada fila pode ser vinculada a uma instância diferente, mantendo atendentes, regras e IA independentes.</p>
-    <div class="data-table-wrap top-space">
-      <table class="data-table">
-        <thead><tr><th>Nome</th><th>Número / identificação</th><th>Instância</th><th>Origem</th><th>Status</th><th>Webhook</th></tr></thead>
-        <tbody>
-        {% for instance in zapi_instances %}
-          <tr>
-            <td><strong>{{ instance.name }}</strong></td>
-            <td>{{ instance.phone_label or 'Não informado' }}</td>
-            <td><span class="table-subline">…{{ instance.instance_id[-8:] }}</span></td>
-            <td>{{ 'Railway / atual' if instance.source_type == 'ENV' else 'Cadastro interno' }}</td>
-            <td><span class="connection-status {% if instance.active %}on{% endif %}">{{ 'Ativa' if instance.active else 'Inativa' }}</span></td>
-            <td>
-              {% if instance.active %}
-              <form action="/settings/zapi/instances/{{ instance.id }}/configure-webhook" method="post">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button class="button button-ghost" type="submit">Atualizar webhook</button>
-              </form>
-              {% else %}—{% endif %}
-            </td>
-          </tr>
-        {% else %}
-          <tr><td colspan="6"><div class="empty-state"><strong>Nenhuma instância cadastrada</strong><span>Cadastre uma instância Z-API para vinculá-la às filas.</span></div></td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-
-    <div class="queue-create-box">
-      <div class="panel-header">
-        <div><span class="eyebrow">NOVA INSTÂNCIA</span><h3>Adicionar número WhatsApp</h3></div>
-        <span class="panel-note">As credenciais ficam protegidas e não são exibidas depois.</span>
-      </div>
-      <form action="/settings/zapi/instances" method="post" class="stack-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="form-grid">
-          <label class="field"><span>Nome da instância</span><input name="name" required placeholder="Ex.: WhatsApp B2B"></label>
-          <label class="field"><span>Número / identificação</span><input name="phone_label" placeholder="Ex.: (55) 99999-0000"></label>
-          <label class="field field-span-2"><span>URL da Z-API</span><input name="base_url" value="https://api.z-api.io" required></label>
-          <label class="field"><span>Instance ID</span><input name="instance_id" required autocomplete="off"></label>
-          <label class="field"><span>Instance Token</span><input name="instance_token" type="password" required autocomplete="new-password"></label>
-          <label class="field field-span-2"><span>Client Token</span><input name="client_token" type="password" autocomplete="new-password"><small>Preencha quando sua conta Z-API utilizar Client-Token.</small></label>
-        </div>
-        <button class="button button-primary" type="submit">Validar e cadastrar instância</button>
-      </form>
-    </div>
-  </article>
+  <a class="settings-hub-card" href="/settings/whatsapp">
+    <span class="settings-hub-icon">Z</span>
+    <div><span class="eyebrow">WHATSAPP</span><h3>Números e conexões Z-API</h3><p>Cadastre instâncias, números, credenciais, webhooks e faça testes de conexão.</p></div>
+    <div class="settings-hub-meta"><strong>{{ settings_stats.zapi_instances }}</strong><span>instâncias</span><b>→</b></div>
+  </a>
   {% endif %}
 
-  <article class="panel panel-span-6">
-    <div class="panel-header"><div><span class="eyebrow">METAS DIÁRIAS</span><h3>Ritmo por frente comercial</h3></div></div>
-    <div class="settings-list">
-    {% for target in targets %}
-      <div><strong>{{ constants.teams.get(target.team, target.team) }}</strong><span>{{ target.metric|replace('_',' ')|title }}</span><em>{{ target.daily_target }}/dia</em></div>
-    {% endfor %}
-    </div>
-  </article>
+  <a class="settings-hub-card" href="/settings/queues">
+    <span class="settings-hub-icon">F</span>
+    <div><span class="eyebrow">DISTRIBUIÇÃO</span><h3>Filas de atendimento</h3><p>Organize filas, atendentes, instância WhatsApp, unidade e estratégia de distribuição.</p></div>
+    <div class="settings-hub-meta"><strong>{{ settings_stats.queues }}</strong><span>filas</span><b>→</b></div>
+  </a>
 
-  <article class="panel panel-span-6">
-    <div class="panel-header"><div><span class="eyebrow">UNIDADES</span><h3>Estrutura cadastrada</h3></div><span class="count-badge">{{ branches|length }}</span></div>
-    <div class="branch-grid">
-      {% for branch in branches %}<div><span>{{ branch.code }}</span><strong>{{ branch.city }}</strong><small>{{ branch.name }}</small></div>{% endfor %}
-    </div>
-  </article>
+  <a class="settings-hub-card" href="/settings/users">
+    <span class="settings-hub-icon">U</span>
+    <div><span class="eyebrow">ACESSOS</span><h3>Usuários e acessos</h3><p>Consulte usuários, perfis, equipes e unidades. Administradores podem criar e editar acessos.</p></div>
+    <div class="settings-hub-meta"><strong>{{ settings_stats.users }}</strong><span>usuários</span><b>→</b></div>
+  </a>
 
-  <article class="panel panel-span-12">
-    <div class="panel-header">
-      <div><span class="eyebrow">FILAS DE ATENDIMENTO</span><h3>Roteamento do WhatsApp</h3></div>
-      <span class="count-badge">{{ queues|length }}</span>
-    </div>
-    <div class="data-table-wrap">
-      <table class="data-table queue-table">
-        <thead><tr><th>Fila</th><th>Equipe / Unidade</th><th>WhatsApp</th><th>Distribuição</th><th>Membros</th><th>Online</th><th>Pendentes</th><th>Padrão</th><th>Ação</th></tr></thead>
-        <tbody>
-        {% for queue in queues %}
-          {% set qs = queue_stats.get(queue.id, {}) %}
-          <tr>
-            <td><strong>{{ queue.name }}</strong><span class="table-subline">{{ queue.code }}</span></td>
-            <td>{{ constants.teams.get(queue.team, queue.team) }}<span class="table-subline">{{ queue.branch.city if queue.branch else 'Corporativo / todas' }}</span></td>
-            {% set qi = queue_instances.get(queue.id) %}
-            <td><strong>{{ qi.name if qi else 'Sem instância' }}</strong><span class="table-subline">{{ qi.phone_label if qi and qi.phone_label else '—' }}</span></td>
-            <td>{{ routing_strategies.get(queue.routing_strategy, queue.routing_strategy) }}</td>
-            <td>{{ qs.get('members', 0) }}</td>
-            <td><span class="connection-status {% if qs.get('online', 0) %}on{% endif %}">{{ qs.get('online', 0) }} online</span></td>
-            <td><strong>{{ qs.get('waiting', 0) }}</strong><span class="table-subline">{{ qs.get('open', 0) }} abertas</span></td>
-            <td>{% if queue.is_default_inbound %}<span class="soft-badge">Entrada padrão</span>{% else %}—{% endif %}</td>
-            <td><a class="button button-ghost" href="/settings/queues/{{ queue.id }}">Configurar</a></td>
-          </tr>
-        {% else %}
-          <tr><td colspan="9"><div class="empty-state"><strong>Nenhuma fila criada</strong><span>Crie uma fila para controlar a distribuição das respostas do WhatsApp.</span></div></td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
+  <a class="settings-hub-card" href="/settings/operations">
+    <span class="settings-hub-icon">M</span>
+    <div><span class="eyebrow">ESTRUTURA</span><h3>Metas e unidades</h3><p>Consulte as metas diárias das frentes comerciais e a estrutura de unidades cadastradas.</p></div>
+    <div class="settings-hub-meta"><strong>{{ settings_stats.branches }}</strong><span>unidades</span><b>→</b></div>
+  </a>
 
-    {% if current_user.role in ['ADMIN','GESTOR'] %}
-    <div class="queue-create-box">
-      <div class="panel-header"><div><span class="eyebrow">NOVA FILA</span><h3>Criar fila de atendimento</h3></div><span class="panel-note">Os membros poderão receber apenas enquanto estiverem online no WhatsApp.</span></div>
-      <form action="/settings/queues" method="post" class="stack-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="form-grid">
-          <label class="field"><span>Nome</span><input name="name" required placeholder="Ex.: Comercial Digital"></label>
-          <label class="field"><span>Código</span><input name="code" required placeholder="Ex.: DIGITAL"></label>
-          <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
-          <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Corporativo / todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
-          <label class="field"><span>Instância WhatsApp</span><select name="zapi_instance_id" required><option value="">Selecione a instância</option>{% for instance in active_zapi_instances %}<option value="{{ instance.id }}">{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>{% endfor %}</select><small>Define qual número enviará e receberá as mensagens desta fila.</small></label>
-          <label class="field"><span>Estratégia de distribuição</span><select name="routing_strategy">{% for key, label in routing_strategies.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
-          <div class="field field-span-2">
-            <span>Usuários da fila</span>
-            <div class="queue-create-user-grid">
-              {% for item in human_users %}
-              <label class="queue-create-user">
-                <input type="checkbox" name="member_user_ids" value="{{ item.id }}">
-                <span class="avatar">{{ item.name[:1]|upper }}</span>
-                <span><strong>{{ item.name }}</strong><small>{{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</small></span>
-              </label>
-              {% endfor %}
-            </div>
-            <small>Marque os usuários que já devem entrar na fila. Depois você poderá adicionar ou remover individualmente.</small>
-          </div>
-          <label class="queue-check"><input type="checkbox" name="is_default_inbound" value="true"><span>Usar como fila padrão para novas mensagens espontâneas desta equipe/unidade</span></label>
-        </div>
-        <button class="button button-primary" type="submit">Criar fila</button>
-      </form>
-    </div>
-    {% endif %}
-  </article>
+  <a class="settings-hub-card" href="/settings/integrations">
+    <span class="settings-hub-icon">I</span>
+    <div><span class="eyebrow">AMBIENTE</span><h3>Integrações e ambiente</h3><p>Visualize Apify, e-mail, OpenAI, motor legado e a capacidade de envios do ambiente.</p></div>
+    <div class="settings-hub-meta"><span>status geral</span><b>→</b></div>
+  </a>
 
-  {% if current_user.role in ['ADMIN','GESTOR'] %}
-  <article class="panel panel-span-12">
-    <div class="panel-header"><div><span class="eyebrow">EQUIPE DO INBOX</span><h3>Novo usuário</h3></div><span class="panel-note">Senha provisória · troca obrigatória no primeiro acesso</span></div>
-    <form action="/settings/users" method="post" class="form-grid">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label class="field"><span>Nome</span><input name="name" required placeholder="Nome completo"></label>
-      <label class="field"><span>E-mail</span><input name="email" type="email" required placeholder="nome@sulnet.com.br"></label>
-      <label class="field"><span>Senha provisória</span><input name="password" type="password" minlength="10" required autocomplete="new-password"></label>
-      <label class="field"><span>Perfil</span><select name="role" required>
-        <option value="CONSULTOR">Consultor</option>
-        <option value="SUPERVISOR">Supervisor</option>
-        {% if current_user.role == 'ADMIN' %}<option value="GESTOR">Gestor</option><option value="ADMIN">Administrador</option>{% endif %}
-      </select></label>
-      <label class="field"><span>Equipe</span><select name="team" required>{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
-      <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Todas / corporativo</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
-      <div class="field field-span-2"><button class="button button-primary" type="submit">Criar usuário e liberar acesso</button></div>
-    </form>
-  </article>
-  {% endif %}
-
-  <article class="panel panel-span-12">
-    <div class="panel-header"><div><span class="eyebrow">USUÁRIOS</span><h3>Acessos do ambiente</h3></div><span class="count-badge">{{ users|length }}</span></div>
-    <div class="data-table-wrap">
-      <table class="data-table"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Unidade</th><th>Status</th>{% if current_user.role in ['ADMIN','GESTOR'] %}<th>Ação</th>{% endif %}</tr></thead><tbody>
-        {% for item in users %}
-        <tr>
-          <td><strong>{{ item.name }}</strong></td>
-          <td>{{ item.email }}</td>
-          <td>{{ constants.roles.get(item.role, item.role) }}</td>
-          <td>{{ constants.teams.get(item.team, item.team) }}</td>
-          <td>{{ item.branch.city if item.branch else 'Todas' }}</td>
-          <td><span class="connection-status {% if item.active %}on{% endif %}">{% if item.active %}Ativo{% else %}Inativo{% endif %}</span></td>
-          {% if current_user.role in ['ADMIN','GESTOR'] %}
-          <td>
-            {% if item.role == 'AI_SDR' %}
-              <span class="panel-note">Gerenciado em IA & Agentes</span>
-            {% elif current_user.role == 'GESTOR' and item.role in ['ADMIN','GESTOR'] %}
-              <span class="panel-note">Acesso restrito</span>
-            {% else %}
-              <div class="table-actions">
-                <a class="button button-secondary" href="/settings/users/{{ item.id }}/edit">Editar</a>
-                {% if item.id != current_user.id %}
-                <form action="/settings/users/{{ item.id }}/toggle" method="post">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                  <button class="button button-ghost" type="submit">{{ 'Desativar' if item.active else 'Ativar' }}</button>
-                </form>
-                {% else %}
-                <span class="panel-note">Você</span>
-                {% endif %}
-              </div>
-            {% endif %}
-          </td>
-          {% endif %}
-        </tr>
-        {% endfor %}
-      </tbody></table>
-    </div>
-  </article>
-
-  <article class="panel panel-span-12">
-    <div class="panel-header"><div><span class="eyebrow">AUDITORIA</span><h3>Eventos recentes do sistema</h3></div><span class="count-badge">{{ audit_logs|length }}</span></div>
-    <div class="data-table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Data</th><th>Usuário</th><th>Ação</th><th>Entidade</th><th>ID</th></tr></thead>
-        <tbody>
-          {% for log in audit_logs %}
-          <tr>
-            <td>{{ log.created_at|datetime_br }}</td>
-            <td>{{ log.user.name if log.user else 'Sistema' }}</td>
-            <td><strong>{{ log.action }}</strong></td>
-            <td>{{ log.entity_type }}</td>
-            <td>{{ log.entity_id or '—' }}</td>
-          </tr>
-          {% else %}
-          <tr><td colspan="5">Nenhum evento registrado.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </article>
+  <a class="settings-hub-card" href="/settings/audit">
+    <span class="settings-hub-icon">A</span>
+    <div><span class="eyebrow">GOVERNANÇA</span><h3>Auditoria</h3><p>Acompanhe alterações de usuários, filas, integrações e demais eventos administrativos.</p></div>
+    <div class="settings-hub-meta"><strong>{{ settings_stats.audit }}</strong><span>eventos recentes</span><b>→</b></div>
+  </a>
 </div>
 {% endblock %}
