@@ -425,7 +425,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "content": (
             "Quando o cliente pedir todos os planos, catálogo, preços, velocidades ou opções da Sulnet de forma ampla, "
             "não diga que não possui a lista e não estime valores. O catálogo estruturado é a fonte oficial. Primeiro pergunte "
-            "o que deseja consultar, com botões 'Fibra óptica' e 'Sulmóvel'. Se escolher Fibra óptica, use a cidade já conhecida; "
+            "o que deseja consultar, com botões 'Fibra óptica' e 'Móvel'. Se escolher Fibra óptica, use a cidade já conhecida; "
             "se a cidade não estiver confirmada, pergunte a cidade. Depois mostre somente os planos de fibra válidos naquela cidade, "
             "com preço mensal confirmado e botões de escolha. Se escolher Sulmóvel, apresente os planos confirmados em botões. "
             "Como o canal aceita no máximo 3 botões por mensagem, pagine o Sulmóvel: 5GB, 7GB e 'Mais planos'; depois 10GB, 15GB e 'Voltar'. "
@@ -628,7 +628,7 @@ Quando o cliente pedir "todos os planos", "quais planos vocês têm", "catálogo
 - NÃO diga que não possui a lista;
 - NÃO estime preços ou velocidades;
 - use o catálogo estruturado vigente;
-- primeiro ofereça botões "Fibra óptica" / "Sulmóvel";
+- primeiro ofereça botões "Fibra óptica" / "Móvel";
 - se escolher Fibra óptica, use a cidade já conhecida; se a cidade não estiver confirmada, pergunte a cidade;
 - depois mostre somente os planos de fibra válidos naquela cidade, com preço mensal e botões para escolher;
 - se escolher Sulmóvel, mostre os planos confirmados em botões;
