@@ -178,6 +178,16 @@ def _followup_is_repetitive(candidate: str, previous_messages: list[str]) -> boo
         ).ratio()
         if similarity >= 0.84:
             return True
+
+        candidate_tokens = set(normalized_candidate.split())
+        previous_tokens = set(normalized_previous.split())
+        if candidate_tokens and previous_tokens:
+            overlap = len(candidate_tokens & previous_tokens) / min(
+                len(candidate_tokens),
+                len(previous_tokens),
+            )
+            if overlap >= 0.80:
+                return True
     return False
 
 
