@@ -779,7 +779,7 @@ def conversation_messages_api(
             detail="Entre no WhatsApp para acessar o canal.",
         )
     conversation = _get_conversation(db, user, conversation_id)
-    if not conversation or not conversation_visible_to_user(conversation, user):
+    if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     stmt = (
         select(Message)
