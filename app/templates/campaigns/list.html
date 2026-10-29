@@ -78,6 +78,15 @@ Aqui é da Sulnet. Estamos conversando com empresas de {{ '{{segmento}}' }} em {
 
 Posso te fazer duas perguntas rápidas?"></textarea><small>Variáveis disponíveis: {{ '{{nome}}' }}, {{ '{{empresa}}' }}, {{ '{{cidade}}' }}, {{ '{{segmento}}' }}</small></label>
       <label class="field"><span>Mídias da campanha</span><input type="file" name="media" accept="image/*,video/*,audio/*" multiple><small>Opcional. Você pode adicionar várias imagens, vídeos e áudios. As mídias serão enviadas junto da abordagem inicial no WhatsApp.</small></label>
+      <div class="field">
+        <span>Botões de resposta rápida</span>
+        <div class="form-grid">
+          <label class="field"><span>Botão 1</span><input name="button_1" maxlength="20" value="Tenho interesse" placeholder="Tenho interesse"></label>
+          <label class="field"><span>Botão 2</span><input name="button_2" maxlength="20" value="Quero saber mais" placeholder="Quero saber mais"></label>
+          <label class="field"><span>Botão 3</span><input name="button_3" maxlength="20" value="Agora não" placeholder="Agora não"></label>
+        </div>
+        <small>Opcional. No WhatsApp o cliente poderá tocar em uma opção. A resposta entra na fila escolhida e inicia o atendimento.</small>
+      </div>
       <div class="form-grid">
         <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
         <label class="field"><span>Canal</span><select name="channel"><option value="WHATSAPP">WhatsApp</option><option value="EMAIL">E-mail</option></select></label>
