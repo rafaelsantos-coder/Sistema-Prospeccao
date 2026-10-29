@@ -50,7 +50,7 @@ def seller_operational() -> bool:
         and settings.ai_autonomous_enabled
         and settings.openai_api_key
         and settings.sulnet_crm_base_url
-        and settings.sulnet_ai_integration_key
+        and settings.sulnet_crm_bearer_token
     )
 
 
@@ -324,6 +324,7 @@ def _create_crm_if_ready(
         "monthlyValue": state.offer_price,
         "sdrSummary": state.handoff_summary,
         "handoffReason": collected.get("handoffReason") or "",
+        "runConsult": False,
     }
     payload = {key: value for key, value in payload.items() if value not in (None, "")}
     result = client.create_opportunity(payload)
