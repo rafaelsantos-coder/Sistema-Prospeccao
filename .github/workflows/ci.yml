@@ -77,8 +77,8 @@ jobs:
           DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sulnet_ci
           APP_ENV: test
         run: |
-          alembic upgrade head
-          alembic current | grep 0006_user_mfa
+          python -m app.migrate
+          alembic current | grep 0007_mfa_schema_repair
 
       - name: Executar testes
         run: pytest -q

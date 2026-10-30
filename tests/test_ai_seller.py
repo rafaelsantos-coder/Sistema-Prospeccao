@@ -19,6 +19,7 @@ from app.services.ai_seller import (
     _extract_iccids,
     _extract_name,
     _contract_is_signed,
+    _complete_if_crm_already_won,
     _finalize_signed_sale,
     _finish_sale_contract,
     _prepare_contract_before_win,
@@ -135,6 +136,8 @@ def test_sdr_ia_mobile_new_number_uses_defaults_and_skips_forbidden_fields():
     }
     values = _mobile_values(collected)
     assert values["vencimento"] == "10"
+    assert values["forma_pagamento"] == "Boleto"
+    assert values["envio_fatura"] == ["WhatsApp"]
     assert values["taxa_ativacao"] == "Não"
     assert values["tipo_assinatura_contrato"] == MOBILE_SIGNATURE_TYPE
 
@@ -146,7 +149,9 @@ def test_sdr_ia_mobile_new_number_uses_defaults_and_skips_forbidden_fields():
     )
     assert ok is True
     assert values["tipo_contratacao"] == "Número novo"
-    assert _mobile_next_step(values, sdr_ia_funnel=True) == "MOBILE_PAYMENT_METHOD"
+    # Boleto + WhatsApp + vencimento já são defaults homologados do SDR IA,
+    # então não resta outra pergunta de faturamento nesta rota.
+    assert _mobile_next_step(values, sdr_ia_funnel=True) is None
 
 
 def test_non_sdr_mobile_contract_type_still_accepts_m2m():
@@ -613,6 +618,33 @@ def test_playbook_code_normalization_handles_snake_and_camel_case():
     assert _playbook_code_key("clientEmail") == "clientemail"
     assert _playbook_code_key("tipo_contratacao") == "tipocontratacao"
     assert _playbook_code_key("port_cpf_cnpj") == "portcpfcnpj"
+    assert _playbook_code_key("cf_envio_fatura") == "enviofatura"
+    assert _playbook_code_key("cf_port_data") == "portdata"
+
+
+def test_cf_invoice_delivery_maps_to_billing_step():
+    item = CRMPlaybookMissingItem(
+        code="cf_envio_fatura",
+        question="Como deseja receber a fatura?",
+    )
+    state = SimpleNamespace(plan_label="800 Mega")
+    collected = {}
+
+    assert (
+        _playbook_step_for_item(item, state, collected)
+        == "BILLING_INVOICE_DELIVERY"
+    )
+
+
+def test_cf_port_data_is_skipped_in_sdr_ia_funnel():
+    item = CRMPlaybookMissingItem(
+        code="cf_port_data",
+        question="Qual a data da portabilidade?",
+    )
+    state = SimpleNamespace(plan_label="Sulmóvel 15GB")
+    collected = {"_sdr_ia_funnel": True}
+
+    assert _playbook_step_for_item(item, state, collected) is None
 
 
 
@@ -809,15 +841,17 @@ def test_sdr_ia_defaults_are_persisted_before_next_billing_question():
         client,
         state,
         collected,
-        fallback_step="BILLING_PAYMENT_METHOD",
+        fallback_step="WAITING_CRM_READY",
     )
 
-    assert step == "BILLING_PAYMENT_METHOD"
-    assert question == payment.question
+    assert step == "WAITING_CRM_READY"
+    assert question is None
     assert client.playbook_calls == 2
     assert client.category_updates
     _, values, category_id, plan_id = client.category_updates[0]
     assert values["vencimento"] == "10"
+    assert values["forma_pagamento"] == "Boleto"
+    assert values["envio_fatura"] == ["WhatsApp"]
     assert values["taxa_ativacao"] == "Não"
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
     assert "novo_iccid" not in values
@@ -884,6 +918,8 @@ def test_sdr_ia_playbook_skips_due_fee_unify_iccid_and_m2m_fields():
         "m2m_quantidade",
         "m2m_iccids",
         "vencimento",
+        "forma_pagamento",
+        "envio_fatura",
         "taxa_ativacao",
         "taxa_valor",
         "unificar_faturas",
@@ -998,8 +1034,19 @@ class _Phase4ContractClient:
     def supports(self, capability):
         return capability == "contract" and self.contract
 
-    def generate_agent_contract(self, opportunity_id):
+    def generate_agent_contract(
+        self,
+        opportunity_id,
+        *,
+        send_signature=True,
+        require_ready_for_win=True,
+    ):
         self.generate_calls += 1
+        self.last_generate_args = {
+            "opportunity_id": opportunity_id,
+            "send_signature": send_signature,
+            "require_ready_for_win": require_ready_for_win,
+        }
         return dict(self.generated)
 
     def start_contract(self, opportunity_id):
@@ -1009,6 +1056,17 @@ class _Phase4ContractClient:
     def mark_won(self, opportunity_id, *, idempotency_key=None):
         self.mark_won_calls.append((opportunity_id, idempotency_key))
         return dict(self.won)
+
+    def get_status(self, opportunity_id):
+        return {
+            "opportunity": {
+                "id": opportunity_id,
+                "status": "open",
+            },
+            "contract": {
+                "status": "aguardando_assinatura",
+            },
+        }
 
     def get_opportunity(self, opportunity_id):
         return {"opportunityId": opportunity_id, "planId": 800}
@@ -1060,6 +1118,11 @@ def test_phase4_ready_for_win_generates_contract_before_any_win():
     )
 
     assert client.generate_calls == 1
+    assert client.last_generate_args == {
+        "opportunity_id": 11754,
+        "send_signature": True,
+        "require_ready_for_win": True,
+    }
     assert client.mark_won_calls == []
     assert state.step == "WAITING_SIGNATURE"
     assert state.sign_url == "https://sign.example/11754"
@@ -1068,6 +1131,32 @@ def test_phase4_ready_for_win_generates_contract_before_any_win():
     assert collected["_contract_product_name"] == (
         "SULNET RESID FIBRA - 800MB - 2-25 (sem desconto)"
     )
+
+
+def test_phase4_sdr_skipped_fields_allow_crm_to_decide_readiness():
+    client = _Phase4ContractClient(
+        generated={
+            "status": "aguardando_assinatura",
+            "signUrl": "https://sign.example/11771",
+            "signatureReused": True,
+        },
+    )
+    state = _phase4_state(opportunity_id=11771)
+    collected = {
+        "_playbook_ready_for_win": False,
+        "_contract_generation_allowed": True,
+    }
+
+    reply = _prepare_contract_before_win(
+        client,
+        state,
+        collected,
+    )
+
+    assert client.generate_calls == 1
+    assert state.step == "WAITING_SIGNATURE"
+    assert state.sign_url == "https://sign.example/11771"
+    assert "assinar" in reply.lower()
 
 
 def test_phase4_not_ready_never_generates_contract_or_marks_won():
@@ -1109,6 +1198,55 @@ def test_phase4_contract_without_sign_url_stays_pending_and_not_won():
     assert state.step == "WAITING_CONTRACT"
     assert state.contract_status == "gerado"
     assert client.mark_won_calls == []
+
+
+def test_phase4_crm_already_won_completes_without_second_mark_won():
+    client = _Phase4ContractClient()
+    client.get_status = lambda opportunity_id: {
+        "opportunity": {
+            "id": opportunity_id,
+            "status": "won",
+            "backofficeCopy": {"id": 99001},
+        },
+        "contract": {"status": "signed"},
+    }
+    state = _phase4_state(
+        step="WAITING_SIGNATURE",
+        contract_status="aguardando_assinatura",
+    )
+    collected = {}
+
+    result = _complete_if_crm_already_won(
+        client,
+        state,
+        collected,
+    )
+
+    assert result is not None
+    assert client.mark_won_calls == []
+    assert state.step == "COMPLETED"
+    assert collected["_won_confirmed_by_crm"] is True
+    assert collected["_backoffice_opportunity_id"] == 99001
+
+
+def test_phase4_agent_contract_waits_for_crm_auto_win_after_signature():
+    client = _Phase4ContractClient()
+    state = _phase4_state(
+        step="WAITING_SIGNATURE",
+        contract_status="assinado",
+    )
+    collected = {"_contract_generation_requested": True}
+
+    result = _finalize_signed_sale(
+        client,
+        state,
+        collected,
+    )
+
+    assert result["pendingAutoWin"] is True
+    assert client.mark_won_calls == []
+    assert state.step == "WAITING_SIGNATURE"
+    assert collected["_awaiting_crm_auto_win"] is True
 
 
 def test_phase4_signed_contract_marks_won_with_stable_idempotency_key():
