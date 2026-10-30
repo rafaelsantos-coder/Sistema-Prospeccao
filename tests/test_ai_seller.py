@@ -949,7 +949,8 @@ def test_phase4_unsigned_contract_cannot_mark_won():
 def test_phase4_contract_status_normalization_is_conservative():
     assert _contract_is_signed("assinado") is True
     assert _contract_is_signed("SIGNED") is True
-    assert _contract_is_signed("concluído") is True
+    assert _contract_is_signed("assinatura_concluida") is True
+    assert _contract_is_signed("concluído") is False
     assert _contract_is_signed("aguardando_assinatura") is False
     assert _contract_is_signed("contrato_gerado") is False
 
