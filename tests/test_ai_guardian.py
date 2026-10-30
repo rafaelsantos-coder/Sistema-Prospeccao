@@ -101,6 +101,69 @@ def test_guardian_blocks_sdr_collecting_closing_data():
     assert "SDR_COLLECTING_CLOSING_DATA" in result.issue_codes
 
 
+def test_guardian_blocks_state_regression_even_if_model_wants_to_rewrite():
+    review = GuardianReview(
+        verdict="REWRITE",
+        risk="MEDIUM",
+        confidence=0.9,
+        quality_score=75,
+        reply_text="A internet é para sua casa ou empresa?",
+        suggested_buttons=["Para casa", "Para empresa"],
+    )
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=_context([
+            {
+                "code": "STATE_REGRESSION",
+                "severity": "HIGH",
+                "detail": "Tentou voltar para IDENTIFY_CUSTOMER.",
+            }
+        ], role="SDR"),
+        original_text="Você já possui algum serviço da Sulnet?",
+        original_buttons=[],
+    )
+
+    assert result.verdict == "BLOCK"
+    assert result.should_send is False
+    assert "STATE_REGRESSION" in result.issue_codes
+
+
+def test_guardian_blocks_rewrite_that_is_still_near_duplicate():
+    context = _context([
+        {
+            "code": "POSSIBLE_REPEAT",
+            "severity": "HIGH",
+            "detail": "Resposta repetitiva.",
+        }
+    ], role="SDR")
+    context["history"] = [
+        {
+            "direction": "OUTBOUND",
+            "body": "Você já possui algum serviço da Sulnet?",
+        }
+    ]
+    review = GuardianReview(
+        verdict="REWRITE",
+        risk="HIGH",
+        confidence=0.9,
+        quality_score=70,
+        reply_text="Você já possui algum serviço da Sulnet?",
+        suggested_buttons=["Sim", "Não"],
+    )
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=context,
+        original_text="Só para eu direcionar: você já possui algum serviço da Sulnet?",
+        original_buttons=[],
+    )
+
+    assert result.verdict == "BLOCK"
+    assert result.should_send is False
+    assert "POSSIBLE_REPEAT" in result.issue_codes
+
+
 def test_guardian_only_corrects_known_forbidden_closer_state(monkeypatch):
     state = SimpleNamespace(step="MOBILE_NEW_ICCID", last_error="erro anterior")
 
