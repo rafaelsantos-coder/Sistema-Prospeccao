@@ -413,6 +413,18 @@ class _PlaybookClient:
         self.updated.append((opportunity_id, payload))
         return {"opportunityId": opportunity_id}
 
+    def update_playbook_field(
+        self,
+        opportunity_id,
+        *,
+        patch_key,
+        value,
+    ):
+        self.playbook_patches.append(
+            (opportunity_id, patch_key, value)
+        )
+        return {"opportunityId": opportunity_id}
+
     def update_category_form(
         self,
         opportunity_id,
