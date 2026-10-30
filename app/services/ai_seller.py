@@ -868,26 +868,54 @@ def _sync_plan_context(
         )
 
 
+def _persist_category_form(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    values: dict[str, Any] | None = None,
+) -> None:
+    if not state.opportunity_id:
+        raise CRMIntegrationError(
+            "Oportunidade do CRM não disponível para gravar o formulário da contratação."
+        )
+
+    if not collected.get("categoryId") or not collected.get("planId"):
+        _sync_plan_context(client, state, collected)
+
+    category_id = int(collected.get("categoryId") or 0)
+    plan_id = int(collected.get("planId") or 0)
+    if not category_id or not plan_id:
+        raise CRMIntegrationError(
+            "Plano/categoria ainda não foi resolvido no catálogo do CRM."
+        )
+
+    merged = _category_values(collected)
+    if values:
+        merged.update(values)
+    _store_category_values(
+        collected,
+        merged,
+        mobile=_is_mobile_plan(state, collected),
+    )
+    client.update_category_form(
+        state.opportunity_id,
+        merged,
+        category_id=category_id,
+        plan_id=plan_id,
+    )
+
+
 def _persist_mobile_category_form(
     client: SulnetCRMClient,
     state: AIClosingState,
     collected: dict[str, Any],
 ) -> None:
-    if not state.opportunity_id:
-        raise CRMIntegrationError("Oportunidade do CRM não disponível para gravar Telefonia Móvel.")
     values = _mobile_values(collected)
-    collected["mobileCategoryValues"] = values
-    category_id = int(collected.get("categoryId") or 0)
-    plan_id = int(collected.get("planId") or 0)
-    if not category_id or not plan_id:
-        raise CRMIntegrationError(
-            "Plano/categoria de Telefonia Móvel ainda não foi resolvido no catálogo do CRM."
-        )
-    client.update_category_form(
-        state.opportunity_id,
+    _persist_category_form(
+        client,
+        state,
+        collected,
         values,
-        category_id=category_id,
-        plan_id=plan_id,
     )
 
 
@@ -906,7 +934,9 @@ def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
             "port_nome_titular",
             "port_cpf_cnpj",
         ]
-    elif contract_type not in {"Número novo", "Número Portabilidade"}:
+    elif contract_type == "M2M":
+        required += ["m2m_quantidade", "m2m_iccids"]
+    elif contract_type != "Número novo":
         required.append("tipo_contratacao")
 
     if values.get("forma_pagamento") == "Boleto":
@@ -926,7 +956,7 @@ def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
 
 def _mobile_next_step(values: dict[str, Any]) -> str | None:
     contract_type = str(values.get("tipo_contratacao") or "")
-    if contract_type not in {"Número novo", "Número Portabilidade"}:
+    if contract_type not in {"Número novo", "Número Portabilidade", "M2M"}:
         return "MOBILE_CONTRACT_TYPE"
 
     if contract_type == "Número Portabilidade":
@@ -939,6 +969,12 @@ def _mobile_next_step(values: dict[str, Any]) -> str | None:
         for field, step in order:
             if not values.get(field):
                 return step
+
+    if contract_type == "M2M":
+        if not values.get("m2m_quantidade"):
+            return "MOBILE_M2M_QTY"
+        if not values.get("m2m_iccids"):
+            return "MOBILE_M2M_ICCIDS"
 
     if not values.get("forma_pagamento"):
         return "MOBILE_PAYMENT_METHOD"
