@@ -153,6 +153,19 @@ class CategoryFormClient:
             response.payload = {
                 "opportunityId": 1234,
                 "aiClosing": {"paymentMethod": "Boleto", "dueDay": 10},
+                "productInfo": {
+                    "categoryForm": {
+                        "values": {
+                            "vencimento": 10,
+                            "forma_pagamento": "Boleto",
+                        },
+                        "files": {
+                            "documento_existente": {
+                                "name": "arquivo.pdf",
+                            }
+                        },
+                    }
+                },
             }
         elif method == "PATCH" and url.endswith("/api/opportunities/1234"):
             response.payload = {"id": 1234, "ok": True}
@@ -190,9 +203,13 @@ def test_update_category_form_uses_generic_opportunity_patch(monkeypatch):
     assert patch["json"]["planIds"] == [44]
     assert patch["json"]["productInfo"]["aiClosing"]["paymentMethod"] == "Boleto"
     values = patch["json"]["productInfo"]["categoryForm"]["values"]
+    assert values["vencimento"] == 10
+    assert values["forma_pagamento"] == "Boleto"
     assert values["tipo_contratacao"] == "Número novo"
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
-    assert patch["json"]["productInfo"]["categoryForm"]["files"] == {}
+    assert patch["json"]["productInfo"]["categoryForm"]["files"] == {
+        "documento_existente": {"name": "arquivo.pdf"}
+    }
 
 
 
