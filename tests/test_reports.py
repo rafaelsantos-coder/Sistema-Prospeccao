@@ -11,6 +11,7 @@ from app.main import app
 from app.models import (
     AIAgentProfile,
     AIClosingState,
+    AuditLog,
     AIConversationState,
     AIJob,
     AIRun,
@@ -22,6 +23,7 @@ from app.models import (
 from app.services.chat_reports import (
     ChatReportFilters,
     _build_ai_performance_management,
+    _build_supervisor_shadow_report,
     build_chat_report,
 )
 from app.services.zapi import ZApiService
@@ -460,3 +462,79 @@ def test_ai_performance_management_returns_positive_health_when_stable():
     assert result["score"] >= 85
     assert result["status"] == "EXCELLENT"
     assert any(item["code"] == "HEALTHY_JOURNEY" for item in result["alerts"])
+
+
+
+def test_supervisor_shadow_report_aggregates_airun_and_followup_reviews(monkeypatch):
+    with TestClient(app) as client:
+        _login(client)
+        location = _create_conversation_with_message(client, monkeypatch, "SUPERVISOR")
+        conversation_id = int(location.rsplit("/", 1)[-1])
+
+        db = SessionLocal()
+        try:
+            db.add_all(
+                [
+                    AuditLog(
+                        action="AI_SUPERVISOR_SHADOW_REVIEW",
+                        entity_type="ai_run",
+                        entity_id="9001",
+                        payload_json=json.dumps(
+                            {
+                                "conversation_id": conversation_id,
+                                "agent_role": "SDR",
+                                "verdict": "APPROVE",
+                                "risk": "LOW",
+                                "confidence": 0.95,
+                                "quality_score": 96,
+                                "issue_codes": [],
+                                "rationale": "Fluxo correto.",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                    AuditLog(
+                        action="AI_SUPERVISOR_SHADOW_REVIEW",
+                        entity_type="followup_audit",
+                        entity_id="9002",
+                        payload_json=json.dumps(
+                            {
+                                "conversation_id": conversation_id,
+                                "agent_role": "CLOSER",
+                                "verdict": "CORRECT",
+                                "risk": "HIGH",
+                                "confidence": 0.91,
+                                "quality_score": 62,
+                                "issue_codes": ["MISSING_QUICK_REPLIES"],
+                                "rationale": "Pergunta fechada sem botões.",
+                                "suggested_reply": "Escolha a forma de pagamento:",
+                                "suggested_buttons": ["Boleto", "Débito em conta"],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                ]
+            )
+            db.commit()
+
+            now = utcnow()
+            report = _build_supervisor_shadow_report(
+                db,
+                conversation_ids=[conversation_id],
+                start=now.replace(hour=0, minute=0, second=0, microsecond=0),
+                end=now.replace(hour=23, minute=59, second=59, microsecond=999999),
+            )
+
+            assert report["reviews"] == 2
+            assert report["approve"] == 1
+            assert report["correct"] == 1
+            assert report["block"] == 0
+            assert report["approval_rate"] == 50.0
+            assert report["intervention_rate"] == 50.0
+            assert report["high_risk"] == 1
+            assert report["sdr_reviews"] == 1
+            assert report["closer_reviews"] == 1
+            assert report["top_issues"][0]["code"] == "MISSING_QUICK_REPLIES"
+            assert report["recent_findings"][0]["conversation_id"] == conversation_id
+        finally:
+            db.close()
