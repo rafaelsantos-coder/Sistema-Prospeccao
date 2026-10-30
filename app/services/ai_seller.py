@@ -3483,8 +3483,8 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     agent=agent,
                     conversation=conversation,
                     text=(
-                        "Contrato assinado com sucesso! Sua contratação foi concluída "
-                        "e seguirá para a operação da Sulnet."
+                        "Contrato assinado com sucesso! Sua contratação foi concluída. "
+                        "A ativação ocorre em até 48 horas após a assinatura do contrato."
                     ),
                 )
                 if conversation.lead:
