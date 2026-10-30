@@ -8,14 +8,19 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    AIFollowupJob,
+    AIClosingState,
+    AIConversationState,
+    AIRun,
     AuditLog,
     Contact,
     Conversation,
     ConversationAssignment,
+    ConversationQueueLink,
     Message,
     MessageEvent,
     User,
@@ -49,6 +54,7 @@ class ChatReportFilters:
     direction: str = ""
     message_type: str = ""
     channel_phone: str = ""
+    queue_id: int | None = None
 
     @classmethod
     def defaults(cls) -> "ChatReportFilters":
@@ -81,6 +87,7 @@ class ChatReportFilters:
             "direction": self.direction,
             "message_type": self.message_type,
             "channel_phone": self.channel_phone,
+            "queue_id": str(self.queue_id or ""),
         }
         return {key: value for key, value in values.items() if value}
 
@@ -331,6 +338,15 @@ def _conversation_query(
         stmt = stmt.where(
             _channel_phone_exists(filters.channel_phone, start, end)
         )
+    if filters.queue_id:
+        stmt = stmt.where(
+            exists(
+                select(ConversationQueueLink.id).where(
+                    ConversationQueueLink.conversation_id == Conversation.id,
+                    ConversationQueueLink.queue_id == filters.queue_id,
+                )
+            )
+        )
 
     return (
         stmt.options(
@@ -356,6 +372,67 @@ def build_chat_report(
     start = filters.start_utc
     end = filters.end_utc
     conversations = list(db.scalars(_conversation_query(user, filters)).unique())
+    conversation_ids = [item.id for item in conversations]
+
+    ai_state_map: dict[int, AIConversationState] = {}
+    closing_state_map: dict[int, AIClosingState] = {}
+    latest_run_map: dict[int, AIRun] = {}
+    pending_followup_map: dict[int, int] = {}
+
+    if conversation_ids:
+        ai_state_map = {
+            item.conversation_id: item
+            for item in db.scalars(
+                select(AIConversationState).where(
+                    AIConversationState.conversation_id.in_(conversation_ids)
+                )
+            )
+        }
+        closing_state_map = {
+            item.conversation_id: item
+            for item in db.scalars(
+                select(AIClosingState).where(
+                    AIClosingState.conversation_id.in_(conversation_ids)
+                )
+            )
+        }
+
+        latest_run_ids = list(
+            db.execute(
+                select(
+                    AIRun.conversation_id,
+                    func.max(AIRun.id).label("run_id"),
+                )
+                .where(
+                    AIRun.conversation_id.in_(conversation_ids),
+                    AIRun.status == "CONCLUIDO",
+                )
+                .group_by(AIRun.conversation_id)
+            )
+        )
+        run_ids = [int(row.run_id) for row in latest_run_ids if row.run_id]
+        if run_ids:
+            latest_run_map = {
+                item.conversation_id: item
+                for item in db.scalars(
+                    select(AIRun).where(AIRun.id.in_(run_ids))
+                )
+            }
+
+        pending_followup_map = {
+            int(row.conversation_id): int(row.total)
+            for row in db.execute(
+                select(
+                    AIFollowupJob.conversation_id,
+                    func.count(AIFollowupJob.id).label("total"),
+                )
+                .where(
+                    AIFollowupJob.conversation_id.in_(conversation_ids),
+                    AIFollowupJob.status.in_(["PENDENTE", "PROCESSANDO"]),
+                )
+                .group_by(AIFollowupJob.conversation_id)
+            )
+        }
 
     rows: list[dict[str, Any]] = []
     all_period_messages: list[Message] = []
@@ -459,6 +536,10 @@ def build_chat_report(
         outbound_count = sum(1 for item in period_messages if item.direction == "OUTBOUND")
         internal_count = sum(1 for item in period_messages if item.direction == "INTERNAL")
 
+        ai_state = ai_state_map.get(conversation.id)
+        closing_state = closing_state_map.get(conversation.id)
+        latest_run = latest_run_map.get(conversation.id)
+
         rows.append(
             {
                 "id": conversation.id,
@@ -485,6 +566,15 @@ def build_chat_report(
                 "close_seconds": close_seconds,
                 "assignment_seconds": assignment_seconds,
                 "pending_wait_seconds": pending_wait_seconds,
+                "ai_state": ai_state.state if ai_state else "",
+                "ai_temperature": ai_state.temperature if ai_state else "",
+                "ai_last_intent": ai_state.last_intent if ai_state else "",
+                "ai_summary": ai_state.summary if ai_state else "",
+                "closing_step": closing_state.step if closing_state else "",
+                "closing_error": closing_state.last_error if closing_state else "",
+                "pending_followups": pending_followup_map.get(conversation.id, 0),
+                "last_ai_run_summary": latest_run.summary if latest_run else "",
+                "last_ai_run_intent": latest_run.intent if latest_run else "",
             }
         )
 
@@ -595,6 +685,19 @@ def build_chat_report(
             "delivery_rate": (delivered_total / outbound_total * 100) if outbound_total else 0.0,
             "read_rate": (read_total / outbound_total * 100) if outbound_total else 0.0,
             "first_reply_sla": first_reply_sla,
+            "ai_active": sum(
+                1 for item in ai_state_map.values()
+                if item.state == "AI_ACTIVE"
+            ),
+            "ai_closing": sum(
+                1 for item in ai_state_map.values()
+                if item.state == "CLOSING"
+            ),
+            "ai_handoff": sum(
+                1 for item in ai_state_map.values()
+                if item.state in {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "ESCALATED"}
+            ),
+            "ai_pending_followups": sum(pending_followup_map.values()),
         },
         "truncated": len(conversations) >= 5000,
     }

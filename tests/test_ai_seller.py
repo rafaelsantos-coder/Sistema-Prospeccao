@@ -15,6 +15,7 @@ from app.services.ai_seller import (
     _mobile_values,
     _redact,
     _sync_plan_context,
+    _seller_followup_prompt,
     _seller_step_buttons,
     _yes_no,
 )
@@ -267,3 +268,28 @@ def test_seller_step_buttons_cover_predefined_mobile_questions():
 def test_seller_step_buttons_keep_free_text_steps_without_buttons():
     assert _seller_step_buttons("MOBILE_PORT_NUMBER", "Qual é o número que será portado?") == []
     assert _seller_step_buttons("EMAIL", "Qual é o seu e-mail?") == []
+
+
+def test_seller_followup_keeps_exact_closing_step():
+    state = SimpleNamespace(step="MOBILE_UNIFY", plan_label="Sulmóvel 15GB")
+    text = _seller_followup_prompt(state, {}, followup_step=1)
+    assert "unificar" in text.lower()
+    assert _seller_step_buttons(state.step, text) == [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ]
+
+    state.step = "MOBILE_CONTRACT_TYPE"
+    text = _seller_followup_prompt(state, {}, followup_step=2)
+    assert "sulmóvel" in text.lower()
+    assert _seller_step_buttons(state.step, text) == [
+        {"id": "portabilidade", "label": "Portabilidade"},
+        {"id": "numero_novo", "label": "Número novo"},
+    ]
+
+
+def test_seller_followup_does_not_invent_new_question_for_free_text_step():
+    state = SimpleNamespace(step="CEP", plan_label="800 Mega")
+    text = _seller_followup_prompt(state, {}, followup_step=1)
+    assert "cep" in text.lower()
+    assert _seller_step_buttons(state.step, text) == []

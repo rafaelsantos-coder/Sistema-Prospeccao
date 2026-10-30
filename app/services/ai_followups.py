@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import (
     AIAgentProfile,
+    AIClosingState,
     AIConversationState,
     AIFollowupJob,
     Conversation,
@@ -77,7 +78,14 @@ def schedule_followup(
             AIConversationState.conversation_id == conversation_id
         )
     )
-    if state and state.state in {"HANDOFF", "HUMAN_ACTIVE", "OPT_OUT"}:
+    if state and state.state in {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "OPT_OUT", "ESCALATED", "COMPLETED"}:
+        return None
+    closing = db.scalar(
+        select(AIClosingState).where(
+            AIClosingState.conversation_id == conversation_id
+        )
+    )
+    if closing and closing.step in {"ESCALATED", "COMPLETED"}:
         return None
 
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
@@ -291,8 +299,15 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
             AIConversationState.conversation_id == conversation.id
         )
     )
-    if state and state.state in {"HANDOFF", "HUMAN_ACTIVE", "OPT_OUT"}:
+    if state and state.state in {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "OPT_OUT", "ESCALATED", "COMPLETED"}:
         return False, state.state
+    closing = db.scalar(
+        select(AIClosingState).where(
+            AIClosingState.conversation_id == conversation.id
+        )
+    )
+    if closing and closing.step in {"ESCALATED", "COMPLETED"}:
+        return False, closing.step
     latest_inbound = _latest_inbound_id(db, conversation.id)
     if (
         job.source_message_id
@@ -427,6 +442,10 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         job.error = "AGENTE_INATIVO"
         return "cancelled"
 
+    if agent.role_type == "CLOSER":
+        from app.services.ai_seller import process_seller_followup
+        return process_seller_followup(db, job, agent)
+
     try:
         history = _recent_history(db, job.conversation_id, limit=40)
         previous_outbound = _recent_outbound_bodies(history)
@@ -446,6 +465,14 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                 step=job.step,
                 previous_messages=previous_outbound,
             )
+
+        # O cliente pode ter respondido enquanto o modelo gerava a mensagem.
+        # Revalida imediatamente antes do envio para não atropelar a resposta.
+        allowed_now, reason_now = _followup_allowed(db, job)
+        if not allowed_now:
+            job.status = "CANCELADO"
+            job.error = reason_now
+            return "cancelled"
 
         conversation = db.get(Conversation, job.conversation_id)
         if not conversation or not conversation.contact or not conversation.contact.phone:

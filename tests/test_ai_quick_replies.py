@@ -90,3 +90,30 @@ def test_infers_yes_no_buttons_from_explicit_closed_question():
         {"id": "sim", "label": "Sim"},
         {"id": "nao", "label": "Não"},
     ]
+
+
+def test_infers_buttons_for_core_prospecting_questions():
+    assert infer_quick_replies("Você já é cliente Sulnet?") == [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ]
+    assert infer_quick_replies("O que deseja conhecer: Internet ou Telefonia Móvel?") == [
+        {"id": "internet", "label": "Internet"},
+        {"id": "movel", "label": "Telefonia Móvel"},
+    ]
+    assert infer_quick_replies(
+        "Como cliente Sulnet, deseja Telefonia Móvel ou uma nova conexão para outro endereço?"
+    ) == [
+        {"id": "movel", "label": "Telefonia Móvel"},
+        {"id": "nova_conexao", "label": "Nova conexão"},
+    ]
+
+
+def test_infers_corporate_plan_buttons():
+    assert infer_quick_replies(
+        "Para empresa temos Corp. 200, Corp. 250 ou Corp. 650. Qual prefere?"
+    ) == [
+        {"id": "corp_200", "label": "Corp. 200"},
+        {"id": "corp_250", "label": "Corp. 250"},
+        {"id": "corp_650", "label": "Corp. 650"},
+    ]

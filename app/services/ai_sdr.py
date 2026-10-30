@@ -169,14 +169,13 @@ def enqueue_ai_job(
         return existing
 
     # Depois do handoff, a conversa pertence ao Vendedor IA e não volta ao SDR.
-    closing_state = db.scalar(
+    ai_state = db.scalar(
         select(AIConversationState).where(
-            AIConversationState.conversation_id == conversation.id,
-            AIConversationState.state == "CLOSING",
+            AIConversationState.conversation_id == conversation.id
         )
     )
-    if closing_state and settings.ai_seller_enabled:
-        closer = db.get(AIAgentProfile, closing_state.agent_id)
+    if ai_state and ai_state.state == "CLOSING" and settings.ai_seller_enabled:
+        closer = db.get(AIAgentProfile, ai_state.agent_id)
         queue = queue_for_conversation(db, conversation.id)
         if closer and closer.active and closer.role_type == "CLOSER" and queue:
             from app.services.ai_followups import cancel_pending_followups
@@ -200,6 +199,21 @@ def enqueue_ai_job(
                 closer.id,
             )
             return job
+
+    if ai_state and ai_state.state in {
+        "HANDOFF",
+        "HANDOFF_HUMAN",
+        "HUMAN_ACTIVE",
+        "OPT_OUT",
+        "ESCALATED",
+        "COMPLETED",
+    }:
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=terminal_state state=%s",
+            conversation.id,
+            ai_state.state,
+        )
+        return None
 
     if not settings.ai_sdr_enabled:
         return None
@@ -486,7 +500,7 @@ def build_ai_context(
     history = _conversation_messages(
         db,
         conversation.id,
-        limit=int(agent.max_history_messages or 24),
+        limit=max(40, int(agent.max_history_messages or 24)),
     )
     knowledge = retrieve_knowledge(db, agent=agent, query=message.body or "")
     knowledge_meta_rows = list(
@@ -525,6 +539,7 @@ def build_ai_context(
             "qualification_score": state.qualification_score if state else 0,
             "temperature": state.temperature if state else "FRIO",
             "last_intent": state.last_intent if state else "UNKNOWN",
+            "state": state.state if state else "NEW",
         },
         "customer_evidence": [
             {
@@ -2033,6 +2048,30 @@ def _apply_offer_rejection_diagnostic_policy(
     return decision
 
 
+def _recent_outbound_messages_for_repetition(
+    context: dict,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    rows = [
+        str(item.get("body") or "").strip()
+        for item in context.get("history", [])
+        if str(item.get("direction") or "").upper() == "OUTBOUND"
+        and str(item.get("body") or "").strip()
+    ]
+    return rows[-limit:]
+
+
+def _sdr_reply_repeats_recent_outbound(decision: AIDecision, context: dict) -> bool:
+    candidate = _fold_sales_text(decision.reply_text)
+    if not candidate:
+        return False
+    for previous in _recent_outbound_messages_for_repetition(context):
+        if candidate == _fold_sales_text(previous):
+            return True
+    return False
+
+
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
@@ -2058,6 +2097,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "na resposta ao cliente, não todos os argumentos disponíveis na base. Se o cliente fizer uma pergunta cuja resposta "
         "não esteja sustentada pela base aprovada nem pelas regras estruturadas, não invente: responda com transparência e "
         "preencha unanswered_question com a dúvida que precisa de validação administrativa. "
+        "Se existir anti_repetition.forbidden_previous_messages no contexto, é proibido devolver qualquer uma dessas mensagens novamente. "
+        "Mantenha o objetivo comercial e a informação que ainda falta, mas formule a continuação de outra maneira e avance a conversa. "
         "Sempre que a mensagem fizer uma pergunta com 2 ou 3 respostas previsíveis, preencha quick_replies com "
         "2 ou 3 botões curtos, com no máximo 20 caracteres por label. Exemplos: Para casa/Para empresa; Sim/Não; "
         "800 Mega/650 Mega; Preço/Lentidão/Quedas. Para pergunta realmente aberta, quick_replies pode ficar vazio. "
@@ -2398,6 +2439,34 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         job.error = "Agente inexistente ou inativo."
         return "skipped"
 
+    current_state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == job.conversation_id
+        )
+    )
+    if (
+        agent.role_type != "CLOSER"
+        and current_state
+        and current_state.state in {
+            "CLOSING",
+            "HANDOFF",
+            "HANDOFF_HUMAN",
+            "HUMAN_ACTIVE",
+            "OPT_OUT",
+            "ESCALATED",
+            "COMPLETED",
+        }
+    ):
+        job.status = "IGNORADO"
+        job.error = f"Conversa já saiu do SDR: {current_state.state}"
+        LOG.info(
+            "ai_sdr_job_ignored_after_handoff job=%s conversation=%s state=%s",
+            job.id,
+            job.conversation_id,
+            current_state.state,
+        )
+        return "skipped"
+
     if agent.role_type == "CLOSER":
         from app.services.ai_seller import process_seller_job
         return process_seller_job(db, job, agent)
@@ -2420,6 +2489,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     try:
         decision = run_ai_decision(agent, context)
+        if _sdr_reply_repeats_recent_outbound(decision, context):
+            retry_context = dict(context)
+            retry_context["anti_repetition"] = {
+                "forbidden_previous_messages": _recent_outbound_messages_for_repetition(
+                    context
+                ),
+                "reason": "A primeira decisão repetiu uma mensagem já enviada nesta conversa.",
+            }
+            LOG.info(
+                "ai_sdr_repeat_regeneration job=%s conversation=%s",
+                job.id,
+                job.conversation_id,
+            )
+            decision = run_ai_decision(agent, retry_context)
     except Exception as exc:
         run.status = "FALHOU"
         run.error = str(exc)[:2000]

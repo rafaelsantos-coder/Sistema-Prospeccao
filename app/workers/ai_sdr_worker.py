@@ -9,8 +9,8 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import AIFollowupJob, AIClosingState, AIConversationState, AIJob, Conversation, Message
-from app.services.ai_followups import claim_followup_job, process_followup_job
+from app.models import AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIRun, Conversation, Message
+from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import (
     active_closer,
@@ -108,6 +108,7 @@ def _reschedule_initial_pending_followups() -> int:
 
 
 def _recover_closer_capture_patch_failures() -> int:
+    """Recupera escalonamentos técnicos antigos sem adivinhar a etapa."""
     db = SessionLocal()
     recovered = 0
     try:
@@ -121,7 +122,7 @@ def _recover_closer_capture_patch_failures() -> int:
                 .where(
                     AIClosingState.step == "ESCALATED",
                     AIClosingState.last_error.ilike("%Falha repetida na integração CRM:%"),
-                    AIClosingState.updated_at >= utcnow() - timedelta(hours=6),
+                    AIClosingState.updated_at >= utcnow() - timedelta(hours=12),
                 )
                 .order_by(AIClosingState.updated_at.desc())
                 .limit(50)
@@ -132,29 +133,35 @@ def _recover_closer_capture_patch_failures() -> int:
             if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
                 continue
 
-            try:
-                import json
-                collected = json.loads(state.collected_json or "{}")
-                if not isinstance(collected, dict):
-                    collected = {}
-            except Exception:
-                collected = {}
+            # A fonte da verdade é o snapshot do último run que falhou. Ele guarda
+            # a etapa antes da tentativa, evitando voltar para NAME/CPF/BILLING.
+            failed_run = db.scalar(
+                select(AIRun)
+                .where(
+                    AIRun.conversation_id == conversation.id,
+                    AIRun.agent_id == closer.id,
+                    AIRun.status == "FALHOU",
+                )
+                .order_by(AIRun.id.desc())
+                .limit(1)
+            )
+            resume_step = ""
+            if failed_run:
+                try:
+                    import json
+                    snapshot = json.loads(failed_run.input_snapshot_json or "{}")
+                    resume_step = str(snapshot.get("step") or "").strip()
+                except Exception:
+                    resume_step = ""
 
-            credit = str(state.credit_status or "").lower()
-            if any(token in credit for token in ("aprovado", "liberado", "pre-aprovado")):
-                if not collected.get("cep"):
-                    state.step = "CEP"
-                elif not collected.get("number"):
-                    state.step = "ADDRESS_NUMBER"
-                elif not collected.get("email"):
-                    state.step = "PLAN_CONFIRM"
-                elif not collected.get("paymentMethod") or not collected.get("dueDay"):
-                    state.step = "BILLING"
-                else:
-                    state.step = "BILLING"
-            else:
-                state.step = "CPF"
+            if not resume_step or resume_step in {"ESCALATED", "COMPLETED"}:
+                LOG.warning(
+                    "closer_crm_recovery_skipped_no_exact_step conversation=%s",
+                    conversation.id,
+                )
+                continue
 
+            state.step = resume_step
             state.agent_id = closer.id
             state.last_error = ""
             conversation.assigned_user_id = closer.user_id
@@ -206,6 +213,119 @@ def _recover_closer_capture_patch_failures() -> int:
     finally:
         db.close()
     return recovered
+
+def _backfill_missing_followups(*, limit: int = 250) -> int:
+    """Recria cadência para conversas IA ativas que ficaram sem job pendente."""
+    db = SessionLocal()
+    created = 0
+    try:
+        states = list(
+            db.scalars(
+                select(AIConversationState)
+                .where(
+                    AIConversationState.state.in_(["AI_ACTIVE", "CLOSING"]),
+                    AIConversationState.updated_at >= utcnow() - timedelta(days=30),
+                )
+                .order_by(AIConversationState.updated_at.desc())
+                .limit(limit)
+            )
+        )
+        for state in states:
+            conversation = db.get(Conversation, state.conversation_id)
+            if (
+                not conversation
+                or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+            ):
+                continue
+
+            if state.state == "CLOSING":
+                from app.services.ai_seller import SELLER_CUSTOMER_INPUT_STEPS
+                closing = db.scalar(
+                    select(AIClosingState).where(
+                        AIClosingState.conversation_id == conversation.id
+                    )
+                )
+                if not closing or closing.step not in SELLER_CUSTOMER_INPUT_STEPS:
+                    # Crédito em análise, geração de contrato e outras etapas
+                    # sistêmicas são tratadas pelos pollers, não por cobrança ao cliente.
+                    continue
+
+            pending = db.scalar(
+                select(AIFollowupJob.id)
+                .where(
+                    AIFollowupJob.conversation_id == conversation.id,
+                    AIFollowupJob.status.in_(["PENDENTE", "PROCESSANDO"]),
+                )
+                .limit(1)
+            )
+            if pending:
+                continue
+
+            latest = db.scalar(
+                select(Message)
+                .where(
+                    Message.conversation_id == conversation.id,
+                    Message.direction.in_(["INBOUND", "OUTBOUND"]),
+                )
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+            if not latest or latest.direction != "OUTBOUND":
+                continue
+
+            source_inbound_id = db.scalar(
+                select(Message.id)
+                .where(
+                    Message.conversation_id == conversation.id,
+                    Message.direction == "INBOUND",
+                    Message.id < latest.id,
+                )
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+
+            last_sent = db.scalar(
+                select(AIFollowupJob)
+                .where(
+                    AIFollowupJob.conversation_id == conversation.id,
+                    AIFollowupJob.source_message_id == source_inbound_id,
+                    AIFollowupJob.status == "ENVIADO",
+                )
+                .order_by(AIFollowupJob.step.desc(), AIFollowupJob.id.desc())
+                .limit(1)
+            )
+            next_step = int(last_sent.step or 0) + 1 if last_sent else 1
+
+            queue = queue_for_conversation(db, conversation.id)
+            if not queue:
+                continue
+            job = schedule_followup(
+                db,
+                agent_id=state.agent_id,
+                queue_id=queue.id,
+                conversation_id=conversation.id,
+                source_message_id=source_inbound_id,
+                step=next_step,
+            )
+            if job:
+                delay, _theme = followup_spec(next_step)
+                last_outbound_at = latest.created_at or utcnow()
+                ideal_due = next_business_time(
+                    last_outbound_at + delay,
+                    settings.default_timezone,
+                )
+                # Conversas que já venceram a janela entram na próxima janela útil,
+                # sem esperar mais um ciclo inteiro da cadência.
+                job.due_at = next_business_time(
+                    utcnow(),
+                    settings.default_timezone,
+                ) if ideal_due <= utcnow() else ideal_due
+                created += 1
+
+        db.commit()
+    finally:
+        db.close()
+    return created
 
 
 def _recover_recent_unqueued_inbounds() -> int:
@@ -363,17 +483,16 @@ def run() -> None:
             "Fechamentos moveis reposicionados apos simplificacao do fluxo=%s",
             resumed_mobile,
         )
-    rescheduled_followups = _reschedule_initial_pending_followups()
-    if rescheduled_followups:
-        LOG.info(
-            "Follow-ups pendentes reagendados para a nova cadencia=%s",
-            rescheduled_followups,
-        )
     recovered_recent = _recover_recent_unqueued_inbounds()
     if recovered_recent:
         LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
+    backfilled_followups = _backfill_missing_followups()
+    if backfilled_followups:
+        LOG.info("Follow-ups ausentes reconstruidos=%s", backfilled_followups)
 
     missing_key_logged = False
+    last_inbound_recovery = time.monotonic()
+    last_stale_recovery = time.monotonic()
     while True:
         if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
             time.sleep(max(10, poll))
@@ -387,6 +506,32 @@ def run() -> None:
             time.sleep(max(15, poll))
             continue
         missing_key_logged = False
+
+        now_mono = time.monotonic()
+        if now_mono - last_inbound_recovery >= 60:
+            try:
+                recovered_recent = _recover_recent_unqueued_inbounds()
+                if recovered_recent:
+                    LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
+            except Exception:
+                LOG.exception("Falha na recuperação periódica de mensagens sem job.")
+            last_inbound_recovery = now_mono
+
+        if now_mono - last_stale_recovery >= 300:
+            try:
+                stale_jobs = _recover_stale_jobs()
+                stale_followups = _recover_stale_followups()
+                backfilled = _backfill_missing_followups(limit=250)
+                if stale_jobs or stale_followups or backfilled:
+                    LOG.info(
+                        "Recuperação periódica stale jobs=%s followups=%s backfilled=%s",
+                        stale_jobs,
+                        stale_followups,
+                        backfilled,
+                    )
+            except Exception:
+                LOG.exception("Falha na recuperação periódica de jobs.")
+            last_stale_recovery = now_mono
 
         db = SessionLocal()
         job_id = None
@@ -408,28 +553,30 @@ def run() -> None:
                         outcome,
                         job.attempts,
                     )
-            else:
-                followup = claim_followup_job(db)
-                if not followup:
-                    contract_updates = poll_pending_contracts(db)
+
+            # Follow-up tem cota própria em toda volta do worker. Assim ele não
+            # fica eternamente atrás de novas mensagens inbound.
+            followup = claim_followup_job(db)
+            if followup:
+                followup_id = followup.id
+                db.commit()
+                followup = db.get(AIFollowupJob, followup_id)
+                if followup:
+                    outcome = process_followup_job(db, followup)
                     db.commit()
-                    if contract_updates:
-                        LOG.info("ai_closer_contract_updates=%s", contract_updates)
-                else:
-                    followup_id = followup.id
-                    db.commit()
-                    followup = db.get(AIFollowupJob, followup_id)
-                    if followup:
-                        outcome = process_followup_job(db, followup)
-                        db.commit()
-                        LOG.info(
-                            "ai_followup=%s conversation=%s step=%s outcome=%s attempts=%s",
-                            followup.id,
-                            followup.conversation_id,
-                            followup.step,
-                            outcome,
-                            followup.attempts,
-                        )
+                    LOG.info(
+                        "ai_followup=%s conversation=%s step=%s outcome=%s attempts=%s",
+                        followup.id,
+                        followup.conversation_id,
+                        followup.step,
+                        outcome,
+                        followup.attempts,
+                    )
+            elif not job:
+                contract_updates = poll_pending_contracts(db)
+                db.commit()
+                if contract_updates:
+                    LOG.info("ai_closer_contract_updates=%s", contract_updates)
         except Exception:
             db.rollback()
             LOG.exception(
