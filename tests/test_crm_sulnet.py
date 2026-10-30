@@ -420,3 +420,110 @@ def test_crm_sends_official_integration_key_when_configured(monkeypatch):
     headers = FakeClient.captured_headers or {}
     assert headers["X-Integration-Key"] == credential
     assert "Authorization" not in headers
+
+
+
+class CapabilityV2Client:
+    captured: list[dict[str, Any]] = []
+
+    def __init__(self, *, headers: dict[str, str], **_: Any):
+        self.headers = headers
+
+    def __enter__(self) -> "CapabilityV2Client":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.__class__.captured.append(
+            {
+                "method": method,
+                "url": url,
+                "json": kwargs.get("json"),
+                "params": kwargs.get("params"),
+            }
+        )
+        response = FakeResponse()
+        if method == "GET" and url.endswith("/api/capture/config"):
+            response.payload = {
+                "apiVersion": 2,
+                "appVersion": "v-test",
+                "capabilities": {
+                    "products": True,
+                    "leadUpdate": True,
+                    "markWon": True,
+                    "status": True,
+                    "contract": True,
+                },
+                "stages": [
+                    {"id": 110, "name": "DADOS E PLANO"},
+                    {"id": 120, "name": "GANHO"},
+                ],
+            }
+        elif method == "GET" and url.endswith("/api/capture/products"):
+            response.payload = [
+                {"id": 501, "name": "Sulmóvel 15GB", "monthlyValue": 69.80}
+            ]
+        elif method == "PATCH" and url.endswith("/api/capture/leads/1234"):
+            response.payload = {"opportunityId": 1234, "ok": True}
+        elif method == "POST" and url.endswith("/api/capture/leads/1234/win"):
+            response.payload = {
+                "opportunity": {"opportunityId": 1234, "status": "won"},
+                "contract": {"status": "aguardando_backoffice"},
+            }
+        elif method == "GET" and url.endswith("/api/capture/leads/1234/status"):
+            response.payload = {
+                "opportunity": {"opportunityId": 1234, "status": "won"},
+                "contract": {"status": "aguardando_backoffice"},
+            }
+        elif method == "POST" and url.endswith("/api/capture/leads/1234/contract"):
+            response.payload = {
+                "status": "aguardando_assinatura",
+                "signUrl": "https://sign.example/123",
+            }
+        return response
+
+
+def test_v2_profile_uses_capture_contract_routes(monkeypatch):
+    CapabilityV2Client.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", CapabilityV2Client)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="b" * 32,
+        integration_key="x" * 32,
+    )
+
+    profile = client.integration_profile()
+    assert profile["apiVersion"] == 2
+    assert profile["legacy"] is False
+    assert client.products("15GB")[0]["id"] == 501
+    assert client.update_opportunity(
+        1234,
+        {"clientEmail": "cliente@exemplo.com"},
+    )["ok"] is True
+    assert client.mark_won(1234)["contract"]["status"] == "aguardando_backoffice"
+    assert client.get_status(1234)["opportunity"]["status"] == "won"
+    assert client.start_contract(1234)["signUrl"] == "https://sign.example/123"
+
+    urls = [item["url"] for item in CapabilityV2Client.captured]
+    assert not any("/api/catalog/products" in url for url in urls)
+    assert not any("/api/opportunities/1234" in url for url in urls)
+    assert any(url.endswith("/api/capture/leads/1234/win") for url in urls)
+
+
+def test_legacy_profile_avoids_blind_win_and_contract_calls(monkeypatch):
+    WinFallbackClient.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", WinFallbackClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="b" * 32,
+    )
+    result = client.mark_won(1234)
+
+    assert result["opportunity"]["status"] == "won"
+    urls = [item["url"] for item in WinFallbackClient.captured]
+    assert not any(url.endswith("/api/capture/leads/1234/win") for url in urls)
+    assert not any(url.endswith("/api/capture/leads/1234/contract") for url in urls)
