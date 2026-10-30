@@ -2415,6 +2415,34 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         job.error = "Agente inexistente ou inativo."
         return "skipped"
 
+    current_state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == job.conversation_id
+        )
+    )
+    if (
+        agent.role_type != "CLOSER"
+        and current_state
+        and current_state.state in {
+            "CLOSING",
+            "HANDOFF",
+            "HANDOFF_HUMAN",
+            "HUMAN_ACTIVE",
+            "OPT_OUT",
+            "ESCALATED",
+            "COMPLETED",
+        }
+    ):
+        job.status = "IGNORADO"
+        job.error = f"Conversa já saiu do SDR: {current_state.state}"
+        LOG.info(
+            "ai_sdr_job_ignored_after_handoff job=%s conversation=%s state=%s",
+            job.id,
+            job.conversation_id,
+            current_state.state,
+        )
+        return "skipped"
+
     if agent.role_type == "CLOSER":
         from app.services.ai_seller import process_seller_job
         return process_seller_job(db, job, agent)
