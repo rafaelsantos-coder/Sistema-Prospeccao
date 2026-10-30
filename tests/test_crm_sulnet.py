@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import app.services.crm_sulnet as crm_module
-from app.services.crm_sulnet import SulnetCRMClient
+from app.services.crm_sulnet import CRMPlaybookMissingItem, SulnetCRMClient
 
 
 class FakeResponse:
@@ -860,4 +860,44 @@ def test_agent_contract_generate_attempts_route_even_before_capability_profile_u
     assert request["json"] == {
         "sendSignature": True,
         "requireReadyForWin": True,
+    }
+
+
+
+def test_playbook_missing_item_parses_dynamic_options():
+    item = CRMPlaybookMissingItem.from_payload(
+        {
+            "code": "cf_nova_regra",
+            "label": "Nova regra",
+            "question": "Escolha uma opção",
+            "patchKey": "customFields.cf_nova_regra",
+            "options": [
+                {"id": "a", "label": "Opção A", "value": "A"},
+                {"id": "b", "label": "Opção B", "value": "B"},
+            ],
+        }
+    )
+
+    assert item is not None
+    assert item.patch_key == "customFields.cf_nova_regra"
+    assert item.options == [
+        {"id": "a", "label": "Opção A", "value": "A"},
+        {"id": "b", "label": "Opção B", "value": "B"},
+    ]
+
+
+def test_playbook_patch_payload_builds_nested_payload():
+    payload = SulnetCRMClient._playbook_patch_payload(
+        "productInfo.categoryForm.values.tipo_contratacao",
+        "Número novo",
+    )
+
+    assert payload == {
+        "productInfo": {
+            "categoryForm": {
+                "values": {
+                    "tipo_contratacao": "Número novo",
+                }
+            }
+        }
     }

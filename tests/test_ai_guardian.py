@@ -196,3 +196,46 @@ def test_guardian_only_corrects_known_forbidden_closer_state(monkeypatch):
     assert result.corrected_state == "WAITING_CRM_READY"
     assert state.step == "WAITING_CRM_READY"
     assert state.last_error == ""
+
+
+
+def test_guardian_allows_real_sign_url_in_waiting_signature():
+    review = GuardianReview(
+        verdict="BLOCK",
+        risk="HIGH",
+        confidence=0.9,
+        quality_score=55,
+        issue_codes=[
+            "CONTRACT_STATUS_CONFLICT",
+            "PREMATURE_SIGNATURE_REQUEST",
+        ],
+        rationale="Contrato ainda não estaria pronto.",
+    )
+    context = _context([])
+    context["current_state"] = {
+        "closing": {
+            "step": "WAITING_SIGNATURE",
+            "has_sign_url": True,
+            "contract_status": "aguardando_assinatura",
+        }
+    }
+    context["proposed_action"] = {
+        "proposed_state": "WAITING_SIGNATURE",
+    }
+
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=context,
+        original_text=(
+            "Seu contrato está disponível para assinatura aqui: "
+            "https://sign.example/abc"
+        ),
+        original_buttons=[],
+    )
+
+    assert result.verdict == "APPROVE"
+    assert result.should_send is True
+    assert result.risk == "LOW"
+    assert "CONTRACT_STATUS_CONFLICT" not in result.issue_codes
+    assert "PREMATURE_SIGNATURE_REQUEST" not in result.issue_codes

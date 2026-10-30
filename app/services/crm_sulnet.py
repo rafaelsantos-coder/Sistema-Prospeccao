@@ -53,6 +53,7 @@ class CRMPlaybookMissingItem:
     group: str = ""
     patch_key: str = ""
     suggested_value: Any = None
+    options: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_payload(cls, payload: Any) -> "CRMPlaybookMissingItem | None":
@@ -61,6 +62,45 @@ class CRMPlaybookMissingItem:
         code = str(payload.get("code") or "").strip()
         if not code:
             return None
+        raw_options = (
+            payload.get("options")
+            or payload.get("choices")
+            or payload.get("allowedValues")
+            or []
+        )
+        options: list[dict[str, Any]] = []
+        if isinstance(raw_options, list):
+            for index, item in enumerate(raw_options, start=1):
+                if isinstance(item, dict):
+                    label = str(
+                        item.get("label")
+                        or item.get("name")
+                        or item.get("value")
+                        or item.get("id")
+                        or ""
+                    ).strip()
+                    value = item.get("value")
+                    if value in (None, ""):
+                        value = item.get("id")
+                    if value in (None, ""):
+                        value = label
+                    option_id = str(
+                        item.get("id")
+                        or item.get("key")
+                        or f"option_{index}"
+                    ).strip()
+                else:
+                    label = str(item or "").strip()
+                    value = item
+                    option_id = f"option_{index}"
+                if label:
+                    options.append(
+                        {
+                            "id": option_id[:64],
+                            "label": label[:80],
+                            "value": value,
+                        }
+                    )
         return cls(
             code=code,
             label=str(payload.get("label") or "").strip(),
@@ -68,6 +108,7 @@ class CRMPlaybookMissingItem:
             group=str(payload.get("group") or "").strip(),
             patch_key=str(payload.get("patchKey") or "").strip(),
             suggested_value=payload.get("suggestedValue"),
+            options=options,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -78,6 +119,7 @@ class CRMPlaybookMissingItem:
             "group": self.group,
             "patchKey": self.patch_key,
             "suggestedValue": self.suggested_value,
+            "options": [dict(item) for item in self.options],
         }
 
 
@@ -898,6 +940,84 @@ class SulnetCRMClient:
             payload["categoryId"] = int(category_id)
         if plan_id:
             payload["planIds"] = [int(plan_id)]
+
+        result = self._request(
+            "PATCH",
+            f"/api/opportunities/{opportunity_id}",
+            json_body=payload,
+        )
+        return result if isinstance(result, dict) else {}
+
+    @staticmethod
+    def _playbook_patch_payload(
+        patch_key: str,
+        value: Any,
+    ) -> dict[str, Any]:
+        raw = str(patch_key or "").strip()
+        if not raw:
+            raise CRMIntegrationError(
+                "Playbook não informou patchKey para persistir o campo.",
+                error_code="CRM_PLAYBOOK_PATCH_KEY_MISSING",
+            )
+
+        normalized = raw.replace("[", ".").replace("]", "")
+        normalized = normalized.lstrip("$. /")
+        parts = [
+            item.strip()
+            for item in re.split(r"[./]+", normalized)
+            if item.strip() and item.strip() != "$"
+        ]
+        if not parts or len(parts) > 10:
+            raise CRMIntegrationError(
+                "patchKey inválido retornado pelo playbook.",
+                error_code="CRM_PLAYBOOK_PATCH_KEY_INVALID",
+            )
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9_-]+", item)
+            for item in parts
+        ):
+            raise CRMIntegrationError(
+                "patchKey contém segmento não permitido.",
+                error_code="CRM_PLAYBOOK_PATCH_KEY_INVALID",
+            )
+
+        nested: Any = value
+        for item in reversed(parts):
+            nested = {item: nested}
+        return nested if isinstance(nested, dict) else {}
+
+    @staticmethod
+    def _deep_merge_dict(
+        base: dict[str, Any],
+        patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = dict(base)
+        for key, value in patch.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = SulnetCRMClient._deep_merge_dict(
+                    dict(merged[key]),
+                    value,
+                )
+            else:
+                merged[key] = value
+        return merged
+
+    def update_playbook_field(
+        self,
+        opportunity_id: int,
+        *,
+        patch_key: str,
+        value: Any,
+    ) -> dict[str, Any]:
+        payload = self._playbook_patch_payload(patch_key, value)
+        current = self.get_opportunity(opportunity_id)
+        if isinstance(current, dict):
+            payload = self._deep_merge_dict(current, payload)
+
+        # Nunca devolvemos identificadores/estado capturados pelo GET no PATCH.
+        # Preservamos apenas os ramos que o patchKey pediu para alterar.
+        patch_root = next(iter(self._playbook_patch_payload(patch_key, value)))
+        payload = {patch_root: payload.get(patch_root)}
 
         result = self._request(
             "PATCH",

@@ -64,6 +64,9 @@ Regras obrigatórias:
 6. No funil sdrIaFunnel=true, não use etapas proibidas de ICCID, M2M, vencimento, taxa,
    unificação, metragem/NAP, anexos ou tipo de assinatura. Defaults/playbook do CRM prevalecem.
 7. Nunca permita GANHO antes de assinatura confirmada pelo CRM.
+7.1. Se o estado do closer já contém sign_url e a etapa proposta é WAITING_SIGNATURE,
+     o contrato está pronto para ser enviado ao cliente. "Aguardando assinatura" é o
+     status esperado nesse momento e NÃO é conflito nem pedido prematuro de assinatura.
 8. Em REWRITE preserve todos os fatos comerciais válidos da mensagem original. Não acrescente
    valores, velocidades, benefícios ou condições que não estejam comprovados no contexto.
 9. CORRECT_STATE só deve ser usado quando o contexto provar o estado correto. Não adivinhe.
@@ -324,6 +327,46 @@ def _apply_guardrails(
             + sorted(deterministic_codes)
         )
     )[:12]
+
+    # Evidência objetiva de contrato pronto: contract/generate já devolveu um
+    # signUrl e o closer está em WAITING_SIGNATURE. O modelo às vezes confunde
+    # "aguardando assinatura" com "contrato não gerado"; essa interpretação não
+    # pode bloquear um link real já persistido no estado.
+    current_state = context.get("current_state") or {}
+    closing = current_state.get("closing") or {}
+    proposed = context.get("proposed_action") or {}
+    signature_ready = bool(
+        str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER"
+        and str(proposed.get("proposed_state") or "") == "WAITING_SIGNATURE"
+        and closing.get("has_sign_url")
+    )
+    signature_false_positives = {
+        "PREMATURE_SIGNATURE_REQUEST",
+        "CONTRACT_STATUS_CONFLICT",
+    }
+    if signature_ready:
+        model_codes = set(review.issue_codes) - deterministic_codes
+        remaining_model_codes = model_codes - signature_false_positives
+        if (
+            model_codes
+            and not remaining_model_codes
+            and not high
+            and review.verdict in {"BLOCK", "REWRITE", "CORRECT_STATE"}
+        ):
+            review.verdict = "APPROVE"
+            review.risk = "LOW"
+            review.quality_score = max(review.quality_score, 90)
+            review.reply_text = ""
+            review.corrected_state = ""
+            review.rationale = (
+                "signUrl válido já presente no estado; envio de assinatura "
+                "é coerente com WAITING_SIGNATURE."
+            )
+        review.issue_codes = [
+            code
+            for code in review.issue_codes
+            if code not in signature_false_positives
+        ]
 
     # Invariantes que o modelo não pode afrouxar.
     if "WON_BEFORE_SIGNATURE" in critical:

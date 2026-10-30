@@ -687,6 +687,37 @@ def _playbook_known_value(
     return None
 
 
+def _playbook_dynamic_options(
+    collected: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw = collected.get("_playbook_dynamic_options")
+    if not isinstance(raw, list):
+        return []
+    return [
+        dict(item)
+        for item in raw
+        if isinstance(item, dict)
+        and str(item.get("label") or "").strip()
+    ]
+
+
+def _resolve_dynamic_playbook_value(
+    text: str,
+    collected: dict[str, Any],
+) -> Any:
+    clean = str(text or "").strip()
+    folded = _norm(clean)
+    for option in _playbook_dynamic_options(collected):
+        candidates = {
+            _norm(str(option.get("id") or "")),
+            _norm(str(option.get("label") or "")),
+            _norm(str(option.get("value") or "")),
+        }
+        if folded and folded in candidates:
+            return option.get("value")
+    return clean
+
+
 def _sync_known_playbook_missing(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -700,6 +731,30 @@ def _sync_known_playbook_missing(
         return False
 
     field, value = known
+
+    if item.patch_key:
+        client.update_playbook_field(
+            state.opportunity_id,
+            patch_key=item.patch_key,
+            value=value,
+        )
+        if field.startswith("category:"):
+            category_field = field.split(":", 1)[1]
+            values = _category_values(collected)
+            values[category_field] = value
+            _store_category_values(
+                collected,
+                values,
+                mobile=_is_mobile_plan(state, collected),
+            )
+        LOG.info(
+            "seller_playbook_synced_patch_key opportunity=%s code=%s patch_key=%s",
+            state.opportunity_id,
+            item.code,
+            item.patch_key,
+        )
+        return True
+
     payload: dict[str, Any]
     if field == "planId":
         payload = {
@@ -812,6 +867,7 @@ def _query_playbook_guidance(
         return fallback_step, None
 
     category = _playbook_category(state, collected)
+    synced_codes: set[str] = set()
     for _ in range(12):
         try:
             result = client.playbook(
@@ -886,28 +942,52 @@ def _query_playbook_guidance(
             return "WAITING_CRM_READY", None
 
         first = actionable[0]
-        if _sync_known_playbook_missing(
-            client,
-            state,
-            collected,
-            first,
+        first_key = _playbook_code_key(first.code)
+        if (
+            first_key not in synced_codes
+            and _sync_known_playbook_missing(
+                client,
+                state,
+                collected,
+                first,
+            )
         ):
-            # O CRM ainda dizia que faltava um dado que o Prospecta já conhecia.
-            # Gravamos e consultamos novamente sem perguntar ao cliente.
+            # Sincroniza no máximo uma vez por campo nesta consulta. Se o CRM
+            # continuar dizendo que falta, perguntamos/seguimos pelo playbook em
+            # vez de entrar em loop de PATCH.
+            synced_codes.add(first_key)
             continue
 
         next_step = _playbook_step_for_item(first, state, collected)
         if not next_step:
-            collected["_playbook_unmapped_code"] = first.code
-            collected["_playbook_unmapped_patch_key"] = first.patch_key
-            _playbook_clear_question(collected)
-            LOG.info(
-                "seller_playbook_unmapped opportunity=%s code=%s fallback=%s",
+            question = (
+                result.next_question
+                if first is result.missing[0]
+                else first.question
+            ) or first.question or (
+                f"Para continuar, preciso confirmar {first.label or first.code}."
+            )
+            collected["_playbook_dynamic_code"] = first.code
+            collected["_playbook_dynamic_patch_key"] = (
+                first.patch_key or first.code
+            )
+            collected["_playbook_dynamic_label"] = first.label
+            collected["_playbook_dynamic_options"] = [
+                dict(item) for item in first.options
+            ]
+            collected["_playbook_step"] = "PLAYBOOK_DYNAMIC_FIELD"
+            collected["_playbook_code"] = first.code
+            collected["_playbook_patch_key"] = first.patch_key
+            collected["_playbook_question"] = question
+            collected.pop("_playbook_unmapped_code", None)
+            collected.pop("_playbook_unmapped_patch_key", None)
+            LOG.warning(
+                "seller_playbook_dynamic opportunity=%s code=%s patch_key=%s",
                 state.opportunity_id,
                 first.code,
-                fallback_step,
+                first.patch_key or first.code,
             )
-            return fallback_step, None
+            return "PLAYBOOK_DYNAMIC_FIELD", question
 
         # nextQuestion é a fonte de verdade quando corresponde ao primeiro
         # campo acionável. Se o CRM ainda devolver um campo vetado pelo SDR IA
@@ -1905,6 +1985,19 @@ def _seller_step_buttons(
     text: str = "",
     collected: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    if step == "PLAYBOOK_DYNAMIC_FIELD":
+        dynamic = _playbook_dynamic_options(collected or {})
+        buttons = [
+            {
+                "id": str(item.get("id") or f"option_{index}")[:40],
+                "label": str(item.get("label") or "")[:20],
+            }
+            for index, item in enumerate(dynamic[:3], start=1)
+            if str(item.get("label") or "").strip()
+        ]
+        if len(buttons) >= 2:
+            return buttons
+
     if step == "MOBILE_CONTRACT_TYPE" and _sdr_ia_mode(collected or {}):
         return [dict(item) for item in MOBILE_CONTRACT_BUTTONS_SDR_IA]
     buttons = SELLER_STEP_BUTTONS.get(step)
@@ -2202,6 +2295,7 @@ SELLER_CUSTOMER_INPUT_STEPS = {
     "ADDRESS_NUMBER",
     "PLAN_CONFIRM",
     "EMAIL",
+    "PLAYBOOK_DYNAMIC_FIELD",
     "BILLING",
     "CREDIT_REJECTED",
     "MOBILE_CONTRACT_TYPE",
@@ -3222,6 +3316,52 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     state,
                     collected,
                     fallback_step=fallback_step,
+                )
+
+        elif state.step == "PLAYBOOK_DYNAMIC_FIELD":
+            value = _resolve_dynamic_playbook_value(text, collected)
+            patch_key = str(
+                collected.get("_playbook_dynamic_patch_key")
+                or collected.get("_playbook_patch_key")
+                or collected.get("_playbook_dynamic_code")
+                or collected.get("_playbook_code")
+                or ""
+            ).strip()
+            if value in (None, "", []):
+                reply = _prompt_for_step(state, collected)
+            elif not patch_key:
+                state.step = "WAITING_CRM_READY"
+                reply = (
+                    "Recebi sua resposta. Estou validando este campo no CRM "
+                    "para continuar a contratação."
+                )
+            else:
+                client.update_playbook_field(
+                    state.opportunity_id or 0,
+                    patch_key=patch_key,
+                    value=value,
+                )
+                collected.setdefault(
+                    "dynamicPlaybookValues",
+                    {},
+                )[str(
+                    collected.get("_playbook_dynamic_code")
+                    or collected.get("_playbook_code")
+                    or patch_key
+                )] = value
+                for key in (
+                    "_playbook_dynamic_code",
+                    "_playbook_dynamic_patch_key",
+                    "_playbook_dynamic_label",
+                    "_playbook_dynamic_options",
+                ):
+                    collected.pop(key, None)
+                _save_collected(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="WAITING_CRM_READY",
                 )
 
         elif state.step.startswith("MOBILE_"):
