@@ -2208,16 +2208,18 @@ def process_seller_followup(
 
 
 def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
-    """Migra apenas fechamentos móveis antigos presos no BILLING genérico.
+    """Reposiciona fechamentos antigos após mudanças de política do Vendedor IA.
 
-    Os campos ICCID/M2M/vencimento/taxa voltaram a ser suportados na Fase 3
-    e nunca mais são removidos deste estado.
+    Para oportunidades confirmadas como funil SDR IA, remove estados que agora
+    são proibidos (ICCID, M2M, vencimento, taxa e unificação) e volta a consultar
+    o playbook. Outros funis mantêm o formulário completo.
     """
+    candidate_steps = sorted({"BILLING", *SDR_IA_FORBIDDEN_STEPS})
     states = list(
         db.scalars(
             select(AIClosingState)
             .where(
-                AIClosingState.step == "BILLING",
+                AIClosingState.step.in_(candidate_steps),
                 AIClosingState.updated_at >= utcnow() - timedelta(days=2),
             )
             .order_by(AIClosingState.updated_at.desc())
@@ -2225,18 +2227,90 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
         )
     )
     resumed = 0
+    client: SulnetCRMClient | None = None
 
     for state in states:
         collected = _load_collected(state)
+        sdr_ia_funnel = _sdr_ia_mode(collected)
+
+        if sdr_ia_funnel:
+            values = _category_values(collected)
+            if _is_mobile_plan(state, collected):
+                fallback_step = _mobile_next_step(
+                    values,
+                    sdr_ia_funnel=True,
+                ) or "WAITING_CRM_READY"
+            else:
+                fallback_step = _billing_next_step(
+                    values,
+                    sdr_ia_funnel=True,
+                ) or "WAITING_CRM_READY"
+
+            next_step = fallback_step
+            question: str | None = None
+            if state.opportunity_id:
+                try:
+                    if client is None:
+                        client = SulnetCRMClient.from_settings()
+                    next_step, question = _query_playbook_guidance(
+                        client,
+                        state,
+                        collected,
+                        fallback_step=fallback_step,
+                    )
+                except CRMIntegrationError as exc:
+                    LOG.warning(
+                        "seller_sdr_ia_policy_resume_playbook_failed state=%s error=%s",
+                        state.id,
+                        str(exc)[:300],
+                    )
+
+            if next_step == "__FINISH__":
+                next_step = "WAITING_CRM_READY"
+                question = None
+
+            state.step = next_step
+            state.last_error = ""
+            _save_collected(state, collected)
+
+            conversation = db.get(Conversation, state.conversation_id)
+            agent = db.get(AIAgentProfile, state.agent_id)
+            if (
+                state.step in SELLER_CUSTOMER_INPUT_STEPS
+                and conversation
+                and agent
+                and agent.active
+                and agent.execution_mode == "AUTO"
+                and conversation.status not in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+            ):
+                prompt = question or _prompt_for_step(state, collected)
+                _send_step_message(
+                    db,
+                    agent=agent,
+                    conversation=conversation,
+                    state=state,
+                    text=prompt,
+                )
+                _schedule_seller_followup(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    source_message_id=None,
+                    step=1,
+                )
+            resumed += 1
+            continue
+
+        # Compatibilidade: fora do funil SDR IA, preserva o comportamento
+        # completo da Fase 3 e apenas corrige estados móveis antigos em BILLING.
+        if state.step != "BILLING":
+            continue
         values = _mobile_values(collected)
         contract_type = str(values.get("tipo_contratacao") or "")
         if contract_type not in {"Número novo", "Número Portabilidade", "M2M"}:
             continue
 
-        next_step = _mobile_next_step(
-            values,
-            sdr_ia_funnel=_sdr_ia_mode(collected),
-        ) or "MOBILE_PAYMENT_METHOD"
+        next_step = _mobile_next_step(values) or "MOBILE_PAYMENT_METHOD"
         _store_category_values(collected, values, mobile=True)
         _save_collected(state, collected)
         state.step = next_step
@@ -2271,7 +2345,6 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
     if resumed:
         db.flush()
     return resumed
-
 
 def _handoff_to_human(
     db: Session,
