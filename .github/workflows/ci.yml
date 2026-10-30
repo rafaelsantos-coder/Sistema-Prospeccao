@@ -70,7 +70,7 @@ jobs:
         env:
           DATABASE_URL: sqlite:////tmp/sulnet-prospecta-ci.db
           APP_ENV: test
-        run: alembic upgrade head
+        run: python -m app.migrate
 
       - name: Validar migrações em PostgreSQL 18
         env:
