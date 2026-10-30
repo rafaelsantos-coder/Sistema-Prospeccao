@@ -408,19 +408,20 @@ def test_mark_won_falls_back_to_generic_opportunity_when_capture_route_missing(m
 
 
 
-def test_crm_sends_official_integration_key_when_configured(monkeypatch):
+def test_capture_api_does_not_use_integration_key_as_bearer(monkeypatch):
     monkeypatch.setattr(crm_module.httpx, "Client", FakeClient)
 
-    credential = "x" * 32
     client = SulnetCRMClient(
         base_url="https://crm.example",
-        integration_key=credential,
+        integration_key="integration-test",
     )
-    assert client.config()["originId"] == 77
 
-    headers = FakeClient.captured_headers or {}
-    assert headers["X-Integration-Key"] == credential
-    assert "Authorization" not in headers
+    try:
+        client.config()
+    except crm_module.CRMIntegrationError as exc:
+        assert exc.error_code == "CRM_BEARER_NOT_CONFIGURED"
+    else:
+        raise AssertionError("Capture API deve exigir autenticação Bearer.")
 
 
 
