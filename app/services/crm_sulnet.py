@@ -886,6 +886,7 @@ class SulnetCRMClient:
                 },
                 "aiClosing": dict(ai_closing),
                 "categoryForm": {
+                    **({"categoryId": int(category_id)} if category_id else {}),
                     "values": merged_values,
                     # Preserva anexos já existentes; a IA não cria documentos/selfies.
                     "files": dict(current_files),
