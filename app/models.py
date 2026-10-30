@@ -619,7 +619,8 @@ class AIAgentProfile(Base):
         Text,
         default=(
             "Atuar como SDR da Sulnet: entender a necessidade, qualificar a oportunidade, "
-            "tratar dúvidas comerciais e recomendar handoff para um vendedor quando houver intenção real."
+            "tratar dúvidas comerciais e transferir ao Vendedor IA quando houver intenção real; "
+            "handoff humano somente quando explicitamente solicitado ou necessário por exceção operacional."
         ),
     )
     system_prompt: Mapped[str] = mapped_column(Text, default="")
