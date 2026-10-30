@@ -201,6 +201,7 @@ def test_update_category_form_uses_generic_opportunity_patch(monkeypatch):
     assert patch["url"].endswith("/api/opportunities/1234")
     assert patch["json"]["categoryId"] == 13
     assert patch["json"]["planIds"] == [44]
+    assert patch["json"]["productInfo"]["categoryForm"]["categoryId"] == 13
     assert patch["json"]["productInfo"]["aiClosing"]["paymentMethod"] == "Boleto"
     values = patch["json"]["productInfo"]["categoryForm"]["values"]
     assert values["vencimento"] == 10
@@ -606,6 +607,15 @@ class Phase1Client:
                 "nextQuestion": "",
                 "readyForWin": False,
                 "sdrIaFunnel": True,
+                "sdrIaDefaults": {
+                    "vencimento": "10",
+                    "taxa_ativacao": "Não",
+                    "tipo_assinatura_contrato": "Assinatura Digital IA",
+                },
+                "sdrIaFieldPolicy": {
+                    "doNotAsk": ["vencimento", "novo_iccid", "m2m_iccids"],
+                    "stillAsk": ["forma_pagamento", "envio_fatura"],
+                },
                 "credit": {
                     "status": "Aprovado",
                     "approved": True,
@@ -664,6 +674,10 @@ def test_playbook_is_normalized_and_uses_bearer_only(monkeypatch):
     assert playbook.credit_approved is True
     assert playbook.ready_for_win is False
     assert playbook.sdr_ia_funnel is True
+    assert playbook.sdr_ia_defaults["vencimento"] == "10"
+    assert playbook.sdr_ia_defaults["taxa_ativacao"] == "Não"
+    assert playbook.sdr_ia_defaults["tipo_assinatura_contrato"] == "Assinatura Digital IA"
+    assert "vencimento" in playbook.sdr_ia_field_policy["doNotAsk"]
     assert playbook.next_question == "Qual seu e-mail?"
     assert playbook.missing_codes == ["clientEmail", "vencimento"]
     assert playbook.missing[0].patch_key == "clientEmail"
