@@ -372,17 +372,23 @@ class SulnetCRMClient:
         return result if isinstance(result, dict) else {}
 
     def update_opportunity(self, opportunity_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        # A instalação atual aceita atualização em /api/opportunities/{id}.
+        # Mantemos a rota capture apenas como compatibilidade para ambientes antigos.
         try:
+            return self._fallback_update_opportunity(opportunity_id, payload)
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+            LOG.warning(
+                "crm_opportunity_legacy_patch_fallback opportunity_id=%s",
+                opportunity_id,
+            )
             result = self._request(
                 "PATCH",
                 f"/api/capture/leads/{opportunity_id}",
                 json_body=payload,
             )
             return result if isinstance(result, dict) else {}
-        except CRMIntegrationError as exc:
-            if exc.status_code != 404:
-                raise
-            return self._fallback_update_opportunity(opportunity_id, payload)
 
     def get_opportunity(self, opportunity_id: int) -> dict[str, Any]:
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}")
@@ -582,18 +588,23 @@ class SulnetCRMClient:
         ]
 
     def products(self, query: str = "") -> list[dict[str, Any]]:
+        # O CRM atual expõe o catálogo por /api/catalog/products. Usar essa
+        # rota primeiro evita um 404 em toda etapa do fechamento.
         try:
+            return self._catalog_products_fallback(query)
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+            LOG.warning(
+                "crm_products_legacy_fallback source=capture query_present=%s",
+                bool(query),
+            )
             result = self._request(
                 "GET",
                 "/api/capture/products",
                 params={"q": query} if query else None,
             )
             return result if isinstance(result, list) else []
-        except CRMIntegrationError as exc:
-            if exc.status_code != 404:
-                raise
-            LOG.warning("crm_products_fallback source=catalog query_present=%s", bool(query))
-            return self._catalog_products_fallback(query)
 
     def mark_won(self, opportunity_id: int) -> dict[str, Any]:
         result = self._request(
