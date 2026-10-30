@@ -829,6 +829,13 @@ def test_phase3_structured_buttons_include_m2m_and_billing_choices():
         "id": "m2m",
         "label": "M2M",
     }
+    assert _seller_step_buttons(
+        "MOBILE_CONTRACT_TYPE",
+        collected={"_sdr_ia_funnel": True},
+    ) == [
+        {"id": "portabilidade", "label": "Portabilidade"},
+        {"id": "numero_novo", "label": "Número novo"},
+    ]
     assert _seller_step_buttons("MOBILE_ACTIVATION_FEE") == [
         {"id": "sim", "label": "Sim"},
         {"id": "nao", "label": "Não"},
@@ -842,6 +849,78 @@ def test_phase3_structured_buttons_include_m2m_and_billing_choices():
         {"id": "nao", "label": "Não"},
     ]
 
+
+
+
+def test_sdr_ia_boleto_does_not_require_unification_due_day_or_fee():
+    values = {
+        "tipo_contratacao": "Número novo",
+        "forma_pagamento": "Boleto",
+        "envio_fatura": ["WhatsApp"],
+        "vencimento": "10",
+        "taxa_ativacao": "Não",
+        "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+    }
+    assert _mobile_missing_fields(values, sdr_ia_funnel=True) == []
+    assert _mobile_next_step(values, sdr_ia_funnel=True) is None
+
+
+def test_sdr_ia_playbook_skips_due_fee_unify_iccid_and_m2m_fields():
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="EMAIL",
+    )
+    collected = {
+        "_sdr_ia_funnel": True,
+        "categoryName": "Telefonia Móvel",
+    }
+    skipped_codes = [
+        "novo_iccid",
+        "port_iccid",
+        "port_data",
+        "m2m_quantidade",
+        "m2m_iccids",
+        "vencimento",
+        "taxa_ativacao",
+        "taxa_valor",
+        "unificar_faturas",
+        "unificar_motivo",
+        "tipo_assinatura_contrato",
+    ]
+    for code in skipped_codes:
+        item = CRMPlaybookMissingItem(
+            code=code,
+            question=f"Pergunta proibida {code}",
+            patch_key=f"productInfo.categoryForm.values.{code}",
+        )
+        assert _playbook_step_for_item(item, state, collected) is None
+
+
+def test_non_sdr_playbook_keeps_full_mobile_fields_available():
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="EMAIL",
+    )
+    collected = {"categoryName": "Telefonia Móvel"}
+    assert _playbook_step_for_item(
+        CRMPlaybookMissingItem(code="novo_iccid"),
+        state,
+        collected,
+    ) == "MOBILE_NEW_ICCID"
+    assert _playbook_step_for_item(
+        CRMPlaybookMissingItem(code="m2m_quantidade"),
+        state,
+        collected,
+    ) == "MOBILE_M2M_QTY"
+    assert _playbook_step_for_item(
+        CRMPlaybookMissingItem(code="vencimento"),
+        state,
+        collected,
+    ) == "MOBILE_DUE_DAY"
 
 
 class _Phase4ContractClient:
@@ -887,6 +966,23 @@ class _Phase4ContractClient:
         self.mark_won_calls.append((opportunity_id, idempotency_key))
         return dict(self.won)
 
+    def get_opportunity(self, opportunity_id):
+        return {"opportunityId": opportunity_id, "planId": 800}
+
+    def products(self, query=""):
+        return [
+            {
+                "id": 800,
+                "name": "SULNET RESID FIBRA - 800MB - 2-25 (sem desconto)",
+                "monthlyValue": 119.90,
+                "categoryId": 10,
+                "categoryName": "FIBRA",
+            }
+        ]
+
+    def update_opportunity(self, opportunity_id, payload):
+        return {"opportunityId": opportunity_id, **payload}
+
 
 def _phase4_state(**overrides):
     data = {
@@ -923,6 +1019,10 @@ def test_phase4_ready_for_win_generates_contract_before_any_win():
     assert state.step == "WAITING_SIGNATURE"
     assert state.sign_url == "https://sign.example/11754"
     assert "assinar" in reply.lower()
+    assert "48 horas" in reply
+    assert collected["_contract_product_name"] == (
+        "SULNET RESID FIBRA - 800MB - 2-25 (sem desconto)"
+    )
 
 
 def test_phase4_not_ready_never_generates_contract_or_marks_won():
