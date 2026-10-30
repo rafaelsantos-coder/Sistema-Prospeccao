@@ -495,6 +495,54 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         if not conversation or not conversation.contact or not conversation.contact.phone:
             raise RuntimeError("Conversa sem telefone para follow-up.")
 
+        from app.services.ai_guardian import guard_outbound_message
+
+        guardian = guard_outbound_message(
+            db,
+            agent=agent,
+            conversation=conversation,
+            reply_text=decision.reply_text,
+            buttons=[item.model_dump() for item in decision.quick_replies],
+            source="SDR_FOLLOWUP",
+            proposed_state="AI_ACTIVE",
+            metadata={"followup_step": job.step, "theme": job.theme},
+        )
+        if not guardian.should_send:
+            first_blocked = decision.reply_text
+            decision = _generate_followup(
+                db,
+                agent=agent,
+                job=job,
+                avoid_messages=previous_outbound + [first_blocked],
+            )
+            guardian = guard_outbound_message(
+                db,
+                agent=agent,
+                conversation=conversation,
+                reply_text=decision.reply_text,
+                buttons=[item.model_dump() for item in decision.quick_replies],
+                source="SDR_FOLLOWUP_RETRY",
+                proposed_state="AI_ACTIVE",
+                metadata={"followup_step": job.step, "theme": job.theme},
+            )
+
+        if not guardian.should_send:
+            job.status = "PENDENTE"
+            job.locked_at = None
+            job.error = (
+                "Guardião bloqueou follow-up: "
+                + (", ".join(guardian.issue_codes) or guardian.rationale)
+            )[:2000]
+            job.due_at = utcnow() + timedelta(minutes=30)
+            return "guardian_blocked"
+
+        if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+            decision.reply_text = guardian.reply_text
+            decision.quick_replies = [
+                QuickReply.model_validate(item)
+                for item in guardian.buttons
+            ]
+
         from app.services.conversation_engine import register_message
         from app.services.zapi_instances import service_for_conversation
 
