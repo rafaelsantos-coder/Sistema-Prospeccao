@@ -1657,6 +1657,58 @@ def _prepare_contract_before_win(
     return _prompt_for_step(state, collected)
 
 
+def _opportunity_status(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    opportunity = payload.get("opportunity")
+    if isinstance(opportunity, dict):
+        value = str(opportunity.get("status") or "").strip().casefold()
+        if value:
+            return value
+    return str(payload.get("status") or "").strip().casefold()
+
+
+def _backoffice_id(payload: dict[str, Any] | None) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    direct = payload.get("backofficeOpportunityId")
+    if direct not in (None, ""):
+        return direct
+    opportunity = payload.get("opportunity")
+    if isinstance(opportunity, dict):
+        copy = opportunity.get("backofficeCopy")
+        if isinstance(copy, dict) and copy.get("id") not in (None, ""):
+            return copy.get("id")
+    return None
+
+
+def _complete_if_crm_already_won(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    *,
+    status_payload: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not state.opportunity_id:
+        return None
+    status = (
+        status_payload
+        if isinstance(status_payload, dict)
+        else client.get_status(state.opportunity_id)
+    )
+    if _opportunity_status(status) != "won":
+        return None
+
+    collected["_won_after_signature"] = True
+    collected["_won_confirmed_by_crm"] = True
+    backoffice_id = _backoffice_id(status)
+    if backoffice_id not in (None, ""):
+        collected["_backoffice_opportunity_id"] = backoffice_id
+    state.step = "COMPLETED"
+    state.completed_at = utcnow()
+    return status
+
+
 def _finalize_signed_sale(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -1664,6 +1716,15 @@ def _finalize_signed_sale(
 ) -> dict[str, Any]:
     if not state.opportunity_id:
         raise CRMIntegrationError("Oportunidade do CRM não disponível para concluir a venda.")
+
+    already_won = _complete_if_crm_already_won(
+        client,
+        state,
+        collected,
+    )
+    if already_won is not None:
+        return already_won
+
     if not _contract_is_signed(state.contract_status):
         raise CRMIntegrationError(
             "A venda não pode ser marcada como ganha antes da assinatura do contrato.",
