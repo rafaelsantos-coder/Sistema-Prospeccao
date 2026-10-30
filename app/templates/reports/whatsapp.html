@@ -196,12 +196,12 @@
       <div class="sla-list">
         <div class="sla-row">
           <div><span>Gargalo atual</span><strong>{{ jk.bottleneck_current }}</strong></div>
-          <div class="sla-track"><i style="width: {{ (jk.bottleneck_current * 10)|min(100) }}%"></i></div>
+          <div class="sla-track"><i style="width: {{ [jk.bottleneck_current * 10, 100]|min }}%"></i></div>
           <small>{{ jk.bottleneck_label }}</small>
         </div>
         <div class="sla-row">
           <div><span>Interações por conversa</span><strong>{{ '%.1f'|format(jk.avg_interactions_per_conversation) }}</strong></div>
-          <div class="sla-track"><i style="width: {{ (jk.avg_interactions_per_conversation * 10)|min(100) }}%"></i></div>
+          <div class="sla-track"><i style="width: {{ [jk.avg_interactions_per_conversation * 10, 100]|min }}%"></i></div>
           <small>Média no período</small>
         </div>
         <div class="sla-row">
