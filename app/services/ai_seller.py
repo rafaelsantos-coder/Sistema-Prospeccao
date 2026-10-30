@@ -220,6 +220,7 @@ MOBILE_SIGNATURE_TYPE = "Assinatura Digital IA"
 MOBILE_CONTRACT_BUTTONS = [
     {"id": "portabilidade", "label": "Portabilidade"},
     {"id": "numero_novo", "label": "Número novo"},
+    {"id": "m2m", "label": "M2M"},
 ]
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
@@ -249,18 +250,29 @@ SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
         {"id": "sim", "label": "Sim"},
         {"id": "nao", "label": "Não"},
     ],
+    "MOBILE_ACTIVATION_FEE": [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ],
+    "BILLING_PAYMENT_METHOD": [
+        {"id": "boleto", "label": "Boleto"},
+        {"id": "debito", "label": "Débito em conta"},
+    ],
+    "BILLING_INVOICE_DELIVERY": [
+        {"id": "whatsapp", "label": "WhatsApp"},
+        {"id": "email", "label": "E-mail"},
+        {"id": "ambos", "label": "Ambos"},
+    ],
+    "BILLING_UNIFY": [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ],
+    "BILLING_ACTIVATION_FEE": [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ],
 }
-REMOVED_MOBILE_STEPS = {
-    "MOBILE_NEW_ICCID",
-    "MOBILE_NEW_NUMBER",
-    "MOBILE_PORT_ICCID",
-    "MOBILE_PORT_DATE",
-    "MOBILE_M2M_QTY",
-    "MOBILE_M2M_ICCIDS",
-    "MOBILE_DUE_DAY",
-    "MOBILE_ACTIVATION_FEE",
-    "MOBILE_ACTIVATION_VALUE",
-}
+REMOVED_MOBILE_STEPS: set[str] = set()
 
 
 def _extract_generic_date(text: str) -> str | None:
@@ -303,9 +315,11 @@ def _extract_due_day(text: str) -> int | None:
 
 def _extract_mobile_contract_type(text: str) -> str | None:
     n = _norm(text)
+    if re.search(r"\bm2m\b", n):
+        return "M2M"
     if "port" in n:
         return "Número Portabilidade"
-    if "numero_novo" in n or "novo" in n or "nova linha" in n or "linha nova" in n:
+    if "numero_novo" in n or "numero novo" in n or "novo" in n or "nova linha" in n or "linha nova" in n:
         return "Número novo"
     return None
 
@@ -316,6 +330,15 @@ def _extract_iccid(text: str) -> str | None:
             return candidate
     digits = _digits(text)
     return digits if 18 <= len(digits) <= 22 else None
+
+
+def _extract_iccids(text: str) -> list[str]:
+    candidates = re.findall(r"(?<!\d)\d{18,22}(?!\d)", text or "")
+    if not candidates:
+        digits = _digits(text)
+        if 18 <= len(digits) <= 22:
+            candidates = [digits]
+    return list(dict.fromkeys(candidates))
 
 
 def _extract_mobile_number(text: str) -> str | None:
