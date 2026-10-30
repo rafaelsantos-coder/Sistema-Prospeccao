@@ -404,7 +404,7 @@ def _conversation_messages(
                 Message.direction.in_({"INBOUND", "OUTBOUND"}),
             )
             .order_by(Message.id.desc())
-            .limit(max(4, min(limit, 80)))
+            .limit(max(4, min(limit, 200)))
         )
     )
     return list(reversed(rows))
@@ -600,6 +600,36 @@ def build_ai_context(
         limit=max(160, int(agent.max_history_messages or 24)),
     )
     confirmed_facts = _confirmed_facts_from_history(fact_history)
+
+    # Memória factual por conversa: o input do último run guarda os fatos que já
+    # haviam sido reconstruídos de falas INBOUND. Isso mantém continuidade mesmo
+    # quando a confirmação original já saiu da janela recente de mensagens.
+    if state and state.last_run_id:
+        previous_run = db.get(AIRun, state.last_run_id)
+        if previous_run:
+            try:
+                previous_snapshot = json.loads(previous_run.input_snapshot_json or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                previous_snapshot = {}
+            previous_facts = (
+                previous_snapshot.get("confirmed_facts")
+                if isinstance(previous_snapshot, dict)
+                else {}
+            )
+            if isinstance(previous_facts, dict):
+                for key in (
+                    "existing_customer",
+                    "customer_type",
+                    "product_kind",
+                    "desired_product",
+                    "city",
+                ):
+                    if not confirmed_facts.get(key) and previous_facts.get(key):
+                        confirmed_facts[key] = previous_facts[key]
+                confirmed_facts["answered_questions"] = sorted(
+                    set(confirmed_facts.get("answered_questions") or [])
+                    | set(previous_facts.get("answered_questions") or [])
+                )
 
     lead_existing = _confirmed_existing_customer_from_lead(lead)
     if (
