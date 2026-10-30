@@ -291,6 +291,12 @@ def test_guardian_allows_authoritative_crm_playbook_recovery():
 
 
 def test_guardian_does_not_override_real_forbidden_sdr_closer_step():
+    state = SimpleNamespace(step="MOBILE_PORT_ICCID", last_error="")
+
+    class FakeDB:
+        def scalar(self, _query):
+            return state
+
     review = GuardianReview(
         verdict="APPROVE",
         risk="LOW",
@@ -324,13 +330,15 @@ def test_guardian_does_not_override_real_forbidden_sdr_closer_step():
     context["current_state"] = {"closing": {"step": "MOBILE_PORT_ICCID"}}
 
     result = _apply_guardrails(
-        None,
+        FakeDB(),
         review=review,
         context=context,
         original_text="Qual é o ICCID?",
         original_buttons=[],
     )
 
-    assert result.verdict == "BLOCK"
-    assert result.should_send is False
+    assert result.verdict == "CORRECT_STATE"
+    assert result.state_corrected is True
+    assert result.corrected_state == "WAITING_CRM_READY"
+    assert state.step == "WAITING_CRM_READY"
     assert "SDR_IA_FORBIDDEN_CLOSING_STEP" in result.issue_codes
