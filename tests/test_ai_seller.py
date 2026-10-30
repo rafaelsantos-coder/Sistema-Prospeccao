@@ -1364,6 +1364,118 @@ def test_phase4_sdr_skipped_fields_allow_crm_to_decide_readiness():
     assert "assinar" in reply.lower()
 
 
+def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
+    item = CRMPlaybookMissingItem(
+        code="cf_tipo_contratacao",
+        label="Tipo de contratação móvel",
+        question="Como você quer contratar sua linha móvel?",
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+        options=[
+            {
+                "id": "portabilidade",
+                "label": "Portabilidade",
+                "value": "PORTABILITY",
+            },
+            {
+                "id": "numero_novo",
+                "label": "Número novo",
+                "value": "NEW_NUMBER",
+            },
+        ],
+    )
+
+    class _RecoveryClient(_Phase4ContractClient):
+        def generate_agent_contract(
+            self,
+            opportunity_id,
+            *,
+            send_signature=True,
+            require_ready_for_win=True,
+        ):
+            self.generate_calls += 1
+            raise CRMIntegrationError(
+                "Campos pendentes para contrato: Tipo de contratação móvel",
+                status_code=400,
+                method="POST",
+                path=(
+                    f"/api/integracoes/agent/v1/opportunities/"
+                    f"{opportunity_id}/contract/generate"
+                ),
+                response_body={
+                    "error": (
+                        "Campos pendentes para contrato: "
+                        "Tipo de contratação móvel"
+                    )
+                },
+            )
+
+        def playbook(self, opportunity_id, *, category):
+            assert category == "telefonia-movel"
+            return _playbook_result(
+                missing=[item],
+                next_question=item.question,
+                category="telefonia-movel",
+                sdr_ia_funnel=True,
+            )
+
+        def get_opportunity(self, opportunity_id):
+            return {"opportunityId": opportunity_id, "planId": 1500}
+
+        def products(self, query=""):
+            return [
+                {
+                    "id": 1500,
+                    "name": "Meu Trabalho Comigo 15GB",
+                    "monthlyValue": 49.90,
+                    "categoryId": 20,
+                    "categoryName": "Telefonia Móvel",
+                }
+            ]
+
+    client = _RecoveryClient(contract=False)
+    state = _phase4_state(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        offer_price=49.90,
+    )
+    collected = {
+        "_playbook_ready_for_win": False,
+        "_contract_generation_allowed": True,
+        "_sdr_ia_funnel": True,
+        "planId": 1500,
+        "categoryId": 20,
+        "categoryName": "Telefonia Móvel",
+        "categoryFormValues": {
+            "tipo_contratacao": "Número Portabilidade",
+            "numero_portado": "55999990000",
+        },
+    }
+
+    reply = _prepare_contract_before_win(
+        client,
+        state,
+        collected,
+    )
+
+    assert client.generate_calls == 1
+    assert state.step == "MOBILE_CONTRACT_TYPE"
+    assert state.contract_status == "aguardando_tipo_contratacao"
+    assert "contratar" in reply.lower()
+    assert "tipo_contratacao" not in collected["categoryFormValues"]
+    assert collected["_playbook_code"] == "cf_tipo_contratacao"
+    assert collected["_playbook_patch_key"] == (
+        "productInfo.categoryForm.values.tipo_contratacao"
+    )
+    assert _seller_step_buttons(
+        state.step,
+        reply,
+        collected,
+    ) == [
+        {"id": "portabilidade", "label": "Portabilidade"},
+        {"id": "numero_novo", "label": "Número novo"},
+    ]
+
+
 def test_phase4_not_ready_never_generates_contract_or_marks_won():
     client = _Phase4ContractClient()
     state = _phase4_state()
