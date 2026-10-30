@@ -672,25 +672,22 @@ class SulnetCRMClient:
         # CRM legado: usa a operação genérica já homologada. Quando o CRM
         # publicar apiVersion >= 2, este caminho deixa de ser usado.
         won_stage_id = self._stage_id_by_name("GANHO")
-        if not won_stage_id:
-            raise CRMIntegrationError(
-                "Etapa GANHO do funil SDR IA não localizada no CRM.",
-                status_code=503,
-            )
-
         LOG.warning(
             "crm_win_legacy_generic opportunity_id=%s stage_id=%s",
             opportunity_id,
-            won_stage_id,
+            won_stage_id or "not-published",
         )
+        win_payload: dict[str, Any] = {
+            "status": "won",
+            "historyAction": "Venda do Vendedor IA validada e marcada como ganha.",
+        }
+        if won_stage_id:
+            win_payload["stageId"] = won_stage_id
+
         updated = self._request(
             "PATCH",
             f"/api/opportunities/{opportunity_id}",
-            json_body={
-                "status": "won",
-                "stageId": won_stage_id,
-                "historyAction": "Venda do Vendedor IA validada e marcada como ganha.",
-            },
+            json_body=win_payload,
         )
         if not isinstance(updated, dict):
             updated = {}
