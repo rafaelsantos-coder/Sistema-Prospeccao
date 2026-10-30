@@ -653,6 +653,13 @@ def build_ai_context(
             | {"CUSTOMER_TYPE"}
         )
 
+    from app.services.ai_learning import learning_context_for_conversation
+    learning_experiment = learning_context_for_conversation(
+        db,
+        conversation_id=conversation.id,
+        scope="SDR_COPY",
+    )
+
     knowledge = retrieve_knowledge(db, agent=agent, query=message.body or "")
     knowledge_meta_rows = list(
         db.scalars(
@@ -677,6 +684,7 @@ def build_ai_context(
             "team": queue.team if queue else "",
         },
         "confirmed_facts": confirmed_facts,
+        "learning_experiment": learning_experiment,
         "lead": {
             "id": lead.id if lead else None,
             "contact_name": lead.contact_name if lead else "",
@@ -2780,6 +2788,22 @@ def _apply_journey_orchestration_policy(
 
     if not decision.next_action.strip():
         decision.next_action = decision.journey_pending_action
+
+    experiment = context.get("learning_experiment") or {}
+    instruction = " ".join(
+        str(experiment.get(key) or "")
+        for key in ("baseline_instruction", "experiment_instruction")
+    ).casefold()
+    if (
+        decision.journey_state == "CHOOSE_SEGMENT"
+        and "casa ou empresa" in instruction
+    ):
+        decision.reply_text = "A internet é para sua casa ou empresa?"
+        decision.quick_replies = [
+            QuickReply(id="internet_casa", label="Para casa"),
+            QuickReply(id="internet_empresa", label="Para empresa"),
+        ]
+
     return decision
 
 
@@ -2802,6 +2826,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "A seção confirmed_facts é memória factual reconstruída das respostas INBOUND do cliente e tem precedência sobre inferências do modelo. "
         "Nunca volte a perguntar uma questão presente em confirmed_facts.answered_questions, salvo se o próprio cliente corrigir explicitamente a resposta. "
         "Uma informação confirmada não pode regredir para NAO_INFORMADO nem fazer a jornada voltar para uma etapa anterior. "
+        "Se learning_experiment trouxer instrução, ela pode alterar SOMENTE redação/abordagem dentro do escopo informado. "
+        "Ela nunca pode alterar fatos, preço, plano, catálogo, fidelidade, contrato, crédito, estado da jornada ou handoff. "
         "Produza a decisão estruturada do SDR. Antes de qualquer oferta, se lead.confirmed_existing_customer estiver vazio e confirmed_facts.existing_customer também estiver vazio, "
         "a primeira qualificação é perguntar se a pessoa já é cliente Sulnet; cliente existente segue para Telefonia Móvel ou nova conexão para outro endereço, "
         "e não cliente segue para Internet ou Telefonia Móvel. Não repita essa pergunta se a memória já estiver confirmada. "

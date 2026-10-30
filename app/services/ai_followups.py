@@ -383,10 +383,18 @@ def _generate_followup(
         if str(item or "").strip()
     ]
     forbidden_messages = (previous_outbound + explicit_avoid)[-15:]
+    from app.services.ai_learning import learning_context_for_conversation
+    learning_experiment = learning_context_for_conversation(
+        db,
+        conversation_id=job.conversation_id,
+        scope="FOLLOWUP_COPY",
+    )
+
     context = {
         "followup_step": job.step,
         "followup_theme": job.theme,
         "forbidden_previous_messages": forbidden_messages,
+        "learning_experiment": learning_experiment,
         "lead": {
             "city": lead.city if lead else "",
             "stage": lead.stage if lead else "",
@@ -413,6 +421,8 @@ def _generate_followup(
         "Leia forbidden_previous_messages e produza uma mensagem claramente diferente em estrutura, pergunta e CTA. "
         "Não repita a mesma pergunta, não copie a mesma CTA e não envie variações quase idênticas. "
         "Não aumente desconto por silêncio. Não invente urgência. Não diga 'viu minha mensagem?'. Faça no máximo uma pergunta principal. "
+        "Se learning_experiment trouxer instrução, aplique somente ajustes de redação dentro do escopo de follow-up; "
+        "é proibido alterar preço, plano, condição comercial, estado da jornada, contrato, crédito ou regra de handoff. "
         "Na cadência inicial, respeite o novo espaçamento de 10 minutos, depois 30 minutos e depois 2 horas; "
         "cada tentativa deve usar um ângulo comercial diferente e sem pressão excessiva. "
         "Quando essa pergunta tiver 2 ou 3 respostas previsíveis, retorne quick_replies com botões curtos "

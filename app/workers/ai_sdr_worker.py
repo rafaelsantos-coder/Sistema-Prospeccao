@@ -19,6 +19,9 @@ from app.services.ai_seller import (
     resume_simplified_mobile_states,
 )
 from app.services.ai_supervisor import run_shadow_supervisor_loop
+from app.services.ai_autocorrector import run_autocorrector_loop
+from app.services.ai_learning import run_learning_loop
+from app.services.ai_engineer import run_engineer_loop
 from app.services.ai_sdr_policy import followup_spec, next_business_time
 from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
@@ -466,10 +469,14 @@ def run() -> None:
     Base.metadata.create_all(bind=engine)
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
-        "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s supervisor_shadow=%s openai_configured=%s poll=%ss",
+        "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s supervisor_shadow=%s guardian=%s autocorrect=%s learning=%s engineer=%s openai_configured=%s poll=%ss",
         settings.ai_sdr_enabled,
         settings.ai_seller_enabled,
         settings.ai_supervisor_shadow_enabled,
+        settings.ai_supervisor_guardian_enabled,
+        settings.ai_autocorrect_enabled,
+        settings.ai_learning_enabled,
+        settings.ai_engineer_enabled,
         bool(settings.openai_api_key),
         poll,
     )
@@ -480,6 +487,24 @@ def run() -> None:
             daemon=True,
         )
         supervisor_thread.start()
+    if settings.ai_autocorrect_enabled:
+        threading.Thread(
+            target=run_autocorrector_loop,
+            name="sulia-autocorrector",
+            daemon=True,
+        ).start()
+    if settings.ai_learning_enabled:
+        threading.Thread(
+            target=run_learning_loop,
+            name="sulia-learning",
+            daemon=True,
+        ).start()
+    if settings.ai_engineer_enabled:
+        threading.Thread(
+            target=run_engineer_loop,
+            name="sulia-engineer",
+            daemon=True,
+        ).start()
     _recover_stale_jobs()
     _recover_stale_followups()
     recovered_closer = _recover_closer_capture_patch_failures()

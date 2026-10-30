@@ -64,6 +64,37 @@ class Settings:
     ai_supervisor_guardian_timeout_seconds: int = int(
         os.getenv("AI_SUPERVISOR_GUARDIAN_TIMEOUT_SECONDS", "30")
     )
+    ai_autocorrect_enabled: bool = os.getenv(
+        "AI_AUTOCORRECT_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    ai_autocorrect_poll_seconds: int = int(os.getenv("AI_AUTOCORRECT_POLL_SECONDS", "30"))
+    ai_learning_enabled: bool = os.getenv(
+        "AI_LEARNING_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    ai_learning_poll_seconds: int = int(os.getenv("AI_LEARNING_POLL_SECONDS", "300"))
+    ai_learning_min_samples_per_arm: int = int(
+        os.getenv("AI_LEARNING_MIN_SAMPLES_PER_ARM", "30")
+    )
+    ai_learning_min_uplift: float = float(
+        os.getenv("AI_LEARNING_MIN_UPLIFT", "0.05")
+    )
+    ai_engineer_enabled: bool = os.getenv(
+        "AI_ENGINEER_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    ai_engineer_poll_seconds: int = int(os.getenv("AI_ENGINEER_POLL_SECONDS", "300"))
+    ai_engineer_min_incidents: int = int(os.getenv("AI_ENGINEER_MIN_INCIDENTS", "3"))
+    ai_engineer_autonomous_pr_enabled: bool = os.getenv(
+        "AI_ENGINEER_AUTONOMOUS_PR_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    ai_engineer_github_repository: str = os.getenv(
+        "AI_ENGINEER_GITHUB_REPOSITORY",
+        "rafaelsantos-coder/Sistema-Integrado",
+    ).strip()
+    ai_engineer_github_token: str = os.getenv("AI_ENGINEER_GITHUB_TOKEN", "").strip()
     sulnet_crm_base_url: str = os.getenv("SULNET_CRM_BASE_URL", "").rstrip("/")
     sulnet_crm_bearer_token: str = os.getenv("SULNET_CRM_BEARER_TOKEN", "")
     sulnet_ai_integration_key: str = os.getenv("SULNET_AI_INTEGRATION_KEY", "")
@@ -110,6 +141,16 @@ class Settings:
             "ai_supervisor_guardian": bool(
                 self.ai_supervisor_guardian_enabled
                 and self.openai_api_key
+            ),
+            "ai_autocorrect": bool(self.ai_autocorrect_enabled),
+            "ai_learning": bool(self.ai_learning_enabled and self.openai_api_key),
+            "ai_engineer": bool(self.ai_engineer_enabled and self.openai_api_key),
+            "ai_engineer_autonomous_pr": bool(
+                self.ai_engineer_enabled
+                and self.ai_engineer_autonomous_pr_enabled
+                and self.openai_api_key
+                and self.ai_engineer_github_repository
+                and self.ai_engineer_github_token
             ),
         }
 
