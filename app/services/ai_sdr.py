@@ -2958,6 +2958,75 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     if effective_mode == "AUTO":
         try:
+            conversation = db.get(Conversation, job.conversation_id)
+            if not conversation:
+                raise AIConfigurationError("Conversa do job não existe.")
+
+            from app.services.ai_guardian import guard_outbound_message
+
+            guardian = guard_outbound_message(
+                db,
+                agent=agent,
+                conversation=conversation,
+                reply_text=decision.reply_text,
+                buttons=[item.model_dump() for item in decision.quick_replies],
+                source="SDR_DECISION",
+                proposed_state=decision.journey_state or decision.sales_state,
+                metadata={
+                    "intent": decision.intent,
+                    "handoff_target": decision.handoff_target,
+                    "customer_commitment": decision.customer_commitment,
+                },
+            )
+            if not guardian.should_send:
+                retry_context = dict(context)
+                retry_context["guardian_feedback"] = {
+                    "issue_codes": guardian.issue_codes,
+                    "rationale": guardian.rationale,
+                    "blocked_reply": decision.reply_text,
+                    "instruction": (
+                        "Gere outra resposta corrigindo os problemas apontados pelo Guardião. "
+                        "Não repita a mensagem bloqueada e não altere fatos comerciais sem evidência."
+                    ),
+                }
+                decision = run_ai_decision(agent, retry_context)
+                guardian = guard_outbound_message(
+                    db,
+                    agent=agent,
+                    conversation=conversation,
+                    reply_text=decision.reply_text,
+                    buttons=[item.model_dump() for item in decision.quick_replies],
+                    source="SDR_DECISION_RETRY",
+                    proposed_state=decision.journey_state or decision.sales_state,
+                    metadata={
+                        "intent": decision.intent,
+                        "handoff_target": decision.handoff_target,
+                        "customer_commitment": decision.customer_commitment,
+                    },
+                )
+
+            if not guardian.should_send:
+                run.status = "FALHOU"
+                run.error = (
+                    "Guardião bloqueou a decisão antes do envio: "
+                    + (", ".join(guardian.issue_codes) or guardian.rationale)
+                )[:2000]
+                run.finished_at = utcnow()
+                job.status = "PENDENTE"
+                job.error = run.error
+                job.available_at = utcnow() + timedelta(minutes=2)
+                job.locked_at = None
+                return "guardian_blocked"
+
+            if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+                decision.reply_text = guardian.reply_text
+                decision.quick_replies = [
+                    QuickReply.model_validate(item)
+                    for item in guardian.buttons
+                ]
+
+            output = decision.model_dump()
+
             _apply_crm_decision(
                 db,
                 agent=agent,
