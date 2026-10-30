@@ -1541,6 +1541,12 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         return "Certo. Qual e-mail você quer deixar no cadastro e receber as comunicações da contratação?"
     if state.step == "MOBILE_CONTRACT_TYPE":
         return "Como você quer contratar o Sulmóvel?"
+    if state.step == "MOBILE_NEW_ICCID":
+        return "Qual é o ICCID do chip da nova linha?"
+    if state.step == "MOBILE_NEW_NUMBER":
+        return "Qual é o número com DDD da nova linha?"
+    if state.step == "MOBILE_PORT_ICCID":
+        return "Qual é o ICCID do chip da linha que será portada?"
     if state.step == "MOBILE_PORT_NUMBER":
         return "Qual é o número que será portado?"
     if state.step == "MOBILE_PORT_TITULAR":
@@ -1549,6 +1555,18 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         return "Qual é o nome completo do titular da linha que será portada?"
     if state.step == "MOBILE_PORT_DOC":
         return "Qual é o CPF ou CNPJ do titular da linha que será portada?"
+    if state.step == "MOBILE_PORT_DATE":
+        return "Qual é a data prevista para a portabilidade? Pode enviar no formato DD/MM/AAAA."
+    if state.step == "MOBILE_M2M_QTY":
+        return "Quantos chips M2M serão contratados?"
+    if state.step == "MOBILE_M2M_ICCIDS":
+        return "Envie os ICCIDs dos chips M2M, separados por espaço ou vírgula."
+    if state.step == "MOBILE_DUE_DAY":
+        return "Qual dia de vencimento você prefere?"
+    if state.step == "MOBILE_ACTIVATION_FEE":
+        return "Existe taxa de ativação nesta contratação?"
+    if state.step == "MOBILE_ACTIVATION_VALUE":
+        return "Qual é o valor da taxa de ativação?"
     if state.step == "MOBILE_PAYMENT_METHOD":
         return "Qual forma de pagamento você prefere: boleto ou débito em conta?"
     if state.step == "MOBILE_INVOICE_DELIVERY":
@@ -1564,6 +1582,28 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == "MOBILE_UNIFY":
         return "Deseja unificar esta fatura com outras faturas Sulnet? Responda sim ou não."
     if state.step == "MOBILE_UNIFY_REASON":
+        return "Qual é o motivo para não unificar as faturas?"
+    if state.step == "BILLING_PAYMENT_METHOD":
+        return "Qual forma de pagamento você prefere: boleto ou débito em conta?"
+    if state.step == "BILLING_INVOICE_DELIVERY":
+        return "Como quer receber a fatura: WhatsApp, e-mail ou ambos?"
+    if state.step == "BILLING_DUE_DAY":
+        return "Qual dia de vencimento você prefere?"
+    if state.step == "BILLING_ACTIVATION_FEE":
+        return "Existe taxa de ativação nesta contratação?"
+    if state.step == "BILLING_ACTIVATION_VALUE":
+        return "Qual é o valor da taxa de ativação?"
+    if state.step == "BILLING_DEBIT_BANK":
+        return "Para o débito em conta, qual é o banco?"
+    if state.step == "BILLING_DEBIT_AGENCY":
+        return "Qual é a agência?"
+    if state.step == "BILLING_DEBIT_ACCOUNT":
+        return "Qual é a conta?"
+    if state.step == "BILLING_DEBIT_HOLDER":
+        return "Qual é o nome do titular da conta bancária?"
+    if state.step == "BILLING_UNIFY":
+        return "Deseja unificar esta fatura com outras faturas Sulnet?"
+    if state.step == "BILLING_UNIFY_REASON":
         return "Qual é o motivo para não unificar as faturas?"
     if state.step == "BILLING":
         return "Agora falta o faturamento: como prefere pagar/receber a fatura e qual dia de vencimento você prefere?"
@@ -1588,10 +1628,19 @@ SELLER_CUSTOMER_INPUT_STEPS = {
     "BILLING",
     "CREDIT_REJECTED",
     "MOBILE_CONTRACT_TYPE",
+    "MOBILE_NEW_ICCID",
+    "MOBILE_NEW_NUMBER",
+    "MOBILE_PORT_ICCID",
     "MOBILE_PORT_NUMBER",
     "MOBILE_PORT_TITULAR",
     "MOBILE_PORT_NAME",
     "MOBILE_PORT_DOC",
+    "MOBILE_PORT_DATE",
+    "MOBILE_M2M_QTY",
+    "MOBILE_M2M_ICCIDS",
+    "MOBILE_DUE_DAY",
+    "MOBILE_ACTIVATION_FEE",
+    "MOBILE_ACTIVATION_VALUE",
     "MOBILE_PAYMENT_METHOD",
     "MOBILE_INVOICE_DELIVERY",
     "MOBILE_DEBIT_BANK",
@@ -1600,6 +1649,17 @@ SELLER_CUSTOMER_INPUT_STEPS = {
     "MOBILE_DEBIT_HOLDER",
     "MOBILE_UNIFY",
     "MOBILE_UNIFY_REASON",
+    "BILLING_PAYMENT_METHOD",
+    "BILLING_INVOICE_DELIVERY",
+    "BILLING_DUE_DAY",
+    "BILLING_ACTIVATION_FEE",
+    "BILLING_ACTIVATION_VALUE",
+    "BILLING_DEBIT_BANK",
+    "BILLING_DEBIT_AGENCY",
+    "BILLING_DEBIT_ACCOUNT",
+    "BILLING_DEBIT_HOLDER",
+    "BILLING_UNIFY",
+    "BILLING_UNIFY_REASON",
     "WAITING_SIGNATURE",
 }
 
