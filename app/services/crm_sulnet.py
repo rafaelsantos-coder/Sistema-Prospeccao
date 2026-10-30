@@ -94,6 +94,8 @@ class CRMPlaybookResult:
     credit_approved: bool = False
     credit_rejected: bool = False
     sdr_ia_funnel: bool = False
+    sdr_ia_defaults: dict[str, Any] = field(default_factory=dict)
+    sdr_ia_field_policy: dict[str, Any] = field(default_factory=dict)
     missing: list[CRMPlaybookMissingItem] = field(default_factory=list)
 
     @classmethod
@@ -129,6 +131,10 @@ class CRMPlaybookResult:
             or opportunity.get("protocol")
             or ""
         ).strip()
+        raw_defaults = source.get("sdrIaDefaults")
+        sdr_ia_defaults = dict(raw_defaults) if isinstance(raw_defaults, dict) else {}
+        raw_policy = source.get("sdrIaFieldPolicy")
+        sdr_ia_field_policy = dict(raw_policy) if isinstance(raw_policy, dict) else {}
         return cls(
             opportunity_id=int(
                 source.get("opportunityId")
@@ -145,6 +151,8 @@ class CRMPlaybookResult:
             credit_approved=bool(credit.get("approved")),
             credit_rejected=bool(credit.get("rejected")),
             sdr_ia_funnel=bool(source.get("sdrIaFunnel")),
+            sdr_ia_defaults=sdr_ia_defaults,
+            sdr_ia_field_policy=sdr_ia_field_policy,
             missing=missing,
         )
 
@@ -169,6 +177,8 @@ class CRMPlaybookResult:
             "missingCodes": self.missing_codes,
             "missing": [item.as_dict() for item in self.missing],
             "sdrIaFunnel": self.sdr_ia_funnel,
+            "sdrIaDefaults": dict(self.sdr_ia_defaults),
+            "sdrIaFieldPolicy": dict(self.sdr_ia_field_policy),
         }
 
 
