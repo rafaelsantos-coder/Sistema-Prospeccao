@@ -1727,14 +1727,23 @@ def _send_text(
         text = guardian.reply_text
 
     zapi = service_for_conversation(db, conversation.id)
-    result = zapi.send_text(phone=phone, message=text)
+    if len(guardian.buttons) >= 2:
+        result = zapi.send_button_list(
+            phone=phone,
+            message=text,
+            buttons=guardian.buttons,
+        )
+        message_type = "BUTTONS"
+    else:
+        result = zapi.send_text(phone=phone, message=text)
+        message_type = "TEXT"
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
     message = register_message(
         db,
         conversation,
         direction="OUTBOUND",
-        message_type="TEXT",
+        message_type=message_type,
         body=text,
         sender_user_id=agent.user_id,
         provider_message_id=provider_id,
