@@ -1689,14 +1689,29 @@ def _seller_followup_prompt(
         "ADDRESS_DETAILS": "me informe a rua ou o bairro que ficou faltando.",
         "ADDRESS_NUMBER": "me informe o número do imóvel e, se houver, o complemento.",
         "EMAIL": "me informe o e-mail que ficará no cadastro.",
+        "MOBILE_NEW_ICCID": "me informe o ICCID do chip da nova linha.",
+        "MOBILE_NEW_NUMBER": "me informe o número com DDD da nova linha.",
+        "MOBILE_PORT_ICCID": "me informe o ICCID do chip da linha que será portada.",
         "MOBILE_PORT_NUMBER": "me informe o número com DDD que será portado.",
         "MOBILE_PORT_NAME": "me informe o nome completo do titular da linha.",
         "MOBILE_PORT_DOC": "me informe o CPF ou CNPJ do titular da linha.",
+        "MOBILE_PORT_DATE": "me informe a data prevista da portabilidade.",
+        "MOBILE_M2M_QTY": "me informe a quantidade de chips M2M.",
+        "MOBILE_M2M_ICCIDS": "me envie todos os ICCIDs dos chips M2M.",
+        "MOBILE_DUE_DAY": "me informe o dia de vencimento.",
+        "MOBILE_ACTIVATION_VALUE": "me informe o valor da taxa de ativação.",
         "MOBILE_DEBIT_BANK": "me informe o banco para o débito em conta.",
         "MOBILE_DEBIT_AGENCY": "me informe a agência.",
         "MOBILE_DEBIT_ACCOUNT": "me informe a conta.",
         "MOBILE_DEBIT_HOLDER": "me informe o nome do titular da conta bancária.",
         "MOBILE_UNIFY_REASON": "me informe o motivo para manter as faturas separadas.",
+        "BILLING_DUE_DAY": "me informe o dia de vencimento.",
+        "BILLING_ACTIVATION_VALUE": "me informe o valor da taxa de ativação.",
+        "BILLING_DEBIT_BANK": "me informe o banco para o débito em conta.",
+        "BILLING_DEBIT_AGENCY": "me informe a agência.",
+        "BILLING_DEBIT_ACCOUNT": "me informe a conta.",
+        "BILLING_DEBIT_HOLDER": "me informe o nome do titular da conta bancária.",
+        "BILLING_UNIFY_REASON": "me informe o motivo para manter as faturas separadas.",
         "BILLING": "me informe a forma de pagamento/faturamento e o dia de vencimento.",
     }
     if state.step == "PLAN_CONFIRM":
@@ -1705,11 +1720,21 @@ def _seller_followup_prompt(
         return "Para continuar com o Sulmóvel, escolha como deseja a linha:"
     if state.step == "MOBILE_PORT_TITULAR":
         return "Para continuar a portabilidade, a linha está no nome do titular desta contratação?"
+    if state.step == "MOBILE_ACTIVATION_FEE":
+        return "Para continuar, informe se existe taxa de ativação:"
     if state.step == "MOBILE_PAYMENT_METHOD":
         return "Para continuar, escolha a forma de pagamento:"
     if state.step == "MOBILE_INVOICE_DELIVERY":
         return "Para continuar, escolha como quer receber a fatura:"
     if state.step == "MOBILE_UNIFY":
+        return "Para continuar, deseja unificar esta fatura com outras faturas Sulnet?"
+    if state.step == "BILLING_PAYMENT_METHOD":
+        return "Para continuar, escolha a forma de pagamento:"
+    if state.step == "BILLING_INVOICE_DELIVERY":
+        return "Para continuar, escolha como quer receber a fatura:"
+    if state.step == "BILLING_ACTIVATION_FEE":
+        return "Para continuar, informe se existe taxa de ativação:"
+    if state.step == "BILLING_UNIFY":
         return "Para continuar, deseja unificar esta fatura com outras faturas Sulnet?"
     if state.step == "CREDIT_REJECTED":
         return "Se quiser encaminhar a análise cadastral para um atendente, escolha Sim. Caso contrário, pode responder Não."
@@ -1807,10 +1832,16 @@ def process_seller_followup(
 
 
 def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
+    """Migra apenas fechamentos móveis antigos presos no BILLING genérico.
+
+    Os campos ICCID/M2M/vencimento/taxa voltaram a ser suportados na Fase 3
+    e nunca mais são removidos deste estado.
+    """
     states = list(
         db.scalars(
             select(AIClosingState)
             .where(
+                AIClosingState.step == "BILLING",
                 AIClosingState.updated_at >= utcnow() - timedelta(days=2),
             )
             .order_by(AIClosingState.updated_at.desc())
@@ -1818,43 +1849,16 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
         )
     )
     resumed = 0
-    obsolete_keys = {
-        "novo_iccid",
-        "numero_novo",
-        "port_iccid",
-        "port_data",
-        "m2m_quantidade",
-        "m2m_iccids",
-        "vencimento",
-        "taxa_ativacao",
-        "taxa_valor",
-    }
 
     for state in states:
         collected = _load_collected(state)
         values = _mobile_values(collected)
         contract_type = str(values.get("tipo_contratacao") or "")
-        is_mobile_flow = contract_type in {"Número novo", "Número Portabilidade", "M2M"}
-        changed = state.step in REMOVED_MOBILE_STEPS
-
-        if contract_type == "M2M":
-            values.pop("tipo_contratacao", None)
-            changed = True
-            is_mobile_flow = True
-
-        # Recuperações genéricas antigas podiam devolver o móvel para BILLING.
-        # Corrige imediatamente para a próxima etapa específica do Sulmóvel.
-        if state.step == "BILLING" and is_mobile_flow:
-            changed = True
-
-        if not changed:
+        if contract_type not in {"Número novo", "Número Portabilidade", "M2M"}:
             continue
 
-        for key in obsolete_keys:
-            values.pop(key, None)
-
         next_step = _mobile_next_step(values) or "MOBILE_PAYMENT_METHOD"
-        collected["mobileCategoryValues"] = values
+        _store_category_values(collected, values, mobile=True)
         _save_collected(state, collected)
         state.step = next_step
         state.last_error = ""
