@@ -170,7 +170,7 @@ def test_send_image_from_inbox(monkeypatch):
         sent = client.post(
             f"{location}/media",
             data={"csrf_token": token, "caption": "Foto de teste"},
-            files={"media": ("foto.jpg", b"fake-jpeg", "image/jpeg")},
+            files={"media": ("foto.jpg", b"\xff\xd8\xff\xe0" + b"x" * 32, "image/jpeg")},
         )
         assert sent.status_code == 200
         assert sent.json()["ok"] is True
@@ -213,7 +213,7 @@ def test_send_audio_from_inbox(monkeypatch):
         sent = client.post(
             f"{location}/media",
             data={"csrf_token": token, "caption": ""},
-            files={"media": ("audio.ogg", b"fake-ogg", "audio/ogg")},
+            files={"media": ("audio.ogg", b"OggS" + b"x" * 32, "audio/ogg")},
         )
         assert sent.status_code == 200
         assert sent.json()["type"] == "AUDIO"
