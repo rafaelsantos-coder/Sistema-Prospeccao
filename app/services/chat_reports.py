@@ -40,6 +40,30 @@ OPEN_STATUSES = {
 }
 CLOSED_STATUSES = {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
 
+JOURNEY_STAGE_ORDER = [
+    "IDENTIFY_CUSTOMER",
+    "CHOOSE_PRODUCT",
+    "CHOOSE_SEGMENT",
+    "CONFIRM_CITY",
+    "SELECT_OFFER",
+    "HANDLE_OBJECTION",
+    "CONFIRM_PURCHASE",
+    "CLOSING",
+]
+JOURNEY_STAGE_LABELS = {
+    "IDENTIFY_CUSTOMER": "Identificar cliente",
+    "CHOOSE_PRODUCT": "Escolher produto",
+    "CHOOSE_SEGMENT": "Casa ou empresa",
+    "CONFIRM_CITY": "Confirmar cidade",
+    "SELECT_OFFER": "Selecionar oferta",
+    "HANDLE_OBJECTION": "Tratar objeção",
+    "CONFIRM_PURCHASE": "Confirmar compra",
+    "CLOSING": "Vendedor IA",
+    "HUMAN_HANDOFF": "Handoff humano",
+    "OPT_OUT": "Opt-out",
+    "COMPLETED": "Venda concluída",
+}
+
 
 @dataclass(slots=True)
 class ChatReportFilters:
@@ -364,6 +388,354 @@ def _conversation_query(
     )
 
 
+def _json_dict(value: str | None) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _build_ai_journey_report(
+    db: Session,
+    *,
+    conversations: list[Conversation],
+    conversation_ids: list[int],
+    ai_state_map: dict[int, AIConversationState],
+    closing_state_map: dict[int, AIClosingState],
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    empty_stages = [
+        {
+            "code": code,
+            "label": JOURNEY_STAGE_LABELS[code],
+            "conversations": 0,
+            "interactions": 0,
+            "avg_interactions": 0.0,
+            "current": 0,
+            "stalled": 0,
+        }
+        for code in JOURNEY_STAGE_ORDER
+    ]
+    empty = {
+        "kpis": {
+            "ai_conversations": 0,
+            "offer_defined": 0,
+            "objection_conversations": 0,
+            "purchase_acceptances": 0,
+            "closer_started_period": 0,
+            "completed_period": 0,
+            "human_handoffs": 0,
+            "stalled": 0,
+            "at_risk": 0,
+            "avg_interactions_per_conversation": 0.0,
+            "avg_interactions_to_acceptance": None,
+            "acceptance_rate": 0.0,
+            "closer_start_rate": 0.0,
+            "completion_rate": 0.0,
+            "bottleneck_code": "",
+            "bottleneck_label": "Sem gargalo identificado",
+            "bottleneck_current": 0,
+        },
+        "funnel": [],
+        "stages": empty_stages,
+        "stalled_conversations": [],
+        "current_by_conversation": {},
+        "period_run_count": 0,
+    }
+    if not conversation_ids:
+        return empty
+
+    period_runs = list(
+        db.scalars(
+            select(AIRun)
+            .where(
+                AIRun.conversation_id.in_(conversation_ids),
+                AIRun.status == "CONCLUIDO",
+                AIRun.created_at >= start,
+                AIRun.created_at <= end,
+            )
+            .order_by(AIRun.conversation_id.asc(), AIRun.id.asc())
+        )
+    )
+
+    journey_runs: list[tuple[AIRun, dict[str, Any]]] = []
+    stage_conversations: dict[str, set[int]] = defaultdict(set)
+    stage_interactions: dict[str, int] = defaultdict(int)
+    conversation_stage_interactions: dict[tuple[int, str], int] = defaultdict(int)
+    runs_by_conversation: dict[int, list[tuple[AIRun, dict[str, Any]]]] = defaultdict(list)
+
+    ai_conversation_ids: set[int] = set()
+    offer_defined_ids: set[int] = set()
+    objection_ids: set[int] = set()
+    accepted_ids: set[int] = set()
+    human_handoff_ids: set[int] = set()
+
+    for run in period_runs:
+        payload = _json_dict(run.output_json)
+        stage = str(payload.get("journey_state") or "").upper()
+        if stage not in JOURNEY_STAGE_LABELS:
+            continue
+
+        journey_runs.append((run, payload))
+        runs_by_conversation[run.conversation_id].append((run, payload))
+        ai_conversation_ids.add(run.conversation_id)
+
+        if stage in JOURNEY_STAGE_ORDER:
+            stage_conversations[stage].add(run.conversation_id)
+            stage_interactions[stage] += 1
+            conversation_stage_interactions[(run.conversation_id, stage)] += 1
+
+        if (
+            str(payload.get("offer_plan_code") or "").strip()
+            or payload.get("offer_price") is not None
+        ):
+            offer_defined_ids.add(run.conversation_id)
+
+        objection = str(payload.get("objection") or "NONE").upper()
+        if objection not in {"", "NONE"}:
+            objection_ids.add(run.conversation_id)
+
+        handoff_target = str(payload.get("handoff_target") or "NONE").upper()
+        if stage == "CLOSING" or handoff_target == "CLOSER_AI":
+            accepted_ids.add(run.conversation_id)
+        if stage == "HUMAN_HANDOFF" or handoff_target == "HUMAN":
+            human_handoff_ids.add(run.conversation_id)
+
+    latest_journey_run_map: dict[int, AIRun] = {}
+    latest_journey_payload_map: dict[int, dict[str, Any]] = {}
+    latest_journey_ids = list(
+        db.execute(
+            select(
+                AIRun.conversation_id,
+                func.max(AIRun.id).label("run_id"),
+            )
+            .where(
+                AIRun.conversation_id.in_(conversation_ids),
+                AIRun.status == "CONCLUIDO",
+                AIRun.output_json.ilike('%"journey_state"%'),
+            )
+            .group_by(AIRun.conversation_id)
+        )
+    )
+    run_ids = [int(row.run_id) for row in latest_journey_ids if row.run_id]
+    if run_ids:
+        latest_journey_run_map = {
+            item.conversation_id: item
+            for item in db.scalars(select(AIRun).where(AIRun.id.in_(run_ids)))
+        }
+        latest_journey_payload_map = {
+            conversation_id: _json_dict(run.output_json)
+            for conversation_id, run in latest_journey_run_map.items()
+        }
+
+    closing_started_ids: set[int] = set()
+    completed_period_ids: set[int] = set()
+    for closing in closing_state_map.values():
+        created = _utc_naive(closing.created_at)
+        completed = _utc_naive(closing.completed_at)
+        if created and start <= created <= end:
+            closing_started_ids.add(closing.conversation_id)
+        if completed and start <= completed <= end:
+            completed_period_ids.add(closing.conversation_id)
+
+    current_stage_counts: dict[str, int] = defaultdict(int)
+    stalled_stage_counts: dict[str, int] = defaultdict(int)
+    current_by_conversation: dict[int, dict[str, Any]] = {}
+    stalled_conversations: list[dict[str, Any]] = []
+    at_risk = 0
+    conversation_map = {item.id: item for item in conversations}
+
+    for conversation_id in conversation_ids:
+        ai_state = ai_state_map.get(conversation_id)
+        closing = closing_state_map.get(conversation_id)
+        payload = dict(latest_journey_payload_map.get(conversation_id) or {})
+
+        stage = str(payload.get("journey_state") or "").upper()
+        pending_action = str(payload.get("journey_pending_action") or "").strip()
+        try:
+            stagnation_count = max(0, int(payload.get("stagnation_count") or 0))
+        except (TypeError, ValueError):
+            stagnation_count = 0
+
+        if closing and closing.step == "COMPLETED":
+            stage = "COMPLETED"
+            pending_action = ""
+            stagnation_count = 0
+        elif (
+            (closing and closing.step == "ESCALATED")
+            or (ai_state and ai_state.state in {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "ESCALATED"})
+        ):
+            stage = "HUMAN_HANDOFF"
+            pending_action = ""
+            stagnation_count = 0
+        elif closing and ai_state and ai_state.state == "CLOSING":
+            stage = "CLOSING"
+            pending_action = (
+                f"Vendedor IA · etapa {closing.step.replace('_', ' ').title()}"
+                if closing.step
+                else "Vendedor IA em fechamento"
+            )
+            stagnation_count = 0
+
+        if stage:
+            current_stage_counts[stage] += 1
+
+        current = {
+            "code": stage,
+            "label": JOURNEY_STAGE_LABELS.get(stage, stage.replace("_", " ").title() if stage else ""),
+            "pending_action": pending_action,
+            "stagnation_count": stagnation_count,
+        }
+        current_by_conversation[conversation_id] = current
+
+        if stage in JOURNEY_STAGE_ORDER[:-1] and stagnation_count >= 2:
+            at_risk += 1
+        if stage in JOURNEY_STAGE_ORDER[:-1] and stagnation_count >= 3:
+            stalled_stage_counts[stage] += 1
+            conversation = conversation_map.get(conversation_id)
+            if conversation:
+                stalled_conversations.append(
+                    {
+                        "id": conversation.id,
+                        "name": (
+                            conversation.contact.business_name
+                            or conversation.contact.name
+                            or conversation.contact.phone
+                        ),
+                        "phone": conversation.contact.phone,
+                        "stage_code": stage,
+                        "stage_label": JOURNEY_STAGE_LABELS.get(stage, stage),
+                        "pending_action": pending_action,
+                        "stagnation_count": stagnation_count,
+                        "interactions_in_stage": conversation_stage_interactions.get(
+                            (conversation_id, stage),
+                            0,
+                        ),
+                        "last_message_at": conversation.last_message_at,
+                    }
+                )
+
+    stalled_conversations.sort(
+        key=lambda item: (
+            -int(item["stagnation_count"]),
+            str(item["name"]).casefold(),
+        )
+    )
+
+    stage_rows: list[dict[str, Any]] = []
+    for code in JOURNEY_STAGE_ORDER:
+        conversations_in_stage = len(stage_conversations.get(code, set()))
+        interactions = int(stage_interactions.get(code, 0))
+        stage_rows.append(
+            {
+                "code": code,
+                "label": JOURNEY_STAGE_LABELS[code],
+                "conversations": conversations_in_stage,
+                "interactions": interactions,
+                "avg_interactions": (
+                    interactions / conversations_in_stage
+                    if conversations_in_stage
+                    else 0.0
+                ),
+                "current": int(current_stage_counts.get(code, 0)),
+                "stalled": int(stalled_stage_counts.get(code, 0)),
+            }
+        )
+
+    turns_to_acceptance: list[float] = []
+    for conversation_id in accepted_ids:
+        runs = runs_by_conversation.get(conversation_id, [])
+        turns = 0
+        for _run, payload in runs:
+            turns += 1
+            stage = str(payload.get("journey_state") or "").upper()
+            target = str(payload.get("handoff_target") or "NONE").upper()
+            if stage == "CLOSING" or target == "CLOSER_AI":
+                turns_to_acceptance.append(float(turns))
+                break
+
+    bottleneck_candidates = [
+        row for row in stage_rows
+        if row["code"] not in {"CLOSING"}
+    ]
+    bottleneck = max(
+        bottleneck_candidates,
+        key=lambda row: (row["current"], row["stalled"], row["interactions"]),
+        default=None,
+    )
+    if not bottleneck or bottleneck["current"] <= 0:
+        bottleneck = None
+
+    acceptance_rate = (
+        len(accepted_ids) / len(offer_defined_ids) * 100
+        if offer_defined_ids
+        else 0.0
+    )
+    closer_start_rate = (
+        len(closing_started_ids & accepted_ids) / len(accepted_ids) * 100
+        if accepted_ids
+        else 0.0
+    )
+    completion_rate = (
+        len(completed_period_ids) / len(closing_started_ids) * 100
+        if closing_started_ids
+        else 0.0
+    )
+
+    funnel_closer_ids = closing_started_ids & accepted_ids
+    funnel_completed_ids = completed_period_ids & funnel_closer_ids
+    funnel_values = [
+        ("SDR IA", len(ai_conversation_ids)),
+        ("Oferta definida", len(offer_defined_ids)),
+        ("Aceite explícito", len(accepted_ids)),
+        ("Vendedor IA", len(funnel_closer_ids)),
+        ("Venda concluída", len(funnel_completed_ids)),
+    ]
+    funnel_base = max(1, funnel_values[0][1])
+    funnel = [
+        {
+            "label": label,
+            "value": value,
+            "pct": value / funnel_base * 100,
+        }
+        for label, value in funnel_values
+    ]
+
+    empty["kpis"].update(
+        {
+            "ai_conversations": len(ai_conversation_ids),
+            "offer_defined": len(offer_defined_ids),
+            "objection_conversations": len(objection_ids),
+            "purchase_acceptances": len(accepted_ids),
+            "closer_started_period": len(closing_started_ids),
+            "completed_period": len(completed_period_ids),
+            "human_handoffs": len(human_handoff_ids),
+            "stalled": len(stalled_conversations),
+            "at_risk": at_risk,
+            "avg_interactions_per_conversation": (
+                len(journey_runs) / len(ai_conversation_ids)
+                if ai_conversation_ids
+                else 0.0
+            ),
+            "avg_interactions_to_acceptance": _mean(turns_to_acceptance),
+            "acceptance_rate": acceptance_rate,
+            "closer_start_rate": closer_start_rate,
+            "completion_rate": completion_rate,
+            "bottleneck_code": bottleneck["code"] if bottleneck else "",
+            "bottleneck_label": bottleneck["label"] if bottleneck else "Sem gargalo identificado",
+            "bottleneck_current": int(bottleneck["current"]) if bottleneck else 0,
+        }
+    )
+    empty["funnel"] = funnel
+    empty["stages"] = stage_rows
+    empty["stalled_conversations"] = stalled_conversations[:50]
+    empty["current_by_conversation"] = current_by_conversation
+    empty["period_run_count"] = len(journey_runs)
+    return empty
+
+
 def build_chat_report(
     db: Session,
     user: User,
@@ -433,6 +805,17 @@ def build_chat_report(
                 .group_by(AIFollowupJob.conversation_id)
             )
         }
+
+    journey_report = _build_ai_journey_report(
+        db,
+        conversations=conversations,
+        conversation_ids=conversation_ids,
+        ai_state_map=ai_state_map,
+        closing_state_map=closing_state_map,
+        start=start,
+        end=end,
+    )
+    journey_current_map = journey_report["current_by_conversation"]
 
     rows: list[dict[str, Any]] = []
     all_period_messages: list[Message] = []
@@ -539,6 +922,7 @@ def build_chat_report(
         ai_state = ai_state_map.get(conversation.id)
         closing_state = closing_state_map.get(conversation.id)
         latest_run = latest_run_map.get(conversation.id)
+        journey_current = journey_current_map.get(conversation.id, {})
 
         rows.append(
             {
@@ -575,6 +959,10 @@ def build_chat_report(
                 "pending_followups": pending_followup_map.get(conversation.id, 0),
                 "last_ai_run_summary": latest_run.summary if latest_run else "",
                 "last_ai_run_intent": latest_run.intent if latest_run else "",
+                "journey_state": journey_current.get("code", ""),
+                "journey_label": journey_current.get("label", ""),
+                "journey_pending_action": journey_current.get("pending_action", ""),
+                "journey_stagnation_count": journey_current.get("stagnation_count", 0),
             }
         )
 
@@ -662,6 +1050,7 @@ def build_chat_report(
         "audit_logs": audit_rows,
         "connected_phones": _connected_phones(db, start, end),
         "operators": operator_rows,
+        "ai_journey": journey_report,
         "daily": [
             {"date": key, **value}
             for key, value in sorted(daily.items())
