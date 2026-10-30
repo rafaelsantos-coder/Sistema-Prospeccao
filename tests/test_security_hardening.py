@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.security import hash_password, password_needs_rehash, verify_password
+from app.security import (
+    hash_password,
+    password_needs_rehash,
+    rehash_legacy_password,
+    verify_password,
+)
 from app.services import network_security, secret_store
 from app.services.network_security import RemoteURLValidationError, validate_remote_url
 from app.services.upload_security import UploadValidationError, validate_upload
@@ -153,3 +158,16 @@ def test_internal_railway_healthcheck_bypasses_host_validation():
 def test_external_request_does_not_bypass_host_validation():
     request = _request("/dashboard", "100.64.0.1")
     assert security_middleware._is_internal_healthcheck(request) is False
+
+
+
+def test_legacy_short_password_can_be_rehashed_without_relaxing_new_policy():
+    legacy = _legacy_hash("curta123")
+    assert verify_password("curta123", legacy)
+    upgraded = rehash_legacy_password("curta123")
+    assert upgraded.startswith("$argon2id$")
+    assert verify_password("curta123", upgraded)
+    assert password_needs_rehash(upgraded) is False
+
+    with pytest.raises(ValueError):
+        hash_password("curta123")
