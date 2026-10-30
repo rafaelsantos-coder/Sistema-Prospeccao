@@ -27,6 +27,10 @@ class Settings:
     session_signing_key: str = os.getenv("SESSION_SIGNING_KEY", "").strip()
     data_encryption_key: str = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
     legacy_data_encryption_key: str = os.getenv("LEGACY_DATA_ENCRYPTION_KEY", "").strip()
+    database_pool_size: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
+    database_max_overflow: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
+    database_pool_timeout_seconds: int = int(os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "15"))
+    database_pool_recycle_seconds: int = int(os.getenv("DATABASE_POOL_RECYCLE_SECONDS", "1800"))
     database_url: str = normalize_database_url(
         os.getenv(
             "DATABASE_URL",
