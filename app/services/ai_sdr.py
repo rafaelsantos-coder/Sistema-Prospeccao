@@ -2146,7 +2146,28 @@ def _explicit_purchase_commitment(context: dict) -> bool:
         "com essa condicao eu fecho",
         "fechado",
     )
-    return any(cue in latest for cue in cues)
+    if any(cue in latest for cue in cues):
+        return True
+
+    previous = _fold_sales_text(_last_outbound_text(context))
+    purchase_question = any(
+        cue in previous
+        for cue in (
+            "quer contratar",
+            "contratar esse plano",
+            "quer seguir com o plano",
+            "quer aproveitar e contratar",
+            "contratar agora",
+        )
+    )
+    return purchase_question and latest in {
+        "sim",
+        "sim quero",
+        "quero",
+        "pode",
+        "vamos",
+        "confirmo",
+    }
 
 
 def _journey_product_kind(decision: AIDecision, context: dict) -> str:
@@ -2359,6 +2380,20 @@ def _apply_journey_orchestration_policy(
             decision.handoff_reason = ""
         if decision.sales_state == "READY_FOR_HUMAN_SALES":
             decision.sales_state = "NEGOTIATING"
+
+    mandatory_gate_states = {
+        "IDENTIFY_CUSTOMER",
+        "CHOOSE_PRODUCT",
+        "CHOOSE_SEGMENT",
+        "CONFIRM_CITY",
+    }
+    if state in mandatory_gate_states:
+        decision = _apply_stagnation_strategy(decision, context)
+        decision.journey_state = state
+        decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS[state]
+        decision.handoff_target = "NONE"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
 
     previous = _journey_memory_from_context(context)
     previous_state = str(previous.get("state") or "")
@@ -2836,6 +2871,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     job=job,
                     decision=decision,
                 )
+                if not closer_started:
+                    # Exceção operacional: se o Vendedor IA estiver indisponível,
+                    # não deixar um cliente que já aceitou comprar preso no SDR.
+                    decision.handoff_target = "HUMAN"
+                    decision.handoff_recommended = True
+                    decision.handoff_reason = (
+                        "Vendedor IA de Fechamento indisponível no momento."
+                    )
+                    decision.reply_text = (
+                        "Perfeito! Vou encaminhar seu atendimento para um vendedor "
+                        "concluir a contratação com você."
+                    )
+                    decision.quick_replies = []
+                    decision.followup_needed = False
 
             if not closer_started:
                 sent_message = _send_autonomous_reply(
