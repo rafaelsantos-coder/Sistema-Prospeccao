@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import AIFollowupJob, AIClosingState, AIConversationState, AIJob, Conversation, Message
+from app.models import AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIRun, Conversation, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import (
@@ -108,6 +108,7 @@ def _reschedule_initial_pending_followups() -> int:
 
 
 def _recover_closer_capture_patch_failures() -> int:
+    """Recupera escalonamentos técnicos antigos sem adivinhar a etapa."""
     db = SessionLocal()
     recovered = 0
     try:
@@ -121,7 +122,7 @@ def _recover_closer_capture_patch_failures() -> int:
                 .where(
                     AIClosingState.step == "ESCALATED",
                     AIClosingState.last_error.ilike("%Falha repetida na integração CRM:%"),
-                    AIClosingState.updated_at >= utcnow() - timedelta(hours=6),
+                    AIClosingState.updated_at >= utcnow() - timedelta(hours=12),
                 )
                 .order_by(AIClosingState.updated_at.desc())
                 .limit(50)
@@ -132,29 +133,35 @@ def _recover_closer_capture_patch_failures() -> int:
             if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
                 continue
 
-            try:
-                import json
-                collected = json.loads(state.collected_json or "{}")
-                if not isinstance(collected, dict):
-                    collected = {}
-            except Exception:
-                collected = {}
+            # A fonte da verdade é o snapshot do último run que falhou. Ele guarda
+            # a etapa antes da tentativa, evitando voltar para NAME/CPF/BILLING.
+            failed_run = db.scalar(
+                select(AIRun)
+                .where(
+                    AIRun.conversation_id == conversation.id,
+                    AIRun.agent_id == closer.id,
+                    AIRun.status == "FALHOU",
+                )
+                .order_by(AIRun.id.desc())
+                .limit(1)
+            )
+            resume_step = ""
+            if failed_run:
+                try:
+                    import json
+                    snapshot = json.loads(failed_run.input_snapshot_json or "{}")
+                    resume_step = str(snapshot.get("step") or "").strip()
+                except Exception:
+                    resume_step = ""
 
-            credit = str(state.credit_status or "").lower()
-            if any(token in credit for token in ("aprovado", "liberado", "pre-aprovado")):
-                if not collected.get("cep"):
-                    state.step = "CEP"
-                elif not collected.get("number"):
-                    state.step = "ADDRESS_NUMBER"
-                elif not collected.get("email"):
-                    state.step = "PLAN_CONFIRM"
-                elif not collected.get("paymentMethod") or not collected.get("dueDay"):
-                    state.step = "BILLING"
-                else:
-                    state.step = "BILLING"
-            else:
-                state.step = "CPF"
+            if not resume_step or resume_step in {"ESCALATED", "COMPLETED"}:
+                LOG.warning(
+                    "closer_crm_recovery_skipped_no_exact_step conversation=%s",
+                    conversation.id,
+                )
+                continue
 
+            state.step = resume_step
             state.agent_id = closer.id
             state.last_error = ""
             conversation.assigned_user_id = closer.user_id
@@ -206,7 +213,6 @@ def _recover_closer_capture_patch_failures() -> int:
     finally:
         db.close()
     return recovered
-
 
 def _backfill_missing_followups(*, limit: int = 250) -> int:
     """Recria cadência para conversas IA ativas que ficaram sem job pendente."""
