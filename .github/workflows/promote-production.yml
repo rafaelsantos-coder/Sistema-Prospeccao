@@ -1,0 +1,79 @@
+name: Promote production
+
+on:
+  workflow_run:
+    workflows:
+      - Testes e Segurança do Sulnet Prospecta
+      - CodeQL
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: promote-production-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aguardar todos os gates do mesmo commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          get_conclusion() {
+            local workflow="$1"
+            gh api -X GET               "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?branch=main&per_page=30"               --jq ".workflow_runs[] | select(.head_sha == \"$TARGET_SHA\") | .conclusion"               | head -n 1
+          }
+
+          for attempt in $(seq 1 40); do
+            ci="$(get_conclusion ci.yml || true)"
+            codeql="$(get_conclusion codeql.yml || true)"
+
+            echo "Gate CI: ${ci:-pending}; CodeQL: ${codeql:-pending}"
+
+            if [ "$ci" = "failure" ] || [ "$ci" = "cancelled" ] ||                [ "$codeql" = "failure" ] || [ "$codeql" = "cancelled" ]; then
+              echo "Um gate falhou; produção não será promovida."
+              exit 1
+            fi
+
+            if [ "$ci" = "success" ] && [ "$codeql" = "success" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+
+          echo "Timeout aguardando os dois gates."
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Promover commit para a branch production
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin production
+
+          current="$(git rev-parse origin/production)"
+          if [ "$current" = "$TARGET_SHA" ]; then
+            echo "Commit já está em production."
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor "$current" "$TARGET_SHA"; then
+            echo "Promoção não é fast-forward; recusando."
+            exit 1
+          fi
+
+          git push origin "$TARGET_SHA:refs/heads/production"
