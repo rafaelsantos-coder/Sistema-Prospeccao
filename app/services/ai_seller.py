@@ -672,6 +672,37 @@ def _sync_known_playbook_missing(
     return True
 
 
+def _sdr_ia_skip_code(code: str, collected: dict[str, Any]) -> bool:
+    return _sdr_ia_mode(collected) and _playbook_code_key(code) in SDR_IA_SKIP_CODES
+
+
+def _sync_sdr_ia_defaults(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> bool:
+    if not _sdr_ia_mode(collected):
+        return False
+    current = _category_values(collected)
+    desired = dict(current)
+    desired.update(_sdr_ia_defaults(collected))
+    if desired == current and collected.get("_sdr_ia_defaults_persisted"):
+        return False
+    _persist_category_form(
+        client,
+        state,
+        collected,
+        desired,
+    )
+    collected["_sdr_ia_defaults_persisted"] = True
+    LOG.info(
+        "seller_sdr_ia_defaults_synced opportunity=%s keys=%s",
+        state.opportunity_id,
+        sorted(_sdr_ia_defaults(collected).keys()),
+    )
+    return True
+
+
 def _playbook_step_for_item(
     item: CRMPlaybookMissingItem,
     state: AIClosingState,
@@ -679,6 +710,9 @@ def _playbook_step_for_item(
 ) -> str | None:
     key = _playbook_code_key(item.code)
     is_mobile = _is_mobile_plan(state, collected)
+
+    if _sdr_ia_skip_code(item.code, collected):
+        return None
 
     billing_steps = PLAYBOOK_BILLING_STEPS.get(key)
     if billing_steps:
@@ -728,6 +762,14 @@ def _query_playbook_guidance(
         if result.credit_status:
             state.credit_status = result.credit_status
 
+        if result.sdr_ia_funnel and _sync_sdr_ia_defaults(
+            client,
+            state,
+            collected,
+        ):
+            # O PATCH automático também precisa ser seguido por novo GET /playbook.
+            continue
+
         if result.credit_rejected:
             question = (
                 result.next_question
@@ -747,7 +789,23 @@ def _query_playbook_guidance(
             collected["_playbook_ready_for_win"] = False
             return "WAITING_CRM_READY", None
 
-        first = result.missing[0]
+        actionable = [
+            item
+            for item in result.missing
+            if not _sdr_ia_skip_code(item.code, collected)
+        ]
+        if not actionable:
+            skipped = [item.code for item in result.missing]
+            collected["_sdr_ia_skipped_missing_codes"] = skipped
+            _playbook_clear_question(collected)
+            LOG.warning(
+                "seller_sdr_ia_only_skipped_fields opportunity=%s codes=%s",
+                state.opportunity_id,
+                skipped,
+            )
+            return "WAITING_CRM_READY", None
+
+        first = actionable[0]
         if _sync_known_playbook_missing(
             client,
             state,
@@ -771,11 +829,14 @@ def _query_playbook_guidance(
             )
             return fallback_step, None
 
+        # nextQuestion é a fonte de verdade quando corresponde ao primeiro
+        # campo acionável. Se o CRM ainda devolver um campo vetado pelo SDR IA
+        # antes dele, usamos a question do próprio item permitido.
         question = (
             result.next_question
-            or first.question
-            or None
-        )
+            if first is result.missing[0]
+            else first.question
+        ) or first.question or None
         collected.pop("_playbook_unmapped_code", None)
         collected.pop("_playbook_unmapped_patch_key", None)
         collected["_playbook_step"] = next_step
