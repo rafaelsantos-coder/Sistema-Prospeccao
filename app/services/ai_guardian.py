@@ -32,6 +32,16 @@ LOG = logging.getLogger("sulnet_ai_guardian")
 GUARDIAN_ACTION = "AI_SUPERVISOR_GUARDIAN_REVIEW"
 GUARDIAN_ERROR_ACTION = "AI_SUPERVISOR_GUARDIAN_ERROR"
 
+
+class GuardianBlockedError(RuntimeError):
+    def __init__(self, result: "GuardianResult"):
+        super().__init__(
+            "Guardião bloqueou a ação: "
+            + (", ".join(result.issue_codes) or result.rationale or result.verdict)
+        )
+        self.result = result
+
+
 GUARDIAN_SYSTEM_PROMPT = """
 Você é o SulIA Guardião, a camada de controle em tempo real do SDR IA e do Vendedor IA
 da Sulnet. Você avalia uma ação ANTES de ela chegar ao cliente.
