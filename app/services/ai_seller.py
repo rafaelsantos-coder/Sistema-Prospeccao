@@ -3182,8 +3182,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             if _contract_is_signed(state.contract_status):
                 _finalize_signed_sale(client, state, collected)
                 reply = (
-                    "Contrato assinado com sucesso! Sua contratação foi concluída "
-                    "e seguirá para a operação da Sulnet."
+                    "Contrato assinado com sucesso! Sua contratação foi concluída. "
+                    "A ativação ocorre em até 48 horas após a assinatura do contrato."
                 )
                 if conversation.lead:
                     conversation.lead.stage = "GANHO"
