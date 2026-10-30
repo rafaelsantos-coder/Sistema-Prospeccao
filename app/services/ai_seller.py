@@ -1051,6 +1051,9 @@ def _persist_category_form(
     merged = _category_values(collected)
     if values:
         merged.update(values)
+    if _sdr_ia_mode(collected):
+        # sdrIaDefaults são dominantes em TODO PATCH de faturamento do SDR IA.
+        merged.update(_sdr_ia_defaults(collected))
     _store_category_values(
         collected,
         merged,
