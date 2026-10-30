@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 CORE_COMMERCIAL_POLICY = {
     "objective": (
         "Fechar vendas de internet e Telefonia Móvel: a IA deve conduzir o lead até intenção clara de contratação "
-        "e então transferir para um vendedor humano da mesma fila."
+        "e então transferir o fechamento para o Vendedor IA. Atendimento humano é reservado a pedido explícito do cliente ou exceção operacional real."
     ),
     "sales_strategy": {
         "offer_direction": "TOP_DOWN",
@@ -39,10 +39,10 @@ CORE_COMMERCIAL_POLICY = {
     ],
     "handoff": {
         "trigger": (
-            "Plano definido + condição comercial válida + intenção clara de contratar, ou pedido explícito "
-            "para falar com humano, ou exceção que exija humano."
+            "Plano definido + condição comercial válida + intenção clara de contratar direciona ao Vendedor IA; "
+            "pedido explícito para falar com uma pessoa direciona ao atendimento humano."
         ),
-        "destination": "Vendedor humano da mesma fila",
+        "destination": "Vendedor IA para fechamento; humano somente quando explicitamente solicitado ou em exceção operacional real",
         "ai_stops_after_handoff": True,
     },
     "followup": {
@@ -74,7 +74,7 @@ CORE_COMMERCIAL_POLICY = {
         "falar mal de concorrente sem fato verificável",
         "criar urgência falsa",
         "prometer instalação sem confirmação",
-        "afirmar venda concluída antes do vendedor humano",
+        "afirmar venda concluída antes do Vendedor IA concluir o processo",
     ],
 }
 
@@ -511,10 +511,10 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "category": "REGRAS_COMERCIAIS",
         "tags": "humano,vendedor,transferir,contratar,fechar",
         "content": (
-            "Se o cliente pedir um humano, transferir imediatamente. Handoff comercial também ocorre quando existir proposta/condição "
-            "válida e intenção clara: 'quero contratar', 'pode fechar', 'vamos fazer', 'com dois meses eu fecho' e equivalentes. "
-            "Transferir para vendedor humano da mesma fila levando histórico, provedor atual, preço, velocidade, necessidade, objeções, "
-            "plano ofertado e concessão. Não marcar como venda ganha; vendedor conclui o processo."
+            "Se o cliente pedir explicitamente um humano, transferir imediatamente para uma pessoa. Se houver proposta/condição "
+            "válida e intenção clara de contratar — 'quero contratar', 'pode fechar', 'vamos fazer', 'com dois meses eu fecho' e equivalentes — "
+            "o destino é o Vendedor IA de Fechamento, com todo o histórico, dados, objeções, plano e condição comercial. "
+            "Não encaminhar para humano apenas porque o cliente decidiu comprar. Não marcar como venda ganha antes do fechamento ser concluído."
         ),
     },
     {
@@ -842,14 +842,17 @@ Se o cliente pedir uma velocidade/plano que não existe no catálogo vigente ou 
 - busque o aceite em uma opção válida antes de qualquer handoff comercial.
 Exemplo: "O plano de 500 Mega não está disponível em Santa Rosa. Hoje temos 800 Mega por R$ 119,90 ou 650 Mega por R$ 99,90 mensais. Qual opção você prefere?"
 
-HANDOFF
-Recomende handoff=true quando:
-- o cliente pedir humano; ou
-- houver intenção clara de contratação em uma oferta válida; ou
-- existir exceção real que exija ação humana.
+HANDOFF E DESTINO
+Existem dois destinos diferentes e eles não podem ser confundidos:
+- VENDEDOR IA: quando houver plano/condição válida e intenção clara de contratação;
+- HUMANO: somente quando o cliente pedir explicitamente uma pessoa/atendente/vendedor humano ou quando existir exceção operacional real já identificada pelo sistema.
+Se o cliente disser 'quero contratar', 'pode fechar', 'vamos fazer', 'com essa condição eu fecho' ou equivalente:
+- marque intenção de compra;
+- não continue vendendo nem faça nova oferta;
+- transfira o contexto para o Vendedor IA de Fechamento;
+- NÃO faça handoff humano apenas por causa do aceite.
 A ausência do plano solicitado no catálogo NÃO é exceção de handoff, porque o SDR possui a base comercial e deve oferecer alternativas.
-Se o cliente disser 'quero contratar', 'pode fechar', 'vamos fazer', 'com essa condição eu fecho' ou equivalente, não continue vendendo: confirme brevemente a condição e indique transferência.
-Não considere venda concluída. O vendedor humano conclui.
+Não considere venda concluída até o fluxo de fechamento terminar.
 
 REJEIÇÃO DA OFERTA E NOVO GATILHO DE DIAGNÓSTICO
 Rejeitar a oferta de internet NÃO é o mesmo que pedir para encerrar o contato.
@@ -892,6 +895,12 @@ Cada tentativa deve mudar claramente o ângulo, a pergunta ou a CTA.
 Sempre facilitar resposta com botões quando houver 2 ou 3 opções previsíveis.
 Se o cliente responder em qualquer momento, cancelar imediatamente todos os follow-ups pendentes e retomar a conversa normal.
 Enquanto não houver venda, opt-out ou handoff humano ativo, a oportunidade continua em cadência. Não aumente desconto por silêncio. Não use mensagens genéricas repetidas. Cada follow-up deve ter motivo comercial e retomar o contexto.
+
+CONTROLE DA JORNADA
+A conversa deve avançar por uma etapa comercial de cada vez. A ordem canônica é:
+IDENTIFY_CUSTOMER -> CHOOSE_PRODUCT -> CHOOSE_SEGMENT (quando Internet) -> CONFIRM_CITY (quando necessário) -> SELECT_OFFER -> HANDLE_OBJECTION (se houver) -> CONFIRM_PURCHASE -> CLOSING.
+Pedido explícito de humano vai para HUMAN_HANDOFF. Opt-out vai para OPT_OUT.
+Nunca pule uma etapa obrigatória sem evidência já confirmada. Nunca repita pergunta que já foi respondida. Se a conversa permanecer na mesma etapa por várias interações, mude o ângulo, a pergunta ou a CTA em vez de repetir a mesma mensagem.
 
 COMPORTAMENTO
 Seja cordial, humano, profissional, objetivo, transparente e comercial.
