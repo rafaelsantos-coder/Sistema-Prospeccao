@@ -149,7 +149,9 @@ def test_sdr_ia_mobile_new_number_uses_defaults_and_skips_forbidden_fields():
     )
     assert ok is True
     assert values["tipo_contratacao"] == "Número novo"
-    assert _mobile_next_step(values, sdr_ia_funnel=True) == "MOBILE_PAYMENT_METHOD"
+    # Boleto + WhatsApp + vencimento já são defaults homologados do SDR IA,
+    # então não resta outra pergunta de faturamento nesta rota.
+    assert _mobile_next_step(values, sdr_ia_funnel=True) is None
 
 
 def test_non_sdr_mobile_contract_type_still_accepts_m2m():
@@ -1054,6 +1056,17 @@ class _Phase4ContractClient:
     def mark_won(self, opportunity_id, *, idempotency_key=None):
         self.mark_won_calls.append((opportunity_id, idempotency_key))
         return dict(self.won)
+
+    def get_status(self, opportunity_id):
+        return {
+            "opportunity": {
+                "id": opportunity_id,
+                "status": "open",
+            },
+            "contract": {
+                "status": "aguardando_assinatura",
+            },
+        }
 
     def get_opportunity(self, opportunity_id):
         return {"opportunityId": opportunity_id, "planId": 800}
