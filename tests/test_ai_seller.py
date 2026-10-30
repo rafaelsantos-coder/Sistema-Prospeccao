@@ -821,6 +821,7 @@ def _phase4_state(**overrides):
     data = {
         "opportunity_id": 11754,
         "external_id": "prospecta-conversation-99",
+        "plan_label": "800 Mega",
         "step": "BILLING_DUE_DAY",
         "contract_status": "",
         "sign_url": "",
