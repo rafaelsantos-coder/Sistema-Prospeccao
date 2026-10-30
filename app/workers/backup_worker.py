@@ -27,13 +27,13 @@ def _pg_url() -> str:
 def _client():
     return boto3.client(
         "s3",
-        endpoint_url=settings.media_s3_endpoint,
-        region_name=settings.media_s3_region or "auto",
-        aws_access_key_id=settings.media_s3_access_key_id,
-        aws_secret_access_key=settings.media_s3_secret_access_key,
+        endpoint_url=settings.backup_s3_endpoint,
+        region_name=settings.backup_s3_region or "auto",
+        aws_access_key_id=settings.backup_s3_access_key_id,
+        aws_secret_access_key=settings.backup_s3_secret_access_key,
         config=Config(
             signature_version="s3v4",
-            s3={"addressing_style": settings.media_s3_url_style},
+            s3={"addressing_style": settings.backup_s3_url_style},
         ),
     )
 
@@ -107,7 +107,7 @@ def _retention(client) -> int:
     token = None
     while True:
         kwargs = {
-            "Bucket": settings.media_s3_bucket,
+            "Bucket": settings.backup_s3_bucket,
             "Prefix": "backups/postgres/",
             "MaxKeys": 1000,
         }
@@ -121,7 +121,7 @@ def _retention(client) -> int:
         ]
         if old:
             client.delete_objects(
-                Bucket=settings.media_s3_bucket,
+                Bucket=settings.backup_s3_bucket,
                 Delete={"Objects": old, "Quiet": True},
             )
             deleted += len(old)
@@ -136,10 +136,10 @@ def create_backup() -> str:
         raise RuntimeError("Backup automático requer PostgreSQL.")
     if not all(
         [
-            settings.media_s3_endpoint,
-            settings.media_s3_bucket,
-            settings.media_s3_access_key_id,
-            settings.media_s3_secret_access_key,
+            settings.backup_s3_endpoint,
+            settings.backup_s3_bucket,
+            settings.backup_s3_access_key_id,
+            settings.backup_s3_secret_access_key,
         ]
     ):
         raise RuntimeError("Object storage não configurado.")
@@ -174,7 +174,7 @@ def create_backup() -> str:
         client = _client()
         client.upload_file(
             str(encrypted),
-            settings.media_s3_bucket,
+            settings.backup_s3_bucket,
             key,
             ExtraArgs={
                 "ContentType": "application/octet-stream",
@@ -197,7 +197,7 @@ def create_backup() -> str:
 def verify_latest_backup() -> str:
     client = _client()
     result = client.list_objects_v2(
-        Bucket=settings.media_s3_bucket,
+        Bucket=settings.backup_s3_bucket,
         Prefix="backups/postgres/",
         MaxKeys=1000,
     )
@@ -214,7 +214,7 @@ def verify_latest_backup() -> str:
         encrypted = Path(tmp) / "latest.enc"
         dump = Path(tmp) / "latest.dump"
         client.download_file(
-            settings.media_s3_bucket,
+            settings.backup_s3_bucket,
             key,
             str(encrypted),
         )
