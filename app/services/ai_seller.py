@@ -235,6 +235,23 @@ SDR_IA_SKIP_CODES = {
     "taxaativacao",
     "taxavalor",
 }
+SDR_IA_FORBIDDEN_STEPS = {
+    "MOBILE_NEW_ICCID",
+    "MOBILE_PORT_ICCID",
+    "MOBILE_PORT_DATE",
+    "MOBILE_M2M_QTY",
+    "MOBILE_M2M_ICCIDS",
+    "MOBILE_DUE_DAY",
+    "MOBILE_ACTIVATION_FEE",
+    "MOBILE_ACTIVATION_VALUE",
+    "MOBILE_UNIFY",
+    "MOBILE_UNIFY_REASON",
+    "BILLING_DUE_DAY",
+    "BILLING_ACTIVATION_FEE",
+    "BILLING_ACTIVATION_VALUE",
+    "BILLING_UNIFY",
+    "BILLING_UNIFY_REASON",
+}
 MOBILE_CONTRACT_BUTTONS = [
     {"id": "portabilidade", "label": "Portabilidade"},
     {"id": "numero_novo", "label": "Número novo"},
@@ -1852,6 +1869,12 @@ def _create_crm_if_ready(
 
 
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
+    if _sdr_ia_mode(collected) and state.step in SDR_IA_FORBIDDEN_STEPS:
+        return (
+            "Vou seguir apenas com os dados necessários para concluir sua contratação "
+            "pelo canal digital."
+        )
+
     playbook_question = str(collected.get("_playbook_question") or "").strip()
     playbook_step = str(collected.get("_playbook_step") or "").strip()
     if playbook_question and playbook_step == state.step:
@@ -2017,6 +2040,12 @@ def _seller_followup_prompt(
     *,
     followup_step: int,
 ) -> str:
+    if _sdr_ia_mode(collected) and state.step in SDR_IA_FORBIDDEN_STEPS:
+        return (
+            "Para continuarmos de onde paramos, vou seguir apenas com os dados "
+            "necessários para a contratação digital."
+        )
+
     plan = state.plan_label or "plano combinado"
     prefix = (
         "Para continuarmos de onde paramos, "
