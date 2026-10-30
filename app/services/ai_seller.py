@@ -963,17 +963,34 @@ def _sync_plan_context(
     collected["categoryId"] = resolved_category_id
     collected["categoryName"] = str(selected.get("categoryName") or "")
     collected["catalogPlanName"] = str(selected.get("name") or "").strip()
+    collected["contractProductName"] = collected["catalogPlanName"]
 
-    # Repara oportunidades antigas que receberam o plano apenas pelo fallback
-    # genérico e ainda não expõem product_id no endpoint de captura.
-    if resolved_plan_id and plan_id != resolved_plan_id:
+    # Para contrato, o nome usado no CRM precisa ser exatamente o nome do
+    # produto do catálogo (que é o nome conciliado pelo registry/Admin → Contratos).
+    # O rótulo comercial do WhatsApp pode continuar curto no estado local.
+    if (
+        resolved_plan_id
+        and (
+            plan_id != resolved_plan_id
+            or collected.get("_catalog_plan_synced") != collected["catalogPlanName"]
+        )
+    ):
+        catalog_value = selected.get("monthlyValue")
+        payload: dict[str, Any] = {
+            "planId": resolved_plan_id,
+            "planLabel": collected["catalogPlanName"],
+        }
+        if catalog_value not in (None, ""):
+            payload["catalogMonthlyValue"] = catalog_value
+            if state.offer_price is None:
+                payload["monthlyValue"] = catalog_value
+        elif state.offer_price is not None:
+            payload["monthlyValue"] = state.offer_price
         client.update_opportunity(
             state.opportunity_id,
-            {
-                "planId": resolved_plan_id,
-                "planLabel": collected["catalogPlanName"],
-            },
+            payload,
         )
+        collected["_catalog_plan_synced"] = collected["catalogPlanName"]
 
 
 def _persist_category_form(
@@ -1443,6 +1460,15 @@ def _prepare_contract_before_win(
         state.contract_status = "aguardando_validacao_crm"
         return _prompt_for_step(state, collected)
 
+    _sync_plan_context(client, state, collected)
+    contract_product_name = str(collected.get("contractProductName") or "").strip()
+    if not contract_product_name:
+        raise CRMIntegrationError(
+            "Produto do CRM não resolvido pelo catálogo para geração do contrato.",
+            error_code="CRM_CONTRACT_PRODUCT_NAME_MISSING",
+        )
+    collected["_contract_product_name"] = contract_product_name
+
     state.step = "WAITING_CONTRACT"
     generated: dict[str, Any] = {}
 
@@ -1491,7 +1517,8 @@ def _prepare_contract_before_win(
         state.step = "WAITING_SIGNATURE"
         return (
             "Seu cadastro foi concluído e o contrato está pronto para assinatura. "
-            f"Você pode assinar por este link: {sign_url}"
+            f"Você pode assinar por este link: {sign_url} "
+            "Após a assinatura, a ativação ocorre em até 48 horas."
         )
 
     return _prompt_for_step(state, collected)
@@ -2816,7 +2843,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         sdr_ia_funnel=_sdr_ia_mode(collected),
                     ) or "MOBILE_CONTRACT_TYPE"
                 else:
-                    fallback_step = "BILLING"
+                    fallback_step = (
+                        "BILLING_PAYMENT_METHOD"
+                        if _sdr_ia_mode(collected)
+                        else "BILLING"
+                    )
                 _save_collected(state, collected)
                 reply = _advance_with_playbook(
                     client,
