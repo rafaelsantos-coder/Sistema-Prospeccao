@@ -17,6 +17,7 @@ from app.services.seed import seed_database
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import instance_webhook_url, list_zapi_instances, service_for_instance
 from app.security_middleware import install_security_middlewares
+from app.redis_session import RedisSessionMiddleware
 from app.web import render
 
 
@@ -99,14 +100,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=settings.effective_session_signing_key,
-    session_cookie=settings.session_cookie,
-    same_site="lax",
-    https_only=settings.is_production,
-    max_age=60 * 60 * 12,
-)
+if settings.redis_url:
+    app.add_middleware(
+        RedisSessionMiddleware,
+        redis_url=settings.redis_url,
+        secret_key=settings.effective_session_signing_key,
+        cookie_name=settings.session_cookie,
+        same_site="lax",
+        https_only=settings.is_production,
+        max_age=settings.session_max_age_seconds,
+    )
+else:
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.effective_session_signing_key,
+        session_cookie=settings.session_cookie,
+        same_site="lax",
+        https_only=settings.is_production,
+        max_age=settings.session_max_age_seconds,
+    )
 
 install_security_middlewares(app)
 
