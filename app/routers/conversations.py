@@ -33,6 +33,8 @@ from app.services.conversation_engine import (
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
+from app.services.pii import redact_pii_text
+from app.services.upload_security import UploadValidationError, validate_upload
 from app.services.queue_routing import queue_for_conversation, queue_member_user_ids
 from app.services.whatsapp_presence import is_user_whatsapp_online, online_user_ids
 from app.services.zapi import ZApiError
@@ -365,7 +367,10 @@ def send_message(
                 status="CONCLUIDA",
                 channel="WHATSAPP",
                 outcome=f"CHAT_ZAPI:{provider_id or zaap_id or sent.id}"[:120],
-                description=f"Mensagem enviada pelo Inbox: {clean_message}",
+                description=(
+                    "Mensagem enviada pelo Inbox: "
+                    + redact_pii_text(clean_message)[:500]
+                ),
                 completed_at=utcnow(),
             )
         )
@@ -419,16 +424,19 @@ async def send_media(
         )
 
     original_name = Path(media.filename or "arquivo").name
-    extension = Path(original_name).suffix.lower()
-    blocked = {".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1", ".sh", ".apk", ".dmg"}
-    if extension in blocked:
-        return JSONResponse(
-            {"ok": False, "error": "Este tipo de arquivo nao e permitido."},
-            status_code=400,
-        )
-
     raw = await media.read()
     mime_type = (media.content_type or "application/octet-stream").split(";")[0].strip()
+    try:
+        validate_upload(
+            filename=original_name,
+            mime_type=mime_type,
+            data=raw,
+        )
+    except UploadValidationError as exc:
+        return JSONResponse(
+            {"ok": False, "error": str(exc)},
+            status_code=400,
+        )
     kind = _media_kind(original_name, mime_type)
 
     if kind == "AUDIO":
