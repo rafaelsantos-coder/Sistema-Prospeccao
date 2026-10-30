@@ -250,6 +250,11 @@ async def oidc_callback(
         )
 
     info = token.get("userinfo") or {}
+    if not info:
+        try:
+            info = await client.userinfo(token=token)
+        except Exception:
+            info = {}
     email = str(info.get("email") or "").strip().casefold()
     if not email or not _allowed_oidc_email(email):
         write_audit(
