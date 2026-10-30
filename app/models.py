@@ -841,7 +841,7 @@ class AIClosingState(Base):
     opportunity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     protocol: Mapped[str] = mapped_column(String(80), default="")
     plan_label: Mapped[str] = mapped_column(String(180), default="")
-    offer_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    offer_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     credit_status: Mapped[str] = mapped_column(String(80), default="")
     credit_analysis_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     contract_status: Mapped[str] = mapped_column(String(80), default="")
