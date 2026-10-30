@@ -7,6 +7,8 @@ import os
 import secrets
 from typing import Any
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import HTTPException, Request, status
 from sqlalchemy.orm import Session
 
@@ -14,31 +16,59 @@ from app.models import User
 
 
 PBKDF2_ITERATIONS = 390_000
+_ARGON2 = PasswordHasher(
+    time_cost=2,
+    memory_cost=19_456,
+    parallelism=1,
+    hash_len=32,
+    salt_len=16,
+)
 
 
 def hash_password(password: str) -> str:
-    if len(password) < 10:
-        raise ValueError("A senha precisa ter pelo menos 10 caracteres.")
-    salt = os.urandom(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
-    return "pbkdf2_sha256${}${}${}".format(
-        PBKDF2_ITERATIONS,
-        base64.urlsafe_b64encode(salt).decode("ascii"),
-        base64.urlsafe_b64encode(digest).decode("ascii"),
-    )
+    if len(password) < 12:
+        raise ValueError("A senha precisa ter pelo menos 12 caracteres.")
+    return _ARGON2.hash(password)
 
 
-def verify_password(password: str, encoded: str) -> bool:
+def _verify_pbkdf2(password: str, encoded: str) -> bool:
     try:
         algorithm, iterations, salt_b64, digest_b64 = encoded.split("$", 3)
         if algorithm != "pbkdf2_sha256":
             return False
         salt = base64.urlsafe_b64decode(salt_b64.encode("ascii"))
         expected = base64.urlsafe_b64decode(digest_b64.encode("ascii"))
-        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iterations))
+        actual = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            int(iterations),
+        )
         return hmac.compare_digest(actual, expected)
     except (ValueError, TypeError):
         return False
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    if not encoded:
+        return False
+    if encoded.startswith("$argon2"):
+        try:
+            return bool(_ARGON2.verify(encoded, password))
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False
+    return _verify_pbkdf2(password, encoded)
+
+
+def password_needs_rehash(encoded: str) -> bool:
+    if not encoded:
+        return True
+    if not encoded.startswith("$argon2"):
+        return True
+    try:
+        return _ARGON2.check_needs_rehash(encoded)
+    except (InvalidHashError, VerificationError):
+        return True
 
 
 def login_user(request: Request, user: User) -> None:
@@ -77,13 +107,19 @@ def get_current_user(request: Request, db: Session) -> User | None:
 def require_user(request: Request, db: Session) -> User:
     user = get_current_user(request, db)
     if not user or not user.active:
-        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"})
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Location": "/login"},
+        )
     return user
 
 
 def require_roles(user: User, *roles: str) -> None:
     if user.role not in roles:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acesso não autorizado.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso não autorizado.",
+        )
 
 
 def csrf_token(request: Request) -> str:
@@ -96,8 +132,15 @@ def csrf_token(request: Request) -> str:
 
 def validate_csrf(request: Request, submitted: str | None) -> None:
     expected = request.session.get("csrf_token")
-    if not expected or not submitted or not hmac.compare_digest(expected, submitted):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sessão inválida. Atualize a página.")
+    if (
+        not expected
+        or not submitted
+        or not hmac.compare_digest(expected, submitted)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sessão inválida. Atualize a página.",
+        )
 
 
 def user_to_session_context(user: User | None) -> dict[str, Any] | None:
