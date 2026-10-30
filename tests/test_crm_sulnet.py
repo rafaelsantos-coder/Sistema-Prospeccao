@@ -359,7 +359,12 @@ class WinFallbackClient:
 
     def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self.__class__.captured.append(
-            {"method": method, "url": url, "json": kwargs.get("json")}
+            {
+                "method": method,
+                "url": url,
+                "json": kwargs.get("json"),
+                "headers": dict(self.headers),
+            }
         )
         response = FakeResponse()
         if method == "GET" and url.endswith("/api/capture/config"):
@@ -402,6 +407,9 @@ def test_mark_won_falls_back_to_generic_opportunity_when_capture_route_missing(m
     )
     assert patch["json"]["status"] == "won"
     assert "stageId" not in patch["json"]
+    assert patch["headers"]["Authorization"] == "Bearer service-token-value"
+    assert "Idempotency-Key" in patch["headers"]
+    assert "X-Integration-Key" not in patch["headers"]
     assert result["opportunity"]["status"] == "won"
     assert result["backofficeOpportunityId"] == 9001
     assert result["contract"]["status"] == "aguardando_backoffice"
