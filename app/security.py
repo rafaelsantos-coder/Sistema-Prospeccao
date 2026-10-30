@@ -12,6 +12,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from fastapi import HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import User
 
 
@@ -105,6 +106,18 @@ def get_current_user(request: Request, db: Session) -> User | None:
     if not version_matches:
         request.session.clear()
         return None
+    if (
+        user.role.upper() in settings.required_mfa_roles
+        and not user.mfa_enabled
+        and request.url.path not in {
+            "/mfa/setup",
+            "/logout",
+        }
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Location": "/mfa/setup"},
+        )
     if user.must_change_password and request.url.path not in {
         "/change-password",
         "/logout",
