@@ -37,6 +37,8 @@ class User(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
     session_version: Mapped[int] = mapped_column(Integer, default=1)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    mfa_secret_encrypted: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -841,7 +843,7 @@ class AIClosingState(Base):
     opportunity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     protocol: Mapped[str] = mapped_column(String(80), default="")
     plan_label: Mapped[str] = mapped_column(String(180), default="")
-    offer_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    offer_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     credit_status: Mapped[str] = mapped_column(String(80), default="")
     credit_analysis_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     contract_status: Mapped[str] = mapped_column(String(80), default="")
