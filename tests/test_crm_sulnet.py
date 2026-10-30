@@ -370,12 +370,7 @@ class WinFallbackClient:
             response.payload = {"error": "Rota não encontrada."}
         elif method == "GET" and url.endswith("/api/capture/context"):
             response.status_code = 200
-            response.payload = {
-                "stages": [
-                    {"id": 110, "name": "DADOS E PLANO"},
-                    {"id": 120, "name": "GANHO"},
-                ]
-            }
+            response.payload = {"originId": 77}
         elif method == "PATCH" and url.endswith("/api/opportunities/1234"):
             response.status_code = 200
             response.payload = {
@@ -406,7 +401,7 @@ def test_mark_won_falls_back_to_generic_opportunity_when_capture_route_missing(m
         and item["url"].endswith("/api/opportunities/1234")
     )
     assert patch["json"]["status"] == "won"
-    assert patch["json"]["stageId"] == 120
+    assert "stageId" not in patch["json"]
     assert result["opportunity"]["status"] == "won"
     assert result["backofficeOpportunityId"] == 9001
     assert result["contract"]["status"] == "aguardando_backoffice"
