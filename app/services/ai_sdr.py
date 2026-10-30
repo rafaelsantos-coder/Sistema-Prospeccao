@@ -2919,12 +2919,23 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     decision.handoff_reason = (
                         "Vendedor IA de Fechamento indisponível no momento."
                     )
+                    decision.journey_state = "HUMAN_HANDOFF"
+                    decision.journey_pending_action = (
+                        "Transferir para atendimento humano por indisponibilidade operacional do Vendedor IA."
+                    )
                     decision.reply_text = (
                         "Perfeito! Vou encaminhar seu atendimento para um vendedor "
                         "concluir a contratação com você."
                     )
                     decision.quick_replies = []
                     decision.followup_needed = False
+                    fallback_conversation = db.get(Conversation, job.conversation_id)
+                    if fallback_conversation and fallback_conversation.lead:
+                        _persist_journey_memory(
+                            fallback_conversation.lead,
+                            decision,
+                            conversation_id=fallback_conversation.id,
+                        )
 
             if not closer_started:
                 sent_message = _send_autonomous_reply(
@@ -2978,6 +2989,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 job.status = "FALHOU"
             return "send_failed"
 
+    output = decision.model_dump()
     run.status = "CONCLUIDO"
     run.intent = decision.intent
     run.qualification_score = decision.qualification_score
