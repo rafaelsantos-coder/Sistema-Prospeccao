@@ -1726,13 +1726,24 @@ def start_closing_from_sdr(
         )
         return True
 
+    prompt = ""
     try:
         _create_crm_if_ready(db, state=state, conversation=conversation)
+        if state.opportunity_id:
+            playbook_client = SulnetCRMClient.from_settings()
+            prompt = _advance_with_playbook(
+                playbook_client,
+                state,
+                collected,
+                fallback_step=state.step,
+            )
+            _save_collected(state, collected)
     except CRMIntegrationError as exc:
         state.last_error = str(exc)
         LOG.warning("closer_crm_create_deferred conversation=%s error=%s", conversation.id, exc)
 
-    prompt = _prompt_for_step(state, collected)
+    if not prompt:
+        prompt = _prompt_for_step(state, collected)
     _send_step_message(
         db,
         agent=closer,
@@ -1868,8 +1879,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     conversation.lead.contact_name = name
                 _save_collected(state, collected)
                 _create_crm_if_ready(db, state=state, conversation=conversation)
-                state.step = "CPF"
-                reply = _prompt_for_step(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="CPF",
+                )
 
         elif state.step == "CPF":
             cpf = _extract_cpf(text)
@@ -1896,8 +1911,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     collected["creditStatus"] = state.credit_status
                     _save_collected(state, collected)
                     if credit.get("approved"):
-                        state.step = "CEP"
-                        reply = _prompt_for_step(state, collected)
+                        reply = _advance_with_playbook(
+                            client,
+                            state,
+                            collected,
+                            fallback_step="CEP",
+                        )
                     elif credit.get("rejected"):
                         state.step = "CREDIT_REJECTED"
                         reply = _prompt_for_step(state, collected)
@@ -1919,8 +1938,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 collected["creditStatus"] = state.credit_status
                 _save_collected(state, collected)
                 if credit.get("approved"):
-                    state.step = "CEP"
-                    reply = _prompt_for_step(state, collected)
+                    reply = _advance_with_playbook(
+                        client,
+                        state,
+                        collected,
+                        fallback_step="CEP",
+                    )
                 elif credit.get("rejected"):
                     state.step = "CREDIT_REJECTED"
                     reply = _prompt_for_step(state, collected)
@@ -1934,8 +1957,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             state.credit_status = credit_status
             n = _norm(credit_status)
             if any(token in n for token in ["aprovado", "pre-aprovado", "liberado"]):
-                state.step = "CEP"
-                reply = _prompt_for_step(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="CEP",
+                )
             elif "reprov" in n:
                 state.step = "CREDIT_REJECTED"
                 reply = _prompt_for_step(state, collected)
@@ -1974,6 +2001,60 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     "uf": collected["uf"],
                 })
                 _save_collected(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="ADDRESS_NUMBER",
+                )
+
+        elif state.step == "ADDRESS_DETAILS":
+            playbook_code = _playbook_code_key(
+                str(collected.get("_playbook_code") or "")
+            )
+            value = re.sub(r"\s+", " ", text).strip(" .,!;:")
+            if len(value) < 2:
+                reply = _prompt_for_step(state, collected)
+            elif playbook_code in {"street", "rua"}:
+                value = re.sub(
+                    r"^(rua|avenida|av\.?|travessa|estrada)\s*[:\-]?\s*",
+                    "",
+                    value,
+                    flags=re.I,
+                ).strip() or value
+                collected["street"] = value[:180]
+                client.update_opportunity(
+                    state.opportunity_id or 0,
+                    {"street": collected["street"]},
+                )
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="ADDRESS_NUMBER",
+                )
+            elif playbook_code in {"neighborhood", "bairro"}:
+                value = re.sub(
+                    r"^bairro\s*[:\-]?\s*",
+                    "",
+                    value,
+                    flags=re.I,
+                ).strip() or value
+                collected["neighborhood"] = value[:160]
+                client.update_opportunity(
+                    state.opportunity_id or 0,
+                    {"neighborhood": collected["neighborhood"]},
+                )
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="ADDRESS_NUMBER",
+                )
+            else:
+                collected["_playbook_unmapped_code"] = str(
+                    collected.get("_playbook_code") or ""
+                )
                 state.step = "ADDRESS_NUMBER"
                 reply = _prompt_for_step(state, collected)
 
@@ -1986,12 +2067,16 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 if complement:
                     collected["complement"] = complement
                 client.update_opportunity(state.opportunity_id or 0, {
-                    "number": number,
+                    "addressNumber": number,
                     "complement": complement,
                 })
                 _save_collected(state, collected)
-                state.step = "PLAN_CONFIRM"
-                reply = _prompt_for_step(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="PLAN_CONFIRM",
+                )
 
         elif state.step == "PLAN_CONFIRM":
             answer = _yes_no(text)
@@ -2041,8 +2126,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         raise
                 _sync_plan_context(client, state, collected)
                 _save_collected(state, collected)
-                state.step = "EMAIL"
-                reply = _prompt_for_step(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="EMAIL",
+                )
             elif answer == "NAO":
                 requested = (interpreted.requested_plan or "").strip()
                 if requested:
@@ -2058,8 +2147,13 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         )
                         _sync_plan_context(client, state, collected)
                         _save_collected(state, collected)
-                        state.step = "EMAIL"
-                        reply = f"Certo, alterei para {state.plan_label}. " + _prompt_for_step(state, collected)
+                        next_prompt = _advance_with_playbook(
+                            client,
+                            state,
+                            collected,
+                            fallback_step="EMAIL",
+                        )
+                        reply = f"Certo, alterei para {state.plan_label}. " + next_prompt
                     else:
                         reply = "Sem problema. Qual plano você quer contratar? Me diga a velocidade ou o nome do plano."
                 else:
@@ -2082,11 +2176,16 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     values = _mobile_values(collected)
                     collected["mobileCategoryValues"] = values
                     _persist_mobile_category_form(client, state, collected)
-                    state.step = _mobile_next_step(values) or "MOBILE_CONTRACT_TYPE"
+                    fallback_step = _mobile_next_step(values) or "MOBILE_CONTRACT_TYPE"
                 else:
-                    state.step = "BILLING"
+                    fallback_step = "BILLING"
                 _save_collected(state, collected)
-                reply = _prompt_for_step(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step=fallback_step,
+                )
 
         elif state.step.startswith("MOBILE_"):
             values = _mobile_values(collected)
