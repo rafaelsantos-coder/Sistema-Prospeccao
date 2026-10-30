@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 import re
@@ -24,16 +24,21 @@ class CRMIntegrationError(RuntimeError):
 @dataclass(slots=True)
 class SulnetCRMClient:
     base_url: str
-    bearer_token: str
+    bearer_token: str = ""
+    integration_key: str = ""
     timeout: float = 25.0
+    _profile_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def from_settings(cls) -> "SulnetCRMClient":
-        if not settings.sulnet_crm_base_url or not settings.sulnet_crm_bearer_token:
-            raise CRMIntegrationError("Integração com o CRM Sulnet não configurada.")
+        if not settings.sulnet_crm_base_url:
+            raise CRMIntegrationError("URL da integração com o CRM Sulnet não configurada.")
+        if not settings.sulnet_ai_integration_key and not settings.sulnet_crm_bearer_token:
+            raise CRMIntegrationError("Credencial da integração com o CRM Sulnet não configurada.")
         return cls(
             base_url=settings.sulnet_crm_base_url.rstrip("/"),
             bearer_token=settings.sulnet_crm_bearer_token,
+            integration_key=settings.sulnet_ai_integration_key,
         )
 
     def _request(
@@ -51,9 +56,18 @@ class SulnetCRMClient:
                 timeout=timeout or self.timeout,
                 follow_redirects=False,
                 headers={
-                    "Authorization": f"Bearer {self.bearer_token}",
+                    **(
+                        {"Authorization": f"Bearer {self.bearer_token}"}
+                        if self.bearer_token
+                        else {}
+                    ),
+                    **(
+                        {"X-Integration-Key": self.integration_key}
+                        if self.integration_key
+                        else {}
+                    ),
                     "Accept": "application/json",
-                    "User-Agent": "Sulnet-Prospecta-Vendedor-IA/1.0",
+                    "User-Agent": "Sulnet-Prospecta-Vendedor-IA/2.0",
                 },
             ) as client:
                 response = client.request(
@@ -92,14 +106,56 @@ class SulnetCRMClient:
             )
         return payload
 
+    def integration_profile(self, *, refresh: bool = False) -> dict[str, Any]:
+        if self._profile_cache is not None and not refresh:
+            return dict(self._profile_cache)
+
+        profile: dict[str, Any] = {}
+        try:
+            result = self._request("GET", "/api/capture/config")
+            if isinstance(result, dict):
+                profile = dict(result)
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+
+        if not profile:
+            try:
+                result = self._request("GET", "/api/capture/context")
+                if isinstance(result, dict):
+                    profile = dict(result)
+            except CRMIntegrationError as exc:
+                if exc.status_code != 404:
+                    raise
+
+        # Servidores antigos não publicam apiVersion/capabilities. Marcamos
+        # explicitamente como legado para escolher compatibilidade sem tentar
+        # cada endpoint no escuro.
+        profile.setdefault("apiVersion", 1 if profile else 0)
+        profile.setdefault("capabilities", {})
+        profile["legacy"] = int(profile.get("apiVersion") or 0) < 2
+        self._profile_cache = dict(profile)
+        LOG.info(
+            "crm_profile api_version=%s app_version=%s legacy=%s",
+            profile.get("apiVersion"),
+            profile.get("appVersion") or "-",
+            profile.get("legacy"),
+        )
+        return dict(profile)
+
+    def supports(self, capability: str) -> bool:
+        profile = self.integration_profile()
+        capabilities = profile.get("capabilities")
+        return bool(
+            isinstance(capabilities, dict)
+            and capabilities.get(capability) is True
+        )
+
     def context(self) -> dict[str, Any]:
-        result = self._request("GET", "/api/capture/context")
-        return result if isinstance(result, dict) else {}
+        return self.integration_profile()
 
     def config(self) -> dict[str, Any]:
-        # Compatibilidade interna: o CRM on-prem expõe o contexto operacional
-        # (origem/funil/permissões) em /api/capture/context.
-        return self.context()
+        return self.integration_profile()
 
     def resolve_origin_id(self) -> int | None:
         context = self.context()
