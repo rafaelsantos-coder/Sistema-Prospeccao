@@ -2048,6 +2048,30 @@ def _apply_offer_rejection_diagnostic_policy(
     return decision
 
 
+def _recent_outbound_messages_for_repetition(
+    context: dict,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    rows = [
+        str(item.get("body") or "").strip()
+        for item in context.get("history", [])
+        if str(item.get("direction") or "").upper() == "OUTBOUND"
+        and str(item.get("body") or "").strip()
+    ]
+    return rows[-limit:]
+
+
+def _sdr_reply_repeats_recent_outbound(decision: AIDecision, context: dict) -> bool:
+    candidate = _fold_sales_text(decision.reply_text)
+    if not candidate:
+        return False
+    for previous in _recent_outbound_messages_for_repetition(context):
+        if candidate == _fold_sales_text(previous):
+            return True
+    return False
+
+
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
@@ -2073,6 +2097,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "na resposta ao cliente, não todos os argumentos disponíveis na base. Se o cliente fizer uma pergunta cuja resposta "
         "não esteja sustentada pela base aprovada nem pelas regras estruturadas, não invente: responda com transparência e "
         "preencha unanswered_question com a dúvida que precisa de validação administrativa. "
+        "Se existir anti_repetition.forbidden_previous_messages no contexto, é proibido devolver qualquer uma dessas mensagens novamente. "
+        "Mantenha o objetivo comercial e a informação que ainda falta, mas formule a continuação de outra maneira e avance a conversa. "
         "Sempre que a mensagem fizer uma pergunta com 2 ou 3 respostas previsíveis, preencha quick_replies com "
         "2 ou 3 botões curtos, com no máximo 20 caracteres por label. Exemplos: Para casa/Para empresa; Sim/Não; "
         "800 Mega/650 Mega; Preço/Lentidão/Quedas. Para pergunta realmente aberta, quick_replies pode ficar vazio. "
@@ -2463,6 +2489,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     try:
         decision = run_ai_decision(agent, context)
+        if _sdr_reply_repeats_recent_outbound(decision, context):
+            retry_context = dict(context)
+            retry_context["anti_repetition"] = {
+                "forbidden_previous_messages": _recent_outbound_messages_for_repetition(
+                    context
+                ),
+                "reason": "A primeira decisão repetiu uma mensagem já enviada nesta conversa.",
+            }
+            LOG.info(
+                "ai_sdr_repeat_regeneration job=%s conversation=%s",
+                job.id,
+                job.conversation_id,
+            )
+            decision = run_ai_decision(agent, retry_context)
     except Exception as exc:
         run.status = "FALHOU"
         run.error = str(exc)[:2000]
