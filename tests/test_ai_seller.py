@@ -19,6 +19,7 @@ from app.services.ai_seller import (
     _extract_iccids,
     _extract_name,
     _contract_is_signed,
+    _complete_if_crm_already_won,
     _finalize_signed_sale,
     _finish_sale_contract,
     _prepare_contract_before_win,
@@ -135,6 +136,8 @@ def test_sdr_ia_mobile_new_number_uses_defaults_and_skips_forbidden_fields():
     }
     values = _mobile_values(collected)
     assert values["vencimento"] == "10"
+    assert values["forma_pagamento"] == "Boleto"
+    assert values["envio_fatura"] == ["WhatsApp"]
     assert values["taxa_ativacao"] == "Não"
     assert values["tipo_assinatura_contrato"] == MOBILE_SIGNATURE_TYPE
 
@@ -836,15 +839,17 @@ def test_sdr_ia_defaults_are_persisted_before_next_billing_question():
         client,
         state,
         collected,
-        fallback_step="BILLING_PAYMENT_METHOD",
+        fallback_step="WAITING_CRM_READY",
     )
 
-    assert step == "BILLING_PAYMENT_METHOD"
-    assert question == payment.question
+    assert step == "WAITING_CRM_READY"
+    assert question is None
     assert client.playbook_calls == 2
     assert client.category_updates
     _, values, category_id, plan_id = client.category_updates[0]
     assert values["vencimento"] == "10"
+    assert values["forma_pagamento"] == "Boleto"
+    assert values["envio_fatura"] == ["WhatsApp"]
     assert values["taxa_ativacao"] == "Não"
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
     assert "novo_iccid" not in values
@@ -911,6 +916,8 @@ def test_sdr_ia_playbook_skips_due_fee_unify_iccid_and_m2m_fields():
         "m2m_quantidade",
         "m2m_iccids",
         "vencimento",
+        "forma_pagamento",
+        "envio_fatura",
         "taxa_ativacao",
         "taxa_valor",
         "unificar_faturas",
@@ -1178,6 +1185,35 @@ def test_phase4_contract_without_sign_url_stays_pending_and_not_won():
     assert state.step == "WAITING_CONTRACT"
     assert state.contract_status == "gerado"
     assert client.mark_won_calls == []
+
+
+def test_phase4_crm_already_won_completes_without_second_mark_won():
+    client = _Phase4ContractClient()
+    client.get_status = lambda opportunity_id: {
+        "opportunity": {
+            "id": opportunity_id,
+            "status": "won",
+            "backofficeCopy": {"id": 99001},
+        },
+        "contract": {"status": "signed"},
+    }
+    state = _phase4_state(
+        step="WAITING_SIGNATURE",
+        contract_status="aguardando_assinatura",
+    )
+    collected = {}
+
+    result = _complete_if_crm_already_won(
+        client,
+        state,
+        collected,
+    )
+
+    assert result is not None
+    assert client.mark_won_calls == []
+    assert state.step == "COMPLETED"
+    assert collected["_won_confirmed_by_crm"] is True
+    assert collected["_backoffice_opportunity_id"] == 99001
 
 
 def test_phase4_signed_contract_marks_won_with_stable_idempotency_key():
