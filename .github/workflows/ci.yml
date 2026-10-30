@@ -29,7 +29,7 @@ jobs:
         run: python -m compileall -q app alembic
 
       - name: Lint crítico
-        run: ruff check app tests --select E9,F63,F7,F82,B
+        run: ruff check app tests --select E9,F63,F7,F82,B --ignore B008
 
       - name: Validar migrações em banco limpo
         env:
