@@ -238,6 +238,18 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
             ):
                 continue
 
+            if state.state == "CLOSING":
+                from app.services.ai_seller import SELLER_CUSTOMER_INPUT_STEPS
+                closing = db.scalar(
+                    select(AIClosingState).where(
+                        AIClosingState.conversation_id == conversation.id
+                    )
+                )
+                if not closing or closing.step not in SELLER_CUSTOMER_INPUT_STEPS:
+                    # Crédito em análise, geração de contrato e outras etapas
+                    # sistêmicas são tratadas pelos pollers, não por cobrança ao cliente.
+                    continue
+
             pending = db.scalar(
                 select(AIFollowupJob.id)
                 .where(
