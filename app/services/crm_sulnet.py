@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 import re
@@ -24,16 +24,21 @@ class CRMIntegrationError(RuntimeError):
 @dataclass(slots=True)
 class SulnetCRMClient:
     base_url: str
-    bearer_token: str
+    bearer_token: str = ""
+    integration_key: str = ""
     timeout: float = 25.0
+    _profile_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def from_settings(cls) -> "SulnetCRMClient":
-        if not settings.sulnet_crm_base_url or not settings.sulnet_crm_bearer_token:
-            raise CRMIntegrationError("Integração com o CRM Sulnet não configurada.")
+        if not settings.sulnet_crm_base_url:
+            raise CRMIntegrationError("URL da integração com o CRM Sulnet não configurada.")
+        if not settings.sulnet_ai_integration_key and not settings.sulnet_crm_bearer_token:
+            raise CRMIntegrationError("Credencial da integração com o CRM Sulnet não configurada.")
         return cls(
             base_url=settings.sulnet_crm_base_url.rstrip("/"),
             bearer_token=settings.sulnet_crm_bearer_token,
+            integration_key=settings.sulnet_ai_integration_key,
         )
 
     def _request(
@@ -51,9 +56,18 @@ class SulnetCRMClient:
                 timeout=timeout or self.timeout,
                 follow_redirects=False,
                 headers={
-                    "Authorization": f"Bearer {self.bearer_token}",
+                    **(
+                        {"Authorization": f"Bearer {self.bearer_token}"}
+                        if self.bearer_token
+                        else {}
+                    ),
+                    **(
+                        {"X-Integration-Key": self.integration_key}
+                        if self.integration_key
+                        else {}
+                    ),
                     "Accept": "application/json",
-                    "User-Agent": "Sulnet-Prospecta-Vendedor-IA/1.0",
+                    "User-Agent": "Sulnet-Prospecta-Vendedor-IA/2.0",
                 },
             ) as client:
                 response = client.request(
@@ -92,14 +106,56 @@ class SulnetCRMClient:
             )
         return payload
 
+    def integration_profile(self, *, refresh: bool = False) -> dict[str, Any]:
+        if self._profile_cache is not None and not refresh:
+            return dict(self._profile_cache)
+
+        profile: dict[str, Any] = {}
+        try:
+            result = self._request("GET", "/api/capture/config")
+            if isinstance(result, dict):
+                profile = dict(result)
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+
+        if not profile:
+            try:
+                result = self._request("GET", "/api/capture/context")
+                if isinstance(result, dict):
+                    profile = dict(result)
+            except CRMIntegrationError as exc:
+                if exc.status_code != 404:
+                    raise
+
+        # Servidores antigos não publicam apiVersion/capabilities. Marcamos
+        # explicitamente como legado para escolher compatibilidade sem tentar
+        # cada endpoint no escuro.
+        profile.setdefault("apiVersion", 1 if profile else 0)
+        profile.setdefault("capabilities", {})
+        profile["legacy"] = int(profile.get("apiVersion") or 0) < 2
+        self._profile_cache = dict(profile)
+        LOG.info(
+            "crm_profile api_version=%s app_version=%s legacy=%s",
+            profile.get("apiVersion"),
+            profile.get("appVersion") or "-",
+            profile.get("legacy"),
+        )
+        return dict(profile)
+
+    def supports(self, capability: str) -> bool:
+        profile = self.integration_profile()
+        capabilities = profile.get("capabilities")
+        return bool(
+            isinstance(capabilities, dict)
+            and capabilities.get(capability) is True
+        )
+
     def context(self) -> dict[str, Any]:
-        result = self._request("GET", "/api/capture/context")
-        return result if isinstance(result, dict) else {}
+        return self.integration_profile()
 
     def config(self) -> dict[str, Any]:
-        # Compatibilidade interna: o CRM on-prem expõe o contexto operacional
-        # (origem/funil/permissões) em /api/capture/context.
-        return self.context()
+        return self.integration_profile()
 
     def resolve_origin_id(self) -> int | None:
         context = self.context()
@@ -380,23 +436,19 @@ class SulnetCRMClient:
         return result if isinstance(result, dict) else {}
 
     def update_opportunity(self, opportunity_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        # A instalação atual aceita atualização em /api/opportunities/{id}.
-        # Mantemos a rota capture apenas como compatibilidade para ambientes antigos.
-        try:
-            return self._fallback_update_opportunity(opportunity_id, payload)
-        except CRMIntegrationError as exc:
-            if exc.status_code != 404:
-                raise
-            LOG.warning(
-                "crm_opportunity_legacy_patch_fallback opportunity_id=%s",
-                opportunity_id,
-            )
+        if self.supports("leadUpdate"):
             result = self._request(
                 "PATCH",
                 f"/api/capture/leads/{opportunity_id}",
                 json_body=payload,
             )
             return result if isinstance(result, dict) else {}
+
+        LOG.warning(
+            "crm_legacy_generic_patch opportunity_id=%s",
+            opportunity_id,
+        )
+        return self._fallback_update_opportunity(opportunity_id, payload)
 
     def get_opportunity(self, opportunity_id: int) -> dict[str, Any]:
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}")
@@ -596,17 +648,7 @@ class SulnetCRMClient:
         ]
 
     def products(self, query: str = "") -> list[dict[str, Any]]:
-        # O CRM atual expõe o catálogo por /api/catalog/products. Usar essa
-        # rota primeiro evita um 404 em toda etapa do fechamento.
-        try:
-            return self._catalog_products_fallback(query)
-        except CRMIntegrationError as exc:
-            if exc.status_code != 404:
-                raise
-            LOG.warning(
-                "crm_products_legacy_fallback source=capture query_present=%s",
-                bool(query),
-            )
+        if self.supports("products"):
             result = self._request(
                 "GET",
                 "/api/capture/products",
@@ -614,53 +656,41 @@ class SulnetCRMClient:
             )
             return result if isinstance(result, list) else []
 
+        # Compatibilidade com o CRM legado em produção enquanto ele não publica
+        # apiVersion/capabilities.
+        return self._catalog_products_fallback(query)
+
     def mark_won(self, opportunity_id: int) -> dict[str, Any]:
-        try:
+        if self.supports("markWon"):
             result = self._request(
                 "POST",
                 f"/api/capture/leads/{opportunity_id}/win",
                 json_body={},
             )
             return result if isinstance(result, dict) else {}
-        except CRMIntegrationError as exc:
-            if exc.status_code != 404:
-                raise
 
-        # Compatibilidade com a versão do CRM em produção que ainda não expõe
-        # /capture/.../win. O endpoint genérico já implementa status=won,
-        # closed_at/won_by_user e a automação de cópia para o Backoffice.
+        # CRM legado: usa a operação genérica já homologada. Quando o CRM
+        # publicar apiVersion >= 2, este caminho deixa de ser usado.
         won_stage_id = self._stage_id_by_name("GANHO")
-        if not won_stage_id:
-            raise CRMIntegrationError(
-                "Etapa GANHO do funil SDR IA não localizada no CRM.",
-                status_code=503,
-            )
-
         LOG.warning(
-            "crm_win_generic_fallback opportunity_id=%s stage_id=%s",
+            "crm_win_legacy_generic opportunity_id=%s stage_id=%s",
             opportunity_id,
-            won_stage_id,
+            won_stage_id or "not-published",
         )
+        win_payload: dict[str, Any] = {
+            "status": "won",
+            "historyAction": "Venda do Vendedor IA validada e marcada como ganha.",
+        }
+        if won_stage_id:
+            win_payload["stageId"] = won_stage_id
+
         updated = self._request(
             "PATCH",
             f"/api/opportunities/{opportunity_id}",
-            json_body={
-                "status": "won",
-                "stageId": won_stage_id,
-                "historyAction": "Venda do Vendedor IA validada e marcada como ganha.",
-            },
+            json_body=win_payload,
         )
         if not isinstance(updated, dict):
             updated = {}
-
-        contract: dict[str, Any] = {"status": "aguardando_backoffice"}
-        try:
-            status = self.get_status(opportunity_id)
-            if isinstance(status.get("contract"), dict):
-                contract = dict(status["contract"])
-        except CRMIntegrationError as status_exc:
-            if status_exc.status_code != 404:
-                raise
 
         return {
             "alreadyWon": str(updated.get("status") or "").lower() == "won",
@@ -670,18 +700,44 @@ class SulnetCRMClient:
                 if isinstance(updated.get("backofficeCopy"), dict)
                 else None
             ),
-            "contract": contract,
+            "contract": {"status": "aguardando_backoffice"},
         }
 
     def get_status(self, opportunity_id: int) -> dict[str, Any]:
-        result = self._request("GET", f"/api/capture/leads/{opportunity_id}/status")
-        return result if isinstance(result, dict) else {}
+        if self.supports("status"):
+            result = self._request(
+                "GET",
+                f"/api/capture/leads/{opportunity_id}/status",
+            )
+            return result if isinstance(result, dict) else {}
+
+        # Legado não expõe estado consolidado do contrato. Mantemos apenas o
+        # estado comercial sem gerar 404 em loop; ao atualizar o CRM, o profile
+        # v2 passa automaticamente a usar /status.
+        opportunity = self.get_opportunity(opportunity_id)
+        return {
+            "opportunity": opportunity,
+            "contract": {
+                "status": (
+                    "aguardando_backoffice"
+                    if str(opportunity.get("status") or "").lower() == "won"
+                    else "aguardando_fechamento_crm"
+                )
+            },
+        }
 
     def get_contract(self, opportunity_id: int) -> dict[str, Any]:
-        result = self._request("GET", f"/api/capture/leads/{opportunity_id}/contract")
+        if not self.supports("contract"):
+            return {"status": "aguardando_backoffice"}
+        result = self._request(
+            "GET",
+            f"/api/capture/leads/{opportunity_id}/contract",
+        )
         return result if isinstance(result, dict) else {}
 
     def start_contract(self, opportunity_id: int) -> dict[str, Any]:
+        if not self.supports("contract"):
+            return {"status": "aguardando_backoffice"}
         result = self._request(
             "POST",
             f"/api/capture/leads/{opportunity_id}/contract",
