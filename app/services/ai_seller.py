@@ -1027,13 +1027,17 @@ def _persist_mobile_category_form(
     )
 
 
-def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
+def _mobile_missing_fields(
+    values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
+) -> list[str]:
     required = [
         "tipo_contratacao",
         "forma_pagamento",
-        "unificar_faturas",
-        "tipo_assinatura_contrato",
     ]
+    if not sdr_ia_funnel:
+        required += ["unificar_faturas", "tipo_assinatura_contrato"]
     contract_type = str(values.get("tipo_contratacao") or "")
     if contract_type == "Número Portabilidade":
         required += [
@@ -1043,7 +1047,10 @@ def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
             "port_cpf_cnpj",
         ]
     elif contract_type == "M2M":
-        required += ["m2m_quantidade", "m2m_iccids"]
+        if sdr_ia_funnel:
+            required.append("tipo_contratacao")
+        else:
+            required += ["m2m_quantidade", "m2m_iccids"]
     elif contract_type != "Número novo":
         required.append("tipo_contratacao")
 
@@ -1051,7 +1058,7 @@ def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
         required.append("envio_fatura")
     elif values.get("forma_pagamento") == "Débito em Conta":
         required += ["debito_banco", "debito_agencia", "debito_conta", "debito_titular"]
-    if values.get("unificar_faturas") == "Não":
+    if not sdr_ia_funnel and values.get("unificar_faturas") == "Não":
         required.append("unificar_motivo")
 
     missing: list[str] = []
@@ -1062,9 +1069,16 @@ def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(missing))
 
 
-def _mobile_next_step(values: dict[str, Any]) -> str | None:
+def _mobile_next_step(
+    values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
+) -> str | None:
     contract_type = str(values.get("tipo_contratacao") or "")
-    if contract_type not in {"Número novo", "Número Portabilidade", "M2M"}:
+    allowed_types = {"Número novo", "Número Portabilidade"}
+    if not sdr_ia_funnel:
+        allowed_types.add("M2M")
+    if contract_type not in allowed_types:
         return "MOBILE_CONTRACT_TYPE"
 
     if contract_type == "Número Portabilidade":
@@ -1078,7 +1092,7 @@ def _mobile_next_step(values: dict[str, Any]) -> str | None:
             if not values.get(field):
                 return step
 
-    if contract_type == "M2M":
+    if contract_type == "M2M" and not sdr_ia_funnel:
         if not values.get("m2m_quantidade"):
             return "MOBILE_M2M_QTY"
         if not values.get("m2m_iccids"):
@@ -1098,20 +1112,25 @@ def _mobile_next_step(values: dict[str, Any]) -> str | None:
         ]:
             if not values.get(field):
                 return step
-    if not values.get("unificar_faturas"):
-        return "MOBILE_UNIFY"
-    if values.get("unificar_faturas") == "Não" and not values.get("unificar_motivo"):
-        return "MOBILE_UNIFY_REASON"
+    if not sdr_ia_funnel:
+        if not values.get("unificar_faturas"):
+            return "MOBILE_UNIFY"
+        if values.get("unificar_faturas") == "Não" and not values.get("unificar_motivo"):
+            return "MOBILE_UNIFY_REASON"
     return None
 
 def _apply_mobile_answer(
     step: str,
     text: str,
     values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
 ) -> tuple[bool, str]:
     if step == "MOBILE_CONTRACT_TYPE":
         contract_type = _extract_mobile_contract_type(text)
-        if not contract_type:
+        if not contract_type or (sdr_ia_funnel and contract_type == "M2M"):
+            if sdr_ia_funnel:
+                return False, "Escolha uma das opções: Portabilidade ou Número novo."
             return False, "Escolha uma das opções: Portabilidade, Número novo ou M2M."
         previous = str(values.get("tipo_contratacao") or "")
         values["tipo_contratacao"] = contract_type
@@ -1613,7 +1632,13 @@ def _send_text(
     return message
 
 
-def _seller_step_buttons(step: str, text: str = "") -> list[dict[str, str]]:
+def _seller_step_buttons(
+    step: str,
+    text: str = "",
+    collected: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    if step == "MOBILE_CONTRACT_TYPE" and _sdr_ia_mode(collected or {}):
+        return [dict(item) for item in MOBILE_CONTRACT_BUTTONS_SDR_IA]
     buttons = SELLER_STEP_BUTTONS.get(step)
     if buttons:
         return [dict(item) for item in buttons]
@@ -1665,7 +1690,11 @@ def _send_step_message(
         )
         return recent_duplicate
 
-    buttons = _seller_step_buttons(state.step, text)
+    buttons = _seller_step_buttons(
+        state.step,
+        text,
+        _load_collected(state),
+    )
     if len(buttons) < 2:
         return _send_text(
             db,
@@ -2076,7 +2105,7 @@ def process_seller_followup(
             "step": job.step,
             "closing_step": state.step,
             "message_id": message.id,
-            "buttons": len(_seller_step_buttons(state.step, text)),
+            "buttons": len(_seller_step_buttons(state.step, text, collected)),
         },
     )
     _schedule_seller_followup(
