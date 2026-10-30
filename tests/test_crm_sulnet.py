@@ -241,6 +241,7 @@ def test_products_falls_back_to_catalog_and_flattens_grouped_response(monkeypatc
     assert products[0]["categoryId"] == 13
     assert products[0]["categoryName"] == "TELEFONIA MÓVEL"
     assert any(url.endswith("/api/catalog/products") for _, url in CatalogFallbackClient.captured)
+    assert not any(url.endswith("/api/capture/products") for _, url in CatalogFallbackClient.captured)
 
 
 
@@ -313,3 +314,25 @@ def test_plan_resolution_uses_expected_value_only_as_disambiguation(monkeypatch)
     assert patch["json"]["planIds"] == [392]
     assert patch["json"]["categoryId"] == 83
     assert patch["json"]["monthlyValue"] == 69.80
+
+
+def test_update_opportunity_prefers_generic_route_without_capture_404(monkeypatch):
+    PlanDisambiguationClient.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", PlanDisambiguationClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="service-token-value",
+    )
+    client.update_opportunity(
+        1234,
+        {"clientEmail": "cliente@exemplo.com"},
+    )
+
+    patch_urls = [
+        item["url"]
+        for item in PlanDisambiguationClient.captured
+        if item["method"] == "PATCH"
+    ]
+    assert any(url.endswith("/api/opportunities/1234") for url in patch_urls)
+    assert not any(url.endswith("/api/capture/leads/1234") for url in patch_urls)
