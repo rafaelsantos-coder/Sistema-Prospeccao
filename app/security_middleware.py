@@ -19,7 +19,12 @@ def trusted_hosts() -> list[str]:
     if configured:
         return configured
 
-    hosts = ["localhost", "127.0.0.1", "*.railway.internal"]
+    hosts = [
+        "localhost",
+        "127.0.0.1",
+        "100.64.0.1",
+        "*.railway.internal",
+    ]
     if settings.app_public_url:
         host = urlparse(settings.app_public_url).hostname
         if host:
