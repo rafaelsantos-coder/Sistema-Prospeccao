@@ -534,13 +534,11 @@ def build_ai_context(
             "temperature": lead.temperature if lead else "FRIO",
             "confirmed_customer_type": _confirmed_customer_type_from_lead(lead),
             "confirmed_existing_customer": _confirmed_existing_customer_from_lead(lead),
-            "commercial_memory": (lead.potential or "")[-6000:] if lead else "",
         },
         "previous_ai_state": {
             "qualification_score": state.qualification_score if state else 0,
             "temperature": state.temperature if state else "FRIO",
             "last_intent": state.last_intent if state else "UNKNOWN",
-            "summary": state.summary if state else "",
             "state": state.state if state else "NEW",
         },
         "customer_evidence": [
