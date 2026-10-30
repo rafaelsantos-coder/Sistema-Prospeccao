@@ -34,6 +34,8 @@ class Settings:
         )
     )
     session_cookie: str = os.getenv("SESSION_COOKIE", "sulnet_prospecta_session")
+    redis_url: str = os.getenv("REDIS_URL", "").strip()
+    session_max_age_seconds: int = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 12)))
     login_max_attempts: int = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
     login_window_seconds: int = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
     login_block_seconds: int = int(os.getenv("LOGIN_BLOCK_SECONDS", "900"))
@@ -161,6 +163,7 @@ class Settings:
             "ai_autocorrect": bool(self.ai_autocorrect_enabled),
             "ai_learning": bool(self.ai_learning_enabled and self.openai_api_key),
             "ai_engineer": bool(self.ai_engineer_enabled and self.openai_api_key),
+            "redis": bool(self.redis_url),
             "ai_engineer_autonomous_pr": bool(
                 self.ai_engineer_enabled
                 and self.ai_engineer_autonomous_pr_enabled
