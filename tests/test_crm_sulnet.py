@@ -770,7 +770,7 @@ def test_contract_webhook_uses_only_integration_key(monkeypatch):
     assert "Authorization" not in request["headers"]
 
 
-def test_agent_contract_generate_is_capability_guarded(monkeypatch):
+def test_agent_contract_generate_uses_official_payload(monkeypatch):
     Phase1Client.captured = []
     monkeypatch.setattr(crm_module.httpx, "Client", Phase1Client)
 
@@ -788,6 +788,10 @@ def test_agent_contract_generate_is_capability_guarded(monkeypatch):
         )
     )
     assert request["headers"]["Authorization"] == "Bearer bearer-test"
+    assert request["json"] == {
+        "sendSignature": True,
+        "requireReadyForWin": True,
+    }
 
 
 
@@ -839,7 +843,7 @@ def test_crm_error_exposes_only_sanitized_diagnostics(monkeypatch):
 
 
 
-def test_agent_contract_generate_does_not_call_planned_route_without_capability(monkeypatch):
+def test_agent_contract_generate_attempts_route_even_before_capability_profile_updates(monkeypatch):
     CapabilityV2Client.captured = []
     monkeypatch.setattr(crm_module.httpx, "Client", CapabilityV2Client)
 
@@ -847,13 +851,13 @@ def test_agent_contract_generate_does_not_call_planned_route_without_capability(
         base_url="https://crm.example",
         bearer_token="bearer-test",
     )
-    try:
-        client.generate_agent_contract(1234)
-    except crm_module.CRMIntegrationError as exc:
-        assert exc.status_code == 501
-        assert exc.error_code == "CRM_AGENT_CONTRACT_NOT_AVAILABLE"
-    else:
-        raise AssertionError("Endpoint planejado não pode ser chamado sem capability.")
+    client.generate_agent_contract(1234)
 
-    urls = [item["url"] for item in CapabilityV2Client.captured]
-    assert not any("/contract/generate" in url for url in urls)
+    request = next(
+        item for item in CapabilityV2Client.captured
+        if "/contract/generate" in item["url"]
+    )
+    assert request["json"] == {
+        "sendSignature": True,
+        "requireReadyForWin": True,
+    }
