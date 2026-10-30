@@ -3345,34 +3345,49 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
         elif state.step in {"WAITING_CONTRACT", "WAITING_SIGNATURE"}:
             status = client.get_status(state.opportunity_id or 0)
-            contract = status.get("contract") or {}
-            if client.supports("contract"):
-                detailed = client.get_contract(state.opportunity_id or 0)
-                if isinstance(detailed, dict) and detailed:
-                    contract = {**contract, **detailed}
-
-            contract_status = _contract_status(contract)
-            sign_url = _contract_sign_url(contract) or state.sign_url
-            if contract_status:
-                state.contract_status = contract_status
-
-            if _contract_is_signed(state.contract_status):
-                _finalize_signed_sale(client, state, collected)
+            already_won = _complete_if_crm_already_won(
+                client,
+                state,
+                collected,
+                status_payload=status,
+            )
+            if already_won is not None:
                 reply = (
                     "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                    "A ativação ocorre em até 48 horas após a assinatura do contrato."
+                    "Agora o pedido segue para o time responsável pela ativação."
                 )
                 if conversation.lead:
                     conversation.lead.stage = "GANHO"
                     conversation.lead.next_action_at = None
-            elif sign_url:
-                state.sign_url = sign_url
-                state.step = "WAITING_SIGNATURE"
-                reply = f"Seu contrato está disponível para assinatura aqui: {sign_url}"
-            elif state.step == "WAITING_CONTRACT":
-                reply = _prepare_contract_before_win(client, state, collected)
             else:
-                reply = _prompt_for_step(state, collected)
+                contract = status.get("contract") or {}
+                if client.supports("contract"):
+                    detailed = client.get_contract(state.opportunity_id or 0)
+                    if isinstance(detailed, dict) and detailed:
+                        contract = {**contract, **detailed}
+
+                contract_status = _contract_status(contract)
+                sign_url = _contract_sign_url(contract) or state.sign_url
+                if contract_status:
+                    state.contract_status = contract_status
+
+                if _contract_is_signed(state.contract_status):
+                    _finalize_signed_sale(client, state, collected)
+                    reply = (
+                        "Contrato assinado com sucesso! Sua contratação foi concluída. "
+                        "Agora o pedido segue para o time responsável pela ativação."
+                    )
+                    if conversation.lead:
+                        conversation.lead.stage = "GANHO"
+                        conversation.lead.next_action_at = None
+                elif sign_url:
+                    state.sign_url = sign_url
+                    state.step = "WAITING_SIGNATURE"
+                    reply = f"Seu contrato está disponível para assinatura aqui: {sign_url}"
+                elif state.step == "WAITING_CONTRACT":
+                    reply = _prepare_contract_before_win(client, state, collected)
+                else:
+                    reply = _prompt_for_step(state, collected)
 
         else:
             reply = "Vou conferir o andamento da sua contratação."
@@ -3665,6 +3680,29 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 continue
 
             status = client.get_status(state.opportunity_id)
+            already_won = _complete_if_crm_already_won(
+                client,
+                state,
+                collected,
+                status_payload=status,
+            )
+            if already_won is not None:
+                _save_collected(state, collected)
+                _send_text(
+                    db,
+                    agent=agent,
+                    conversation=conversation,
+                    text=(
+                        "Contrato assinado com sucesso! Sua contratação foi concluída. "
+                        "Agora o pedido segue para o time responsável pela ativação."
+                    ),
+                )
+                if conversation.lead:
+                    conversation.lead.stage = "GANHO"
+                    conversation.lead.next_action_at = None
+                processed += 1
+                continue
+
             contract = status.get("contract") or {}
             if client.supports("contract"):
                 detailed = client.get_contract(state.opportunity_id)
