@@ -436,23 +436,19 @@ class SulnetCRMClient:
         return result if isinstance(result, dict) else {}
 
     def update_opportunity(self, opportunity_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        # A instalação atual aceita atualização em /api/opportunities/{id}.
-        # Mantemos a rota capture apenas como compatibilidade para ambientes antigos.
-        try:
-            return self._fallback_update_opportunity(opportunity_id, payload)
-        except CRMIntegrationError as exc:
-            if exc.status_code != 404:
-                raise
-            LOG.warning(
-                "crm_opportunity_legacy_patch_fallback opportunity_id=%s",
-                opportunity_id,
-            )
+        if self.supports("leadUpdate"):
             result = self._request(
                 "PATCH",
                 f"/api/capture/leads/{opportunity_id}",
                 json_body=payload,
             )
             return result if isinstance(result, dict) else {}
+
+        LOG.warning(
+            "crm_legacy_generic_patch opportunity_id=%s",
+            opportunity_id,
+        )
+        return self._fallback_update_opportunity(opportunity_id, payload)
 
     def get_opportunity(self, opportunity_id: int) -> dict[str, Any]:
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}")
@@ -652,17 +648,7 @@ class SulnetCRMClient:
         ]
 
     def products(self, query: str = "") -> list[dict[str, Any]]:
-        # O CRM atual expõe o catálogo por /api/catalog/products. Usar essa
-        # rota primeiro evita um 404 em toda etapa do fechamento.
-        try:
-            return self._catalog_products_fallback(query)
-        except CRMIntegrationError as exc:
-            if exc.status_code != 404:
-                raise
-            LOG.warning(
-                "crm_products_legacy_fallback source=capture query_present=%s",
-                bool(query),
-            )
+        if self.supports("products"):
             result = self._request(
                 "GET",
                 "/api/capture/products",
@@ -670,21 +656,21 @@ class SulnetCRMClient:
             )
             return result if isinstance(result, list) else []
 
+        # Compatibilidade com o CRM legado em produção enquanto ele não publica
+        # apiVersion/capabilities.
+        return self._catalog_products_fallback(query)
+
     def mark_won(self, opportunity_id: int) -> dict[str, Any]:
-        try:
+        if self.supports("markWon"):
             result = self._request(
                 "POST",
                 f"/api/capture/leads/{opportunity_id}/win",
                 json_body={},
             )
             return result if isinstance(result, dict) else {}
-        except CRMIntegrationError as exc:
-            if exc.status_code != 404:
-                raise
 
-        # Compatibilidade com a versão do CRM em produção que ainda não expõe
-        # /capture/.../win. O endpoint genérico já implementa status=won,
-        # closed_at/won_by_user e a automação de cópia para o Backoffice.
+        # CRM legado: usa a operação genérica já homologada. Quando o CRM
+        # publicar apiVersion >= 2, este caminho deixa de ser usado.
         won_stage_id = self._stage_id_by_name("GANHO")
         if not won_stage_id:
             raise CRMIntegrationError(
@@ -693,7 +679,7 @@ class SulnetCRMClient:
             )
 
         LOG.warning(
-            "crm_win_generic_fallback opportunity_id=%s stage_id=%s",
+            "crm_win_legacy_generic opportunity_id=%s stage_id=%s",
             opportunity_id,
             won_stage_id,
         )
@@ -709,15 +695,6 @@ class SulnetCRMClient:
         if not isinstance(updated, dict):
             updated = {}
 
-        contract: dict[str, Any] = {"status": "aguardando_backoffice"}
-        try:
-            status = self.get_status(opportunity_id)
-            if isinstance(status.get("contract"), dict):
-                contract = dict(status["contract"])
-        except CRMIntegrationError as status_exc:
-            if status_exc.status_code != 404:
-                raise
-
         return {
             "alreadyWon": str(updated.get("status") or "").lower() == "won",
             "opportunity": updated,
@@ -726,18 +703,44 @@ class SulnetCRMClient:
                 if isinstance(updated.get("backofficeCopy"), dict)
                 else None
             ),
-            "contract": contract,
+            "contract": {"status": "aguardando_backoffice"},
         }
 
     def get_status(self, opportunity_id: int) -> dict[str, Any]:
-        result = self._request("GET", f"/api/capture/leads/{opportunity_id}/status")
-        return result if isinstance(result, dict) else {}
+        if self.supports("status"):
+            result = self._request(
+                "GET",
+                f"/api/capture/leads/{opportunity_id}/status",
+            )
+            return result if isinstance(result, dict) else {}
+
+        # Legado não expõe estado consolidado do contrato. Mantemos apenas o
+        # estado comercial sem gerar 404 em loop; ao atualizar o CRM, o profile
+        # v2 passa automaticamente a usar /status.
+        opportunity = self.get_opportunity(opportunity_id)
+        return {
+            "opportunity": opportunity,
+            "contract": {
+                "status": (
+                    "aguardando_backoffice"
+                    if str(opportunity.get("status") or "").lower() == "won"
+                    else "aguardando_fechamento_crm"
+                )
+            },
+        }
 
     def get_contract(self, opportunity_id: int) -> dict[str, Any]:
-        result = self._request("GET", f"/api/capture/leads/{opportunity_id}/contract")
+        if not self.supports("contract"):
+            return {"status": "aguardando_backoffice"}
+        result = self._request(
+            "GET",
+            f"/api/capture/leads/{opportunity_id}/contract",
+        )
         return result if isinstance(result, dict) else {}
 
     def start_contract(self, opportunity_id: int) -> dict[str, Any]:
+        if not self.supports("contract"):
+            return {"status": "aguardando_backoffice"}
         result = self._request(
             "POST",
             f"/api/capture/leads/{opportunity_id}/contract",
