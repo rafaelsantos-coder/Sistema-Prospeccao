@@ -218,10 +218,31 @@ def _billing_local(text: str) -> dict[str, Any]:
 
 
 MOBILE_SIGNATURE_TYPE = "Assinatura Digital IA"
+SDR_IA_DEFAULTS_FALLBACK = {
+    "vencimento": "10",
+    "taxa_ativacao": "Não",
+    "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+}
+SDR_IA_SKIP_CODES = {
+    "novoiccid",
+    "porticcid",
+    "portdata",
+    "m2mquantidade",
+    "m2miccids",
+    "unificarfaturas",
+    "unificarmotivo",
+    "vencimento",
+    "taxaativacao",
+    "taxavalor",
+}
 MOBILE_CONTRACT_BUTTONS = [
     {"id": "portabilidade", "label": "Portabilidade"},
     {"id": "numero_novo", "label": "Número novo"},
     {"id": "m2m", "label": "M2M"},
+]
+MOBILE_CONTRACT_BUTTONS_SDR_IA = [
+    {"id": "portabilidade", "label": "Portabilidade"},
+    {"id": "numero_novo", "label": "Número novo"},
 ]
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
@@ -376,13 +397,27 @@ def _extract_mobile_payment(text: str) -> str | None:
     return None
 
 
+def _sdr_ia_mode(collected: dict[str, Any]) -> bool:
+    return bool(collected.get("_sdr_ia_funnel"))
+
+
+def _sdr_ia_defaults(collected: dict[str, Any]) -> dict[str, Any]:
+    raw = collected.get("_sdr_ia_defaults")
+    defaults = dict(raw) if isinstance(raw, dict) else {}
+    if _sdr_ia_mode(collected):
+        for key, value in SDR_IA_DEFAULTS_FALLBACK.items():
+            defaults.setdefault(key, value)
+    return defaults
+
+
 def _category_values(collected: dict[str, Any]) -> dict[str, Any]:
     raw = collected.get("categoryFormValues")
     values = dict(raw) if isinstance(raw, dict) else {}
     legacy_mobile = collected.get("mobileCategoryValues")
     if isinstance(legacy_mobile, dict):
         values.update(legacy_mobile)
-    values["tipo_assinatura_contrato"] = MOBILE_SIGNATURE_TYPE
+    if _sdr_ia_mode(collected):
+        values.update(_sdr_ia_defaults(collected))
     return values
 
 
@@ -393,7 +428,8 @@ def _store_category_values(
     mobile: bool = False,
 ) -> None:
     normalized = dict(values)
-    normalized["tipo_assinatura_contrato"] = MOBILE_SIGNATURE_TYPE
+    if _sdr_ia_mode(collected):
+        normalized.update(_sdr_ia_defaults(collected))
     collected["categoryFormValues"] = normalized
     if mobile:
         collected["mobileCategoryValues"] = normalized
@@ -515,6 +551,13 @@ def _playbook_store_snapshot(
     collected["_playbook_ready_for_win"] = bool(result.ready_for_win)
     collected["_playbook_missing_codes"] = result.missing_codes
     collected["_playbook_next_question"] = result.next_question
+    collected["_sdr_ia_funnel"] = bool(result.sdr_ia_funnel)
+    if result.sdr_ia_funnel:
+        defaults = dict(result.sdr_ia_defaults or {})
+        for key, value in SDR_IA_DEFAULTS_FALLBACK.items():
+            defaults.setdefault(key, value)
+        collected["_sdr_ia_defaults"] = defaults
+        collected["_sdr_ia_field_policy"] = dict(result.sdr_ia_field_policy or {})
 
 
 def _playbook_clear_question(collected: dict[str, Any]) -> None:
