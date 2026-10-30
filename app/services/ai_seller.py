@@ -629,6 +629,7 @@ def _playbook_clear_question(collected: dict[str, Any]) -> None:
         "_playbook_code",
         "_playbook_patch_key",
         "_playbook_question",
+        "_playbook_options",
     ):
         collected.pop(key, None)
 
@@ -701,6 +702,110 @@ def _playbook_dynamic_options(
     ]
 
 
+def _playbook_current_options(
+    collected: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw = collected.get("_playbook_options")
+    if not isinstance(raw, list):
+        return []
+    return [
+        dict(item)
+        for item in raw
+        if isinstance(item, dict)
+        and str(item.get("label") or "").strip()
+    ]
+
+
+def _canonical_playbook_value(
+    item: CRMPlaybookMissingItem,
+    value: Any,
+) -> tuple[bool, Any]:
+    """Resolve valor local para o valor interno publicado pelo CRM.
+
+    Se o playbook publicar opções, nunca enviamos um valor inventado: procuramos
+    correspondência exata/semântica única por id, label ou value. Se não houver
+    correspondência única, devolvemos False para que a IA pergunte ao cliente.
+    """
+    if not item.options:
+        return True, value
+
+    folded = _norm(str(value or ""))
+    if not folded:
+        return False, None
+
+    exact: list[dict[str, Any]] = []
+    semantic: list[dict[str, Any]] = []
+    for option in item.options:
+        candidates = [
+            _norm(str(option.get("id") or "")),
+            _norm(str(option.get("label") or "")),
+            _norm(str(option.get("value") or "")),
+        ]
+        candidates = [candidate for candidate in candidates if candidate]
+        if folded in candidates:
+            exact.append(option)
+            continue
+        if any(
+            candidate in folded or folded in candidate
+            for candidate in candidates
+            if len(candidate) >= 4
+        ):
+            semantic.append(option)
+
+    matches = exact or semantic
+    unique: list[dict[str, Any]] = []
+    seen_values: set[str] = set()
+    for option in matches:
+        marker = repr(option.get("value"))
+        if marker in seen_values:
+            continue
+        seen_values.add(marker)
+        unique.append(option)
+
+    if len(unique) != 1:
+        return False, None
+    return True, unique[0].get("value")
+
+
+def _current_playbook_canonical_value(
+    collected: dict[str, Any],
+    value: Any,
+) -> Any:
+    options = _playbook_current_options(collected)
+    if not options:
+        return value
+
+    item = CRMPlaybookMissingItem(
+        code=str(collected.get("_playbook_code") or ""),
+        patch_key=str(collected.get("_playbook_patch_key") or ""),
+        options=options,
+    )
+    matched, canonical = _canonical_playbook_value(item, value)
+    return canonical if matched else value
+
+
+def _playbook_recovery_metadata(
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> dict[str, Any]:
+    playbook_step = str(collected.get("_playbook_step") or "").strip()
+    code = str(collected.get("_playbook_code") or "").strip()
+    patch_key = str(collected.get("_playbook_patch_key") or "").strip()
+    required = bool(
+        playbook_step
+        and playbook_step == state.step
+        and code
+        and patch_key
+    )
+    return {
+        "closing_step": state.step,
+        "crm_playbook_required": required,
+        "crm_playbook_step": playbook_step,
+        "crm_playbook_code": code,
+        "crm_playbook_patch_key": patch_key,
+    }
+
+
 def _resolve_dynamic_playbook_value(
     text: str,
     collected: dict[str, Any],
@@ -731,6 +836,13 @@ def _sync_known_playbook_missing(
         return False
 
     field, value = known
+    matched, canonical_value = _canonical_playbook_value(item, value)
+    if item.options and not matched:
+        # O CRM publicou uma lista fechada e o valor legado não corresponde
+        # de forma inequívoca. Não adivinhamos: a próxima etapa pergunta ao cliente.
+        return False
+    if matched:
+        value = canonical_value
 
     if item.patch_key:
         client.update_playbook_field(
@@ -1002,6 +1114,9 @@ def _query_playbook_guidance(
         collected["_playbook_step"] = next_step
         collected["_playbook_code"] = first.code
         collected["_playbook_patch_key"] = first.patch_key
+        collected["_playbook_options"] = [
+            dict(item) for item in first.options
+        ]
         if question:
             collected["_playbook_question"] = question
         else:
@@ -1923,6 +2038,8 @@ def _send_text(
     agent: AIAgentProfile,
     conversation: Conversation,
     text: str,
+    source: str = "CLOSER_TEXT",
+    guardian_metadata: dict[str, Any] | None = None,
 ) -> Message:
     from app.services.conversation_engine import register_message
     from app.services.zapi_instances import service_for_conversation
@@ -1943,9 +2060,12 @@ def _send_text(
         conversation=conversation,
         reply_text=text,
         buttons=[],
-        source="CLOSER_TEXT",
+        source=source,
         proposed_state=str(closing.step if closing else ""),
-        metadata={"closing_step": str(closing.step if closing else "")},
+        metadata=(
+            guardian_metadata
+            or {"closing_step": str(closing.step if closing else "")}
+        ),
     )
     if not guardian.should_send:
         raise GuardianBlockedError(guardian)
@@ -1985,6 +2105,21 @@ def _seller_step_buttons(
     text: str = "",
     collected: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    current_collected = collected or {}
+    playbook_step = str(current_collected.get("_playbook_step") or "")
+    if playbook_step == step:
+        playbook_options = _playbook_current_options(current_collected)
+        buttons = [
+            {
+                "id": str(item.get("id") or f"option_{index}")[:40],
+                "label": str(item.get("label") or "")[:20],
+            }
+            for index, item in enumerate(playbook_options[:3], start=1)
+            if str(item.get("label") or "").strip()
+        ]
+        if len(buttons) >= 2:
+            return buttons
+
     if step == "PLAYBOOK_DYNAMIC_FIELD":
         dynamic = _playbook_dynamic_options(collected or {})
         buttons = [
@@ -2051,10 +2186,15 @@ def _send_step_message(
         )
         return recent_duplicate
 
+    collected = _load_collected(state)
+    guardian_metadata = _playbook_recovery_metadata(
+        state,
+        collected,
+    )
     buttons = _seller_step_buttons(
         state.step,
         text,
-        _load_collected(state),
+        collected,
     )
     if len(buttons) < 2:
         return _send_text(
@@ -2062,6 +2202,8 @@ def _send_step_message(
             agent=agent,
             conversation=conversation,
             text=text,
+            source="CLOSER_STEP",
+            guardian_metadata=guardian_metadata,
         )
 
     from app.services.conversation_engine import register_message
@@ -2078,7 +2220,7 @@ def _send_step_message(
         buttons=buttons,
         source="CLOSER_STEP",
         proposed_state=state.step,
-        metadata={"closing_step": state.step},
+        metadata=guardian_metadata,
     )
     if not guardian.should_send:
         raise GuardianBlockedError(guardian)
@@ -3376,7 +3518,40 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 reply = error_reply
             else:
                 collected["mobileCategoryValues"] = values
-                _persist_mobile_category_form(client, state, collected)
+                current_code = str(collected.get("_playbook_code") or "")
+                current_patch_key = str(
+                    collected.get("_playbook_patch_key") or ""
+                ).strip()
+                current_step = str(collected.get("_playbook_step") or "")
+                category_field = PLAYBOOK_CATEGORY_FIELD_BY_CODE.get(
+                    _playbook_code_key(current_code)
+                )
+                if (
+                    current_patch_key
+                    and current_step == state.step
+                    and category_field
+                    and values.get(category_field) not in (None, "", [])
+                ):
+                    playbook_value = _current_playbook_canonical_value(
+                        collected,
+                        values[category_field],
+                    )
+                    # Para tipo de contratação sem options publicadas, o CRM
+                    # usa a escolha apresentada ao cliente (Portabilidade/Número novo),
+                    # enquanto o estado local mantém "Número Portabilidade".
+                    if (
+                        _playbook_code_key(current_code) == "tipocontratacao"
+                        and not _playbook_current_options(collected)
+                        and values[category_field] == "Número Portabilidade"
+                    ):
+                        playbook_value = "Portabilidade"
+                    client.update_playbook_field(
+                        state.opportunity_id or 0,
+                        patch_key=current_patch_key,
+                        value=playbook_value,
+                    )
+                else:
+                    _persist_mobile_category_form(client, state, collected)
                 next_step = _mobile_next_step(
                     values,
                     sdr_ia_funnel=_sdr_ia_mode(collected),
@@ -3428,12 +3603,35 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             if not accepted:
                 reply = error_reply
             else:
-                _persist_category_form(
-                    client,
-                    state,
-                    collected,
-                    values,
+                current_code = str(collected.get("_playbook_code") or "")
+                current_patch_key = str(
+                    collected.get("_playbook_patch_key") or ""
+                ).strip()
+                current_step = str(collected.get("_playbook_step") or "")
+                category_field = PLAYBOOK_CATEGORY_FIELD_BY_CODE.get(
+                    _playbook_code_key(current_code)
                 )
+                if (
+                    current_patch_key
+                    and current_step == state.step
+                    and category_field
+                    and values.get(category_field) not in (None, "", [])
+                ):
+                    client.update_playbook_field(
+                        state.opportunity_id or 0,
+                        patch_key=current_patch_key,
+                        value=_current_playbook_canonical_value(
+                            collected,
+                            values[category_field],
+                        ),
+                    )
+                else:
+                    _persist_category_form(
+                        client,
+                        state,
+                        collected,
+                        values,
+                    )
                 playbook_step, playbook_question = _query_playbook_guidance(
                     client,
                     state,
