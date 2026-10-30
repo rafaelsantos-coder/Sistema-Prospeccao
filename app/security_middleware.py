@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import fnmatch
+import ipaddress
 from urllib.parse import urlparse
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
-from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import PlainTextResponse, Response
 
 from app.config import settings
 
@@ -78,11 +79,52 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+def _host_allowed(host: str) -> bool:
+    clean = (host or "").split(":", 1)[0].strip().casefold()
+    if not clean:
+        return False
+    for pattern in trusted_hosts():
+        item = pattern.casefold()
+        if item.startswith("*."):
+            if fnmatch.fnmatch(clean, item):
+                return True
+        elif clean == item:
+            return True
+    return False
+
+
+def _is_internal_healthcheck(request: Request) -> bool:
+    if request.url.path != "/api/health":
+        return False
+    client_host = request.client.host if request.client else ""
+    try:
+        ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    cgnat = ipaddress.ip_network("100.64.0.0/10")
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip in cgnat
+    )
+
+
+class SulnetTrustedHostMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if _is_internal_healthcheck(request):
+            return await call_next(request)
+
+        host = request.headers.get("host", "")
+        if not _host_allowed(host):
+            return PlainTextResponse(
+                "Invalid host header",
+                status_code=400,
+            )
+        return await call_next(request)
+
+
 def install_security_middlewares(app) -> None:
     app.add_middleware(SecurityHeadersMiddleware)
     if settings.is_production:
-        app.add_middleware(
-            TrustedHostMiddleware,
-            allowed_hosts=trusted_hosts(),
-            www_redirect=False,
-        )
+        app.add_middleware(SulnetTrustedHostMiddleware)
