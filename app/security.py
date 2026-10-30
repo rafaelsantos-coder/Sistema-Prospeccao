@@ -26,10 +26,24 @@ _ARGON2 = PasswordHasher(
 )
 
 
+def _argon2_hash(password: str) -> str:
+    return _ARGON2.hash(password)
+
+
 def hash_password(password: str) -> str:
     if len(password) < 12:
         raise ValueError("A senha precisa ter pelo menos 12 caracteres.")
-    return _ARGON2.hash(password)
+    return _argon2_hash(password)
+
+
+def rehash_legacy_password(password: str) -> str:
+    """Rehash transparente de senha já existente.
+
+    A política de comprimento vale para criação/troca de senha, não para
+    autenticação de credenciais legadas já válidas. Assim evitamos quebrar
+    usuários antigos durante a migração para Argon2id.
+    """
+    return _argon2_hash(password)
 
 
 def _verify_pbkdf2(password: str, encoded: str) -> bool:
