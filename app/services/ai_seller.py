@@ -570,6 +570,13 @@ def _playbook_known_value(
         if category_id not in (None, "", 0, "0"):
             return "categoryId", category_id
 
+    category_field = PLAYBOOK_CATEGORY_FIELD_BY_CODE.get(key)
+    if category_field:
+        values = _category_values(collected)
+        value = values.get(category_field)
+        if value not in (None, "", []):
+            return f"category:{category_field}", value
+
     return None
 
 
@@ -592,13 +599,26 @@ def _sync_known_playbook_missing(
             "planId": value,
             "planLabel": collected.get("catalogPlanName") or state.plan_label,
         }
+        client.update_opportunity(state.opportunity_id, payload)
     elif field == "categoryId":
         # categoryId acompanha o produto; sozinho não deve forçar uma troca de plano.
         return False
+    elif field.startswith("category:"):
+        category_field = field.split(":", 1)[1]
+        values = _category_values(collected)
+        values[category_field] = value
+        _persist_category_form(
+            client,
+            state,
+            collected,
+            values,
+        )
     else:
-        payload = {field: value}
+        client.update_opportunity(
+            state.opportunity_id,
+            {field: value},
+        )
 
-    client.update_opportunity(state.opportunity_id, payload)
     LOG.info(
         "seller_playbook_synced_known opportunity=%s code=%s field=%s",
         state.opportunity_id,
@@ -614,15 +634,14 @@ def _playbook_step_for_item(
     collected: dict[str, Any],
 ) -> str | None:
     key = _playbook_code_key(item.code)
+    is_mobile = _is_mobile_plan(state, collected)
 
-    # Faturamento de fibra e os campos móveis removidos ficam para a Fase 3.
-    if key in PLAYBOOK_UNSUPPORTED_PHASE3_CODES:
-        return None
+    billing_steps = PLAYBOOK_BILLING_STEPS.get(key)
+    if billing_steps:
+        return billing_steps[0] if is_mobile else billing_steps[1]
 
     step = PLAYBOOK_STEP_BY_CODE.get(key)
-    if step == "MOBILE_PAYMENT_METHOD" and not _is_mobile_plan(state, collected):
-        return None
-    if step and step.startswith("MOBILE_") and not _is_mobile_plan(state, collected):
+    if step and step.startswith("MOBILE_") and not is_mobile:
         return None
     return step
 
