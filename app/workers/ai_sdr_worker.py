@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIRun, Conversation, Message
+from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, Conversation, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import (
@@ -78,6 +78,78 @@ def _cancel_pre_real_mode_work() -> tuple[int, int]:
     finally:
         db.close()
     return cancelled_jobs, cancelled_followups
+
+
+def _ensure_bound_ai_agents_active() -> int:
+    if os.getenv("AI_ENSURE_BOUND_AGENTS_ACTIVE", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        return 0
+    db = SessionLocal()
+    activated = 0
+    try:
+        bindings = list(db.scalars(select(AIQueueBinding).where(
+            AIQueueBinding.active.is_(True),
+            AIQueueBinding.handling_mode != "HUMAN",
+        )))
+        for binding in bindings:
+            agent = db.get(AIAgentProfile, binding.agent_id)
+            if agent and not agent.active:
+                agent.active = True
+                activated += 1
+        db.commit()
+    finally:
+        db.close()
+    return activated
+
+
+def _reset_legacy_state_for_real_inbound(db, conversation: Conversation, message: Message) -> bool:
+    cutoff = _real_mode_cutoff()
+    if not cutoff or not message.created_at or message.created_at < cutoff:
+        return False
+
+    state = db.scalar(select(AIConversationState).where(
+        AIConversationState.conversation_id == conversation.id
+    ))
+    closing = db.scalar(select(AIClosingState).where(
+        AIClosingState.conversation_id == conversation.id
+    ))
+
+    legacy_state = bool(
+        (state and state.created_at and state.created_at < cutoff)
+        or (closing and closing.created_at and closing.created_at < cutoff)
+    )
+    if not legacy_state:
+        return False
+
+    for followup in db.scalars(select(AIFollowupJob).where(
+        AIFollowupJob.conversation_id == conversation.id,
+        AIFollowupJob.status.in_(["PENDENTE", "PROCESSANDO"]),
+    )):
+        followup.status = "CANCELADO"
+        followup.locked_at = None
+        followup.error = "Cancelado ao reiniciar conversa como caso real."
+
+    if closing:
+        db.delete(closing)
+
+    if state:
+        state.state = "AI_ACTIVE"
+        state.summary = ""
+        state.qualification_score = 0
+        state.temperature = "FRIO"
+        state.last_intent = "UNKNOWN"
+        state.last_run_id = None
+        state.handoff_at = None
+
+    conversation.assigned_user_id = None
+    conversation.status = "EM_FILA"
+    db.flush()
+    LOG.warning(
+        "real_case_state_reset conversation=%s message=%s cutoff=%s",
+        conversation.id,
+        message.id,
+        cutoff,
+    )
+    return True
 
 
 def _recover_stale_jobs() -> int:
@@ -444,6 +516,8 @@ def _recover_recent_unqueued_inbounds() -> int:
                 reasons["closed_conversation"] += 1
                 continue
 
+            _reset_legacy_state_for_real_inbound(db, conversation, message)
+
             state = db.scalar(
                 select(AIConversationState).where(
                     AIConversationState.conversation_id == conversation.id
@@ -568,6 +642,9 @@ def run() -> None:
             name="sulia-engineer",
             daemon=True,
         ).start()
+    activated_agents = _ensure_bound_ai_agents_active()
+    if activated_agents:
+        LOG.warning("Agentes IA vinculados reativados=%s", activated_agents)
     cancelled_jobs, cancelled_followups = _cancel_pre_real_mode_work()
     if cancelled_jobs or cancelled_followups:
         LOG.warning("Modo real ativado: jobs antigos cancelados=%s followups antigos cancelados=%s cutoff=%s", cancelled_jobs, cancelled_followups, _real_mode_cutoff())
