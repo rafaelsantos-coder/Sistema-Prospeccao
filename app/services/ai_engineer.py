@@ -406,7 +406,7 @@ def _open_patch_pr(
 
     branch = (
         f"ai-engineer/{proposal.id}-"
-        f"{hashlib.sha1(proposal.fingerprint.encode()).hexdigest()[:8]}"
+        f"{hashlib.sha256(proposal.fingerprint.encode()).hexdigest()[:8]}"
     )
     with httpx.Client(timeout=30.0) as client:
         _github_create_branch(client, branch)
