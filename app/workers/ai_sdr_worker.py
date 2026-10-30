@@ -20,7 +20,7 @@ from app.services.ai_seller import (
 from app.services.ai_sdr_policy import followup_spec, next_business_time
 from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
-from app.timeutils import utcnow
+from app.timeutils import utc_naive, utcnow
 
 
 logging.basicConfig(level=logging.INFO)
@@ -310,16 +310,24 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
             if job:
                 delay, _theme = followup_spec(next_step)
                 last_outbound_at = latest.created_at or utcnow()
-                ideal_due = next_business_time(
-                    last_outbound_at + delay,
-                    settings.default_timezone,
-                )
+                ideal_due = utc_naive(
+                    next_business_time(
+                        last_outbound_at + delay,
+                        settings.default_timezone,
+                    )
+                ) or utcnow()
                 # Conversas que já venceram a janela entram na próxima janela útil,
-                # sem esperar mais um ciclo inteiro da cadência.
-                job.due_at = next_business_time(
-                    utcnow(),
-                    settings.default_timezone,
-                ) if ideal_due <= utcnow() else ideal_due
+                # sem esperar mais um ciclo inteiro da cadência. Normalizamos para
+                # UTC naive, padrão interno do app, porque o PostgreSQL pode devolver
+                # created_at com tzinfo mesmo quando utcnow() é naive.
+                now_utc = utcnow()
+                next_window = utc_naive(
+                    next_business_time(
+                        now_utc,
+                        settings.default_timezone,
+                    )
+                ) or now_utc
+                job.due_at = next_window if ideal_due <= now_utc else ideal_due
                 created += 1
 
         db.commit()
