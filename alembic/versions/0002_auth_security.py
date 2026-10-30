@@ -15,21 +15,31 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "users",
-        sa.Column(
+    columns = {
+        item["name"]
+        for item in sa.inspect(op.get_bind()).get_columns("users")
+    }
+    if "session_version" not in columns:
+        op.add_column(
+            "users",
+            sa.Column(
+                "session_version",
+                sa.Integer(),
+                nullable=False,
+                server_default=sa.text("1"),
+            ),
+        )
+        op.alter_column(
+            "users",
             "session_version",
-            sa.Integer(),
-            nullable=False,
-            server_default=sa.text("1"),
-        ),
-    )
-    op.alter_column(
-        "users",
-        "session_version",
-        server_default=None,
-    )
+            server_default=None,
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("users", "session_version")
+    columns = {
+        item["name"]
+        for item in sa.inspect(op.get_bind()).get_columns("users")
+    }
+    if "session_version" in columns:
+        op.drop_column("users", "session_version")
