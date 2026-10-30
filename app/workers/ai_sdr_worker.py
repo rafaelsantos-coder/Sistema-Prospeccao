@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.models import AIFollowupJob, AIClosingState, AIConversationState, AIJob, Conversation, Message
-from app.services.ai_followups import claim_followup_job, process_followup_job
+from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import (
     active_closer,
@@ -208,6 +208,108 @@ def _recover_closer_capture_patch_failures() -> int:
     return recovered
 
 
+def _backfill_missing_followups(*, limit: int = 250) -> int:
+    """Recria cadência para conversas IA ativas que ficaram sem job pendente."""
+    db = SessionLocal()
+    created = 0
+    try:
+        states = list(
+            db.scalars(
+                select(AIConversationState)
+                .where(
+                    AIConversationState.state.in_(["AI_ACTIVE", "CLOSING"]),
+                    AIConversationState.updated_at >= utcnow() - timedelta(days=30),
+                )
+                .order_by(AIConversationState.updated_at.desc())
+                .limit(limit)
+            )
+        )
+        for state in states:
+            conversation = db.get(Conversation, state.conversation_id)
+            if (
+                not conversation
+                or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+            ):
+                continue
+
+            pending = db.scalar(
+                select(AIFollowupJob.id)
+                .where(
+                    AIFollowupJob.conversation_id == conversation.id,
+                    AIFollowupJob.status.in_(["PENDENTE", "PROCESSANDO"]),
+                )
+                .limit(1)
+            )
+            if pending:
+                continue
+
+            latest = db.scalar(
+                select(Message)
+                .where(
+                    Message.conversation_id == conversation.id,
+                    Message.direction.in_(["INBOUND", "OUTBOUND"]),
+                )
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+            if not latest or latest.direction != "OUTBOUND":
+                continue
+
+            source_inbound_id = db.scalar(
+                select(Message.id)
+                .where(
+                    Message.conversation_id == conversation.id,
+                    Message.direction == "INBOUND",
+                    Message.id < latest.id,
+                )
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+
+            last_sent = db.scalar(
+                select(AIFollowupJob)
+                .where(
+                    AIFollowupJob.conversation_id == conversation.id,
+                    AIFollowupJob.source_message_id == source_inbound_id,
+                    AIFollowupJob.status == "ENVIADO",
+                )
+                .order_by(AIFollowupJob.step.desc(), AIFollowupJob.id.desc())
+                .limit(1)
+            )
+            next_step = int(last_sent.step or 0) + 1 if last_sent else 1
+
+            queue = queue_for_conversation(db, conversation.id)
+            if not queue:
+                continue
+            job = schedule_followup(
+                db,
+                agent_id=state.agent_id,
+                queue_id=queue.id,
+                conversation_id=conversation.id,
+                source_message_id=source_inbound_id,
+                step=next_step,
+            )
+            if job:
+                delay, _theme = followup_spec(next_step)
+                last_outbound_at = latest.created_at or utcnow()
+                ideal_due = next_business_time(
+                    last_outbound_at + delay,
+                    settings.default_timezone,
+                )
+                # Conversas que já venceram a janela entram na próxima janela útil,
+                # sem esperar mais um ciclo inteiro da cadência.
+                job.due_at = next_business_time(
+                    utcnow(),
+                    settings.default_timezone,
+                ) if ideal_due <= utcnow() else ideal_due
+                created += 1
+
+        db.commit()
+    finally:
+        db.close()
+    return created
+
+
 def _recover_recent_unqueued_inbounds() -> int:
     db = SessionLocal()
     recovered = 0
@@ -366,6 +468,9 @@ def run() -> None:
     recovered_recent = _recover_recent_unqueued_inbounds()
     if recovered_recent:
         LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
+    backfilled_followups = _backfill_missing_followups()
+    if backfilled_followups:
+        LOG.info("Follow-ups ausentes reconstruidos=%s", backfilled_followups)
 
     missing_key_logged = False
     last_inbound_recovery = time.monotonic()
@@ -398,11 +503,13 @@ def run() -> None:
             try:
                 stale_jobs = _recover_stale_jobs()
                 stale_followups = _recover_stale_followups()
-                if stale_jobs or stale_followups:
+                backfilled = _backfill_missing_followups(limit=250)
+                if stale_jobs or stale_followups or backfilled:
                     LOG.info(
-                        "Recuperação periódica stale jobs=%s followups=%s",
+                        "Recuperação periódica stale jobs=%s followups=%s backfilled=%s",
                         stale_jobs,
                         stale_followups,
+                        backfilled,
                     )
             except Exception:
                 LOG.exception("Falha na recuperação periódica de jobs.")
