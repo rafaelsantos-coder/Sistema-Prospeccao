@@ -4,7 +4,7 @@ import json
 import re
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -737,6 +737,387 @@ def _build_ai_journey_report(
     return empty
 
 
+def _previous_period_filters(filters: ChatReportFilters) -> ChatReportFilters:
+    try:
+        current_from = datetime.fromisoformat(filters.date_from).date()
+        current_to = datetime.fromisoformat(filters.date_to).date()
+    except (TypeError, ValueError):
+        current_to = datetime.now(LOCAL_TZ).date()
+        current_from = current_to - timedelta(days=29)
+
+    span_days = max(1, (current_to - current_from).days + 1)
+    previous_to = current_from - timedelta(days=1)
+    previous_from = previous_to - timedelta(days=span_days - 1)
+    return replace(
+        filters,
+        date_from=previous_from.isoformat(),
+        date_to=previous_to.isoformat(),
+    )
+
+
+def _ai_state_maps(
+    db: Session,
+    conversation_ids: list[int],
+) -> tuple[dict[int, AIConversationState], dict[int, AIClosingState]]:
+    if not conversation_ids:
+        return {}, {}
+    ai_state_map = {
+        item.conversation_id: item
+        for item in db.scalars(
+            select(AIConversationState).where(
+                AIConversationState.conversation_id.in_(conversation_ids)
+            )
+        )
+    }
+    closing_state_map = {
+        item.conversation_id: item
+        for item in db.scalars(
+            select(AIClosingState).where(
+                AIClosingState.conversation_id.in_(conversation_ids)
+            )
+        )
+    }
+    return ai_state_map, closing_state_map
+
+
+_STAGE_RECOMMENDATIONS = {
+    "IDENTIFY_CUSTOMER": (
+        "Simplificar a abertura e manter apenas a pergunta cliente/não cliente com botões Sim e Não."
+    ),
+    "CHOOSE_PRODUCT": (
+        "Revisar a CTA de escolha entre Internet e Telefonia Móvel e garantir botões curtos e objetivos."
+    ),
+    "CHOOSE_SEGMENT": (
+        "Manter a escolha Casa/Empresa direta, sem texto adicional que desvie a resposta."
+    ),
+    "CONFIRM_CITY": (
+        "Revisar o reconhecimento da cidade e usar uma pergunta curta quando ela ainda não estiver no contexto."
+    ),
+    "SELECT_OFFER": (
+        "Revisar clareza da oferta, preço, velocidade e CTA. Evitar excesso de detalhes antes da escolha."
+    ),
+    "HANDLE_OBJECTION": (
+        "Variar o argumento conforme preço, qualidade ou momento e evitar repetir a mesma oferta sem diagnóstico."
+    ),
+    "CONFIRM_PURCHASE": (
+        "Usar uma CTA direta de contratação e não voltar para explicações já concluídas."
+    ),
+    "CLOSING": (
+        "Revisar disponibilidade do Vendedor IA, CRM e continuidade do fechamento."
+    ),
+}
+
+
+def _metric_delta(current: float | int | None, previous: float | int | None) -> float | None:
+    if current is None or previous is None:
+        return None
+    return float(current) - float(previous)
+
+
+def _build_ai_performance_management(
+    current: dict[str, Any],
+    previous: dict[str, Any],
+    *,
+    current_label: str,
+    previous_label: str,
+) -> dict[str, Any]:
+    ck = current["kpis"]
+    pk = previous["kpis"]
+    ai_total = int(ck.get("ai_conversations") or 0)
+    offers = int(ck.get("offer_defined") or 0)
+    acceptances = int(ck.get("purchase_acceptances") or 0)
+    closer_started = int(ck.get("closer_started_period") or 0)
+    stalled = int(ck.get("stalled") or 0)
+    human_handoffs = int(ck.get("human_handoffs") or 0)
+
+    acceptance_delta = _metric_delta(
+        ck.get("acceptance_rate"),
+        pk.get("acceptance_rate"),
+    )
+    closer_delta = _metric_delta(
+        ck.get("closer_start_rate"),
+        pk.get("closer_start_rate"),
+    )
+    completion_delta = _metric_delta(
+        ck.get("completion_rate"),
+        pk.get("completion_rate"),
+    )
+    interactions_delta = _metric_delta(
+        ck.get("avg_interactions_to_acceptance"),
+        pk.get("avg_interactions_to_acceptance"),
+    )
+
+    alerts: list[dict[str, Any]] = []
+
+    def add_alert(
+        severity: str,
+        code: str,
+        title: str,
+        detail: str,
+        recommendation: str,
+        *,
+        metric: str = "",
+        value: float | int | None = None,
+        delta: float | None = None,
+    ) -> None:
+        alerts.append(
+            {
+                "severity": severity,
+                "code": code,
+                "title": title,
+                "detail": detail,
+                "recommendation": recommendation,
+                "metric": metric,
+                "value": value,
+                "delta": delta,
+            }
+        )
+
+    stalled_ratio = (stalled / ai_total * 100) if ai_total else 0.0
+    if stalled:
+        severity = "CRITICAL" if stalled_ratio >= 15 or stalled >= 5 else "WARNING"
+        add_alert(
+            severity,
+            "STALLED_CONVERSATIONS",
+            "Há conversas travadas na jornada",
+            (
+                f"{stalled} conversa(s) estão com 3 ou mais interações sem avanço "
+                f"({stalled_ratio:.1f}% das conversas do SDR IA)."
+            ),
+            "Abrir primeiro as conversas travadas e atacar a pendência exibida em cada uma.",
+            metric="stalled_rate",
+            value=stalled_ratio,
+        )
+
+    bottleneck_code = str(ck.get("bottleneck_code") or "")
+    bottleneck_current = int(ck.get("bottleneck_current") or 0)
+    stage_lookup = {
+        row["code"]: row
+        for row in current.get("stages", [])
+    }
+    bottleneck_row = stage_lookup.get(bottleneck_code)
+    if bottleneck_code and bottleneck_current and bottleneck_row:
+        avg_interactions = float(bottleneck_row.get("avg_interactions") or 0.0)
+        stage_stalled = int(bottleneck_row.get("stalled") or 0)
+        if avg_interactions >= 2.0 or stage_stalled:
+            add_alert(
+                "WARNING",
+                "JOURNEY_BOTTLENECK",
+                f"Gargalo em {bottleneck_row['label']}",
+                (
+                    f"{bottleneck_current} conversa(s) estão atualmente nessa etapa, "
+                    f"com média de {avg_interactions:.2f} interação(ões) por conversa."
+                ),
+                _STAGE_RECOMMENDATIONS.get(
+                    bottleneck_code,
+                    "Revisar a pergunta, a CTA e a regra de avanço desta etapa.",
+                ),
+                metric="stage_avg_interactions",
+                value=avg_interactions,
+            )
+
+    previous_offers = int(pk.get("offer_defined") or 0)
+    acceptance_rate = float(ck.get("acceptance_rate") or 0.0)
+    if offers >= 5 and acceptance_rate < 25:
+        add_alert(
+            "CRITICAL" if acceptance_rate < 15 else "WARNING",
+            "LOW_ACCEPTANCE_RATE",
+            "Conversão de oferta para aceite está baixa",
+            (
+                f"Apenas {acceptance_rate:.1f}% das conversas com oferta definida "
+                "chegaram a um aceite explícito."
+            ),
+            "Revisar apresentação da oferta, CTA de fechamento e tratamento das principais objeções.",
+            metric="acceptance_rate",
+            value=acceptance_rate,
+            delta=acceptance_delta,
+        )
+    if (
+        offers >= 5
+        and previous_offers >= 5
+        and acceptance_delta is not None
+        and acceptance_delta <= -10
+    ):
+        add_alert(
+            "CRITICAL",
+            "ACCEPTANCE_RATE_DROP",
+            "A taxa de aceite caiu em relação ao período anterior",
+            (
+                f"A conversão oferta → aceite caiu {abs(acceptance_delta):.1f} p.p. "
+                f"comparando {current_label} com {previous_label}."
+            ),
+            "Comparar as conversas recentes com as do período anterior e revisar oferta, objeções e CTA que mais mudaram.",
+            metric="acceptance_rate",
+            value=acceptance_rate,
+            delta=acceptance_delta,
+        )
+
+    closer_rate = float(ck.get("closer_start_rate") or 0.0)
+    if acceptances >= 3 and closer_rate < 90:
+        add_alert(
+            "CRITICAL",
+            "CLOSER_HANDOFF_LOSS",
+            "Aceites não estão chegando ao Vendedor IA",
+            (
+                f"{closer_rate:.1f}% dos aceites explícitos iniciaram o Vendedor IA "
+                "dentro do período analisado."
+            ),
+            "Auditar handoff, disponibilidade do closer e criação do estado de fechamento para não perder cliente já decidido.",
+            metric="closer_start_rate",
+            value=closer_rate,
+            delta=closer_delta,
+        )
+
+    completion_rate = float(ck.get("completion_rate") or 0.0)
+    if closer_started >= 3 and completion_rate < 60:
+        add_alert(
+            "CRITICAL" if completion_rate < 35 else "WARNING",
+            "LOW_CLOSING_COMPLETION",
+            "Fechamentos iniciados estão concluindo pouco",
+            (
+                f"{completion_rate:.1f}% dos fechamentos iniciados no período "
+                "também foram concluídos na mesma coorte."
+            ),
+            "Revisar em quais etapas do Vendedor IA as contratações estão parando: cadastro, crédito, endereço, plano, faturamento ou assinatura.",
+            metric="completion_rate",
+            value=completion_rate,
+            delta=completion_delta,
+        )
+    previous_closer_started = int(pk.get("closer_started_period") or 0)
+    if (
+        closer_started >= 3
+        and previous_closer_started >= 3
+        and completion_delta is not None
+        and completion_delta <= -10
+    ):
+        add_alert(
+            "WARNING",
+            "COMPLETION_RATE_DROP",
+            "A conclusão do Vendedor IA caiu",
+            (
+                f"A taxa de conclusão caiu {abs(completion_delta):.1f} p.p. "
+                "em relação ao período anterior."
+            ),
+            "Comparar as etapas de fechamento com maior permanência e verificar erros recentes do CRM ou assinatura.",
+            metric="completion_rate",
+            value=completion_rate,
+            delta=completion_delta,
+        )
+
+    interactions_to_acceptance = ck.get("avg_interactions_to_acceptance")
+    if (
+        acceptances >= 3
+        and interactions_to_acceptance is not None
+        and float(interactions_to_acceptance) > 5
+    ):
+        add_alert(
+            "WARNING",
+            "TOO_MANY_INTERACTIONS",
+            "O SDR está demorando para chegar ao aceite",
+            (
+                f"São necessárias, em média, {float(interactions_to_acceptance):.1f} "
+                "interações do SDR até o aceite explícito."
+            ),
+            "Encurtar perguntas, evitar recapitulações e apresentar oferta/CTA assim que as informações obrigatórias estiverem completas.",
+            metric="avg_interactions_to_acceptance",
+            value=float(interactions_to_acceptance),
+            delta=interactions_delta,
+        )
+
+    handoff_ratio = (human_handoffs / ai_total * 100) if ai_total else 0.0
+    if ai_total >= 5 and handoff_ratio > 20:
+        add_alert(
+            "WARNING",
+            "HIGH_HUMAN_HANDOFF",
+            "Handoff humano acima do esperado",
+            (
+                f"{handoff_ratio:.1f}% das conversas do SDR IA tiveram destino humano "
+                "no período."
+            ),
+            "Revisar motivos dos handoffs e separar pedidos explícitos de humano de falhas operacionais ou classificações indevidas.",
+            metric="human_handoff_rate",
+            value=handoff_ratio,
+        )
+
+    objection_ratio = (
+        int(ck.get("objection_conversations") or 0) / ai_total * 100
+        if ai_total
+        else 0.0
+    )
+    if ai_total >= 5 and objection_ratio >= 50:
+        add_alert(
+            "INFO",
+            "HIGH_OBJECTION_VOLUME",
+            "Objeções estão concentradas em muitas conversas",
+            f"{objection_ratio:.1f}% das conversas do SDR IA registraram alguma objeção.",
+            "Usar as conversas com objeção para revisar argumentos comerciais e identificar se preço, qualidade ou momento estão predominando.",
+            metric="objection_rate",
+            value=objection_ratio,
+        )
+
+    severity_rank = {"CRITICAL": 0, "WARNING": 1, "INFO": 2, "POSITIVE": 3}
+    alerts.sort(key=lambda item: (severity_rank.get(item["severity"], 9), item["title"]))
+
+    score = 100
+    score -= sum(18 for item in alerts if item["severity"] == "CRITICAL")
+    score -= sum(9 for item in alerts if item["severity"] == "WARNING")
+    score -= sum(3 for item in alerts if item["severity"] == "INFO")
+    if ai_total and stalled_ratio >= 15:
+        score -= 8
+    score = max(0, min(100, score))
+
+    if ai_total < 3:
+        status = "SEM_BASE"
+        status_label = "Base insuficiente"
+    elif score >= 85:
+        status = "EXCELLENT"
+        status_label = "Excelente"
+    elif score >= 70:
+        status = "GOOD"
+        status_label = "Boa"
+    elif score >= 50:
+        status = "ATTENTION"
+        status_label = "Atenção"
+    else:
+        status = "CRITICAL"
+        status_label = "Crítica"
+
+    if not alerts and ai_total >= 3:
+        add_alert(
+            "POSITIVE",
+            "HEALTHY_JOURNEY",
+            "Jornada sem alerta relevante",
+            "Os principais indicadores estão dentro das faixas operacionais definidas.",
+            "Continuar monitorando a evolução por etapa e a comparação com o período anterior.",
+        )
+
+    primary = next(
+        (item for item in alerts if item["severity"] in {"CRITICAL", "WARNING"}),
+        alerts[0] if alerts else None,
+    )
+
+    return {
+        "score": score,
+        "status": status,
+        "status_label": status_label,
+        "alerts": alerts[:10],
+        "critical_count": sum(1 for item in alerts if item["severity"] == "CRITICAL"),
+        "warning_count": sum(1 for item in alerts if item["severity"] == "WARNING"),
+        "primary_recommendation": primary["recommendation"] if primary else "",
+        "comparison": {
+            "current_label": current_label,
+            "previous_label": previous_label,
+            "acceptance_rate_delta": acceptance_delta,
+            "closer_start_rate_delta": closer_delta,
+            "completion_rate_delta": completion_delta,
+            "interactions_to_acceptance_delta": interactions_delta,
+            "previous_acceptance_rate": float(pk.get("acceptance_rate") or 0.0),
+            "previous_closer_start_rate": float(pk.get("closer_start_rate") or 0.0),
+            "previous_completion_rate": float(pk.get("completion_rate") or 0.0),
+        },
+    }
+
+
 def build_chat_report(
     db: Session,
     user: User,
@@ -816,6 +1197,38 @@ def build_chat_report(
         start=start,
         end=end,
     )
+
+    previous_filters = _previous_period_filters(filters)
+    previous_conversations = list(
+        db.scalars(_conversation_query(user, previous_filters)).unique()
+    )
+    previous_conversation_ids = [item.id for item in previous_conversations]
+    previous_ai_state_map, previous_closing_state_map = _ai_state_maps(
+        db,
+        previous_conversation_ids,
+    )
+    previous_journey = _build_ai_journey_report(
+        db,
+        conversations=previous_conversations,
+        conversation_ids=previous_conversation_ids,
+        ai_state_map=previous_ai_state_map,
+        closing_state_map=previous_closing_state_map,
+        start=previous_filters.start_utc,
+        end=previous_filters.end_utc,
+    )
+    journey_report["performance"] = _build_ai_performance_management(
+        journey_report,
+        previous_journey,
+        current_label=f"{filters.date_from} a {filters.date_to}",
+        previous_label=(
+            f"{previous_filters.date_from} a {previous_filters.date_to}"
+        ),
+    )
+    journey_report["previous_period"] = {
+        "date_from": previous_filters.date_from,
+        "date_to": previous_filters.date_to,
+        "kpis": previous_journey["kpis"],
+    }
     journey_current_map = journey_report["current_by_conversation"]
 
     rows: list[dict[str, Any]] = []

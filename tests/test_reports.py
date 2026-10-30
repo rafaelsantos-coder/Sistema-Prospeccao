@@ -19,7 +19,11 @@ from app.models import (
     ServiceQueue,
     User,
 )
-from app.services.chat_reports import ChatReportFilters, build_chat_report
+from app.services.chat_reports import (
+    ChatReportFilters,
+    _build_ai_performance_management,
+    build_chat_report,
+)
 from app.services.zapi import ZApiService
 from app.timeutils import utcnow
 
@@ -94,6 +98,9 @@ def test_whatsapp_reports_page(monkeypatch):
         assert "EFICIÊNCIA POR ETAPA" in response.text
         assert "CSV jornada IA" in response.text
         assert "Interações até aceite" in response.text
+        assert "GESTÃO AUTOMÁTICA DE PERFORMANCE" in response.text
+        assert "Saúde da jornada" in response.text
+        assert "Recomendação principal" in response.text
 
 
 def test_whatsapp_reports_csv_exports(monkeypatch):
@@ -123,6 +130,9 @@ def test_whatsapp_reports_csv_exports(monkeypatch):
         assert "DESEMPENHO POR ETAPA" in journey_text
         assert "CONVERSAS TRAVADAS" in journey_text
         assert "Confirmar compra" in journey_text
+        assert "DIAGNÓSTICO AUTOMÁTICO DA IA" in journey_text
+        assert "ALERTAS E RECOMENDAÇÕES" in journey_text
+        assert "COMPARAÇÃO COM O PERÍODO ANTERIOR" in journey_text
 
         conversation_id = location.rsplit("/", 1)[-1]
         transcript = client.get(f"/reports/whatsapp/conversations/{conversation_id}.csv")
@@ -295,3 +305,154 @@ def test_ai_journey_report_counts_acceptance_and_completed_sale(monkeypatch):
             )
         finally:
             db.close()
+
+
+
+def _performance_fixture(
+    *,
+    ai_conversations=10,
+    offer_defined=8,
+    purchase_acceptances=4,
+    closer_started_period=4,
+    completed_period=3,
+    human_handoffs=1,
+    stalled=0,
+    at_risk=0,
+    objection_conversations=2,
+    acceptance_rate=50.0,
+    closer_start_rate=100.0,
+    completion_rate=75.0,
+    avg_interactions_to_acceptance=3.0,
+    bottleneck_code="SELECT_OFFER",
+    bottleneck_label="Selecionar oferta",
+    bottleneck_current=2,
+    stage_avg=1.5,
+    stage_stalled=0,
+):
+    return {
+        "kpis": {
+            "ai_conversations": ai_conversations,
+            "offer_defined": offer_defined,
+            "purchase_acceptances": purchase_acceptances,
+            "closer_started_period": closer_started_period,
+            "completed_period": completed_period,
+            "human_handoffs": human_handoffs,
+            "stalled": stalled,
+            "at_risk": at_risk,
+            "objection_conversations": objection_conversations,
+            "acceptance_rate": acceptance_rate,
+            "closer_start_rate": closer_start_rate,
+            "completion_rate": completion_rate,
+            "avg_interactions_to_acceptance": avg_interactions_to_acceptance,
+            "avg_interactions_per_conversation": 2.0,
+            "bottleneck_code": bottleneck_code,
+            "bottleneck_label": bottleneck_label,
+            "bottleneck_current": bottleneck_current,
+        },
+        "stages": [
+            {
+                "code": bottleneck_code,
+                "label": bottleneck_label,
+                "conversations": 4,
+                "interactions": 6,
+                "avg_interactions": stage_avg,
+                "current": bottleneck_current,
+                "stalled": stage_stalled,
+            }
+        ],
+    }
+
+
+def test_ai_performance_management_detects_conversion_drop_and_stagnation():
+    current = _performance_fixture(
+        offer_defined=10,
+        purchase_acceptances=1,
+        acceptance_rate=10.0,
+        stalled=3,
+        at_risk=4,
+        stage_avg=3.2,
+        stage_stalled=2,
+    )
+    previous = _performance_fixture(
+        offer_defined=10,
+        purchase_acceptances=5,
+        acceptance_rate=50.0,
+        stalled=0,
+        stage_avg=1.4,
+    )
+
+    result = _build_ai_performance_management(
+        current,
+        previous,
+        current_label="2026-10-01 a 2026-10-30",
+        previous_label="2026-09-01 a 2026-09-30",
+    )
+
+    codes = {item["code"] for item in result["alerts"]}
+    assert "STALLED_CONVERSATIONS" in codes
+    assert "JOURNEY_BOTTLENECK" in codes
+    assert "LOW_ACCEPTANCE_RATE" in codes
+    assert "ACCEPTANCE_RATE_DROP" in codes
+    assert result["critical_count"] >= 2
+    assert result["score"] < 70
+    assert result["status"] in {"ATTENTION", "CRITICAL"}
+    assert result["comparison"]["acceptance_rate_delta"] == -40.0
+    assert result["primary_recommendation"]
+
+
+def test_ai_performance_management_flags_closer_loss_after_acceptance():
+    current = _performance_fixture(
+        purchase_acceptances=5,
+        closer_started_period=2,
+        closer_start_rate=40.0,
+    )
+    previous = _performance_fixture(
+        purchase_acceptances=5,
+        closer_started_period=5,
+        closer_start_rate=100.0,
+    )
+
+    result = _build_ai_performance_management(
+        current,
+        previous,
+        current_label="atual",
+        previous_label="anterior",
+    )
+
+    codes = {item["code"] for item in result["alerts"]}
+    assert "CLOSER_HANDOFF_LOSS" in codes
+    alert = next(
+        item for item in result["alerts"]
+        if item["code"] == "CLOSER_HANDOFF_LOSS"
+    )
+    assert alert["severity"] == "CRITICAL"
+    assert "Vendedor IA" in alert["title"]
+
+
+def test_ai_performance_management_returns_positive_health_when_stable():
+    current = _performance_fixture(
+        stalled=0,
+        at_risk=0,
+        stage_avg=1.2,
+        bottleneck_current=1,
+        human_handoffs=0,
+        objection_conversations=1,
+    )
+    previous = _performance_fixture(
+        stalled=0,
+        stage_avg=1.3,
+        bottleneck_current=1,
+        human_handoffs=0,
+        objection_conversations=1,
+    )
+
+    result = _build_ai_performance_management(
+        current,
+        previous,
+        current_label="atual",
+        previous_label="anterior",
+    )
+
+    assert result["score"] >= 85
+    assert result["status"] == "EXCELLENT"
+    assert any(item["code"] == "HEALTHY_JOURNEY" for item in result["alerts"])
