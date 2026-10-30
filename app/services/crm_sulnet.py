@@ -843,17 +843,42 @@ class SulnetCRMClient:
         plan_id: int | None = None,
     ) -> dict[str, Any]:
         current = self.get_opportunity(opportunity_id)
+
+        product_info = current.get("productInfo")
+        if not isinstance(product_info, dict):
+            product_info = {}
+
         ai_closing = current.get("aiClosing")
+        if not isinstance(ai_closing, dict):
+            ai_closing = product_info.get("aiClosing")
         if not isinstance(ai_closing, dict):
             ai_closing = {}
 
+        category_form = product_info.get("categoryForm")
+        if not isinstance(category_form, dict):
+            category_form = {}
+        current_values = category_form.get("values")
+        if not isinstance(current_values, dict):
+            current_values = {}
+        merged_values = dict(current_values)
+        merged_values.update(values)
+
+        current_files = category_form.get("files")
+        if not isinstance(current_files, dict):
+            current_files = {}
+
         payload: dict[str, Any] = {
             "productInfo": {
+                **{
+                    key: value
+                    for key, value in product_info.items()
+                    if key not in {"aiClosing", "categoryForm"}
+                },
                 "aiClosing": dict(ai_closing),
                 "categoryForm": {
-                    "values": dict(values),
-                    # No funil SDR IA, documentos/selfie não são coletados no chat.
-                    "files": {},
+                    "values": merged_values,
+                    # Preserva anexos já existentes; a IA não cria documentos/selfies.
+                    "files": dict(current_files),
                 },
             }
         }
