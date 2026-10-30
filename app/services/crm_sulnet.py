@@ -158,7 +158,7 @@ class SulnetCRMClient:
             return normalized
         return result
 
-    def _data_stage_id(self) -> int | None:
+    def _stage_id_by_name(self, *names: str) -> int | None:
         try:
             context = self.context()
         except CRMIntegrationError:
@@ -166,16 +166,24 @@ class SulnetCRMClient:
         stages = context.get("stages")
         if not isinstance(stages, list):
             return None
+        wanted = {
+            self._fold_catalog_text(name)
+            for name in names
+            if str(name or "").strip()
+        }
         for item in stages:
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("name") or "").strip().lower()
-            if "dados e plano" in name:
+            name = self._fold_catalog_text(str(item.get("name") or ""))
+            if name in wanted:
                 try:
                     return int(item.get("id"))
                 except (TypeError, ValueError):
                     return None
         return None
+
+    def _data_stage_id(self) -> int | None:
+        return self._stage_id_by_name("DADOS E PLANO")
 
     def _fallback_update_opportunity(
         self,
@@ -607,12 +615,63 @@ class SulnetCRMClient:
             return result if isinstance(result, list) else []
 
     def mark_won(self, opportunity_id: int) -> dict[str, Any]:
-        result = self._request(
-            "POST",
-            f"/api/capture/leads/{opportunity_id}/win",
-            json_body={},
+        try:
+            result = self._request(
+                "POST",
+                f"/api/capture/leads/{opportunity_id}/win",
+                json_body={},
+            )
+            return result if isinstance(result, dict) else {}
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+
+        # Compatibilidade com a versão do CRM em produção que ainda não expõe
+        # /capture/.../win. O endpoint genérico já implementa status=won,
+        # closed_at/won_by_user e a automação de cópia para o Backoffice.
+        won_stage_id = self._stage_id_by_name("GANHO")
+        if not won_stage_id:
+            raise CRMIntegrationError(
+                "Etapa GANHO do funil SDR IA não localizada no CRM.",
+                status_code=503,
+            )
+
+        LOG.warning(
+            "crm_win_generic_fallback opportunity_id=%s stage_id=%s",
+            opportunity_id,
+            won_stage_id,
         )
-        return result if isinstance(result, dict) else {}
+        updated = self._request(
+            "PATCH",
+            f"/api/opportunities/{opportunity_id}",
+            json_body={
+                "status": "won",
+                "stageId": won_stage_id,
+                "historyAction": "Venda do Vendedor IA validada e marcada como ganha.",
+            },
+        )
+        if not isinstance(updated, dict):
+            updated = {}
+
+        contract: dict[str, Any] = {"status": "aguardando_backoffice"}
+        try:
+            status = self.get_status(opportunity_id)
+            if isinstance(status.get("contract"), dict):
+                contract = dict(status["contract"])
+        except CRMIntegrationError as status_exc:
+            if status_exc.status_code != 404:
+                raise
+
+        return {
+            "alreadyWon": str(updated.get("status") or "").lower() == "won",
+            "opportunity": updated,
+            "backofficeOpportunityId": (
+                (updated.get("backofficeCopy") or {}).get("id")
+                if isinstance(updated.get("backofficeCopy"), dict)
+                else None
+            ),
+            "contract": contract,
+        }
 
     def get_status(self, opportunity_id: int) -> dict[str, Any]:
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}/status")
