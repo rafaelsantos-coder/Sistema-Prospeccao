@@ -398,7 +398,12 @@ def _extract_mobile_payment(text: str) -> str | None:
 
 
 def _sdr_ia_mode(collected: dict[str, Any]) -> bool:
-    return bool(collected.get("_sdr_ia_funnel"))
+    if "_sdr_ia_funnel" in collected:
+        return bool(collected.get("_sdr_ia_funnel"))
+    snapshot = collected.get("crmPlaybook")
+    if isinstance(snapshot, dict):
+        return bool(snapshot.get("sdrIaFunnel"))
+    return False
 
 
 def _sdr_ia_defaults(collected: dict[str, Any]) -> dict[str, Any]:
@@ -1057,12 +1062,9 @@ def _mobile_missing_fields(
         required += ["unificar_faturas", "tipo_assinatura_contrato"]
     contract_type = str(values.get("tipo_contratacao") or "")
     if contract_type == "Número Portabilidade":
-        required += [
-            "numero_portado",
-            "port_titular",
-            "port_nome_titular",
-            "port_cpf_cnpj",
-        ]
+        required += ["numero_portado", "port_titular"]
+        if values.get("port_titular") == "Não":
+            required += ["port_nome_titular", "port_cpf_cnpj"]
     elif contract_type == "M2M":
         if sdr_ia_funnel:
             required.append("tipo_contratacao")
@@ -1099,15 +1101,19 @@ def _mobile_next_step(
         return "MOBILE_CONTRACT_TYPE"
 
     if contract_type == "Número Portabilidade":
-        order = [
+        for field, step in [
             ("numero_portado", "MOBILE_PORT_NUMBER"),
             ("port_titular", "MOBILE_PORT_TITULAR"),
-            ("port_nome_titular", "MOBILE_PORT_NAME"),
-            ("port_cpf_cnpj", "MOBILE_PORT_DOC"),
-        ]
-        for field, step in order:
+        ]:
             if not values.get(field):
                 return step
+        if values.get("port_titular") == "Não":
+            for field, step in [
+                ("port_nome_titular", "MOBILE_PORT_NAME"),
+                ("port_cpf_cnpj", "MOBILE_PORT_DOC"),
+            ]:
+                if not values.get(field):
+                    return step
 
     if contract_type == "M2M" and not sdr_ia_funnel:
         if not values.get("m2m_quantidade"):
@@ -1135,6 +1141,33 @@ def _mobile_next_step(
         if values.get("unificar_faturas") == "Não" and not values.get("unificar_motivo"):
             return "MOBILE_UNIFY_REASON"
     return None
+
+def _billing_next_step(
+    values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
+) -> str | None:
+    if not values.get("forma_pagamento"):
+        return "BILLING_PAYMENT_METHOD"
+    if values.get("forma_pagamento") == "Boleto":
+        if not values.get("envio_fatura"):
+            return "BILLING_INVOICE_DELIVERY"
+    elif values.get("forma_pagamento") == "Débito em Conta":
+        for field, step in [
+            ("debito_banco", "BILLING_DEBIT_BANK"),
+            ("debito_agencia", "BILLING_DEBIT_AGENCY"),
+            ("debito_conta", "BILLING_DEBIT_ACCOUNT"),
+            ("debito_titular", "BILLING_DEBIT_HOLDER"),
+        ]:
+            if not values.get(field):
+                return step
+    if not sdr_ia_funnel:
+        if not values.get("unificar_faturas"):
+            return "BILLING_UNIFY"
+        if values.get("unificar_faturas") == "Não" and not values.get("unificar_motivo"):
+            return "BILLING_UNIFY_REASON"
+    return None
+
 
 def _apply_mobile_answer(
     step: str,
