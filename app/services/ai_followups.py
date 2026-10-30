@@ -66,6 +66,7 @@ def schedule_followup(
     conversation_id: int,
     source_message_id: int | None,
     step: int = 1,
+    pending_action: str | None = None,
 ) -> AIFollowupJob | None:
     conversation = db.get(Conversation, conversation_id)
     if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
@@ -90,6 +91,9 @@ def schedule_followup(
 
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
     delay, theme = followup_spec(step)
+    clean_pending = re.sub(r"\s+", " ", str(pending_action or "")).strip()
+    if clean_pending:
+        theme = f"{theme}. Pendência atual: {clean_pending[:500]}"
     due = next_business_time(utcnow() + delay, settings.default_timezone)
     job = AIFollowupJob(
         agent_id=agent_id,
@@ -271,6 +275,14 @@ def _unique_followup_fallback(
     )
 
 
+def _pending_action_from_theme(value: str | None) -> str:
+    text = str(value or "")
+    marker = "Pendência atual:"
+    if marker not in text:
+        return ""
+    return text.split(marker, 1)[1].strip()
+
+
 def _latest_inbound_id(db: Session, conversation_id: int) -> int | None:
     return db.scalar(
         select(Message.id)
@@ -337,7 +349,7 @@ def _generate_followup(
             AIConversationState.conversation_id == job.conversation_id
         )
     )
-    from app.services.ai_sdr import retrieve_knowledge
+    from app.services.ai_sdr import _journey_memory_from_lead, retrieve_knowledge
 
     history = _recent_history(db, job.conversation_id)
     inbound_history = [
@@ -378,6 +390,10 @@ def _generate_followup(
         "lead": {
             "city": lead.city if lead else "",
             "stage": lead.stage if lead else "",
+            "journey": _journey_memory_from_lead(
+                lead,
+                conversation_id=job.conversation_id,
+            ),
         },
         "ai_state": {
             "last_intent": state.last_intent if state else "UNKNOWN",
@@ -389,7 +405,8 @@ def _generate_followup(
     prompt = (
         "Crie APENAS a próxima mensagem de follow-up comercial para WhatsApp. "
         "Ela deve retomar a conversa com naturalidade, usar o contexto real, ter um motivo comercial e "
-        "estimular resposta. REGRA DE EVIDÊNCIA: apenas mensagens INBOUND/customer_evidence são falas do cliente. "
+        "estimular resposta. A 'Pendência atual' registrada no objetivo/jornada tem prioridade: o follow-up deve tentar "
+        "resolver exatamente essa pendência sem reabrir etapas já concluídas. REGRA DE EVIDÊNCIA: apenas mensagens INBOUND/customer_evidence são falas do cliente. "
         "Mensagens OUTBOUND são falas do SulIA e jamais podem virar fato sobre provedor, preço, velocidade, uso, "
         "satisfação, residência ou empresa. Se um dado não foi confirmado pelo cliente, pergunte; não assuma. "
         "É PROIBIDO repetir qualquer mensagem OUTBOUND anterior, inclusive com pequenas trocas de palavras. "
@@ -539,6 +556,7 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
             conversation_id=job.conversation_id,
             source_message_id=job.source_message_id,
             step=job.step + 1,
+            pending_action=_pending_action_from_theme(job.theme),
         )
         return "sent"
     except Exception as exc:
