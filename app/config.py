@@ -125,6 +125,12 @@ class Settings:
     backup_encryption_key: str = os.getenv("BACKUP_ENCRYPTION_KEY", "").strip()
     backup_retention_days: int = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
     media_remote_allowed_hosts: str = os.getenv("MEDIA_REMOTE_ALLOWED_HOSTS", "").strip()
+    clamav_host: str = os.getenv("CLAMAV_HOST", "").strip()
+    clamav_port: int = int(os.getenv("CLAMAV_PORT", "3310"))
+    clamav_required: bool = os.getenv(
+        "CLAMAV_REQUIRED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
     trusted_hosts: str = os.getenv("TRUSTED_HOSTS", "").strip()
     whatsapp_presence_timeout_seconds: int = int(os.getenv("WHATSAPP_PRESENCE_TIMEOUT_SECONDS", "90"))
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "America/Sao_Paulo")
@@ -191,6 +197,7 @@ class Settings:
             "ai_learning": bool(self.ai_learning_enabled and self.openai_api_key),
             "ai_engineer": bool(self.ai_engineer_enabled and self.openai_api_key),
             "redis": bool(self.redis_url),
+            "clamav": bool(self.clamav_host),
             "oidc_sso": self.oidc_configured,
             "ai_engineer_autonomous_pr": bool(
                 self.ai_engineer_enabled
