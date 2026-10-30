@@ -534,12 +534,31 @@ def _persist_journey_memory(
     if not isinstance(payload, dict):
         payload = {}
 
+    previous = payload.get("ai_journey")
+    previous = previous if isinstance(previous, dict) else {}
+
+    existing_customer = str(decision.qualification.existing_customer or "").upper()
+    if existing_customer not in {"CLIENTE", "NAO_CLIENTE"}:
+        existing_customer = str(previous.get("existing_customer") or "").upper()
+    if existing_customer not in {"CLIENTE", "NAO_CLIENTE"}:
+        existing_customer = ""
+
+    customer_type = str(decision.qualification.customer_type or "").upper()
+    if customer_type not in {"EMPRESA", "RESIDENCIAL"}:
+        customer_type = str(previous.get("customer_type") or "").upper()
+    if customer_type not in {"EMPRESA", "RESIDENCIAL"}:
+        customer_type = ""
+
+    desired_product = str(decision.qualification.desired_product or "").strip()
+    if not desired_product:
+        desired_product = str(previous.get("desired_product") or "").strip()
+
     payload["ai_journey"] = {
         "state": decision.journey_state,
         "pending_action": decision.journey_pending_action or decision.next_action,
-        "desired_product": decision.qualification.desired_product or "",
-        "customer_type": decision.qualification.customer_type,
-        "existing_customer": decision.qualification.existing_customer,
+        "desired_product": desired_product,
+        "customer_type": customer_type,
+        "existing_customer": existing_customer,
         "offer_plan_code": decision.offer_plan_code or "",
         "offer_price": decision.offer_price,
         "objection": decision.objection,
@@ -575,6 +594,35 @@ def build_ai_context(
         conversation.id,
         limit=max(40, int(agent.max_history_messages or 24)),
     )
+    fact_history = _conversation_messages(
+        db,
+        conversation.id,
+        limit=max(160, int(agent.max_history_messages or 24)),
+    )
+    confirmed_facts = _confirmed_facts_from_history(fact_history)
+
+    lead_existing = _confirmed_existing_customer_from_lead(lead)
+    if (
+        not confirmed_facts.get("existing_customer")
+        and lead_existing in {"CLIENTE", "NAO_CLIENTE"}
+    ):
+        confirmed_facts["existing_customer"] = lead_existing
+        confirmed_facts["answered_questions"] = sorted(
+            set(confirmed_facts.get("answered_questions") or [])
+            | {"EXISTING_CUSTOMER"}
+        )
+
+    lead_customer_type = _confirmed_customer_type_from_lead(lead)
+    if (
+        not confirmed_facts.get("customer_type")
+        and lead_customer_type in {"EMPRESA", "RESIDENCIAL"}
+    ):
+        confirmed_facts["customer_type"] = lead_customer_type
+        confirmed_facts["answered_questions"] = sorted(
+            set(confirmed_facts.get("answered_questions") or [])
+            | {"CUSTOMER_TYPE"}
+        )
+
     knowledge = retrieve_knowledge(db, agent=agent, query=message.body or "")
     knowledge_meta_rows = list(
         db.scalars(
@@ -598,6 +646,7 @@ def build_ai_context(
             "name": queue.name if queue else "",
             "team": queue.team if queue else "",
         },
+        "confirmed_facts": confirmed_facts,
         "lead": {
             "id": lead.id if lead else None,
             "contact_name": lead.contact_name if lead else "",
@@ -2679,7 +2728,10 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "uso, satisfação, residência ou empresa apenas porque o SulIA mencionou isso antes. A seção customer_evidence contém "
         "somente falas reais do cliente e é a fonte principal para esses fatos. Dados de memória/CRM gerados pela IA não devem "
         "ser tratados como confirmação do cliente. Quando algo não estiver confirmado, pergunte em vez de assumir. "
-        "Produza a decisão estruturada do SDR. Antes de qualquer oferta, se lead.confirmed_existing_customer estiver vazio, "
+        "A seção confirmed_facts é memória factual reconstruída das respostas INBOUND do cliente e tem precedência sobre inferências do modelo. "
+        "Nunca volte a perguntar uma questão presente em confirmed_facts.answered_questions, salvo se o próprio cliente corrigir explicitamente a resposta. "
+        "Uma informação confirmada não pode regredir para NAO_INFORMADO nem fazer a jornada voltar para uma etapa anterior. "
+        "Produza a decisão estruturada do SDR. Antes de qualquer oferta, se lead.confirmed_existing_customer estiver vazio e confirmed_facts.existing_customer também estiver vazio, "
         "a primeira qualificação é perguntar se a pessoa já é cliente Sulnet; cliente existente segue para Telefonia Móvel ou nova conexão para outro endereço, "
         "e não cliente segue para Internet ou Telefonia Móvel. Não repita essa pergunta se a memória já estiver confirmada. "
         "Além da resposta, classifique objeção, estado comercial, plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
