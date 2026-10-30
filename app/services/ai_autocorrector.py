@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import unicodedata
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -42,7 +43,12 @@ _SAFE_ERROR_CUES = (
 
 
 def _fold(value: str | None) -> str:
-    return " ".join(str(value or "").casefold().split())
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(
+        char for char in text
+        if not unicodedata.combining(char)
+    )
+    return " ".join(text.casefold().split())
 
 
 def _is_safe_retriable_error(value: str | None) -> bool:
