@@ -103,7 +103,8 @@ def _ensure_bound_ai_agents_active() -> int:
 
 def _reset_legacy_state_for_real_inbound(db, conversation: Conversation, message: Message) -> bool:
     cutoff = _real_mode_cutoff()
-    if not cutoff or not message.created_at or message.created_at < cutoff:
+    message_created_at = utc_naive(message.created_at)
+    if not cutoff or not message_created_at or message_created_at < cutoff:
         return False
 
     state = db.scalar(select(AIConversationState).where(
@@ -114,8 +115,8 @@ def _reset_legacy_state_for_real_inbound(db, conversation: Conversation, message
     ))
 
     legacy_state = bool(
-        (state and state.created_at and state.created_at < cutoff)
-        or (closing and closing.created_at and closing.created_at < cutoff)
+        (state and state.created_at and utc_naive(state.created_at) < cutoff)
+        or (closing and closing.created_at and utc_naive(closing.created_at) < cutoff)
     )
     if not legacy_state:
         return False
