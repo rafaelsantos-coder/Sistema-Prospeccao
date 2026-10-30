@@ -31,7 +31,10 @@ def health(db: Session = Depends(get_db)):
 def dashboard_api(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
-        return {"error": "unauthorized"}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="unauthorized",
+        )
     return dashboard_metrics(db, user)
 
 
@@ -39,7 +42,10 @@ def dashboard_api(request: Request, db: Session = Depends(get_db)):
 def leads_api(request: Request, limit: int = 50, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
-        return {"error": "unauthorized"}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="unauthorized",
+        )
     stmt = apply_user_scope(select(Lead).order_by(Lead.created_at.desc()).limit(min(limit, 100)), user)
     leads = list(db.scalars(stmt))
     return {

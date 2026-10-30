@@ -470,9 +470,10 @@ def run() -> None:
         Base.metadata.create_all(bind=engine)
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
-        "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s supervisor_shadow=%s guardian=%s autocorrect=%s learning=%s engineer=%s openai_configured=%s poll=%ss",
+        "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s maintenance=%s supervisor_shadow=%s guardian=%s autocorrect=%s learning=%s engineer=%s openai_configured=%s poll=%ss",
         settings.ai_sdr_enabled,
         settings.ai_seller_enabled,
+        settings.ai_maintenance_enabled,
         settings.ai_supervisor_shadow_enabled,
         settings.ai_supervisor_guardian_enabled,
         settings.ai_autocorrect_enabled,
@@ -481,26 +482,26 @@ def run() -> None:
         bool(settings.openai_api_key),
         poll,
     )
-    if settings.ai_supervisor_shadow_enabled:
+    if settings.ai_maintenance_enabled and settings.ai_supervisor_shadow_enabled:
         supervisor_thread = threading.Thread(
             target=run_shadow_supervisor_loop,
             name="sulia-supervisor-shadow",
             daemon=True,
         )
         supervisor_thread.start()
-    if settings.ai_autocorrect_enabled:
+    if settings.ai_maintenance_enabled and settings.ai_autocorrect_enabled:
         threading.Thread(
             target=run_autocorrector_loop,
             name="sulia-autocorrector",
             daemon=True,
         ).start()
-    if settings.ai_learning_enabled:
+    if settings.ai_maintenance_enabled and settings.ai_learning_enabled:
         threading.Thread(
             target=run_learning_loop,
             name="sulia-learning",
             daemon=True,
         ).start()
-    if settings.ai_engineer_enabled:
+    if settings.ai_maintenance_enabled and settings.ai_engineer_enabled:
         threading.Thread(
             target=run_engineer_loop,
             name="sulia-engineer",

@@ -2,7 +2,7 @@
 name = "sulnet-prospecta"
 version = "0.1.1"
 description = "CRM e prospecção automatizada para uso interno da Sulnet"
-requires-python = ">=3.11"
+requires-python = ">=3.14,<3.15"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -10,7 +10,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 110
-target-version = "py311"
+target-version = "py314"
 exclude = ["data"]
 
 [tool.ruff.lint]
