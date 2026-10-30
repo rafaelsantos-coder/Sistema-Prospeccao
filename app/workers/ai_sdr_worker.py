@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import Counter
 from datetime import timedelta
@@ -17,6 +18,7 @@ from app.services.ai_seller import (
     poll_pending_contracts,
     resume_simplified_mobile_states,
 )
+from app.services.ai_supervisor import run_shadow_supervisor_loop
 from app.services.ai_sdr_policy import followup_spec, next_business_time
 from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
@@ -464,12 +466,20 @@ def run() -> None:
     Base.metadata.create_all(bind=engine)
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
-        "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s openai_configured=%s poll=%ss",
+        "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s supervisor_shadow=%s openai_configured=%s poll=%ss",
         settings.ai_sdr_enabled,
         settings.ai_seller_enabled,
+        settings.ai_supervisor_shadow_enabled,
         bool(settings.openai_api_key),
         poll,
     )
+    if settings.ai_supervisor_shadow_enabled:
+        supervisor_thread = threading.Thread(
+            target=run_shadow_supervisor_loop,
+            name="sulia-supervisor-shadow",
+            daemon=True,
+        )
+        supervisor_thread.start()
     _recover_stale_jobs()
     _recover_stale_followups()
     recovered_closer = _recover_closer_capture_patch_failures()

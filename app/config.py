@@ -48,6 +48,15 @@ class Settings:
     ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
     ai_seller_enabled: bool = os.getenv("AI_SELLER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    ai_supervisor_shadow_enabled: bool = os.getenv(
+        "AI_SUPERVISOR_SHADOW_ENABLED",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    ai_supervisor_model: str = os.getenv("AI_SUPERVISOR_MODEL", "gpt-6-luna").strip() or "gpt-6-luna"
+    ai_supervisor_reasoning_effort: str = (
+        os.getenv("AI_SUPERVISOR_REASONING_EFFORT", "low").strip() or "low"
+    )
+    ai_supervisor_poll_seconds: int = int(os.getenv("AI_SUPERVISOR_POLL_SECONDS", "4"))
     sulnet_crm_base_url: str = os.getenv("SULNET_CRM_BASE_URL", "").rstrip("/")
     sulnet_crm_bearer_token: str = os.getenv("SULNET_CRM_BEARER_TOKEN", "")
     sulnet_ai_integration_key: str = os.getenv("SULNET_AI_INTEGRATION_KEY", "")
@@ -86,6 +95,10 @@ class Settings:
                 and self.openai_api_key
                 and self.sulnet_crm_base_url
                 and (self.sulnet_ai_integration_key or self.sulnet_crm_bearer_token)
+            ),
+            "ai_supervisor_shadow": bool(
+                self.ai_supervisor_shadow_enabled
+                and self.openai_api_key
             ),
         }
 
