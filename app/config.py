@@ -113,6 +113,8 @@ class Settings:
     media_s3_secret_access_key: str = os.getenv("MEDIA_S3_SECRET_ACCESS_KEY", "")
     media_s3_url_style: str = os.getenv("MEDIA_S3_URL_STYLE", "virtual-host")
     media_max_upload_mb: int = int(os.getenv("MEDIA_MAX_UPLOAD_MB", "50"))
+    backup_encryption_key: str = os.getenv("BACKUP_ENCRYPTION_KEY", "").strip()
+    backup_retention_days: int = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
     media_remote_allowed_hosts: str = os.getenv("MEDIA_REMOTE_ALLOWED_HOSTS", "").strip()
     trusted_hosts: str = os.getenv("TRUSTED_HOSTS", "").strip()
     whatsapp_presence_timeout_seconds: int = int(os.getenv("WHATSAPP_PRESENCE_TIMEOUT_SECONDS", "90"))
