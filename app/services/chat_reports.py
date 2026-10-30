@@ -678,8 +678,9 @@ def _build_ai_journey_report(
         if accepted_ids
         else 0.0
     )
+    completed_from_started_ids = completed_period_ids & closing_started_ids
     completion_rate = (
-        len(completed_period_ids) / len(closing_started_ids) * 100
+        len(completed_from_started_ids) / len(closing_started_ids) * 100
         if closing_started_ids
         else 0.0
     )
