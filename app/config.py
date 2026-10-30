@@ -128,6 +128,12 @@ class Settings:
     media_max_upload_mb: int = int(os.getenv("MEDIA_MAX_UPLOAD_MB", "50"))
     backup_encryption_key: str = os.getenv("BACKUP_ENCRYPTION_KEY", "").strip()
     backup_retention_days: int = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
+    backup_s3_endpoint: str = os.getenv("BACKUP_S3_ENDPOINT", "").strip()
+    backup_s3_bucket: str = os.getenv("BACKUP_S3_BUCKET", "").strip()
+    backup_s3_region: str = os.getenv("BACKUP_S3_REGION", "auto").strip() or "auto"
+    backup_s3_access_key_id: str = os.getenv("BACKUP_S3_ACCESS_KEY_ID", "").strip()
+    backup_s3_secret_access_key: str = os.getenv("BACKUP_S3_SECRET_ACCESS_KEY", "").strip()
+    backup_s3_url_style: str = os.getenv("BACKUP_S3_URL_STYLE", "virtual-host").strip()
     media_remote_allowed_hosts: str = os.getenv("MEDIA_REMOTE_ALLOWED_HOSTS", "").strip()
     clamav_host: str = os.getenv("CLAMAV_HOST", "").strip()
     clamav_port: int = int(os.getenv("CLAMAV_PORT", "3310"))
