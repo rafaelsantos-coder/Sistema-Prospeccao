@@ -64,6 +64,10 @@ class Settings:
     ai_sdr_enabled: bool = os.getenv("AI_SDR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
+    ai_maintenance_enabled: bool = os.getenv(
+        "AI_MAINTENANCE_ENABLED",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
     ai_seller_enabled: bool = os.getenv("AI_SELLER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     ai_supervisor_shadow_enabled: bool = os.getenv(
         "AI_SUPERVISOR_SHADOW_ENABLED",
