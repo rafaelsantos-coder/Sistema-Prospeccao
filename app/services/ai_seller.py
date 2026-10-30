@@ -237,6 +237,8 @@ def _billing_local(text: str) -> dict[str, Any]:
 MOBILE_SIGNATURE_TYPE = "Assinatura Digital IA"
 SDR_IA_DEFAULTS_FALLBACK = {
     "vencimento": "10",
+    "forma_pagamento": "Boleto",
+    "envio_fatura": ["WhatsApp"],
     "taxa_ativacao": "Não",
     "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
 }
@@ -249,6 +251,8 @@ SDR_IA_SKIP_CODES = {
     "unificarfaturas",
     "unificarmotivo",
     "vencimento",
+    "formapagamento",
+    "enviofatura",
     "taxaativacao",
     "taxavalor",
     "tipoassinaturacontrato",
@@ -260,11 +264,15 @@ SDR_IA_FORBIDDEN_STEPS = {
     "MOBILE_M2M_QTY",
     "MOBILE_M2M_ICCIDS",
     "MOBILE_DUE_DAY",
+    "MOBILE_PAYMENT_METHOD",
+    "MOBILE_INVOICE_DELIVERY",
     "MOBILE_ACTIVATION_FEE",
     "MOBILE_ACTIVATION_VALUE",
     "MOBILE_UNIFY",
     "MOBILE_UNIFY_REASON",
     "BILLING_DUE_DAY",
+    "BILLING_PAYMENT_METHOD",
+    "BILLING_INVOICE_DELIVERY",
     "BILLING_ACTIVATION_FEE",
     "BILLING_ACTIVATION_VALUE",
     "BILLING_UNIFY",
