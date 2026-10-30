@@ -310,9 +310,11 @@ def test_sync_plan_context_recovers_mobile_product_after_email():
             {
                 "planId": 392,
                 "planLabel": "Meu Trabalho Comigo 15GB",
+                "catalogMonthlyValue": 69.80,
             },
         )
     ]
+    assert collected["contractProductName"] == "Meu Trabalho Comigo 15GB"
 
 
 def test_seller_step_buttons_cover_predefined_mobile_questions():
@@ -691,7 +693,7 @@ def test_phase3_mobile_due_day_and_activation_fee():
     assert values["taxa_valor"] == 49.90
 
 
-def test_phase3_fiber_billing_uses_category_form_fields():
+def test_non_sdr_fiber_billing_keeps_full_form_behavior():
     values = _category_values({})
 
     ok, _ = _apply_billing_form_answer("BILLING_PAYMENT_METHOD", "Boleto", values)
@@ -706,7 +708,7 @@ def test_phase3_fiber_billing_uses_category_form_fields():
     assert ok is True
     assert values["vencimento"] == 15
 
-    assert values["tipo_assinatura_contrato"] == MOBILE_SIGNATURE_TYPE
+    assert "tipo_assinatura_contrato" not in values
 
 
 def test_phase3_playbook_maps_billing_differently_for_fiber_and_mobile():
@@ -737,7 +739,7 @@ def test_phase3_playbook_maps_billing_differently_for_fiber_and_mobile():
     ) == "MOBILE_DUE_DAY"
 
 
-def test_phase3_signature_is_automatic_and_never_becomes_customer_question():
+def test_sdr_ia_signature_is_automatic_and_never_becomes_customer_question():
     item = CRMPlaybookMissingItem(
         code="tipo_assinatura_contrato",
         question="Como deseja assinar?",
@@ -749,33 +751,45 @@ def test_phase3_signature_is_automatic_and_never_becomes_customer_question():
         credit_status="",
         step="EMAIL",
     )
-    values = _category_values({})
+    collected = {"_sdr_ia_funnel": True}
+    values = _category_values(collected)
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
-    assert _playbook_step_for_item(item, state, {}) is None
+    assert values["vencimento"] == "10"
+    assert values["taxa_ativacao"] == "Não"
+    assert _playbook_step_for_item(item, state, collected) is None
 
 
 
-def test_phase3_signature_is_auto_persisted_then_playbook_advances():
-    signature = CRMPlaybookMissingItem(
-        code="tipo_assinatura_contrato",
-        question="Como deseja assinar?",
-        patch_key="productInfo.categoryForm.values.tipo_assinatura_contrato",
+def test_sdr_ia_defaults_are_persisted_before_next_billing_question():
+    payment = CRMPlaybookMissingItem(
+        code="forma_pagamento",
+        question="Como deseja pagar: boleto ou débito?",
+        patch_key="productInfo.categoryForm.values.forma_pagamento",
     )
-    due_day = CRMPlaybookMissingItem(
-        code="vencimento",
-        question="Qual dia de vencimento?",
-        patch_key="productInfo.categoryForm.values.vencimento",
+    iccid = CRMPlaybookMissingItem(
+        code="novo_iccid",
+        question="Qual é o ICCID?",
+        patch_key="productInfo.categoryForm.values.novo_iccid",
     )
+    defaults = {
+        "vencimento": "10",
+        "taxa_ativacao": "Não",
+        "tipo_assinatura_contrato": "Assinatura Digital IA",
+    }
     client = _PlaybookClient([
         _playbook_result(
-            missing=[signature],
-            next_question="Como deseja assinar?",
+            missing=[payment],
+            next_question=payment.question,
             category="fibra",
+            sdr_ia_funnel=True,
+            sdr_defaults=defaults,
         ),
         _playbook_result(
-            missing=[due_day],
-            next_question="Qual dia de vencimento?",
+            missing=[iccid, payment],
+            next_question=iccid.question,
             category="fibra",
+            sdr_ia_funnel=True,
+            sdr_defaults=defaults,
         ),
     ])
     state = SimpleNamespace(
@@ -794,14 +808,18 @@ def test_phase3_signature_is_auto_persisted_then_playbook_advances():
         client,
         state,
         collected,
-        fallback_step="BILLING",
+        fallback_step="BILLING_PAYMENT_METHOD",
     )
 
-    assert step == "BILLING_DUE_DAY"
-    assert question == "Qual dia de vencimento?"
+    assert step == "BILLING_PAYMENT_METHOD"
+    assert question == payment.question
+    assert client.playbook_calls == 2
     assert client.category_updates
     _, values, category_id, plan_id = client.category_updates[0]
+    assert values["vencimento"] == "10"
+    assert values["taxa_ativacao"] == "Não"
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
+    assert "novo_iccid" not in values
     assert category_id == 10
     assert plan_id == 800
 
