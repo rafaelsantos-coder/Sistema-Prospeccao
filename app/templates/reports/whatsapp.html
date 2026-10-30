@@ -142,6 +142,7 @@
     <article class="report-kpi"><span>TMA · ciclo total</span><strong>{{ format_duration(report.kpis.avg_close_seconds) }}</strong><small>Abertura até encerramento</small></article>
     <article class="report-kpi"><span>Tempo até atribuição</span><strong>{{ format_duration(report.kpis.avg_assignment_seconds) }}</strong><small>Abertura até primeiro responsável</small></article>
     <article class="report-kpi"><span>Pendentes de resposta</span><strong>{{ report.kpis.pending_unanswered }}</strong><small>Espera média {{ format_duration(report.kpis.avg_pending_wait_seconds) }}</small></article>
+    <article class="report-kpi"><span>IA · operação</span><strong>{{ report.kpis.ai_active + report.kpis.ai_closing }}</strong><small>{{ report.kpis.ai_active }} SDR · {{ report.kpis.ai_closing }} fechamento · {{ report.kpis.ai_pending_followups }} follow-up</small></article>
     <article class="report-kpi"><span>Leitura</span><strong>{{ '%.1f'|format(report.kpis.read_rate) }}%</strong><small>Entrega {{ '%.1f'|format(report.kpis.delivery_rate) }}%</small></article>
   </section>
 
@@ -232,7 +233,7 @@
       <table class="report-table conversations-report-table">
         <thead>
           <tr>
-            <th>Contato</th><th>Responsável</th><th>Status</th><th>Mensagens</th><th>1ª resposta</th><th>Resposta média</th><th>Aberta</th><th>Extrato</th>
+            <th>Contato</th><th>Responsável</th><th>Status</th><th>IA / etapa</th><th>Mensagens</th><th>1ª resposta</th><th>Resposta média</th><th>Aberta</th><th>Extrato</th>
           </tr>
         </thead>
         <tbody>
@@ -244,6 +245,18 @@
             </td>
             <td>{{ item.owner }}</td>
             <td><span class="report-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
+            <td>
+              {% if item.ai_state %}
+              <strong>{{ item.ai_state|replace('_',' ') }}</strong>
+              <small>
+                {% if item.closing_step %}Etapa: {{ item.closing_step|replace('_',' ') }} · {% endif %}
+                {{ item.pending_followups }} follow-up pendente(s)
+              </small>
+              {% if item.closing_error %}<small title="{{ item.closing_error }}">Último erro técnico registrado</small>{% endif %}
+              {% else %}
+              <span>—</span>
+              {% endif %}
+            </td>
             <td>{{ item.message_count }} <small>{{ item.inbound_count }}↓ · {{ item.outbound_count }}↑</small></td>
             <td>{{ format_duration(item.first_response_seconds) }}</td>
             <td>{{ format_duration(item.avg_reply_seconds) }}</td>
@@ -257,7 +270,7 @@
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="8" class="report-empty-cell">Nenhuma conversa encontrada com estes filtros.</td></tr>
+          <tr><td colspan="9" class="report-empty-cell">Nenhuma conversa encontrada com estes filtros.</td></tr>
           {% endfor %}
         </tbody>
       </table>
