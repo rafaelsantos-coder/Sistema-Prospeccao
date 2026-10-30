@@ -670,6 +670,139 @@ def _fold_sales_text(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+_EXISTING_CUSTOMER_QUESTION_CUES = (
+    "voce ja e cliente sulnet",
+    "ja e cliente sulnet",
+    "voce ja e nosso cliente",
+    "voce ja possui algum servico da sulnet",
+    "ja possui algum servico da sulnet",
+    "possui algum servico da sulnet",
+    "voce tem algum servico da sulnet",
+    "tem algum servico da sulnet",
+)
+
+
+def _asks_existing_customer(value: str | None) -> bool:
+    folded = _fold_sales_text(value)
+    return bool(folded) and any(
+        cue in folded for cue in _EXISTING_CUSTOMER_QUESTION_CUES
+    )
+
+
+def _product_kind_from_text(
+    value: str | None,
+    *,
+    previous_outbound: str | None = None,
+) -> str:
+    folded = _fold_sales_text(value)
+    previous = _fold_sales_text(previous_outbound)
+    if not folded:
+        return ""
+
+    mobile = {
+        "movel",
+        "telefonia movel",
+        "plano movel",
+        "planos moveis",
+        "sulmovel",
+        "celular",
+    }
+    internet = {
+        "internet",
+        "fibra",
+        "fibra optica",
+        "plano de internet",
+        "planos de internet",
+    }
+    if folded in mobile:
+        return "MOBILE"
+    if folded in internet:
+        return "INTERNET"
+
+    product_question = (
+        "internet" in previous
+        and any(token in previous for token in ("telefonia movel", "movel"))
+    )
+    if product_question:
+        if folded in {"internet", "fibra", "fibra optica"}:
+            return "INTERNET"
+        if folded in {"movel", "telefonia movel", "sulmovel", "celular"}:
+            return "MOBILE"
+    return ""
+
+
+def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
+    facts: dict[str, object] = {
+        "existing_customer": "",
+        "customer_type": "",
+        "product_kind": "",
+        "desired_product": "",
+        "city": "",
+        "answered_questions": [],
+    }
+    answered: set[str] = set()
+    previous_outbound = ""
+
+    for row in rows:
+        if isinstance(row, dict):
+            direction = str(row.get("direction") or "").upper()
+            body = str(row.get("body") or "")
+        else:
+            direction = str(row.direction or "").upper()
+            body = str(row.body or "")
+
+        if direction == "OUTBOUND":
+            previous_outbound = body
+            continue
+        if direction != "INBOUND":
+            continue
+
+        existing = _existing_customer_from_text(
+            body,
+            previous_outbound=previous_outbound,
+        )
+        if existing:
+            facts["existing_customer"] = existing
+            answered.add("EXISTING_CUSTOMER")
+
+        customer_type = _customer_type_from_text(body)
+        if customer_type:
+            facts["customer_type"] = customer_type
+            answered.add("CUSTOMER_TYPE")
+
+        product_kind = _product_kind_from_text(
+            body,
+            previous_outbound=previous_outbound,
+        )
+        if product_kind:
+            facts["product_kind"] = product_kind
+            facts["desired_product"] = (
+                "Internet" if product_kind == "INTERNET" else "Telefonia Móvel"
+            )
+            answered.add("PRODUCT")
+
+        folded = _fold_sales_text(body)
+        previous_folded = _fold_sales_text(previous_outbound)
+        asks_city = any(
+            cue in previous_folded
+            for cue in (
+                "qual e a sua cidade",
+                "qual sua cidade",
+                "em qual cidade",
+                "qual cidade",
+            )
+        )
+        for service_city in SERVICE_CITIES:
+            city_key = _fold_sales_text(service_city)
+            if folded == city_key or (asks_city and city_key in folded):
+                facts["city"] = service_city
+                answered.add("CITY")
+                break
+
+    facts["answered_questions"] = sorted(answered)
+    return facts
+
+
 def _existing_customer_from_text(
     value: str | None,
     *,
@@ -708,14 +841,7 @@ def _existing_customer_from_text(
     if folded in positive_exact or any(cue in folded for cue in positive_sulnet_cues):
         return "CLIENTE"
 
-    status_question = any(
-        cue in previous
-        for cue in (
-            "voce ja e cliente sulnet",
-            "ja e cliente sulnet",
-            "voce ja e nosso cliente",
-        )
-    )
+    status_question = _asks_existing_customer(previous_outbound)
     if status_question:
         if folded in {"sim", "sim sou", "sou", "ja sou", "sou sim"}:
             return "CLIENTE"
@@ -725,6 +851,11 @@ def _existing_customer_from_text(
 
 
 def _existing_customer_from_context(context: dict) -> str:
+    facts = context.get("confirmed_facts") or {}
+    fact_value = str(facts.get("existing_customer") or "").upper()
+    if fact_value in {"CLIENTE", "NAO_CLIENTE"}:
+        return fact_value
+
     previous = _last_outbound_text(context)
     latest = _existing_customer_from_text(
         str(context.get("latest_customer_message") or ""),
@@ -739,13 +870,29 @@ def _existing_customer_from_context(context: dict) -> str:
     if confirmed in {"CLIENTE", "NAO_CLIENTE"}:
         return confirmed
 
-    for row in reversed(context.get("history") or []):
-        if str(row.get("direction") or "").upper() != "INBOUND":
+    journey_value = str(
+        _journey_memory_from_context(context).get("existing_customer") or ""
+    ).upper()
+    if journey_value in {"CLIENTE", "NAO_CLIENTE"}:
+        return journey_value
+
+    previous_outbound = ""
+    reconstructed = ""
+    for row in context.get("history") or []:
+        direction = str(row.get("direction") or "").upper()
+        body = str(row.get("body") or "")
+        if direction == "OUTBOUND":
+            previous_outbound = body
             continue
-        value = _existing_customer_from_text(str(row.get("body") or ""))
+        if direction != "INBOUND":
+            continue
+        value = _existing_customer_from_text(
+            body,
+            previous_outbound=previous_outbound,
+        )
         if value:
-            return value
-    return ""
+            reconstructed = value
+    return reconstructed
 
 
 def _customer_type_from_text(value: str | None) -> str:
@@ -801,6 +948,11 @@ def _customer_type_from_text(value: str | None) -> str:
 
 
 def _customer_type_from_context(context: dict) -> str:
+    facts = context.get("confirmed_facts") or {}
+    fact_value = str(facts.get("customer_type") or "").upper()
+    if fact_value in {"EMPRESA", "RESIDENCIAL"}:
+        return fact_value
+
     latest_type = _customer_type_from_text(
         str(context.get("latest_customer_message") or "")
     )
@@ -937,6 +1089,10 @@ def _normalized_city(value: str | None) -> str:
 
 
 def _city_from_sales_context(decision: AIDecision, context: dict) -> str:
+    fact_city = str((context.get("confirmed_facts") or {}).get("city") or "").strip()
+    if fact_city:
+        return fact_city
+
     lead_city = str((context.get("lead") or {}).get("city") or "").strip()
     if lead_city:
         return lead_city
@@ -2246,6 +2402,18 @@ def _explicit_purchase_commitment(context: dict) -> bool:
 
 
 def _journey_product_kind(decision: AIDecision, context: dict) -> str:
+    facts = context.get("confirmed_facts") or {}
+    fact_kind = str(facts.get("product_kind") or "").upper()
+    if fact_kind in {"INTERNET", "MOBILE"}:
+        return fact_kind
+
+    latest_kind = _product_kind_from_text(
+        str(context.get("latest_customer_message") or ""),
+        previous_outbound=_last_outbound_text(context),
+    )
+    if latest_kind:
+        return latest_kind
+
     memory = _journey_memory_from_context(context)
     combined = _fold_sales_text(
         " ".join(
