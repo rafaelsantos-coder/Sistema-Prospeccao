@@ -27,7 +27,12 @@ from app.models import (
     Message,
 )
 from app.services.audit import write_audit
-from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
+from app.services.crm_sulnet import (
+    CRMIntegrationError,
+    CRMPlaybookMissingItem,
+    CRMPlaybookResult,
+    SulnetCRMClient,
+)
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.services.zapi import ZApiError
 from app.timeutils import utcnow
@@ -363,6 +368,313 @@ def _is_mobile_plan(state: AIClosingState, collected: dict[str, Any]) -> bool:
         or "telefonia movel" in label
         or " movel " in f" {label} "
     )
+
+
+PLAYBOOK_STEP_BY_CODE = {
+    "clientname": "NAME",
+    "nome": "NAME",
+    "clientcpf": "CPF",
+    "cpf": "CPF",
+    "document": "CPF",
+    "documento": "CPF",
+    "clientbirthdate": "BIRTH_DATE",
+    "birthdate": "BIRTH_DATE",
+    "datanascimento": "BIRTH_DATE",
+    "cep": "CEP",
+    "street": "ADDRESS_DETAILS",
+    "rua": "ADDRESS_DETAILS",
+    "neighborhood": "ADDRESS_DETAILS",
+    "bairro": "ADDRESS_DETAILS",
+    "addressnumber": "ADDRESS_NUMBER",
+    "number": "ADDRESS_NUMBER",
+    "numero": "ADDRESS_NUMBER",
+    "productid": "PLAN_CONFIRM",
+    "planid": "PLAN_CONFIRM",
+    "produto": "PLAN_CONFIRM",
+    "clientemail": "EMAIL",
+    "email": "EMAIL",
+    "tipocontratacao": "MOBILE_CONTRACT_TYPE",
+    "numeroportado": "MOBILE_PORT_NUMBER",
+    "porttitular": "MOBILE_PORT_TITULAR",
+    "portnometitular": "MOBILE_PORT_NAME",
+    "portcpfcnpj": "MOBILE_PORT_DOC",
+    "formapagamento": "MOBILE_PAYMENT_METHOD",
+    "enviofatura": "MOBILE_INVOICE_DELIVERY",
+    "debitobanco": "MOBILE_DEBIT_BANK",
+    "debitoagencia": "MOBILE_DEBIT_AGENCY",
+    "debitoconta": "MOBILE_DEBIT_ACCOUNT",
+    "debitotitular": "MOBILE_DEBIT_HOLDER",
+    "unificarfaturas": "MOBILE_UNIFY",
+    "unificarmotivo": "MOBILE_UNIFY_REASON",
+}
+
+PLAYBOOK_UNSUPPORTED_PHASE3_CODES = {
+    "novoiccid",
+    "numeronovo",
+    "porticcid",
+    "portdata",
+    "m2mquantidade",
+    "m2miccids",
+    "vencimento",
+    "taxaativacao",
+    "taxavalor",
+}
+
+
+def _playbook_code_key(value: str) -> str:
+    folded = _norm(value)
+    return re.sub(r"[^a-z0-9]+", "", folded)
+
+
+def _playbook_category(
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> str:
+    return "telefonia-movel" if _is_mobile_plan(state, collected) else "fibra"
+
+
+def _playbook_store_snapshot(
+    collected: dict[str, Any],
+    result: CRMPlaybookResult,
+) -> None:
+    collected["crmPlaybook"] = result.as_dict()
+    collected["_playbook_mode"] = "active"
+    collected["_playbook_category"] = result.category
+    collected["_playbook_ready_for_win"] = bool(result.ready_for_win)
+    collected["_playbook_missing_codes"] = result.missing_codes
+    collected["_playbook_next_question"] = result.next_question
+
+
+def _playbook_clear_question(collected: dict[str, Any]) -> None:
+    for key in (
+        "_playbook_step",
+        "_playbook_code",
+        "_playbook_patch_key",
+        "_playbook_question",
+    ):
+        collected.pop(key, None)
+
+
+def _playbook_disable_for_closing(
+    collected: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    collected["_playbook_mode"] = "fallback"
+    collected["_playbook_fallback_reason"] = reason[:240]
+    _playbook_clear_question(collected)
+
+
+def _playbook_known_value(
+    item: CRMPlaybookMissingItem,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> tuple[str, Any] | None:
+    key = _playbook_code_key(item.code)
+    known: dict[str, tuple[str, Any]] = {
+        "clientname": ("clientName", collected.get("name")),
+        "clientphone": ("clientPhone", collected.get("phone")),
+        "clientemail": ("clientEmail", collected.get("email")),
+        "cep": ("cep", collected.get("cep")),
+        "street": ("street", collected.get("street")),
+        "neighborhood": ("neighborhood", collected.get("neighborhood")),
+        "city": ("city", collected.get("city")),
+        "uf": ("uf", collected.get("uf")),
+        "addressnumber": ("addressNumber", collected.get("number")),
+        "number": ("addressNumber", collected.get("number")),
+        "complement": ("complement", collected.get("complement")),
+    }
+    if key in known:
+        field, value = known[key]
+        if value not in (None, "", []):
+            return field, value
+        return None
+
+    if key in {"productid", "planid"}:
+        plan_id = collected.get("planId")
+        if plan_id not in (None, "", 0, "0"):
+            return "planId", plan_id
+    if key == "categoryid":
+        category_id = collected.get("categoryId")
+        if category_id not in (None, "", 0, "0"):
+            return "categoryId", category_id
+
+    return None
+
+
+def _sync_known_playbook_missing(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    item: CRMPlaybookMissingItem,
+) -> bool:
+    if not state.opportunity_id:
+        return False
+    known = _playbook_known_value(item, state, collected)
+    if not known:
+        return False
+
+    field, value = known
+    payload: dict[str, Any]
+    if field == "planId":
+        payload = {
+            "planId": value,
+            "planLabel": collected.get("catalogPlanName") or state.plan_label,
+        }
+    elif field == "categoryId":
+        # categoryId acompanha o produto; sozinho não deve forçar uma troca de plano.
+        return False
+    else:
+        payload = {field: value}
+
+    client.update_opportunity(state.opportunity_id, payload)
+    LOG.info(
+        "seller_playbook_synced_known opportunity=%s code=%s field=%s",
+        state.opportunity_id,
+        item.code,
+        field,
+    )
+    return True
+
+
+def _playbook_step_for_item(
+    item: CRMPlaybookMissingItem,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> str | None:
+    key = _playbook_code_key(item.code)
+
+    # Faturamento de fibra e os campos móveis removidos ficam para a Fase 3.
+    if key in PLAYBOOK_UNSUPPORTED_PHASE3_CODES:
+        return None
+
+    step = PLAYBOOK_STEP_BY_CODE.get(key)
+    if step == "MOBILE_PAYMENT_METHOD" and not _is_mobile_plan(state, collected):
+        return None
+    if step and step.startswith("MOBILE_") and not _is_mobile_plan(state, collected):
+        return None
+    return step
+
+
+def _query_playbook_guidance(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    *,
+    fallback_step: str,
+) -> tuple[str, str | None]:
+    if not state.opportunity_id:
+        return fallback_step, None
+
+    if collected.get("_playbook_mode") == "fallback":
+        return fallback_step, None
+
+    category = _playbook_category(state, collected)
+    for _ in range(4):
+        try:
+            result = client.playbook(
+                state.opportunity_id,
+                category=category,
+            )
+        except CRMIntegrationError as exc:
+            if exc.status_code in {404, 405, 501}:
+                _playbook_disable_for_closing(
+                    collected,
+                    reason=f"HTTP_{exc.status_code}",
+                )
+                LOG.info(
+                    "seller_playbook_fallback opportunity=%s reason=http_%s",
+                    state.opportunity_id,
+                    exc.status_code,
+                )
+                return fallback_step, None
+            raise
+
+        _playbook_store_snapshot(collected, result)
+        if result.credit_status:
+            state.credit_status = result.credit_status
+
+        if result.credit_rejected:
+            question = (
+                result.next_question
+                or "A consulta cadastral não foi aprovada automaticamente. "
+                "Se quiser, posso encaminhar para análise de um atendente."
+            )
+            collected["_playbook_step"] = "CREDIT_REJECTED"
+            collected["_playbook_question"] = question
+            return "CREDIT_REJECTED", question
+
+        if result.ready_for_win:
+            _playbook_clear_question(collected)
+            return fallback_step, None
+
+        if not result.missing:
+            _playbook_clear_question(collected)
+            return fallback_step, None
+
+        first = result.missing[0]
+        if _sync_known_playbook_missing(
+            client,
+            state,
+            collected,
+            first,
+        ):
+            # O CRM ainda dizia que faltava um dado que o Prospecta já conhecia.
+            # Gravamos e consultamos novamente sem perguntar ao cliente.
+            continue
+
+        next_step = _playbook_step_for_item(first, state, collected)
+        if not next_step:
+            collected["_playbook_unmapped_code"] = first.code
+            collected["_playbook_unmapped_patch_key"] = first.patch_key
+            _playbook_clear_question(collected)
+            LOG.info(
+                "seller_playbook_unmapped opportunity=%s code=%s fallback=%s",
+                state.opportunity_id,
+                first.code,
+                fallback_step,
+            )
+            return fallback_step, None
+
+        question = (
+            result.next_question
+            or first.question
+            or None
+        )
+        collected["_playbook_step"] = next_step
+        collected["_playbook_code"] = first.code
+        collected["_playbook_patch_key"] = first.patch_key
+        if question:
+            collected["_playbook_question"] = question
+        else:
+            collected.pop("_playbook_question", None)
+        return next_step, question
+
+    LOG.warning(
+        "seller_playbook_sync_limit opportunity=%s fallback=%s",
+        state.opportunity_id,
+        fallback_step,
+    )
+    return fallback_step, None
+
+
+def _advance_with_playbook(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    *,
+    fallback_step: str,
+) -> str:
+    next_step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step=fallback_step,
+    )
+    state.step = next_step
+    if question:
+        return question
+    return _prompt_for_step(state, collected)
 
 
 def _sync_plan_context(
@@ -917,6 +1229,11 @@ def _create_crm_if_ready(
 
 
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
+    playbook_question = str(collected.get("_playbook_question") or "").strip()
+    playbook_step = str(collected.get("_playbook_step") or "").strip()
+    if playbook_question and playbook_step == state.step:
+        return playbook_question
+
     plan = state.plan_label or "plano combinado"
     if state.step == "NAME":
         return f"Perfeito! Vamos dar início à contratação do {plan}. Para começar, me confirma seu nome completo?"
@@ -928,6 +1245,8 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         if _is_mobile_plan(state, collected):
             return "Consulta aprovada! Qual é o CEP do seu endereço de cadastro?"
         return "Consulta aprovada! Qual é o CEP do endereço onde será instalada a internet?"
+    if state.step == "ADDRESS_DETAILS":
+        return "Qual é a rua ou o bairro que ficou faltando no endereço?"
     if state.step == "ADDRESS_NUMBER":
         street = str(collected.get("street") or "").strip()
         city = str(collected.get("city") or "").strip()
@@ -981,6 +1300,7 @@ SELLER_CUSTOMER_INPUT_STEPS = {
     "CPF",
     "BIRTH_DATE",
     "CEP",
+    "ADDRESS_DETAILS",
     "ADDRESS_NUMBER",
     "PLAN_CONFIRM",
     "EMAIL",
@@ -1015,11 +1335,17 @@ def _seller_followup_prompt(
         if followup_step <= 1
         else "Quando puder, seguimos exatamente de onde paramos: "
     )
+    playbook_question = str(collected.get("_playbook_question") or "").strip()
+    playbook_step = str(collected.get("_playbook_step") or "").strip()
+    if playbook_question and playbook_step == state.step:
+        return playbook_question
+
     prompts = {
         "NAME": "me envie seu nome completo para eu iniciar o cadastro.",
         "CPF": "me envie seu CPF para eu continuar a consulta cadastral.",
         "BIRTH_DATE": "me envie sua data de nascimento no formato DD/MM/AAAA.",
         "CEP": "me envie o CEP do endereço para eu continuar a contratação.",
+        "ADDRESS_DETAILS": "me informe a rua ou o bairro que ficou faltando.",
         "ADDRESS_NUMBER": "me informe o número do imóvel e, se houver, o complemento.",
         "EMAIL": "me informe o e-mail que ficará no cadastro.",
         "MOBILE_PORT_NUMBER": "me informe o número com DDD que será portado.",
