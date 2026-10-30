@@ -2579,6 +2579,35 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         reply = playbook_question or _prompt_for_step(state, collected)
                 _save_collected(state, collected)
 
+        elif state.step.startswith("BILLING_"):
+            values = _category_values(collected)
+            accepted, error_reply = _apply_billing_form_answer(
+                state.step,
+                text,
+                values,
+            )
+            if not accepted:
+                reply = error_reply
+            else:
+                _persist_category_form(
+                    client,
+                    state,
+                    collected,
+                    values,
+                )
+                playbook_step, playbook_question = _query_playbook_guidance(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="__FINISH__",
+                )
+                if playbook_step == "__FINISH__":
+                    reply = _finish_sale_contract(client, state)
+                else:
+                    state.step = playbook_step
+                    reply = playbook_question or _prompt_for_step(state, collected)
+                _save_collected(state, collected)
+
         elif state.step == "BILLING":
             billing = _billing_local(text)
             if not billing.get("paymentMethod") or not billing.get("dueDay"):
