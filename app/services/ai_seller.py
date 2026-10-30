@@ -2664,7 +2664,33 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     }
 
     try:
-        if state.step == "NAME":
+        if _sdr_ia_mode(collected) and (
+            state.step in SDR_IA_FORBIDDEN_STEPS or state.step == "BILLING"
+        ):
+            values = _category_values(collected)
+            if _is_mobile_plan(state, collected):
+                fallback_step = _mobile_next_step(
+                    values,
+                    sdr_ia_funnel=True,
+                ) or "WAITING_CRM_READY"
+            else:
+                fallback_step = _billing_next_step(
+                    values,
+                    sdr_ia_funnel=True,
+                ) or "WAITING_CRM_READY"
+            playbook_step, playbook_question = _query_playbook_guidance(
+                client,
+                state,
+                collected,
+                fallback_step=fallback_step,
+            )
+            if playbook_step == "__FINISH__":
+                reply = _finish_sale_contract(client, state, collected)
+            else:
+                state.step = playbook_step
+                reply = playbook_question or _prompt_for_step(state, collected)
+
+        elif state.step == "NAME":
             name = _extract_name(text)
             if not name:
                 reply = "Para emitir o contrato corretamente, preciso do seu nome completo. Pode me informar, por favor?"
