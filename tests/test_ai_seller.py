@@ -1,5 +1,11 @@
 from types import SimpleNamespace
 
+from app.services.crm_sulnet import (
+    CRMIntegrationError,
+    CRMPlaybookMissingItem,
+    CRMPlaybookResult,
+)
+
 from app.services.ai_seller import (
     MOBILE_SIGNATURE_TYPE,
     _apply_mobile_answer,
@@ -13,6 +19,10 @@ from app.services.ai_seller import (
     _mobile_missing_fields,
     _mobile_next_step,
     _mobile_values,
+    _playbook_code_key,
+    _playbook_step_for_item,
+    _prompt_for_step,
+    _query_playbook_guidance,
     _redact,
     _sync_plan_context,
     _seller_followup_prompt,
@@ -293,3 +303,219 @@ def test_seller_followup_does_not_invent_new_question_for_free_text_step():
     text = _seller_followup_prompt(state, {}, followup_step=1)
     assert "cep" in text.lower()
     assert _seller_step_buttons(state.step, text) == []
+
+
+
+class _PlaybookClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.playbook_calls = 0
+        self.updated = []
+
+    def playbook(self, opportunity_id, *, category):
+        self.playbook_calls += 1
+        if not self.responses:
+            raise AssertionError("Playbook chamado além do esperado.")
+        value = self.responses.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def update_opportunity(self, opportunity_id, payload):
+        self.updated.append((opportunity_id, payload))
+        return {"opportunityId": opportunity_id}
+
+
+def _playbook_result(*, missing=None, next_question="", ready=False, category="fibra"):
+    return CRMPlaybookResult(
+        opportunity_id=11754,
+        protocol="CRM-TEST",
+        category=category,
+        crm_ok=True,
+        next_step="playbook",
+        next_question=next_question,
+        ready_for_win=ready,
+        credit_status="Aprovado",
+        credit_approved=True,
+        credit_rejected=False,
+        sdr_ia_funnel=True,
+        missing=list(missing or []),
+    )
+
+
+def test_playbook_uses_crm_next_question_for_supported_core_field():
+    item = CRMPlaybookMissingItem(
+        code="clientEmail",
+        label="E-mail",
+        question="Qual seu melhor e-mail?",
+        patch_key="clientEmail",
+    )
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[item],
+            next_question="Qual seu melhor e-mail?",
+        )
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        credit_status="",
+        step="PLAN_CONFIRM",
+    )
+    collected = {}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="EMAIL",
+    )
+
+    assert step == "EMAIL"
+    assert question == "Qual seu melhor e-mail?"
+    assert collected["_playbook_mode"] == "active"
+    assert collected["_playbook_step"] == "EMAIL"
+    assert collected["_playbook_code"] == "clientEmail"
+    assert collected["_playbook_missing_codes"] == ["clientEmail"]
+
+
+def test_playbook_syncs_known_value_before_asking_next_question():
+    missing_email = CRMPlaybookMissingItem(
+        code="clientEmail",
+        question="Qual seu e-mail?",
+        patch_key="clientEmail",
+    )
+    missing_cep = CRMPlaybookMissingItem(
+        code="cep",
+        question="Qual é o CEP da instalação?",
+        patch_key="cep",
+    )
+    client = _PlaybookClient([
+        _playbook_result(missing=[missing_email], next_question="Qual seu e-mail?"),
+        _playbook_result(missing=[missing_cep], next_question="Qual é o CEP da instalação?"),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        credit_status="",
+        step="EMAIL",
+    )
+    collected = {"email": "cliente@exemplo.test"}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="CEP",
+    )
+
+    assert client.updated == [
+        (11754, {"clientEmail": "cliente@exemplo.test"})
+    ]
+    assert client.playbook_calls == 2
+    assert step == "CEP"
+    assert question == "Qual é o CEP da instalação?"
+
+
+def test_playbook_404_disables_it_for_same_closing_and_uses_fallback():
+    client = _PlaybookClient([
+        CRMIntegrationError("Rota não encontrada.", status_code=404)
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        credit_status="",
+        step="CPF",
+    )
+    collected = {}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="CEP",
+    )
+    assert step == "CEP"
+    assert question is None
+    assert collected["_playbook_mode"] == "fallback"
+    assert collected["_playbook_fallback_reason"] == "HTTP_404"
+
+    step2, question2 = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="ADDRESS_NUMBER",
+    )
+    assert step2 == "ADDRESS_NUMBER"
+    assert question2 is None
+    assert client.playbook_calls == 1
+
+
+def test_playbook_mobile_existing_field_maps_to_existing_closer_step():
+    item = CRMPlaybookMissingItem(
+        code="tipo_contratacao",
+        question="Seu chip será linha nova, portabilidade ou M2M?",
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+    )
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="EMAIL",
+    )
+    collected = {"categoryName": "Telefonia Móvel"}
+
+    assert _playbook_step_for_item(item, state, collected) == "MOBILE_CONTRACT_TYPE"
+
+
+def test_phase3_mobile_field_is_recorded_but_does_not_break_phase2():
+    item = CRMPlaybookMissingItem(
+        code="novo_iccid",
+        question="Qual é o ICCID do chip?",
+        patch_key="productInfo.categoryForm.values.novo_iccid",
+    )
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[item],
+            next_question="Qual é o ICCID do chip?",
+            category="telefonia-movel",
+        )
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="MOBILE_CONTRACT_TYPE",
+    )
+    collected = {"categoryName": "Telefonia Móvel"}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="MOBILE_PAYMENT_METHOD",
+    )
+
+    assert step == "MOBILE_PAYMENT_METHOD"
+    assert question is None
+    assert collected["_playbook_unmapped_code"] == "novo_iccid"
+    assert collected["_playbook_mode"] == "active"
+
+
+def test_prompt_for_step_prefers_playbook_question_when_step_matches():
+    state = SimpleNamespace(
+        step="EMAIL",
+        plan_label="800 Mega",
+    )
+    collected = {
+        "_playbook_step": "EMAIL",
+        "_playbook_question": "Qual e-mail deseja usar no contrato?",
+    }
+
+    assert _prompt_for_step(state, collected) == "Qual e-mail deseja usar no contrato?"
+
+
+def test_playbook_code_normalization_handles_snake_and_camel_case():
+    assert _playbook_code_key("clientEmail") == "clientemail"
+    assert _playbook_code_key("tipo_contratacao") == "tipocontratacao"
+    assert _playbook_code_key("port_cpf_cnpj") == "portcpfcnpj"
