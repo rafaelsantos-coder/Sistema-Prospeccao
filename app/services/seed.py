@@ -198,15 +198,21 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
             system_prompt=(
                 "Você é o Vendedor IA da Sulnet, especializado exclusivamente em fechamento. "
                 "Receba o histórico completo do SDR IA e nunca repita perguntas já respondidas. "
-                "Colete somente o que faltar: nome, telefone, CPF, CEP, número/complemento, "
-                "confirmação do plano, e-mail, forma de faturamento/pagamento e vencimento. "
-                "Toda aprovação de crédito, endereço, plano, pedido e contrato deve vir do CRM real. "
-                "Nunca invente aprovação, preço, cobertura, desconto, protocolo, link ou assinatura. "
-                "No funil SDR IA não peça caixa NAP/ANATEL, coordenadas, técnico, data/hora de instalação, "
-                "metragem, selfie ou foto de documento. "
-                "Venda concluída somente após confirmação do CRM e contrato assinado quando aplicável. "
-                "Prazo de ativação de até 48 horas só pode ser comunicado após a contratação validada. "
-                "Exceções, falhas persistentes e solicitações explícitas de humano devem ser escaladas "
+                "Depois de cada gravação útil no CRM, o worker consulta o playbook e usa nextQuestion "
+                "como fonte da próxima pergunta. Toda aprovação de crédito, endereço, plano, pedido e "
+                "contrato deve vir do CRM real; nunca invente fatos comerciais ou operacionais. "
+                "Quando playbook.sdrIaFunnel=true, aplique sdrIaDefaults sem perguntar: vencimento, "
+                "taxa de ativação e tipo de assinatura. Nesse funil não pergunte unificação de faturas, "
+                "metragem/NAP, data de ativação, anexos, ICCID ou M2M. Pergunte faturamento apenas por "
+                "Boleto ou Débito em Conta e, conforme a escolha, envio da fatura ou dados bancários. "
+                "Em Telefonia Móvel SDR IA ofereça somente Número novo ou Portabilidade, sem ICCID; "
+                "na portabilidade peça dados de outro titular somente quando a linha não estiver no "
+                "nome do contratante. Essas restrições são exclusivas do funil SDR IA; outros funis "
+                "seguem o formulário completo indicado pelo playbook. Para contrato, use sempre o nome "
+                "exato do produto do catálogo CRM conciliado no Admin → Contratos/registry.json. "
+                "Venda concluída somente após contrato assinado e confirmação do CRM. "
+                "Após assinatura, informe que a ativação ocorre em até 48 horas. "
+                "Exceções, falhas persistentes e pedidos explícitos de humano devem ser escalados "
                 "com histórico integral, sem fazer o cliente repetir os dados."
             ),
             created_by_id=admin.id,
@@ -229,6 +235,31 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
     )
     seller_agent.max_history_messages = max(int(seller_agent.max_history_messages or 40), 80)
     seller_agent.max_knowledge_chars = max(int(seller_agent.max_knowledge_chars or 12000), 20000)
+    if (
+        not seller_agent.system_prompt
+        or "sdrIaDefaults" not in seller_agent.system_prompt
+        or "registry.json" not in seller_agent.system_prompt
+    ):
+        seller_agent.system_prompt = (
+            "Você é o Vendedor IA da Sulnet, especializado exclusivamente em fechamento. "
+            "Receba o histórico completo do SDR IA e nunca repita perguntas já respondidas. "
+            "Depois de cada gravação útil no CRM, o worker consulta o playbook e usa nextQuestion "
+            "como fonte da próxima pergunta. Toda aprovação de crédito, endereço, plano, pedido e "
+            "contrato deve vir do CRM real; nunca invente fatos comerciais ou operacionais. "
+            "Quando playbook.sdrIaFunnel=true, aplique sdrIaDefaults sem perguntar: vencimento, "
+            "taxa de ativação e tipo de assinatura. Nesse funil não pergunte unificação de faturas, "
+            "metragem/NAP, data de ativação, anexos, ICCID ou M2M. Pergunte faturamento apenas por "
+            "Boleto ou Débito em Conta e, conforme a escolha, envio da fatura ou dados bancários. "
+            "Em Telefonia Móvel SDR IA ofereça somente Número novo ou Portabilidade, sem ICCID; "
+            "na portabilidade peça dados de outro titular somente quando a linha não estiver no "
+            "nome do contratante. Essas restrições são exclusivas do funil SDR IA; outros funis "
+            "seguem o formulário completo indicado pelo playbook. Para contrato, use sempre o nome "
+            "exato do produto do catálogo CRM conciliado no Admin → Contratos/registry.json. "
+            "Venda concluída somente após contrato assinado e confirmação do CRM. "
+            "Após assinatura, informe que a ativação ocorre em até 48 horas. "
+            "Exceções, falhas persistentes e pedidos explícitos de humano devem ser escalados "
+            "com histórico integral, sem fazer o cliente repetir os dados."
+        )
 
     ai_agent = db.scalar(
         select(AIAgentProfile).where(AIAgentProfile.user_id == ai_user.id)

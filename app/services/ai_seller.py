@@ -218,10 +218,49 @@ def _billing_local(text: str) -> dict[str, Any]:
 
 
 MOBILE_SIGNATURE_TYPE = "Assinatura Digital IA"
+SDR_IA_DEFAULTS_FALLBACK = {
+    "vencimento": "10",
+    "taxa_ativacao": "Não",
+    "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+}
+SDR_IA_SKIP_CODES = {
+    "novoiccid",
+    "porticcid",
+    "portdata",
+    "m2mquantidade",
+    "m2miccids",
+    "unificarfaturas",
+    "unificarmotivo",
+    "vencimento",
+    "taxaativacao",
+    "taxavalor",
+    "tipoassinaturacontrato",
+}
+SDR_IA_FORBIDDEN_STEPS = {
+    "MOBILE_NEW_ICCID",
+    "MOBILE_PORT_ICCID",
+    "MOBILE_PORT_DATE",
+    "MOBILE_M2M_QTY",
+    "MOBILE_M2M_ICCIDS",
+    "MOBILE_DUE_DAY",
+    "MOBILE_ACTIVATION_FEE",
+    "MOBILE_ACTIVATION_VALUE",
+    "MOBILE_UNIFY",
+    "MOBILE_UNIFY_REASON",
+    "BILLING_DUE_DAY",
+    "BILLING_ACTIVATION_FEE",
+    "BILLING_ACTIVATION_VALUE",
+    "BILLING_UNIFY",
+    "BILLING_UNIFY_REASON",
+}
 MOBILE_CONTRACT_BUTTONS = [
     {"id": "portabilidade", "label": "Portabilidade"},
     {"id": "numero_novo", "label": "Número novo"},
     {"id": "m2m", "label": "M2M"},
+]
+MOBILE_CONTRACT_BUTTONS_SDR_IA = [
+    {"id": "portabilidade", "label": "Portabilidade"},
+    {"id": "numero_novo", "label": "Número novo"},
 ]
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
@@ -376,13 +415,32 @@ def _extract_mobile_payment(text: str) -> str | None:
     return None
 
 
+def _sdr_ia_mode(collected: dict[str, Any]) -> bool:
+    if "_sdr_ia_funnel" in collected:
+        return bool(collected.get("_sdr_ia_funnel"))
+    snapshot = collected.get("crmPlaybook")
+    if isinstance(snapshot, dict):
+        return bool(snapshot.get("sdrIaFunnel"))
+    return False
+
+
+def _sdr_ia_defaults(collected: dict[str, Any]) -> dict[str, Any]:
+    raw = collected.get("_sdr_ia_defaults")
+    defaults = dict(raw) if isinstance(raw, dict) else {}
+    if _sdr_ia_mode(collected):
+        for key, value in SDR_IA_DEFAULTS_FALLBACK.items():
+            defaults.setdefault(key, value)
+    return defaults
+
+
 def _category_values(collected: dict[str, Any]) -> dict[str, Any]:
     raw = collected.get("categoryFormValues")
     values = dict(raw) if isinstance(raw, dict) else {}
     legacy_mobile = collected.get("mobileCategoryValues")
     if isinstance(legacy_mobile, dict):
         values.update(legacy_mobile)
-    values["tipo_assinatura_contrato"] = MOBILE_SIGNATURE_TYPE
+    if _sdr_ia_mode(collected):
+        values.update(_sdr_ia_defaults(collected))
     return values
 
 
@@ -393,7 +451,8 @@ def _store_category_values(
     mobile: bool = False,
 ) -> None:
     normalized = dict(values)
-    normalized["tipo_assinatura_contrato"] = MOBILE_SIGNATURE_TYPE
+    if _sdr_ia_mode(collected):
+        normalized.update(_sdr_ia_defaults(collected))
     collected["categoryFormValues"] = normalized
     if mobile:
         collected["mobileCategoryValues"] = normalized
@@ -515,6 +574,13 @@ def _playbook_store_snapshot(
     collected["_playbook_ready_for_win"] = bool(result.ready_for_win)
     collected["_playbook_missing_codes"] = result.missing_codes
     collected["_playbook_next_question"] = result.next_question
+    collected["_sdr_ia_funnel"] = bool(result.sdr_ia_funnel)
+    if result.sdr_ia_funnel:
+        defaults = dict(result.sdr_ia_defaults or {})
+        for key, value in SDR_IA_DEFAULTS_FALLBACK.items():
+            defaults.setdefault(key, value)
+        collected["_sdr_ia_defaults"] = defaults
+        collected["_sdr_ia_field_policy"] = dict(result.sdr_ia_field_policy or {})
 
 
 def _playbook_clear_question(collected: dict[str, Any]) -> None:
@@ -629,6 +695,48 @@ def _sync_known_playbook_missing(
     return True
 
 
+def _sdr_ia_skip_code(code: str, collected: dict[str, Any]) -> bool:
+    return _sdr_ia_mode(collected) and _playbook_code_key(code) in SDR_IA_SKIP_CODES
+
+
+def _sync_sdr_ia_defaults(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> bool:
+    if not _sdr_ia_mode(collected):
+        return False
+
+    # A política do pacote manda aplicar os defaults ao iniciar faturamento.
+    # Antes de produto/categoria existirem, apenas guardamos os defaults no estado.
+    if not collected.get("planId") or not collected.get("categoryId"):
+        try:
+            _sync_plan_context(client, state, collected)
+        except CRMIntegrationError:
+            return False
+    if not collected.get("planId") or not collected.get("categoryId"):
+        return False
+
+    current = _category_values(collected)
+    desired = dict(current)
+    desired.update(_sdr_ia_defaults(collected))
+    if desired == current and collected.get("_sdr_ia_defaults_persisted"):
+        return False
+    _persist_category_form(
+        client,
+        state,
+        collected,
+        desired,
+    )
+    collected["_sdr_ia_defaults_persisted"] = True
+    LOG.info(
+        "seller_sdr_ia_defaults_synced opportunity=%s keys=%s",
+        state.opportunity_id,
+        sorted(_sdr_ia_defaults(collected).keys()),
+    )
+    return True
+
+
 def _playbook_step_for_item(
     item: CRMPlaybookMissingItem,
     state: AIClosingState,
@@ -636,6 +744,9 @@ def _playbook_step_for_item(
 ) -> str | None:
     key = _playbook_code_key(item.code)
     is_mobile = _is_mobile_plan(state, collected)
+
+    if _sdr_ia_skip_code(item.code, collected):
+        return None
 
     billing_steps = PLAYBOOK_BILLING_STEPS.get(key)
     if billing_steps:
@@ -685,6 +796,14 @@ def _query_playbook_guidance(
         if result.credit_status:
             state.credit_status = result.credit_status
 
+        if result.sdr_ia_funnel and _sync_sdr_ia_defaults(
+            client,
+            state,
+            collected,
+        ):
+            # O PATCH automático também precisa ser seguido por novo GET /playbook.
+            continue
+
         if result.credit_rejected:
             question = (
                 result.next_question
@@ -704,7 +823,23 @@ def _query_playbook_guidance(
             collected["_playbook_ready_for_win"] = False
             return "WAITING_CRM_READY", None
 
-        first = result.missing[0]
+        actionable = [
+            item
+            for item in result.missing
+            if not _sdr_ia_skip_code(item.code, collected)
+        ]
+        if not actionable:
+            skipped = [item.code for item in result.missing]
+            collected["_sdr_ia_skipped_missing_codes"] = skipped
+            _playbook_clear_question(collected)
+            LOG.warning(
+                "seller_sdr_ia_only_skipped_fields opportunity=%s codes=%s",
+                state.opportunity_id,
+                skipped,
+            )
+            return "WAITING_CRM_READY", None
+
+        first = actionable[0]
         if _sync_known_playbook_missing(
             client,
             state,
@@ -728,11 +863,14 @@ def _query_playbook_guidance(
             )
             return fallback_step, None
 
+        # nextQuestion é a fonte de verdade quando corresponde ao primeiro
+        # campo acionável. Se o CRM ainda devolver um campo vetado pelo SDR IA
+        # antes dele, usamos a question do próprio item permitido.
         question = (
             result.next_question
-            or first.question
-            or None
-        )
+            if first is result.missing[0]
+            else first.question
+        ) or first.question or None
         collected.pop("_playbook_unmapped_code", None)
         collected.pop("_playbook_unmapped_patch_key", None)
         collected["_playbook_step"] = next_step
@@ -859,17 +997,34 @@ def _sync_plan_context(
     collected["categoryId"] = resolved_category_id
     collected["categoryName"] = str(selected.get("categoryName") or "")
     collected["catalogPlanName"] = str(selected.get("name") or "").strip()
+    collected["contractProductName"] = collected["catalogPlanName"]
 
-    # Repara oportunidades antigas que receberam o plano apenas pelo fallback
-    # genérico e ainda não expõem product_id no endpoint de captura.
-    if resolved_plan_id and plan_id != resolved_plan_id:
+    # Para contrato, o nome usado no CRM precisa ser exatamente o nome do
+    # produto do catálogo (que é o nome conciliado pelo registry/Admin → Contratos).
+    # O rótulo comercial do WhatsApp pode continuar curto no estado local.
+    if (
+        resolved_plan_id
+        and (
+            plan_id != resolved_plan_id
+            or collected.get("_catalog_plan_synced") != collected["catalogPlanName"]
+        )
+    ):
+        catalog_value = selected.get("monthlyValue")
+        payload: dict[str, Any] = {
+            "planId": resolved_plan_id,
+            "planLabel": collected["catalogPlanName"],
+        }
+        if catalog_value not in (None, ""):
+            payload["catalogMonthlyValue"] = catalog_value
+            if state.offer_price is None:
+                payload["monthlyValue"] = catalog_value
+        elif state.offer_price is not None:
+            payload["monthlyValue"] = state.offer_price
         client.update_opportunity(
             state.opportunity_id,
-            {
-                "planId": resolved_plan_id,
-                "planLabel": collected["catalogPlanName"],
-            },
+            payload,
         )
+        collected["_catalog_plan_synced"] = collected["catalogPlanName"]
 
 
 def _persist_category_form(
@@ -896,6 +1051,9 @@ def _persist_category_form(
     merged = _category_values(collected)
     if values:
         merged.update(values)
+    if _sdr_ia_mode(collected):
+        # sdrIaDefaults são dominantes em TODO PATCH de faturamento do SDR IA.
+        merged.update(_sdr_ia_defaults(collected))
     _store_category_values(
         collected,
         merged,
@@ -923,23 +1081,27 @@ def _persist_mobile_category_form(
     )
 
 
-def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
+def _mobile_missing_fields(
+    values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
+) -> list[str]:
     required = [
         "tipo_contratacao",
         "forma_pagamento",
-        "unificar_faturas",
-        "tipo_assinatura_contrato",
     ]
+    if not sdr_ia_funnel:
+        required += ["unificar_faturas", "tipo_assinatura_contrato"]
     contract_type = str(values.get("tipo_contratacao") or "")
     if contract_type == "Número Portabilidade":
-        required += [
-            "numero_portado",
-            "port_titular",
-            "port_nome_titular",
-            "port_cpf_cnpj",
-        ]
+        required += ["numero_portado", "port_titular"]
+        if values.get("port_titular") == "Não":
+            required += ["port_nome_titular", "port_cpf_cnpj"]
     elif contract_type == "M2M":
-        required += ["m2m_quantidade", "m2m_iccids"]
+        if sdr_ia_funnel:
+            required.append("tipo_contratacao")
+        else:
+            required += ["m2m_quantidade", "m2m_iccids"]
     elif contract_type != "Número novo":
         required.append("tipo_contratacao")
 
@@ -947,7 +1109,7 @@ def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
         required.append("envio_fatura")
     elif values.get("forma_pagamento") == "Débito em Conta":
         required += ["debito_banco", "debito_agencia", "debito_conta", "debito_titular"]
-    if values.get("unificar_faturas") == "Não":
+    if not sdr_ia_funnel and values.get("unificar_faturas") == "Não":
         required.append("unificar_motivo")
 
     missing: list[str] = []
@@ -958,23 +1120,34 @@ def _mobile_missing_fields(values: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(missing))
 
 
-def _mobile_next_step(values: dict[str, Any]) -> str | None:
+def _mobile_next_step(
+    values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
+) -> str | None:
     contract_type = str(values.get("tipo_contratacao") or "")
-    if contract_type not in {"Número novo", "Número Portabilidade", "M2M"}:
+    allowed_types = {"Número novo", "Número Portabilidade"}
+    if not sdr_ia_funnel:
+        allowed_types.add("M2M")
+    if contract_type not in allowed_types:
         return "MOBILE_CONTRACT_TYPE"
 
     if contract_type == "Número Portabilidade":
-        order = [
+        for field, step in [
             ("numero_portado", "MOBILE_PORT_NUMBER"),
             ("port_titular", "MOBILE_PORT_TITULAR"),
-            ("port_nome_titular", "MOBILE_PORT_NAME"),
-            ("port_cpf_cnpj", "MOBILE_PORT_DOC"),
-        ]
-        for field, step in order:
+        ]:
             if not values.get(field):
                 return step
+        if values.get("port_titular") == "Não":
+            for field, step in [
+                ("port_nome_titular", "MOBILE_PORT_NAME"),
+                ("port_cpf_cnpj", "MOBILE_PORT_DOC"),
+            ]:
+                if not values.get(field):
+                    return step
 
-    if contract_type == "M2M":
+    if contract_type == "M2M" and not sdr_ia_funnel:
         if not values.get("m2m_quantidade"):
             return "MOBILE_M2M_QTY"
         if not values.get("m2m_iccids"):
@@ -994,20 +1167,52 @@ def _mobile_next_step(values: dict[str, Any]) -> str | None:
         ]:
             if not values.get(field):
                 return step
-    if not values.get("unificar_faturas"):
-        return "MOBILE_UNIFY"
-    if values.get("unificar_faturas") == "Não" and not values.get("unificar_motivo"):
-        return "MOBILE_UNIFY_REASON"
+    if not sdr_ia_funnel:
+        if not values.get("unificar_faturas"):
+            return "MOBILE_UNIFY"
+        if values.get("unificar_faturas") == "Não" and not values.get("unificar_motivo"):
+            return "MOBILE_UNIFY_REASON"
     return None
+
+def _billing_next_step(
+    values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
+) -> str | None:
+    if not values.get("forma_pagamento"):
+        return "BILLING_PAYMENT_METHOD"
+    if values.get("forma_pagamento") == "Boleto":
+        if not values.get("envio_fatura"):
+            return "BILLING_INVOICE_DELIVERY"
+    elif values.get("forma_pagamento") == "Débito em Conta":
+        for field, step in [
+            ("debito_banco", "BILLING_DEBIT_BANK"),
+            ("debito_agencia", "BILLING_DEBIT_AGENCY"),
+            ("debito_conta", "BILLING_DEBIT_ACCOUNT"),
+            ("debito_titular", "BILLING_DEBIT_HOLDER"),
+        ]:
+            if not values.get(field):
+                return step
+    if not sdr_ia_funnel:
+        if not values.get("unificar_faturas"):
+            return "BILLING_UNIFY"
+        if values.get("unificar_faturas") == "Não" and not values.get("unificar_motivo"):
+            return "BILLING_UNIFY_REASON"
+    return None
+
 
 def _apply_mobile_answer(
     step: str,
     text: str,
     values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
 ) -> tuple[bool, str]:
     if step == "MOBILE_CONTRACT_TYPE":
         contract_type = _extract_mobile_contract_type(text)
-        if not contract_type:
+        if not contract_type or (sdr_ia_funnel and contract_type == "M2M"):
+            if sdr_ia_funnel:
+                return False, "Escolha uma das opções: Portabilidade ou Número novo."
             return False, "Escolha uma das opções: Portabilidade, Número novo ou M2M."
         previous = str(values.get("tipo_contratacao") or "")
         values["tipo_contratacao"] = contract_type
@@ -1320,6 +1525,15 @@ def _prepare_contract_before_win(
         state.contract_status = "aguardando_validacao_crm"
         return _prompt_for_step(state, collected)
 
+    _sync_plan_context(client, state, collected)
+    contract_product_name = str(collected.get("contractProductName") or "").strip()
+    if not contract_product_name:
+        raise CRMIntegrationError(
+            "Produto do CRM não resolvido pelo catálogo para geração do contrato.",
+            error_code="CRM_CONTRACT_PRODUCT_NAME_MISSING",
+        )
+    collected["_contract_product_name"] = contract_product_name
+
     state.step = "WAITING_CONTRACT"
     generated: dict[str, Any] = {}
 
@@ -1368,7 +1582,8 @@ def _prepare_contract_before_win(
         state.step = "WAITING_SIGNATURE"
         return (
             "Seu cadastro foi concluído e o contrato está pronto para assinatura. "
-            f"Você pode assinar por este link: {sign_url}"
+            f"Você pode assinar por este link: {sign_url} "
+            "Após a assinatura, a ativação ocorre em até 48 horas."
         )
 
     return _prompt_for_step(state, collected)
@@ -1509,7 +1724,13 @@ def _send_text(
     return message
 
 
-def _seller_step_buttons(step: str, text: str = "") -> list[dict[str, str]]:
+def _seller_step_buttons(
+    step: str,
+    text: str = "",
+    collected: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    if step == "MOBILE_CONTRACT_TYPE" and _sdr_ia_mode(collected or {}):
+        return [dict(item) for item in MOBILE_CONTRACT_BUTTONS_SDR_IA]
     buttons = SELLER_STEP_BUTTONS.get(step)
     if buttons:
         return [dict(item) for item in buttons]
@@ -1561,7 +1782,11 @@ def _send_step_message(
         )
         return recent_duplicate
 
-    buttons = _seller_step_buttons(state.step, text)
+    buttons = _seller_step_buttons(
+        state.step,
+        text,
+        _load_collected(state),
+    )
     if len(buttons) < 2:
         return _send_text(
             db,
@@ -1659,6 +1884,12 @@ def _create_crm_if_ready(
 
 
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
+    if _sdr_ia_mode(collected) and state.step in SDR_IA_FORBIDDEN_STEPS:
+        return (
+            "Vou seguir apenas com os dados necessários para concluir sua contratação "
+            "pelo canal digital."
+        )
+
     playbook_question = str(collected.get("_playbook_question") or "").strip()
     playbook_step = str(collected.get("_playbook_step") or "").strip()
     if playbook_question and playbook_step == state.step:
@@ -1824,6 +2055,12 @@ def _seller_followup_prompt(
     *,
     followup_step: int,
 ) -> str:
+    if _sdr_ia_mode(collected) and state.step in SDR_IA_FORBIDDEN_STEPS:
+        return (
+            "Para continuarmos de onde paramos, vou seguir apenas com os dados "
+            "necessários para a contratação digital."
+        )
+
     plan = state.plan_label or "plano combinado"
     prefix = (
         "Para continuarmos de onde paramos, "
@@ -1972,7 +2209,7 @@ def process_seller_followup(
             "step": job.step,
             "closing_step": state.step,
             "message_id": message.id,
-            "buttons": len(_seller_step_buttons(state.step, text)),
+            "buttons": len(_seller_step_buttons(state.step, text, collected)),
         },
     )
     _schedule_seller_followup(
@@ -1986,16 +2223,18 @@ def process_seller_followup(
 
 
 def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
-    """Migra apenas fechamentos móveis antigos presos no BILLING genérico.
+    """Reposiciona fechamentos antigos após mudanças de política do Vendedor IA.
 
-    Os campos ICCID/M2M/vencimento/taxa voltaram a ser suportados na Fase 3
-    e nunca mais são removidos deste estado.
+    Para oportunidades confirmadas como funil SDR IA, remove estados que agora
+    são proibidos (ICCID, M2M, vencimento, taxa e unificação) e volta a consultar
+    o playbook. Outros funis mantêm o formulário completo.
     """
+    candidate_steps = sorted({"BILLING", *SDR_IA_FORBIDDEN_STEPS})
     states = list(
         db.scalars(
             select(AIClosingState)
             .where(
-                AIClosingState.step == "BILLING",
+                AIClosingState.step.in_(candidate_steps),
                 AIClosingState.updated_at >= utcnow() - timedelta(days=2),
             )
             .order_by(AIClosingState.updated_at.desc())
@@ -2003,9 +2242,84 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
         )
     )
     resumed = 0
+    client: SulnetCRMClient | None = None
 
     for state in states:
         collected = _load_collected(state)
+        sdr_ia_funnel = _sdr_ia_mode(collected)
+
+        if sdr_ia_funnel:
+            values = _category_values(collected)
+            if _is_mobile_plan(state, collected):
+                fallback_step = _mobile_next_step(
+                    values,
+                    sdr_ia_funnel=True,
+                ) or "WAITING_CRM_READY"
+            else:
+                fallback_step = _billing_next_step(
+                    values,
+                    sdr_ia_funnel=True,
+                ) or "WAITING_CRM_READY"
+
+            next_step = fallback_step
+            question: str | None = None
+            if state.opportunity_id:
+                try:
+                    if client is None:
+                        client = SulnetCRMClient.from_settings()
+                    next_step, question = _query_playbook_guidance(
+                        client,
+                        state,
+                        collected,
+                        fallback_step=fallback_step,
+                    )
+                except CRMIntegrationError as exc:
+                    LOG.warning(
+                        "seller_sdr_ia_policy_resume_playbook_failed state=%s error=%s",
+                        state.id,
+                        str(exc)[:300],
+                    )
+
+            if next_step == "__FINISH__":
+                next_step = "WAITING_CRM_READY"
+                question = None
+
+            state.step = next_step
+            state.last_error = ""
+            _save_collected(state, collected)
+
+            conversation = db.get(Conversation, state.conversation_id)
+            agent = db.get(AIAgentProfile, state.agent_id)
+            if (
+                state.step in SELLER_CUSTOMER_INPUT_STEPS
+                and conversation
+                and agent
+                and agent.active
+                and agent.execution_mode == "AUTO"
+                and conversation.status not in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+            ):
+                prompt = question or _prompt_for_step(state, collected)
+                _send_step_message(
+                    db,
+                    agent=agent,
+                    conversation=conversation,
+                    state=state,
+                    text=prompt,
+                )
+                _schedule_seller_followup(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    source_message_id=None,
+                    step=1,
+                )
+            resumed += 1
+            continue
+
+        # Compatibilidade: fora do funil SDR IA, preserva o comportamento
+        # completo da Fase 3 e apenas corrige estados móveis antigos em BILLING.
+        if state.step != "BILLING":
+            continue
         values = _mobile_values(collected)
         contract_type = str(values.get("tipo_contratacao") or "")
         if contract_type not in {"Número novo", "Número Portabilidade", "M2M"}:
@@ -2046,7 +2360,6 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
     if resumed:
         db.flush()
     return resumed
-
 
 def _handoff_to_human(
     db: Session,
@@ -2366,7 +2679,33 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     }
 
     try:
-        if state.step == "NAME":
+        if _sdr_ia_mode(collected) and (
+            state.step in SDR_IA_FORBIDDEN_STEPS or state.step == "BILLING"
+        ):
+            values = _category_values(collected)
+            if _is_mobile_plan(state, collected):
+                fallback_step = _mobile_next_step(
+                    values,
+                    sdr_ia_funnel=True,
+                ) or "WAITING_CRM_READY"
+            else:
+                fallback_step = _billing_next_step(
+                    values,
+                    sdr_ia_funnel=True,
+                ) or "WAITING_CRM_READY"
+            playbook_step, playbook_question = _query_playbook_guidance(
+                client,
+                state,
+                collected,
+                fallback_step=fallback_step,
+            )
+            if playbook_step == "__FINISH__":
+                reply = _finish_sale_contract(client, state, collected)
+            else:
+                state.step = playbook_step
+                reply = playbook_question or _prompt_for_step(state, collected)
+
+        elif state.step == "NAME":
             name = _extract_name(text)
             if not name:
                 reply = "Para emitir o contrato corretamente, preciso do seu nome completo. Pode me informar, por favor?"
@@ -2675,9 +3014,16 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     values = _mobile_values(collected)
                     collected["mobileCategoryValues"] = values
                     _persist_mobile_category_form(client, state, collected)
-                    fallback_step = _mobile_next_step(values) or "MOBILE_CONTRACT_TYPE"
+                    fallback_step = _mobile_next_step(
+                        values,
+                        sdr_ia_funnel=_sdr_ia_mode(collected),
+                    ) or "MOBILE_CONTRACT_TYPE"
                 else:
-                    fallback_step = "BILLING"
+                    fallback_step = (
+                        "BILLING_PAYMENT_METHOD"
+                        if _sdr_ia_mode(collected)
+                        else "BILLING"
+                    )
                 _save_collected(state, collected)
                 reply = _advance_with_playbook(
                     client,
@@ -2692,13 +3038,17 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 state.step,
                 text,
                 values,
+                sdr_ia_funnel=_sdr_ia_mode(collected),
             )
             if not accepted:
                 reply = error_reply
             else:
                 collected["mobileCategoryValues"] = values
                 _persist_mobile_category_form(client, state, collected)
-                next_step = _mobile_next_step(values)
+                next_step = _mobile_next_step(
+                    values,
+                    sdr_ia_funnel=_sdr_ia_mode(collected),
+                )
                 if next_step:
                     reply = _advance_with_playbook(
                         client,
@@ -2707,7 +3057,10 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         fallback_step=next_step,
                     )
                 else:
-                    missing = _mobile_missing_fields(values)
+                    missing = _mobile_missing_fields(
+                        values,
+                        sdr_ia_funnel=_sdr_ia_mode(collected),
+                    )
                     if missing:
                         raise CRMIntegrationError(
                             "Checklist de Telefonia Móvel incompleto: " + ", ".join(missing)
@@ -2832,8 +3185,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             if _contract_is_signed(state.contract_status):
                 _finalize_signed_sale(client, state, collected)
                 reply = (
-                    "Contrato assinado com sucesso! Sua contratação foi concluída "
-                    "e seguirá para a operação da Sulnet."
+                    "Contrato assinado com sucesso! Sua contratação foi concluída. "
+                    "A ativação ocorre em até 48 horas após a assinatura do contrato."
                 )
                 if conversation.lead:
                     conversation.lead.stage = "GANHO"
@@ -3133,8 +3486,8 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     agent=agent,
                     conversation=conversation,
                     text=(
-                        "Contrato assinado com sucesso! Sua contratação foi concluída "
-                        "e seguirá para a operação da Sulnet."
+                        "Contrato assinado com sucesso! Sua contratação foi concluída. "
+                        "A ativação ocorre em até 48 horas após a assinatura do contrato."
                     ),
                 )
                 if conversation.lead:

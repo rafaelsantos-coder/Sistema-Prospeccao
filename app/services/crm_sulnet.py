@@ -94,6 +94,8 @@ class CRMPlaybookResult:
     credit_approved: bool = False
     credit_rejected: bool = False
     sdr_ia_funnel: bool = False
+    sdr_ia_defaults: dict[str, Any] = field(default_factory=dict)
+    sdr_ia_field_policy: dict[str, Any] = field(default_factory=dict)
     missing: list[CRMPlaybookMissingItem] = field(default_factory=list)
 
     @classmethod
@@ -129,6 +131,10 @@ class CRMPlaybookResult:
             or opportunity.get("protocol")
             or ""
         ).strip()
+        raw_defaults = source.get("sdrIaDefaults")
+        sdr_ia_defaults = dict(raw_defaults) if isinstance(raw_defaults, dict) else {}
+        raw_policy = source.get("sdrIaFieldPolicy")
+        sdr_ia_field_policy = dict(raw_policy) if isinstance(raw_policy, dict) else {}
         return cls(
             opportunity_id=int(
                 source.get("opportunityId")
@@ -145,6 +151,8 @@ class CRMPlaybookResult:
             credit_approved=bool(credit.get("approved")),
             credit_rejected=bool(credit.get("rejected")),
             sdr_ia_funnel=bool(source.get("sdrIaFunnel")),
+            sdr_ia_defaults=sdr_ia_defaults,
+            sdr_ia_field_policy=sdr_ia_field_policy,
             missing=missing,
         )
 
@@ -169,6 +177,8 @@ class CRMPlaybookResult:
             "missingCodes": self.missing_codes,
             "missing": [item.as_dict() for item in self.missing],
             "sdrIaFunnel": self.sdr_ia_funnel,
+            "sdrIaDefaults": dict(self.sdr_ia_defaults),
+            "sdrIaFieldPolicy": dict(self.sdr_ia_field_policy),
         }
 
 
@@ -876,6 +886,7 @@ class SulnetCRMClient:
                 },
                 "aiClosing": dict(ai_closing),
                 "categoryForm": {
+                    **({"categoryId": int(category_id)} if category_id else {}),
                     "values": merged_values,
                     # Preserva anexos já existentes; a IA não cria documentos/selfies.
                     "files": dict(current_files),
@@ -1053,17 +1064,21 @@ class SulnetCRMClient:
         ]
 
     def products(self, query: str = "") -> list[dict[str, Any]]:
-        if self.supports("products"):
-            result = self._request(
-                "GET",
-                "/api/capture/products",
-                params={"q": query} if query else None,
-            )
-            return result if isinstance(result, list) else []
+        # Pacote oficial SDR IA: o catálogo de produtos é /api/catalog/products.
+        # Mantemos /api/capture/products apenas como compatibilidade com versões
+        # futuras/alternativas que publiquem essa capability.
+        try:
+            return self._catalog_products_fallback(query)
+        except CRMIntegrationError as exc:
+            if exc.status_code not in {404, 405} or not self.supports("products"):
+                raise
 
-        # Compatibilidade com o CRM legado em produção enquanto ele não publica
-        # apiVersion/capabilities.
-        return self._catalog_products_fallback(query)
+        result = self._request(
+            "GET",
+            "/api/capture/products",
+            params={"q": query} if query else None,
+        )
+        return result if isinstance(result, list) else []
 
     def mark_won(
         self,

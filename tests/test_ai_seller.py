@@ -22,6 +22,7 @@ from app.services.ai_seller import (
     _finalize_signed_sale,
     _finish_sale_contract,
     _prepare_contract_before_win,
+    _persist_category_form,
     _win_idempotency_key,
     _mobile_missing_fields,
     _mobile_next_step,
@@ -123,17 +124,32 @@ def test_extract_birth_date_normalizes_to_iso():
 
 
 
-def test_mobile_contract_type_new_number_skips_iccid_number_due_day_and_fee():
-    values = _mobile_values({})
+def test_sdr_ia_mobile_new_number_uses_defaults_and_skips_forbidden_fields():
+    collected = {
+        "_sdr_ia_funnel": True,
+        "_sdr_ia_defaults": {
+            "vencimento": "10",
+            "taxa_ativacao": "Não",
+            "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+        },
+    }
+    values = _mobile_values(collected)
+    assert values["vencimento"] == "10"
+    assert values["taxa_ativacao"] == "Não"
     assert values["tipo_assinatura_contrato"] == MOBILE_SIGNATURE_TYPE
 
-    ok, _ = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "numero_novo", values)
+    ok, _ = _apply_mobile_answer(
+        "MOBILE_CONTRACT_TYPE",
+        "numero_novo",
+        values,
+        sdr_ia_funnel=True,
+    )
     assert ok is True
     assert values["tipo_contratacao"] == "Número novo"
-    assert _mobile_next_step(values) == "MOBILE_PAYMENT_METHOD"
+    assert _mobile_next_step(values, sdr_ia_funnel=True) == "MOBILE_PAYMENT_METHOD"
 
 
-def test_mobile_contract_type_accepts_m2m_and_requests_quantity_in_fallback():
+def test_non_sdr_mobile_contract_type_still_accepts_m2m():
     values = _mobile_values({})
     ok, message = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "M2M", values)
     assert ok is True
@@ -142,20 +158,47 @@ def test_mobile_contract_type_accepts_m2m_and_requests_quantity_in_fallback():
     assert _mobile_next_step(values) == "MOBILE_M2M_QTY"
 
 
-def test_mobile_portability_requires_number_and_holder_data_but_not_iccid_or_date():
+def test_sdr_ia_mobile_contract_type_rejects_m2m():
+    values = _mobile_values({"_sdr_ia_funnel": True})
+    ok, message = _apply_mobile_answer(
+        "MOBILE_CONTRACT_TYPE",
+        "M2M",
+        values,
+        sdr_ia_funnel=True,
+    )
+    assert ok is False
+    assert "Portabilidade" in message
+    assert "Número novo" in message
+    assert "M2M" not in message
+
+
+def test_mobile_portability_does_not_repeat_holder_data_when_same_holder():
     values = {
         "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
         "tipo_contratacao": "Número Portabilidade",
         "numero_portado": "5555999990000",
         "port_titular": "Sim",
+        "forma_pagamento": "Boleto",
+        "envio_fatura": ["WhatsApp"],
+        "unificar_faturas": "Sim",
+    }
+    missing = _mobile_missing_fields(values)
+    assert "port_nome_titular" not in missing
+    assert "port_cpf_cnpj" not in missing
+    assert "port_iccid" not in missing
+    assert "port_data" not in missing
+
+
+def test_mobile_portability_asks_holder_data_only_when_different_holder():
+    values = {
+        "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+        "tipo_contratacao": "Número Portabilidade",
+        "numero_portado": "5555999990000",
+        "port_titular": "Não",
     }
     missing = _mobile_missing_fields(values)
     assert "port_nome_titular" in missing
     assert "port_cpf_cnpj" in missing
-    assert "port_iccid" not in missing
-    assert "port_data" not in missing
-    assert "vencimento" not in missing
-    assert "taxa_ativacao" not in missing
 
 
 def test_mobile_boleto_billing_requires_delivery_and_unification_reason():
@@ -214,7 +257,7 @@ class _MobilePlanContextClient:
         return [
             {
                 "id": 392,
-                "name": "Meu Trabalho Comigo 15GB",
+                "name": "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26",
                 "monthlyValue": 69.80,
                 "categoryId": 83,
                 "categoryName": "TELEFONIA MÓVEL",
@@ -260,17 +303,19 @@ def test_sync_plan_context_recovers_mobile_product_after_email():
     assert collected["planId"] == 392
     assert collected["categoryId"] == 83
     assert collected["categoryName"] == "TELEFONIA MÓVEL"
-    assert collected["catalogPlanName"] == "Meu Trabalho Comigo 15GB"
+    assert collected["catalogPlanName"] == "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26"
     assert state.plan_label == "Sulmóvel 15GB"
     assert client.updated == [
         (
             11754,
             {
                 "planId": 392,
-                "planLabel": "Meu Trabalho Comigo 15GB",
+                "planLabel": "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26",
+                "catalogMonthlyValue": 69.80,
             },
         )
     ]
+    assert collected["contractProductName"] == "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26"
 
 
 def test_seller_step_buttons_cover_predefined_mobile_questions():
@@ -364,7 +409,16 @@ class _PlaybookClient:
         return {"opportunityId": opportunity_id}
 
 
-def _playbook_result(*, missing=None, next_question="", ready=False, category="fibra"):
+def _playbook_result(
+    *,
+    missing=None,
+    next_question="",
+    ready=False,
+    category="fibra",
+    sdr_ia_funnel=False,
+    sdr_defaults=None,
+    field_policy=None,
+):
     return CRMPlaybookResult(
         opportunity_id=11754,
         protocol="CRM-TEST",
@@ -376,7 +430,9 @@ def _playbook_result(*, missing=None, next_question="", ready=False, category="f
         credit_status="Aprovado",
         credit_approved=True,
         credit_rejected=False,
-        sdr_ia_funnel=True,
+        sdr_ia_funnel=sdr_ia_funnel,
+        sdr_ia_defaults=dict(sdr_defaults or {}),
+        sdr_ia_field_policy=dict(field_policy or {}),
         missing=list(missing or []),
     )
 
@@ -638,7 +694,7 @@ def test_phase3_mobile_due_day_and_activation_fee():
     assert values["taxa_valor"] == 49.90
 
 
-def test_phase3_fiber_billing_uses_category_form_fields():
+def test_non_sdr_fiber_billing_keeps_full_form_behavior():
     values = _category_values({})
 
     ok, _ = _apply_billing_form_answer("BILLING_PAYMENT_METHOD", "Boleto", values)
@@ -653,7 +709,7 @@ def test_phase3_fiber_billing_uses_category_form_fields():
     assert ok is True
     assert values["vencimento"] == 15
 
-    assert values["tipo_assinatura_contrato"] == MOBILE_SIGNATURE_TYPE
+    assert "tipo_assinatura_contrato" not in values
 
 
 def test_phase3_playbook_maps_billing_differently_for_fiber_and_mobile():
@@ -684,7 +740,7 @@ def test_phase3_playbook_maps_billing_differently_for_fiber_and_mobile():
     ) == "MOBILE_DUE_DAY"
 
 
-def test_phase3_signature_is_automatic_and_never_becomes_customer_question():
+def test_sdr_ia_signature_is_automatic_and_never_becomes_customer_question():
     item = CRMPlaybookMissingItem(
         code="tipo_assinatura_contrato",
         question="Como deseja assinar?",
@@ -696,33 +752,45 @@ def test_phase3_signature_is_automatic_and_never_becomes_customer_question():
         credit_status="",
         step="EMAIL",
     )
-    values = _category_values({})
+    collected = {"_sdr_ia_funnel": True}
+    values = _category_values(collected)
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
-    assert _playbook_step_for_item(item, state, {}) is None
+    assert values["vencimento"] == "10"
+    assert values["taxa_ativacao"] == "Não"
+    assert _playbook_step_for_item(item, state, collected) is None
 
 
 
-def test_phase3_signature_is_auto_persisted_then_playbook_advances():
-    signature = CRMPlaybookMissingItem(
-        code="tipo_assinatura_contrato",
-        question="Como deseja assinar?",
-        patch_key="productInfo.categoryForm.values.tipo_assinatura_contrato",
+def test_sdr_ia_defaults_are_persisted_before_next_billing_question():
+    payment = CRMPlaybookMissingItem(
+        code="forma_pagamento",
+        question="Como deseja pagar: boleto ou débito?",
+        patch_key="productInfo.categoryForm.values.forma_pagamento",
     )
-    due_day = CRMPlaybookMissingItem(
-        code="vencimento",
-        question="Qual dia de vencimento?",
-        patch_key="productInfo.categoryForm.values.vencimento",
+    iccid = CRMPlaybookMissingItem(
+        code="novo_iccid",
+        question="Qual é o ICCID?",
+        patch_key="productInfo.categoryForm.values.novo_iccid",
     )
+    defaults = {
+        "vencimento": "10",
+        "taxa_ativacao": "Não",
+        "tipo_assinatura_contrato": "Assinatura Digital IA",
+    }
     client = _PlaybookClient([
         _playbook_result(
-            missing=[signature],
-            next_question="Como deseja assinar?",
+            missing=[payment],
+            next_question=payment.question,
             category="fibra",
+            sdr_ia_funnel=True,
+            sdr_defaults=defaults,
         ),
         _playbook_result(
-            missing=[due_day],
-            next_question="Qual dia de vencimento?",
+            missing=[iccid, payment],
+            next_question=iccid.question,
             category="fibra",
+            sdr_ia_funnel=True,
+            sdr_defaults=defaults,
         ),
     ])
     state = SimpleNamespace(
@@ -741,14 +809,18 @@ def test_phase3_signature_is_auto_persisted_then_playbook_advances():
         client,
         state,
         collected,
-        fallback_step="BILLING",
+        fallback_step="BILLING_PAYMENT_METHOD",
     )
 
-    assert step == "BILLING_DUE_DAY"
-    assert question == "Qual dia de vencimento?"
+    assert step == "BILLING_PAYMENT_METHOD"
+    assert question == payment.question
+    assert client.playbook_calls == 2
     assert client.category_updates
     _, values, category_id, plan_id = client.category_updates[0]
+    assert values["vencimento"] == "10"
+    assert values["taxa_ativacao"] == "Não"
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
+    assert "novo_iccid" not in values
     assert category_id == 10
     assert plan_id == 800
 
@@ -758,6 +830,13 @@ def test_phase3_structured_buttons_include_m2m_and_billing_choices():
         "id": "m2m",
         "label": "M2M",
     }
+    assert _seller_step_buttons(
+        "MOBILE_CONTRACT_TYPE",
+        collected={"_sdr_ia_funnel": True},
+    ) == [
+        {"id": "portabilidade", "label": "Portabilidade"},
+        {"id": "numero_novo", "label": "Número novo"},
+    ]
     assert _seller_step_buttons("MOBILE_ACTIVATION_FEE") == [
         {"id": "sim", "label": "Sim"},
         {"id": "nao", "label": "Não"},
@@ -771,6 +850,121 @@ def test_phase3_structured_buttons_include_m2m_and_billing_choices():
         {"id": "nao", "label": "Não"},
     ]
 
+
+
+
+def test_sdr_ia_boleto_does_not_require_unification_due_day_or_fee():
+    values = {
+        "tipo_contratacao": "Número novo",
+        "forma_pagamento": "Boleto",
+        "envio_fatura": ["WhatsApp"],
+        "vencimento": "10",
+        "taxa_ativacao": "Não",
+        "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+    }
+    assert _mobile_missing_fields(values, sdr_ia_funnel=True) == []
+    assert _mobile_next_step(values, sdr_ia_funnel=True) is None
+
+
+def test_sdr_ia_playbook_skips_due_fee_unify_iccid_and_m2m_fields():
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="EMAIL",
+    )
+    collected = {
+        "_sdr_ia_funnel": True,
+        "categoryName": "Telefonia Móvel",
+    }
+    skipped_codes = [
+        "novo_iccid",
+        "port_iccid",
+        "port_data",
+        "m2m_quantidade",
+        "m2m_iccids",
+        "vencimento",
+        "taxa_ativacao",
+        "taxa_valor",
+        "unificar_faturas",
+        "unificar_motivo",
+        "tipo_assinatura_contrato",
+    ]
+    for code in skipped_codes:
+        item = CRMPlaybookMissingItem(
+            code=code,
+            question=f"Pergunta proibida {code}",
+            patch_key=f"productInfo.categoryForm.values.{code}",
+        )
+        assert _playbook_step_for_item(item, state, collected) is None
+
+
+def test_non_sdr_playbook_keeps_full_mobile_fields_available():
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="EMAIL",
+    )
+    collected = {"categoryName": "Telefonia Móvel"}
+    assert _playbook_step_for_item(
+        CRMPlaybookMissingItem(code="novo_iccid"),
+        state,
+        collected,
+    ) == "MOBILE_NEW_ICCID"
+    assert _playbook_step_for_item(
+        CRMPlaybookMissingItem(code="m2m_quantidade"),
+        state,
+        collected,
+    ) == "MOBILE_M2M_QTY"
+    assert _playbook_step_for_item(
+        CRMPlaybookMissingItem(code="vencimento"),
+        state,
+        collected,
+    ) == "MOBILE_DUE_DAY"
+
+
+
+def test_sdr_ia_defaults_override_stale_values_in_every_billing_patch():
+    client = _PlaybookClient([])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        offer_price=119.90,
+    )
+    collected = {
+        "_sdr_ia_funnel": True,
+        "_sdr_ia_defaults": {
+            "vencimento": "10",
+            "taxa_ativacao": "Não",
+            "tipo_assinatura_contrato": "Assinatura Digital IA",
+        },
+        "planId": 800,
+        "categoryId": 10,
+        "categoryName": "FIBRA",
+    }
+    stale = {
+        "forma_pagamento": "Boleto",
+        "envio_fatura": ["WhatsApp"],
+        "vencimento": "15",
+        "taxa_ativacao": "Sim",
+        "tipo_assinatura_contrato": "Manual",
+    }
+
+    _persist_category_form(
+        client,
+        state,
+        collected,
+        stale,
+    )
+
+    _, sent, category_id, plan_id = client.category_updates[-1]
+    assert sent["forma_pagamento"] == "Boleto"
+    assert sent["vencimento"] == "10"
+    assert sent["taxa_ativacao"] == "Não"
+    assert sent["tipo_assinatura_contrato"] == "Assinatura Digital IA"
+    assert category_id == 10
+    assert plan_id == 800
 
 
 class _Phase4ContractClient:
@@ -816,12 +1010,30 @@ class _Phase4ContractClient:
         self.mark_won_calls.append((opportunity_id, idempotency_key))
         return dict(self.won)
 
+    def get_opportunity(self, opportunity_id):
+        return {"opportunityId": opportunity_id, "planId": 800}
+
+    def products(self, query=""):
+        return [
+            {
+                "id": 800,
+                "name": "SULNET RESID FIBRA - 800MB - 2-25 (sem desconto)",
+                "monthlyValue": 119.90,
+                "categoryId": 10,
+                "categoryName": "FIBRA",
+            }
+        ]
+
+    def update_opportunity(self, opportunity_id, payload):
+        return {"opportunityId": opportunity_id, **payload}
+
 
 def _phase4_state(**overrides):
     data = {
         "opportunity_id": 11754,
         "external_id": "prospecta-conversation-99",
         "plan_label": "800 Mega",
+        "offer_price": 119.90,
         "step": "BILLING_DUE_DAY",
         "contract_status": "",
         "sign_url": "",
@@ -852,6 +1064,10 @@ def test_phase4_ready_for_win_generates_contract_before_any_win():
     assert state.step == "WAITING_SIGNATURE"
     assert state.sign_url == "https://sign.example/11754"
     assert "assinar" in reply.lower()
+    assert "48 horas" in reply
+    assert collected["_contract_product_name"] == (
+        "SULNET RESID FIBRA - 800MB - 2-25 (sem desconto)"
+    )
 
 
 def test_phase4_not_ready_never_generates_contract_or_marks_won():
