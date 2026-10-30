@@ -39,7 +39,9 @@ from app.services.ai_sdr import (
     _apply_unavailable_plan_policy,
     _confirmed_customer_type_from_lead,
     _confirmed_existing_customer_from_lead,
+    _confirmed_facts_from_history,
     _is_company_context,
+    _journey_integrity_issues,
     _journey_memory_from_lead,
     _persist_confirmed_customer_type,
     _persist_confirmed_existing_customer,
@@ -2276,6 +2278,104 @@ def test_new_customer_internet_choice_asks_home_or_company():
     ]
 
 
+def test_alternative_existing_customer_question_recognizes_no_from_history():
+    history = [
+        {
+            "direction": "OUTBOUND",
+            "body": "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?",
+        },
+        {"direction": "INBOUND", "body": "Não"},
+    ]
+
+    facts = _confirmed_facts_from_history(history)
+
+    assert facts["existing_customer"] == "NAO_CLIENTE"
+    assert "EXISTING_CUSTOMER" in facts["answered_questions"]
+
+
+def test_conversation_without_lead_does_not_regress_after_internet_choice():
+    history = [
+        {
+            "direction": "OUTBOUND",
+            "body": "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?",
+        },
+        {"direction": "INBOUND", "body": "Não"},
+        {
+            "direction": "OUTBOUND",
+            "body": "Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?",
+        },
+        {"direction": "INBOUND", "body": "Internet"},
+    ]
+    facts = _confirmed_facts_from_history(history)
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Internet",
+        "confirmed_facts": facts,
+        "lead": {
+            "city": "",
+            "confirmed_existing_customer": "",
+            "confirmed_customer_type": "",
+            "journey": {},
+        },
+        "history": history,
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+    result = _apply_journey_orchestration_policy(result, context)
+
+    assert facts["existing_customer"] == "NAO_CLIENTE"
+    assert facts["product_kind"] == "INTERNET"
+    assert result.qualification.existing_customer == "NAO_CLIENTE"
+    assert result.journey_state == "CHOOSE_SEGMENT"
+    assert "casa ou empresa" in result.reply_text.lower()
+    assert [item.label for item in result.quick_replies] == [
+        "Para casa",
+        "Para empresa",
+    ]
+
+
+def test_integrity_guard_flags_regression_to_answered_existing_customer_gate():
+    decision = _base_prospecting_entry_decision()
+    decision.journey_state = "IDENTIFY_CUSTOMER"
+    decision.reply_text = (
+        "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"
+    )
+    context = {
+        "latest_customer_message": "Internet",
+        "confirmed_facts": {
+            "existing_customer": "NAO_CLIENTE",
+            "customer_type": "",
+            "product_kind": "INTERNET",
+            "desired_product": "Internet",
+            "city": "",
+            "answered_questions": ["EXISTING_CUSTOMER", "PRODUCT"],
+        },
+        "lead": {
+            "city": "",
+            "confirmed_existing_customer": "",
+            "confirmed_customer_type": "",
+            "journey": {},
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Você já possui algum serviço da Sulnet?",
+            },
+            {"direction": "INBOUND", "body": "Não"},
+            {
+                "direction": "OUTBOUND",
+                "body": "Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?",
+            },
+            {"direction": "INBOUND", "body": "Internet"},
+        ],
+    }
+
+    issues = _journey_integrity_issues(decision, context)
+
+    assert "STATE_REGRESSION_EXISTING_CUSTOMER" in issues
+    assert "IGNORED_CONFIRMED_EXISTING_CUSTOMER" in issues
+
+
 def test_existing_customer_new_connection_asks_home_or_company_for_new_address():
     decision = _base_prospecting_entry_decision()
     context = {
@@ -2750,6 +2850,41 @@ def test_journey_memory_is_structured_and_isolated_by_conversation():
     assert memory["stagnation_count"] == 2
     assert _journey_memory_from_lead(lead, conversation_id=1000) == {}
     assert '"origem": "teste"' in lead.raw_data
+
+
+def test_journey_memory_does_not_erase_confirmed_gate_facts():
+    lead = Lead(
+        business_name="",
+        contact_name="Teste Memória",
+        phone="5555888888888",
+        segment="Residencial",
+        city="Santa Rosa",
+        source="MANUAL",
+        origin_channel="WHATSAPP",
+        team="DIGITAL",
+        stage="CONTATO_REALIZADO",
+        score=0,
+        temperature="FRIO",
+        priority="NORMAL",
+        raw_data="{}",
+    )
+    first = _base_journey_decision()
+    first.journey_state = "CHOOSE_SEGMENT"
+    first.qualification.existing_customer = "NAO_CLIENTE"
+    first.qualification.desired_product = "Internet"
+    first.qualification.customer_type = "NAO_INFORMADO"
+    _persist_journey_memory(lead, first, conversation_id=77)
+
+    second = _base_journey_decision()
+    second.journey_state = "CHOOSE_PRODUCT"
+    second.qualification.existing_customer = "NAO_INFORMADO"
+    second.qualification.desired_product = None
+    second.qualification.customer_type = "NAO_INFORMADO"
+    _persist_journey_memory(lead, second, conversation_id=77)
+
+    memory = _journey_memory_from_lead(lead, conversation_id=77)
+    assert memory["existing_customer"] == "NAO_CLIENTE"
+    assert memory["desired_product"] == "Internet"
 
 
 def test_followup_theme_recovers_current_pending_action():
