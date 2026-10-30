@@ -2201,8 +2201,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 _persist_mobile_category_form(client, state, collected)
                 next_step = _mobile_next_step(values)
                 if next_step:
-                    state.step = next_step
-                    reply = _prompt_for_step(state, collected)
+                    reply = _advance_with_playbook(
+                        client,
+                        state,
+                        collected,
+                        fallback_step=next_step,
+                    )
                 else:
                     missing = _mobile_missing_fields(values)
                     if missing:
@@ -2217,7 +2221,17 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         },
                     )
                     _persist_mobile_category_form(client, state, collected)
-                    reply = _finish_sale_contract(client, state)
+                    playbook_step, playbook_question = _query_playbook_guidance(
+                        client,
+                        state,
+                        collected,
+                        fallback_step="__FINISH__",
+                    )
+                    if playbook_step == "__FINISH__":
+                        reply = _finish_sale_contract(client, state)
+                    else:
+                        state.step = playbook_step
+                        reply = playbook_question or _prompt_for_step(state, collected)
                 _save_collected(state, collected)
 
         elif state.step == "BILLING":
@@ -2246,7 +2260,17 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 collected.update(billing)
                 client.update_opportunity(state.opportunity_id or 0, billing)
                 _save_collected(state, collected)
-                reply = _finish_sale_contract(client, state)
+                playbook_step, playbook_question = _query_playbook_guidance(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="__FINISH__",
+                )
+                if playbook_step == "__FINISH__":
+                    reply = _finish_sale_contract(client, state)
+                else:
+                    state.step = playbook_step
+                    reply = playbook_question or _prompt_for_step(state, collected)
 
         elif state.step in {"WAITING_CONTRACT", "WAITING_SIGNATURE"}:
             status = client.get_status(state.opportunity_id or 0)
@@ -2315,6 +2339,10 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             "protocol": state.protocol,
             "credit_status": state.credit_status,
             "contract_status": state.contract_status,
+            "playbook_mode": collected.get("_playbook_mode"),
+            "playbook_ready_for_win": collected.get("_playbook_ready_for_win"),
+            "playbook_missing_codes": collected.get("_playbook_missing_codes", []),
+            "playbook_unmapped_code": collected.get("_playbook_unmapped_code"),
         })
         _finish_run(db, run=run, job=job, state=state, reply=reply, output=output)
         return "completed"
@@ -2425,8 +2453,13 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 normalized_credit = _norm(credit_status)
                 collected = _load_collected(state)
                 if any(token in normalized_credit for token in ("aprovado", "pre-aprovado", "liberado")):
-                    state.step = "CEP"
-                    prompt = _prompt_for_step(state, collected)
+                    prompt = _advance_with_playbook(
+                        client,
+                        state,
+                        collected,
+                        fallback_step="CEP",
+                    )
+                    _save_collected(state, collected)
                     _send_step_message(
                         db,
                         agent=agent,
