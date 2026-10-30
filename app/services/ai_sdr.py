@@ -2145,6 +2145,12 @@ def _explicit_purchase_commitment(context: dict) -> bool:
         "pode contratar",
         "com essa condicao eu fecho",
         "fechado",
+        "pode dar andamento",
+        "vamos dar andamento",
+        "pode seguir",
+        "pode prosseguir",
+        "eu aceito",
+        "aceito",
     )
     if any(cue in latest for cue in cues):
         return True
@@ -2194,11 +2200,7 @@ def _derive_journey_state(decision: AIDecision, context: dict) -> str:
         return "OPT_OUT"
     if _explicit_human_request(context):
         return "HUMAN_HANDOFF"
-    if (
-        decision.customer_commitment
-        or decision.sales_state == "PURCHASE_INTENT"
-        or _explicit_purchase_commitment(context)
-    ):
+    if _explicit_purchase_commitment(context):
         return "CLOSING"
 
     existing_customer = _existing_customer_from_context(context)
@@ -2274,21 +2276,43 @@ def _apply_stagnation_strategy(
     state = decision.journey_state
     existing = _existing_customer_from_context(context)
     customer_type = _customer_type_from_context(context)
+    previous_outbound = _recent_sdr_outbound(context)
 
     if state == "IDENTIFY_CUSTOMER":
+        if previous_outbound:
+            decision = _show_existing_customer_question(decision)
+            decision.reply_text = "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"
+            return decision
         return _show_existing_customer_question(decision)
     if state == "CHOOSE_PRODUCT":
         if existing == "CLIENTE":
-            return _show_existing_customer_product_question(decision)
+            decision = _show_existing_customer_product_question(decision)
+            if previous_outbound:
+                decision.reply_text = "Para sua próxima contratação, prefere Telefonia Móvel ou internet em outro endereço?"
+            return decision
         if existing == "NAO_CLIENTE":
-            return _show_new_customer_product_question(decision)
+            decision = _show_new_customer_product_question(decision)
+            if previous_outbound:
+                decision.reply_text = "Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?"
+            return decision
     if state == "CHOOSE_SEGMENT":
-        return _show_internet_segment_question(
+        decision = _show_internet_segment_question(
             decision,
             existing_customer=existing == "CLIENTE",
         )
+        if previous_outbound:
+            decision.reply_text = (
+                "E essa nova conexão será residencial ou empresarial?"
+                if existing == "CLIENTE"
+                else "Essa conexão será residencial ou empresarial?"
+            )
+        return decision
     if state == "CONFIRM_CITY":
-        decision.reply_text = "Para eu te mostrar somente os planos disponíveis, qual é a sua cidade?"
+        decision.reply_text = (
+            "Em qual cidade será instalada a conexão?"
+            if previous_outbound
+            else "Para eu te mostrar somente os planos disponíveis, qual é a sua cidade?"
+        )
         decision.quick_replies = []
         decision.intent = "QUALIFYING"
         decision.sales_state = "DISCOVERY"
@@ -2298,12 +2322,21 @@ def _apply_stagnation_strategy(
         return decision
     if state == "SELECT_OFFER":
         if customer_type == "EMPRESA":
-            return _show_corporate_catalog(decision)
+            decision = _show_corporate_catalog(decision)
+            if previous_outbound:
+                decision.reply_text = "Qual das opções corporativas você prefere avaliar agora?"
+            return decision
         if _journey_product_kind(decision, context) == "MOBILE":
-            return _show_mobile_catalog_page(decision, page=1)
+            decision = _show_mobile_catalog_page(decision, page=1)
+            if previous_outbound:
+                decision.reply_text = "Qual plano de Telefonia Móvel você quer avaliar agora?"
+            return decision
         city = _city_from_sales_context(decision, context)
         if city:
-            return _show_fiber_catalog(decision, context)
+            decision = _show_fiber_catalog(decision, context)
+            if previous_outbound:
+                decision.reply_text = f"Entre as opções disponíveis em {city}, qual velocidade você quer avaliar?"
+            return decision
     if state == "HANDLE_OBJECTION":
         if decision.objection == "PRICE":
             decision.reply_text = "Para eu comparar de forma justa, quanto você paga hoje pela sua conexão?"
@@ -2374,12 +2407,19 @@ def _apply_journey_orchestration_policy(
     else:
         decision.handoff_target = "NONE"
         # O modelo não pode transformar intenção de compra/qualificação normal
-        # em handoff humano sem um pedido explícito do cliente.
+        # em handoff humano ou fechamento sem evidência explícita do cliente.
         if decision.intent != "DO_NOT_CONTACT":
             decision.handoff_recommended = False
             decision.handoff_reason = ""
-        if decision.sales_state == "READY_FOR_HUMAN_SALES":
-            decision.sales_state = "NEGOTIATING"
+        if decision.intent == "HUMAN_REQUEST":
+            decision.intent = (
+                "QUALIFYING"
+                if state in {"IDENTIFY_CUSTOMER", "CHOOSE_PRODUCT", "CHOOSE_SEGMENT", "CONFIRM_CITY"}
+                else "INTEREST"
+            )
+        decision.customer_commitment = False
+        if decision.sales_state in {"READY_FOR_HUMAN_SALES", "PURCHASE_INTENT"}:
+            decision.sales_state = "NEGOTIATING" if decision.objection != "NONE" else "OFFERING"
 
     mandatory_gate_states = {
         "IDENTIFY_CUSTOMER",
