@@ -2743,7 +2743,7 @@ def process_seller_followup(
     return "sent"
 
 
-def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
+def resume_simplified_mobile_states(db: Session, *, limit: int = 50, since=None) -> int:
     """Reposiciona fechamentos antigos após mudanças de política do Vendedor IA.
 
     Para oportunidades confirmadas como funil SDR IA, remove estados que agora
@@ -2756,7 +2756,7 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
             select(AIClosingState)
             .where(
                 AIClosingState.step.in_(candidate_steps),
-                AIClosingState.updated_at >= utcnow() - timedelta(days=2),
+                AIClosingState.updated_at >= max(utcnow() - timedelta(days=2), since) if since else AIClosingState.updated_at >= utcnow() - timedelta(days=2),
             )
             .order_by(AIClosingState.updated_at.desc())
             .limit(limit)
