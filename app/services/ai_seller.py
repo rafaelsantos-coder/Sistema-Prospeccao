@@ -147,6 +147,32 @@ def _extract_cpf(text: str) -> str | None:
     return None
 
 
+def _wants_other_cpf(text: str) -> bool:
+    key = _norm(text)
+    phrases = (
+        "outro cpf",
+        "outro documento",
+        "cpf diferente",
+        "cpf de outra pessoa",
+        "cpf de outra pessoa",
+        "cpf de outro titular",
+        "trocar o cpf",
+        "trocar cpf",
+        "novo cpf",
+        "tentar outro cpf",
+        "contratar em outro cpf",
+        "contratar com outro cpf",
+    )
+    return any(phrase in key for phrase in phrases)
+
+
+def _clear_rejected_credit(state: AIClosingState, collected: dict[str, Any]) -> None:
+    state.credit_status = ""
+    state.credit_analysis_id = None
+    collected.pop("creditStatus", None)
+    collected.pop("creditAnalysisId", None)
+
+
 def _extract_birth_date(text: str) -> str | None:
     value = text or ""
     patterns = [
@@ -290,8 +316,8 @@ MOBILE_CONTRACT_BUTTONS_SDR_IA = [
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
     "CREDIT_REJECTED": [
-        {"id": "sim", "label": "Sim"},
-        {"id": "nao", "label": "Não"},
+        {"id": "outro_cpf", "label": "Tentar outro CPF"},
+        {"id": "encerrar", "label": "Encerrar"},
     ],
     "PLAN_CONFIRM": [
         {"id": "sim", "label": "Sim"},
@@ -2508,7 +2534,7 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == "BILLING":
         return "Agora falta o faturamento: como prefere pagar/receber a fatura e qual dia de vencimento você prefere?"
     if state.step == "CREDIT_REJECTED":
-        return "A consulta cadastral não foi aprovada automaticamente. Se quiser, posso encaminhar para análise de um atendente."
+        return "A consulta cadastral não foi aprovada. Quer tentar a contratação com outro CPF?"
     if state.step == "WAITING_CRM_READY":
         return (
             "Seus dados já foram enviados ao CRM. Estou aguardando a validação final "
@@ -2649,7 +2675,7 @@ def _seller_followup_prompt(
     if state.step == "BILLING_UNIFY":
         return "Para continuar, deseja unificar esta fatura com outras faturas Sulnet?"
     if state.step == "CREDIT_REJECTED":
-        return "Se quiser encaminhar a análise cadastral para um atendente, escolha Sim. Caso contrário, pode responder Não."
+        return "Se quiser continuar com outro titular, escolha Tentar outro CPF. Se não quiser continuar, escolha Encerrar."
     if state.step == "WAITING_SIGNATURE":
         if state.sign_url:
             return f"Seu contrato continua aguardando assinatura. Quando puder, assine por aqui: {state.sign_url}"
@@ -3329,15 +3355,64 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 reply = "A análise cadastral ainda está em andamento. Assim que houver decisão, eu continuo a contratação."
 
         elif state.step == "CREDIT_REJECTED":
-            interpreted = _interpret_ambiguous(db, agent=agent, step=state.step, message=text, plan_label=state.plan_label)
-            if interpreted.human_requested or interpreted.wants_contest or _yes_no(text) == "SIM":
-                _handoff_to_human(
-                    db, state=state, conversation=conversation, agent=agent,
-                    reason="Cliente solicitou análise/contestação após reprovação de crédito.",
-                )
-                reply = "Certo. Encaminhei seu caso para análise de um atendente, com todo o histórico da contratação."
+            normalized_text = _norm(text)
+            new_cpf = _extract_cpf(text)
+
+            if new_cpf:
+                _clear_rejected_credit(state, collected)
+                credit = client.consult_credit(state.opportunity_id or 0, new_cpf)
+                state.credit_status = str(credit.get("status") or "")
+                state.credit_analysis_id = int(credit.get("analysisId") or 0) or None
+                collected["creditStatus"] = state.credit_status
+                _save_collected(state, collected)
+
+                if credit.get("approved"):
+                    reply = _advance_with_playbook(
+                        client,
+                        state,
+                        collected,
+                        fallback_step="CEP",
+                    )
+                elif credit.get("rejected"):
+                    state.step = "CREDIT_REJECTED"
+                    reply = "Esse novo CPF também não foi aprovado. Se quiser, podemos tentar com outro CPF."
+                else:
+                    state.step = "CREDIT_REVIEW"
+                    reply = "A consulta deste novo CPF ficou em análise. Vou manter a contratação aberta e sigo assim que houver retorno."
+
+            elif (
+                _wants_other_cpf(text)
+                or normalized_text in {"outro cpf", "tentar outro cpf", "novo cpf", "outro_cpf"}
+            ):
+                _clear_rejected_credit(state, collected)
+                state.step = "CPF"
+                _save_collected(state, collected)
+                reply = "Claro. Qual é o novo CPF que você quer usar para a contratação?"
+
+            elif normalized_text in {"encerrar", "nao", "não"} or _yes_no(text) == "NAO":
+                state.step = "COMPLETED"
+                state.completed_at = utcnow()
+                reply = "Certo. Encerramos esta tentativa de contratação. Se quiser tentar novamente depois, é só me chamar."
+
             else:
-                reply = _prompt_for_step(state, collected)
+                interpreted = _interpret_ambiguous(
+                    db,
+                    agent=agent,
+                    step=state.step,
+                    message=text,
+                    plan_label=state.plan_label,
+                )
+                if interpreted.human_requested or interpreted.wants_contest:
+                    _handoff_to_human(
+                        db,
+                        state=state,
+                        conversation=conversation,
+                        agent=agent,
+                        reason="Cliente solicitou análise/contestação após reprovação de crédito.",
+                    )
+                    reply = "Certo. Encaminhei seu caso para análise de um atendente, com todo o histórico da contratação."
+                else:
+                    reply = _prompt_for_step(state, collected)
 
         elif state.step == "CEP":
             cep = _extract_cep(text)
