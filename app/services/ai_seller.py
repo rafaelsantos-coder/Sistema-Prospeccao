@@ -1731,6 +1731,24 @@ def _finalize_signed_sale(
             error_code="CRM_CONTRACT_NOT_SIGNED",
         )
 
+    # No endpoint agent contract/generate, o CRM/ZapSign é a autoridade da
+    # transição assinatura -> won -> BKO. Pode existir uma janela curta em que
+    # o contrato já aparece assinado, mas o webhook ainda está concluindo o
+    # ganho. Nesse fluxo esperamos o CRM em vez de disparar um segundo mark_won.
+    if collected.get("_contract_generation_requested"):
+        collected["_awaiting_crm_auto_win"] = True
+        state.step = "WAITING_SIGNATURE"
+        return {
+            "pendingAutoWin": True,
+            "opportunity": {
+                "id": state.opportunity_id,
+                "status": "open",
+            },
+            "contract": {
+                "status": state.contract_status,
+            },
+        }
+
     idempotency_key = _win_idempotency_key(state)
     collected["_win_idempotency_key"] = idempotency_key
     won = client.mark_won(
@@ -3373,13 +3391,19 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
                 if _contract_is_signed(state.contract_status):
                     _finalize_signed_sale(client, state, collected)
-                    reply = (
-                        "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                        "Agora o pedido segue para o time responsável pela ativação."
-                    )
-                    if conversation.lead:
-                        conversation.lead.stage = "GANHO"
-                        conversation.lead.next_action_at = None
+                    if state.step == "COMPLETED":
+                        reply = (
+                            "Contrato assinado com sucesso! Sua contratação foi concluída. "
+                            "Agora o pedido segue para o time responsável pela ativação."
+                        )
+                        if conversation.lead:
+                            conversation.lead.stage = "GANHO"
+                            conversation.lead.next_action_at = None
+                    else:
+                        reply = (
+                            "Recebi a confirmação da assinatura. "
+                            "Estou concluindo o registro da sua contratação."
+                        )
                 elif sign_url:
                     state.sign_url = sign_url
                     state.step = "WAITING_SIGNATURE"
@@ -3721,19 +3745,22 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     collected,
                 )
                 _save_collected(state, collected)
-                _send_text(
-                    db,
-                    agent=agent,
-                    conversation=conversation,
-                    text=(
-                        "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                        "A ativação ocorre em até 48 horas após a assinatura do contrato."
-                    ),
-                )
-                if conversation.lead:
-                    conversation.lead.stage = "GANHO"
-                    conversation.lead.next_action_at = None
-                processed += 1
+                if state.step == "COMPLETED":
+                    _send_text(
+                        db,
+                        agent=agent,
+                        conversation=conversation,
+                        text=(
+                            "Contrato assinado com sucesso! Sua contratação foi concluída. "
+                            "Agora o pedido segue para o time responsável pela ativação."
+                        ),
+                    )
+                    if conversation.lead:
+                        conversation.lead.stage = "GANHO"
+                        conversation.lead.next_action_at = None
+                    processed += 1
+                else:
+                    state.updated_at = utcnow()
                 continue
 
             if sign_url:
