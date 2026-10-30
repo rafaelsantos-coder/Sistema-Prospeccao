@@ -190,6 +190,9 @@ def export_conversations_csv(request: Request, db: Session = Depends(get_db)):
         "Tempo até encerramento",
         "Tempo até atribuição",
         "Espera atual",
+        "Jornada IA",
+        "Pendência da jornada",
+        "Estagnação",
     ]]
     for item in report["conversations"]:
         rows.append([
@@ -211,6 +214,9 @@ def export_conversations_csv(request: Request, db: Session = Depends(get_db)):
             format_duration(item["close_seconds"]),
             format_duration(item["assignment_seconds"]),
             format_duration(item["pending_wait_seconds"]),
+            item["journey_label"],
+            item["journey_pending_action"],
+            str(item["journey_stagnation_count"]),
         ])
 
     write_audit(
@@ -223,6 +229,91 @@ def export_conversations_csv(request: Request, db: Session = Depends(get_db)):
     )
     db.commit()
     return _csv_response(rows, "relatorio-conversas-whatsapp.csv")
+
+
+@router.get("/reports/whatsapp/export/ai-journey.csv")
+def export_ai_journey_csv(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    filters = _filters_from_request(request)
+    report = build_chat_report(db, user, filters)
+    journey = report["ai_journey"]
+
+    rows: list[list[str]] = [
+        ["FUNIL COMERCIAL IA"],
+        ["Etapa", "Conversas", "% da base SDR IA"],
+    ]
+    for item in journey["funnel"]:
+        rows.append([
+            item["label"],
+            str(item["value"]),
+            f'{float(item["pct"]):.1f}%',
+        ])
+
+    rows.extend([
+        [],
+        ["DESEMPENHO POR ETAPA"],
+        [
+            "Etapa",
+            "Conversas no período",
+            "Interações SDR",
+            "Interações médias",
+            "Atualmente na etapa",
+            "Travadas",
+        ],
+    ])
+    for item in journey["stages"]:
+        rows.append([
+            item["label"],
+            str(item["conversations"]),
+            str(item["interactions"]),
+            f'{float(item["avg_interactions"]):.2f}',
+            str(item["current"]),
+            str(item["stalled"]),
+        ])
+
+    rows.extend([
+        [],
+        ["CONVERSAS TRAVADAS"],
+        [
+            "Conversa",
+            "Contato",
+            "Telefone",
+            "Etapa",
+            "Pendência",
+            "Estagnação",
+            "Interações na etapa",
+            "Última mensagem",
+        ],
+    ])
+    for item in journey["stalled_conversations"]:
+        rows.append([
+            str(item["id"]),
+            item["name"],
+            phone_br(item["phone"]),
+            item["stage_label"],
+            item["pending_action"],
+            str(item["stagnation_count"]),
+            str(item["interactions_in_stage"]),
+            _dt(item["last_message_at"]),
+        ])
+
+    write_audit(
+        db,
+        user=user,
+        action="WHATSAPP_AI_JOURNEY_EXPORTED",
+        entity_type="report",
+        entity_id="ai_journey_csv",
+        payload={
+            "filters": filters.as_query_dict(),
+            "stages": len(journey["stages"]),
+            "stalled": len(journey["stalled_conversations"]),
+        },
+    )
+    db.commit()
+    return _csv_response(rows, "jornada-comercial-ia.csv")
 
 
 @router.get("/reports/whatsapp/export/messages.csv")
