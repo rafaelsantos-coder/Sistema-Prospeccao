@@ -494,29 +494,30 @@ class SulnetCRMClient:
             "items": [dict(item) for item in result if isinstance(item, dict)],
         }
 
-    def generate_agent_contract(self, opportunity_id: int) -> dict[str, Any]:
-        if not self.supports_any(
-            "agentContractGenerate",
-            "contractGenerate",
-            "contractGeneration",
-        ):
-            raise CRMIntegrationError(
-                "Geração de contrato pelo endpoint agent ainda não foi publicada pelo CRM.",
-                status_code=501,
-                method="POST",
-                path=(
-                    f"/api/integracoes/agent/v1/opportunities/"
-                    f"{opportunity_id}/contract/generate"
-                ),
-                error_code="CRM_AGENT_CONTRACT_NOT_AVAILABLE",
-            )
+    def generate_agent_contract(
+        self,
+        opportunity_id: int,
+        *,
+        send_signature: bool = True,
+        require_ready_for_win: bool = True,
+    ) -> dict[str, Any]:
+        """Gera contrato e, quando solicitado, já cria/reutiliza a assinatura.
+
+        O endpoint agent é a fonte de verdade atual para fechamento SDR IA.
+        Não dependemos do capability profile para chamá-lo porque o CRM pode
+        publicar o endpoint antes de atualizar /api/capture/config/context.
+        O chamador trata 404/405/501 como compatibilidade com CRM legado.
+        """
         result = self._request(
             "POST",
             (
                 f"/api/integracoes/agent/v1/opportunities/"
                 f"{opportunity_id}/contract/generate"
             ),
-            json_body={},
+            json_body={
+                "sendSignature": bool(send_signature),
+                "requireReadyForWin": bool(require_ready_for_win),
+            },
             timeout=60.0,
         )
         return result if isinstance(result, dict) else {}
