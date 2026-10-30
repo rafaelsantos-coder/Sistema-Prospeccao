@@ -1064,17 +1064,21 @@ class SulnetCRMClient:
         ]
 
     def products(self, query: str = "") -> list[dict[str, Any]]:
-        if self.supports("products"):
-            result = self._request(
-                "GET",
-                "/api/capture/products",
-                params={"q": query} if query else None,
-            )
-            return result if isinstance(result, list) else []
+        # Pacote oficial SDR IA: o catálogo de produtos é /api/catalog/products.
+        # Mantemos /api/capture/products apenas como compatibilidade com versões
+        # futuras/alternativas que publiquem essa capability.
+        try:
+            return self._catalog_products_fallback(query)
+        except CRMIntegrationError as exc:
+            if exc.status_code not in {404, 405} or not self.supports("products"):
+                raise
 
-        # Compatibilidade com o CRM legado em produção enquanto ele não publica
-        # apiVersion/capabilities.
-        return self._catalog_products_fallback(query)
+        result = self._request(
+            "GET",
+            "/api/capture/products",
+            params={"q": query} if query else None,
+        )
+        return result if isinstance(result, list) else []
 
     def mark_won(
         self,
