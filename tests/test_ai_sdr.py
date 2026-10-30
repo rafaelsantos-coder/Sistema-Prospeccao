@@ -24,13 +24,14 @@ from app.models import (
     ZApiInstance,
 )
 from app.security import hash_password
-from app.services.ai_followups import _followup_is_repetitive, _unique_followup_fallback
+from app.services.ai_followups import _followup_is_repetitive, _pending_action_from_theme, _unique_followup_fallback
 from app.services.ai_sdr_policy import followup_spec
 from app.services.ai_sdr import (
     AIDecision,
     QualificationData,
     _apply_catalog_navigation_policy,
     _apply_corporate_customer_policy,
+    _apply_journey_orchestration_policy,
     _apply_offer_rejection_diagnostic_policy,
     _apply_prospecting_entry_policy,
     _apply_router_information_policy,
@@ -39,10 +40,13 @@ from app.services.ai_sdr import (
     _confirmed_customer_type_from_lead,
     _confirmed_existing_customer_from_lead,
     _is_company_context,
+    _journey_memory_from_lead,
     _persist_confirmed_customer_type,
     _persist_confirmed_existing_customer,
+    _persist_journey_memory,
     _show_corporate_differentials,
     _sanitize_unconfirmed_customer_facts,
+    _sdr_reply_is_repetitive,
     build_ai_context,
     claim_ai_job,
     process_ai_job,
@@ -2433,3 +2437,305 @@ def test_opt_out_is_not_overridden_by_prospecting_customer_gate():
     assert result.intent == "DO_NOT_CONTACT"
     assert result.sales_state == "OPT_OUT"
     assert result.reply_text == "Tudo bem. Não enviaremos novas mensagens."
+
+
+
+def _base_journey_decision():
+    return AIDecision(
+        reply_text="Temos o plano de 800 Mega por R$ 119,90. Quer contratar?",
+        intent="INTEREST",
+        qualification_score=65,
+        temperature="MORNO",
+        recommended_stage="PROPOSTA",
+        handoff_recommended=True,
+        handoff_reason="Cliente parece interessado.",
+        confidence=0.9,
+        summary="Cliente em negociação.",
+        next_action="Avançar venda.",
+        qualification=QualificationData(
+            city="Santa Rosa",
+            customer_type="RESIDENCIAL",
+            existing_customer="NAO_CLIENTE",
+            desired_product="Internet",
+        ),
+        crm_notes=[],
+        sales_state="OFFERING",
+        offer_plan_code="FTTH_800",
+        offer_price=119.90,
+    )
+
+
+def test_purchase_intent_routes_to_closer_ai_not_human():
+    decision = _base_journey_decision()
+    decision.reply_text = "Perfeito, vou transferir para um vendedor."
+    decision.intent = "HUMAN_REQUEST"
+    decision.sales_state = "READY_FOR_HUMAN_SALES"
+    context = {
+        "latest_customer_message": "Quero contratar esse plano",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "NAO_CLIENTE",
+            "confirmed_customer_type": "RESIDENCIAL",
+            "journey": {},
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Quer contratar o plano de 800 Mega por R$ 119,90?",
+            },
+            {"direction": "INBOUND", "body": "Quero contratar esse plano"},
+        ],
+    }
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.journey_state == "CLOSING"
+    assert result.handoff_target == "CLOSER_AI"
+    assert result.handoff_recommended is False
+    assert result.customer_commitment is True
+    assert result.sales_state == "PURCHASE_INTENT"
+    assert result.intent == "HIGH_INTENT"
+
+
+def test_short_yes_after_contract_question_routes_to_closer_ai():
+    decision = _base_journey_decision()
+    context = {
+        "latest_customer_message": "Sim",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "NAO_CLIENTE",
+            "confirmed_customer_type": "RESIDENCIAL",
+            "journey": {},
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Quer contratar esse plano agora?",
+            },
+            {"direction": "INBOUND", "body": "Sim"},
+        ],
+    }
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.journey_state == "CLOSING"
+    assert result.handoff_target == "CLOSER_AI"
+    assert result.customer_commitment is True
+
+
+def test_explicit_human_request_routes_only_to_human():
+    decision = _base_journey_decision()
+    context = {
+        "latest_customer_message": "Quero falar com uma pessoa",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "NAO_CLIENTE",
+            "confirmed_customer_type": "RESIDENCIAL",
+            "journey": {},
+        },
+        "history": [],
+    }
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.journey_state == "HUMAN_HANDOFF"
+    assert result.handoff_target == "HUMAN"
+    assert result.handoff_recommended is True
+    assert result.intent == "HUMAN_REQUEST"
+    assert result.followup_needed is False
+
+
+def test_model_cannot_handoff_human_without_explicit_customer_request():
+    decision = _base_journey_decision()
+    decision.handoff_recommended = True
+    decision.handoff_reason = "Modelo decidiu chamar humano."
+    decision.sales_state = "READY_FOR_HUMAN_SALES"
+    context = {
+        "latest_customer_message": "Quais as vantagens desse plano?",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "NAO_CLIENTE",
+            "confirmed_customer_type": "RESIDENCIAL",
+            "journey": {},
+        },
+        "history": [],
+    }
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.handoff_target == "NONE"
+    assert result.handoff_recommended is False
+    assert result.handoff_reason == ""
+    assert result.sales_state != "READY_FOR_HUMAN_SALES"
+
+
+def test_journey_gate_blocks_offer_before_existing_customer_is_known():
+    decision = _base_journey_decision()
+    decision.qualification.existing_customer = "NAO_INFORMADO"
+    context = {
+        "latest_customer_message": "Quanto custa 800 Mega?",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+            "confirmed_customer_type": "",
+            "journey": {},
+        },
+        "history": [],
+    }
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.journey_state == "IDENTIFY_CUSTOMER"
+    assert result.offer_plan_code is None
+    assert result.offer_price is None
+    assert result.reply_text == "Antes de te mostrar as opções, você já é cliente Sulnet?"
+    assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+
+
+def test_journey_gate_requires_segment_before_internet_offer():
+    decision = _base_journey_decision()
+    decision.qualification.customer_type = "NAO_INFORMADO"
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    context = {
+        "latest_customer_message": "Internet",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "NAO_CLIENTE",
+            "confirmed_customer_type": "",
+            "journey": {
+                "desired_product": "Internet",
+            },
+        },
+        "history": [],
+    }
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.journey_state == "CHOOSE_SEGMENT"
+    assert result.reply_text == "A internet é para sua casa ou empresa?"
+    assert [item.label for item in result.quick_replies] == [
+        "Para casa",
+        "Para empresa",
+    ]
+
+
+def test_residential_internet_without_city_is_forced_to_confirm_city():
+    decision = _base_journey_decision()
+    decision.qualification.city = None
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    context = {
+        "latest_customer_message": "Para casa",
+        "lead": {
+            "city": "",
+            "confirmed_existing_customer": "NAO_CLIENTE",
+            "confirmed_customer_type": "RESIDENCIAL",
+            "journey": {
+                "desired_product": "Internet",
+            },
+        },
+        "history": [],
+    }
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.journey_state == "CONFIRM_CITY"
+    assert "qual é a sua cidade" in result.reply_text.lower()
+    assert result.offer_plan_code is None
+
+
+def test_main_sdr_repetition_detector_catches_near_duplicate_cta():
+    previous = [
+        "Quer seguir com o plano de 650 Mega por R$ 99,90 mensais?",
+    ]
+
+    assert _sdr_reply_is_repetitive(
+        "Quer seguir com o plano de 650 Mega por R$ 99,90 por mês?",
+        previous,
+    ) is True
+
+
+def test_stagnation_forces_different_question_after_repeated_position():
+    decision = _base_journey_decision()
+    decision.objection = "OTHER"
+    decision.sales_state = "NEGOTIATING"
+    context = {
+        "latest_customer_message": "Ainda estou pensando",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "NAO_CLIENTE",
+            "confirmed_customer_type": "RESIDENCIAL",
+            "journey": {
+                "state": "HANDLE_OBJECTION",
+                "pending_action": "Resolver a objeção atual com um ângulo novo e avançar a decisão.",
+                "desired_product": "Internet",
+                "offer_plan_code": "FTTH_800",
+                "stagnation_count": 3,
+            },
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Temos o plano de 800 Mega por R$ 119,90. Quer contratar?",
+            },
+            {"direction": "INBOUND", "body": "Ainda estou pensando"},
+        ],
+    }
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.journey_state == "HANDLE_OBJECTION"
+    assert "o que mais pesa na sua decisão hoje" in result.reply_text.lower()
+    assert [item.label for item in result.quick_replies] == [
+        "Preço",
+        "Qualidade",
+        "Momento",
+    ]
+
+
+def test_journey_memory_persists_structured_opportunity_state():
+    lead = Lead(
+        business_name="",
+        contact_name="Teste Jornada",
+        phone="5555999999999",
+        segment="Residencial",
+        city="Santa Rosa",
+        source="MANUAL",
+        origin_channel="WHATSAPP",
+        team="DIGITAL",
+        stage="PROPOSTA",
+        score=0,
+        temperature="MORNO",
+        priority="NORMAL",
+        raw_data='{"origem":"teste"}',
+    )
+    decision = _base_journey_decision()
+    decision.journey_state = "CONFIRM_PURCHASE"
+    decision.journey_pending_action = "Obter aceite explícito para contratar a oferta escolhida."
+    decision.handoff_target = "NONE"
+    decision.stagnation_count = 2
+
+    _persist_journey_memory(
+        lead,
+        decision,
+        conversation_id=999,
+    )
+
+    memory = _journey_memory_from_lead(lead)
+    assert memory["state"] == "CONFIRM_PURCHASE"
+    assert memory["offer_plan_code"] == "FTTH_800"
+    assert memory["pending_action"].startswith("Obter aceite")
+    assert memory["stagnation_count"] == 2
+    assert '"origem": "teste"' in lead.raw_data
+
+
+def test_followup_theme_can_recover_current_pending_action():
+    theme = (
+        "reativação 1: retomar o contexto. "
+        "Pendência atual: Confirmar se a conexão é para casa ou empresa."
+    )
+
+    assert _pending_action_from_theme(theme) == (
+        "Confirmar se a conexão é para casa ou empresa."
+    )
