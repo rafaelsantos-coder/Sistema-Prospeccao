@@ -660,7 +660,7 @@ def _query_playbook_guidance(
         return fallback_step, None
 
     category = _playbook_category(state, collected)
-    for _ in range(4):
+    for _ in range(12):
         try:
             result = client.playbook(
                 state.opportunity_id,
@@ -731,6 +731,8 @@ def _query_playbook_guidance(
             or first.question
             or None
         )
+        collected.pop("_playbook_unmapped_code", None)
+        collected.pop("_playbook_unmapped_patch_key", None)
         collected["_playbook_step"] = next_step
         collected["_playbook_code"] = first.code
         collected["_playbook_patch_key"] = first.patch_key
