@@ -74,6 +74,7 @@ def password_needs_rehash(encoded: str) -> bool:
 def login_user(request: Request, user: User) -> None:
     request.session.clear()
     request.session["user_id"] = user.id
+    request.session["session_version"] = int(user.session_version or 1)
     request.session["csrf_token"] = secrets.token_urlsafe(32)
 
 
@@ -91,6 +92,10 @@ def get_current_user(request: Request, db: Session) -> User | None:
         request.session.clear()
         return None
     if not user or not user.active:
+        request.session.clear()
+        return None
+    session_version = request.session.get("session_version")
+    if session_version is None or int(session_version) != int(user.session_version or 1):
         request.session.clear()
         return None
     if user.must_change_password and request.url.path not in {
