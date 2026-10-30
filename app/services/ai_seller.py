@@ -3932,6 +3932,8 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
             continue
 
         collected = _load_collected(state)
+        step_before_poll = state.step
+        collected_before_poll = state.collected_json
         try:
             if state.step == "CREDIT_REVIEW":
                 status = client.get_status(state.opportunity_id)
@@ -4158,6 +4160,20 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
             else:
                 state.updated_at = utcnow()
 
+        except GuardianBlockedError as exc:
+            # Um bloqueio do Guardião em uma oportunidade não pode abortar o
+            # poller inteiro. Reverte somente o estado local desta tentativa;
+            # o CRM será consultado novamente no próximo ciclo.
+            state.step = step_before_poll
+            state.collected_json = collected_before_poll
+            state.last_error = str(exc)[:1200]
+            state.updated_at = utcnow()
+            LOG.warning(
+                "seller_contract_poll_guardian_blocked state=%s step=%s issues=%s",
+                state.id,
+                step_before_poll,
+                ",".join(exc.result.issue_codes),
+            )
         except CRMIntegrationError as exc:
             state.last_error = str(exc)[:1200]
             state.updated_at = utcnow()
