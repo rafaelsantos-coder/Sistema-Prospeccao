@@ -10,6 +10,8 @@ from app.security import hash_password, password_needs_rehash, verify_password
 from app.services import network_security, secret_store
 from app.services.network_security import RemoteURLValidationError, validate_remote_url
 from app.services.upload_security import UploadValidationError, validate_upload
+from app import security_middleware
+from starlette.requests import Request
 
 
 def _legacy_hash(password: str) -> str:
@@ -124,3 +126,30 @@ def test_remote_url_accepts_public_https(monkeypatch):
         validate_remote_url("https://cdn.example.com/arquivo.jpg")
         == "https://cdn.example.com/arquivo.jpg"
     )
+
+
+
+def _request(path: str, client_host: str, host: str = "internal.invalid") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "headers": [(b"host", host.encode("ascii"))],
+            "client": (client_host, 12345),
+            "server": ("0.0.0.0", 8080),
+            "scheme": "http",
+        }
+    )
+
+
+def test_internal_railway_healthcheck_bypasses_host_validation():
+    request = _request("/api/health", "100.64.0.1")
+    assert security_middleware._is_internal_healthcheck(request) is True
+
+
+def test_external_request_does_not_bypass_host_validation():
+    request = _request("/dashboard", "100.64.0.1")
+    assert security_middleware._is_internal_healthcheck(request) is False
