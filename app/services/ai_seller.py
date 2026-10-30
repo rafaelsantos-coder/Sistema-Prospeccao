@@ -6,6 +6,7 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -82,6 +83,21 @@ def _norm(value: str) -> str:
 
 def _digits(value: str) -> str:
     return re.sub(r"\D+", "", value or "")
+
+
+def _money(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _money_for_api(value: Decimal | float | int | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def _redact(value: str) -> str:
@@ -1020,7 +1036,7 @@ def _sync_plan_context(
             if state.offer_price is None:
                 payload["monthlyValue"] = catalog_value
         elif state.offer_price is not None:
-            payload["monthlyValue"] = state.offer_price
+            payload["monthlyValue"] = _money_for_api(state.offer_price)
         client.update_opportunity(
             state.opportunity_id,
             payload,
@@ -1916,7 +1932,7 @@ def _create_crm_if_ready(
         "clientName": name,
         "clientPhone": phone,
         "planLabel": state.plan_label or None,
-        "monthlyValue": state.offer_price,
+        "monthlyValue": _money_for_api(state.offer_price),
         "sdrSummary": state.handoff_summary,
         "handoffReason": collected.get("handoffReason") or "",
         "runConsult": False,
@@ -2483,7 +2499,7 @@ def start_closing_from_sdr(
             agent_id=closer.id,
             external_id=f"prospecta-conversation-{conversation.id}",
             plan_label=plan_label,
-            offer_price=getattr(decision, "offer_price", None),
+            offer_price=_money(getattr(decision, "offer_price", None)),
             handoff_summary=str(getattr(decision, "summary", "") or ""),
         )
         db.add(state)
@@ -2495,7 +2511,7 @@ def start_closing_from_sdr(
         if not state.plan_label:
             state.plan_label = plan_label
         if state.offer_price is None:
-            state.offer_price = getattr(decision, "offer_price", None)
+            state.offer_price = _money(getattr(decision, "offer_price", None))
         latest_summary = str(getattr(decision, "summary", "") or "").strip()
         if latest_summary and latest_summary not in state.handoff_summary:
             state.handoff_summary = (
@@ -2992,7 +3008,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                             "planLabel": state.plan_label,
                             # Usado apenas para desempatar catálogo; o valor gravado
                             # continua sendo o preço oficial do produto no CRM.
-                            "monthlyValue": state.offer_price,
+                            "monthlyValue": _money_for_api(state.offer_price),
                         },
                     )
                 except CRMIntegrationError:
