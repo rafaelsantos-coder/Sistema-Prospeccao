@@ -280,6 +280,18 @@ class _MobilePlanContextClient:
         self.updated.append((opportunity_id, payload))
         return {"opportunityId": opportunity_id}
 
+    def update_playbook_field(
+        self,
+        opportunity_id,
+        *,
+        patch_key,
+        value,
+    ):
+        self.playbook_patches.append(
+            (opportunity_id, patch_key, value)
+        )
+        return {"opportunityId": opportunity_id}
+
     def update_category_form(
         self,
         opportunity_id,
@@ -386,6 +398,7 @@ class _PlaybookClient:
         self.playbook_calls = 0
         self.updated = []
         self.category_updates = []
+        self.playbook_patches = []
 
     def playbook(self, opportunity_id, *, category):
         self.playbook_calls += 1
@@ -508,12 +521,104 @@ def test_playbook_syncs_known_value_before_asking_next_question():
         fallback_step="CEP",
     )
 
-    assert client.updated == [
-        (11754, {"clientEmail": "cliente@exemplo.test"})
+    assert client.playbook_patches == [
+        (11754, "clientEmail", "cliente@exemplo.test")
     ]
     assert client.playbook_calls == 2
     assert step == "CEP"
     assert question == "Qual é o CEP da instalação?"
+
+
+def test_mobile_known_contract_type_uses_exact_crm_patch_key():
+    item = CRMPlaybookMissingItem(
+        code="cf_tipo_contratacao",
+        label="Tipo de contratação móvel",
+        question="Como você quer contratar o Sulmóvel?",
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+    )
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[item],
+            next_question=item.question,
+            category="telefonia-movel",
+        ),
+        _playbook_result(
+            missing=[],
+            ready=True,
+            category="telefonia-movel",
+        ),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="WAITING_CONTRACT",
+    )
+    collected = {
+        "categoryName": "Telefonia Móvel",
+        "categoryFormValues": {
+            "tipo_contratacao": "Número novo",
+        },
+    }
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="__FINISH__",
+    )
+
+    assert client.playbook_patches == [
+        (
+            11754,
+            "productInfo.categoryForm.values.tipo_contratacao",
+            "Número novo",
+        )
+    ]
+    assert step == "__FINISH__"
+    assert question is None
+
+
+def test_unknown_playbook_field_never_falls_through_to_finish():
+    item = CRMPlaybookMissingItem(
+        code="cf_nova_regra",
+        label="Nova regra",
+        question="Qual opção deseja?",
+        patch_key="customFields.cf_nova_regra",
+        options=[
+            {"id": "a", "label": "Opção A", "value": "A"},
+            {"id": "b", "label": "Opção B", "value": "B"},
+        ],
+    )
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[item],
+            next_question=item.question,
+            category="telefonia-movel",
+        )
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="WAITING_CONTRACT",
+    )
+    collected = {"categoryName": "Telefonia Móvel"}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="__FINISH__",
+    )
+
+    assert step == "PLAYBOOK_DYNAMIC_FIELD"
+    assert question == "Qual opção deseja?"
+    assert collected["_playbook_dynamic_patch_key"] == "customFields.cf_nova_regra"
+    assert _seller_step_buttons(step, question, collected) == [
+        {"id": "a", "label": "Opção A"},
+        {"id": "b", "label": "Opção B"},
+    ]
 
 
 def test_playbook_404_disables_it_for_same_closing_and_uses_fallback():
