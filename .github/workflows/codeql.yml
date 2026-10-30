@@ -11,18 +11,51 @@ on:
 permissions:
   actions: read
   contents: read
-  security-events: write
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [python]
     steps:
       - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+
+      - uses: github/codeql-action/init@v4
         with:
-          languages: ${{ matrix.language }}
-      - uses: github/codeql-action/analyze@v3
+          languages: python
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          upload: false
+          output: codeql-results
+
+      - name: Falhar em achados CodeQL
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = list(Path("codeql-results").glob("*.sarif"))
+          findings = []
+          for path in files:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              for run in data.get("runs", []):
+                  rules = {
+                      item.get("id"): item
+                      for item in (run.get("tool", {}).get("driver", {}).get("rules", []) or [])
+                  }
+                  for result in run.get("results", []) or []:
+                      rule_id = result.get("ruleId") or ""
+                      level = result.get("level") or "warning"
+                      message = (result.get("message") or {}).get("text") or ""
+                      findings.append((level, rule_id, message, rules.get(rule_id, {})))
+
+          blocking = [
+              item for item in findings
+              if item[0] in {"error", "warning"}
+          ]
+          if blocking:
+              print("CodeQL encontrou achados bloqueantes:")
+              for level, rule_id, message, _rule in blocking[:50]:
+                  print(f"- {level}: {rule_id}: {message}")
+              raise SystemExit(1)
+          print("CodeQL sem achados bloqueantes.")
+          PY
