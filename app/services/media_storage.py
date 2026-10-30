@@ -246,6 +246,92 @@ class MediaStorage:
             direction=direction,
         )
 
+    def upload_system_file(
+        self,
+        *,
+        local_path: str,
+        key: str,
+        content_type: str = "application/octet-stream",
+        metadata: dict[str, str] | None = None,
+    ) -> str:
+        if not self.configured:
+            raise MediaStorageError(
+                "O armazenamento de sistema ainda nao foi configurado."
+            )
+        try:
+            self._client().upload_file(
+                local_path,
+                self.bucket,
+                key,
+                ExtraArgs={
+                    "ContentType": content_type,
+                    "Metadata": metadata or {},
+                },
+            )
+        except Exception as exc:
+            raise MediaStorageError(
+                "Nao foi possivel armazenar o arquivo de sistema."
+            ) from exc
+        return self.storage_uri(key)
+
+    def download_system_file(
+        self,
+        *,
+        key: str,
+        local_path: str,
+    ) -> None:
+        try:
+            self._client().download_file(
+                self.bucket,
+                key,
+                local_path,
+            )
+        except Exception as exc:
+            raise MediaStorageError(
+                "Nao foi possivel baixar o arquivo de sistema."
+            ) from exc
+
+    def list_system_objects(
+        self,
+        *,
+        prefix: str,
+    ) -> list[dict]:
+        client = self._client()
+        result: list[dict] = []
+        token = None
+        while True:
+            kwargs = {
+                "Bucket": self.bucket,
+                "Prefix": prefix,
+                "MaxKeys": 1000,
+            }
+            if token:
+                kwargs["ContinuationToken"] = token
+            response = client.list_objects_v2(**kwargs)
+            result.extend(response.get("Contents", []))
+            if not response.get("IsTruncated"):
+                break
+            token = response.get("NextContinuationToken")
+        return result
+
+    def delete_system_objects(self, keys: list[str]) -> int:
+        clean = [item for item in keys if item]
+        if not clean:
+            return 0
+        client = self._client()
+        deleted = 0
+        for index in range(0, len(clean), 1000):
+            batch = clean[index:index + 1000]
+            client.delete_objects(
+                Bucket=self.bucket,
+                Delete={
+                    "Objects": [{"Key": item} for item in batch],
+                    "Quiet": True,
+                },
+            )
+            deleted += len(batch)
+        return deleted
+
     def storage_uri(self, key: str) -> str:
         return f"s3://{self.bucket}/{key.lstrip('/')}"
 
