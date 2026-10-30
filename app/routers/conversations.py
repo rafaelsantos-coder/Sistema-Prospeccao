@@ -604,7 +604,9 @@ def conversation_media(
             expires_seconds=900,
         )
     except MediaStorageError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND
+        ) from None
     return RedirectResponse(url, status_code=307)
 
 
