@@ -16,6 +16,7 @@ from app.routers import ai_agents, api, auth, campaigns, conversations, dashboar
 from app.services.seed import seed_database
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import instance_webhook_url, list_zapi_instances, service_for_instance
+from app.security_middleware import install_security_middlewares
 from app.web import render
 
 
@@ -106,6 +107,8 @@ app.add_middleware(
     https_only=settings.is_production,
     max_age=60 * 60 * 12,
 )
+
+install_security_middlewares(app)
 
 static_dir = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
