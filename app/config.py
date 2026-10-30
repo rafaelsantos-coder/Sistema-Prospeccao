@@ -39,6 +39,11 @@ class Settings:
     login_max_attempts: int = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
     login_window_seconds: int = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
     login_block_seconds: int = int(os.getenv("LOGIN_BLOCK_SECONDS", "900"))
+    mfa_required_roles: str = os.getenv("MFA_REQUIRED_ROLES", "").strip()
+    oidc_metadata_url: str = os.getenv("OIDC_METADATA_URL", "").strip()
+    oidc_client_id: str = os.getenv("OIDC_CLIENT_ID", "").strip()
+    oidc_client_secret: str = os.getenv("OIDC_CLIENT_SECRET", "").strip()
+    oidc_allowed_domains: str = os.getenv("OIDC_ALLOWED_DOMAINS", "").strip()
     bootstrap_admin_name: str = os.getenv("BOOTSTRAP_ADMIN_NAME", "Administrador Sulnet")
     bootstrap_admin_email: str = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "admin@sulnet.local")
     bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "Sulnet@2026!")
@@ -125,6 +130,22 @@ class Settings:
         return self.app_env.lower() == "production"
 
     @property
+    def oidc_configured(self) -> bool:
+        return bool(
+            self.oidc_metadata_url
+            and self.oidc_client_id
+            and self.oidc_client_secret
+        )
+
+    @property
+    def required_mfa_roles(self) -> set[str]:
+        return {
+            item.strip().upper()
+            for item in self.mfa_required_roles.split(",")
+            if item.strip()
+        }
+
+    @property
     def effective_session_signing_key(self) -> str:
         return self.session_signing_key or self.secret_key
 
@@ -166,6 +187,7 @@ class Settings:
             "ai_learning": bool(self.ai_learning_enabled and self.openai_api_key),
             "ai_engineer": bool(self.ai_engineer_enabled and self.openai_api_key),
             "redis": bool(self.redis_url),
+            "oidc_sso": self.oidc_configured,
             "ai_engineer_autonomous_pr": bool(
                 self.ai_engineer_enabled
                 and self.ai_engineer_autonomous_pr_enabled
