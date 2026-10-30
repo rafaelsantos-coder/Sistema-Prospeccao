@@ -359,7 +359,12 @@ class WinFallbackClient:
 
     def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self.__class__.captured.append(
-            {"method": method, "url": url, "json": kwargs.get("json")}
+            {
+                "method": method,
+                "url": url,
+                "json": kwargs.get("json"),
+                "headers": dict(self.headers),
+            }
         )
         response = FakeResponse()
         if method == "GET" and url.endswith("/api/capture/config"):
@@ -402,25 +407,29 @@ def test_mark_won_falls_back_to_generic_opportunity_when_capture_route_missing(m
     )
     assert patch["json"]["status"] == "won"
     assert "stageId" not in patch["json"]
+    assert patch["headers"]["Authorization"] == "Bearer service-token-value"
+    assert "Idempotency-Key" in patch["headers"]
+    assert "X-Integration-Key" not in patch["headers"]
     assert result["opportunity"]["status"] == "won"
     assert result["backofficeOpportunityId"] == 9001
     assert result["contract"]["status"] == "aguardando_backoffice"
 
 
 
-def test_crm_sends_official_integration_key_when_configured(monkeypatch):
+def test_capture_api_does_not_use_integration_key_as_bearer(monkeypatch):
     monkeypatch.setattr(crm_module.httpx, "Client", FakeClient)
 
-    credential = "x" * 32
     client = SulnetCRMClient(
         base_url="https://crm.example",
-        integration_key=credential,
+        integration_key="integration-test",
     )
-    assert client.config()["originId"] == 77
 
-    headers = FakeClient.captured_headers or {}
-    assert headers["X-Integration-Key"] == credential
-    assert "Authorization" not in headers
+    try:
+        client.config()
+    except crm_module.CRMIntegrationError as exc:
+        assert exc.error_code == "CRM_BEARER_NOT_CONFIGURED"
+    else:
+        raise AssertionError("Capture API deve exigir autenticação Bearer.")
 
 
 
@@ -528,3 +537,281 @@ def test_legacy_profile_avoids_blind_win_and_contract_calls(monkeypatch):
     urls = [item["url"] for item in WinFallbackClient.captured]
     assert not any(url.endswith("/api/capture/leads/1234/win") for url in urls)
     assert not any(url.endswith("/api/capture/leads/1234/contract") for url in urls)
+
+
+
+class Phase1Client:
+    captured: list[dict[str, Any]] = []
+
+    def __init__(self, *, headers: dict[str, str], **_: Any):
+        self.headers = dict(headers)
+
+    def __enter__(self) -> "Phase1Client":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.__class__.captured.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": dict(self.headers),
+                "json": kwargs.get("json"),
+                "params": kwargs.get("params"),
+            }
+        )
+        response = FakeResponse()
+        if url.endswith("/api/capture/config"):
+            response.payload = {
+                "apiVersion": 3,
+                "capabilities": {
+                    "markWon": True,
+                    "agentContractGenerate": True,
+                },
+            }
+        elif "/playbook/templates" in url:
+            response.payload = {
+                "category": "telefonia-movel",
+                "items": [
+                    {
+                        "code": "tipo_contratacao",
+                        "question": "Seu chip será linha nova, portabilidade ou M2M?",
+                    }
+                ],
+            }
+        elif "/playbook" in url:
+            response.payload = {
+                "opportunityId": 1234,
+                "protocol": "CRM-TEST-1234",
+                "nextStep": "email",
+                "nextQuestion": "",
+                "readyForWin": False,
+                "sdrIaFunnel": True,
+                "credit": {
+                    "status": "Aprovado",
+                    "approved": True,
+                    "rejected": False,
+                },
+                "missing": [
+                    {
+                        "code": "clientEmail",
+                        "label": "E-mail",
+                        "question": "Qual seu e-mail?",
+                        "group": "cliente",
+                        "patchKey": "clientEmail",
+                    },
+                    {
+                        "code": "vencimento",
+                        "label": "Vencimento",
+                        "question": "Qual dia de vencimento?",
+                        "group": "faturamento",
+                        "patchKey": "productInfo.categoryForm.values.vencimento",
+                        "suggestedValue": "10",
+                    },
+                ],
+            }
+        elif url.endswith("/api/capture/leads/1234/win"):
+            response.payload = {
+                "opportunity": {"opportunityId": 1234, "status": "won"},
+                "contract": {"status": "aguardando_backoffice"},
+            }
+        elif url.endswith("/api/integracoes/agent/v1/opportunities/1234/contract/generate"):
+            response.payload = {
+                "pdfUrl": "https://crm.example/contracts/1234.pdf",
+                "templateId": "tpl-800",
+                "protocol": "CRM-TEST-1234",
+            }
+        elif url.endswith("/webhook/contrato"):
+            response.payload = {"ok": True}
+        else:
+            response.payload = {"ok": True}
+        return response
+
+
+def test_playbook_is_normalized_and_uses_bearer_only(monkeypatch):
+    Phase1Client.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", Phase1Client)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+        integration_key="integration-test",
+    )
+    playbook = client.playbook(1234, category="Telefonia Móvel")
+
+    assert playbook.opportunity_id == 1234
+    assert playbook.protocol == "CRM-TEST-1234"
+    assert playbook.category == "telefonia-movel"
+    assert playbook.credit_approved is True
+    assert playbook.ready_for_win is False
+    assert playbook.sdr_ia_funnel is True
+    assert playbook.next_question == "Qual seu e-mail?"
+    assert playbook.missing_codes == ["clientEmail", "vencimento"]
+    assert playbook.missing[0].patch_key == "clientEmail"
+    assert playbook.missing[1].suggested_value == "10"
+
+    request = next(
+        item for item in Phase1Client.captured
+        if "/opportunities/1234/playbook" in item["url"]
+    )
+    assert request["params"] == {"category": "telefonia-movel"}
+    assert request["headers"]["Authorization"] == "Bearer bearer-test"
+    assert "X-Integration-Key" not in request["headers"]
+
+
+def test_playbook_template_normalizes_mobile_category(monkeypatch):
+    Phase1Client.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", Phase1Client)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+    )
+    template = client.playbook_template(category="Sulmóvel")
+
+    assert template["category"] == "telefonia-movel"
+    assert template["items"][0]["code"] == "tipo_contratacao"
+    request = next(
+        item for item in Phase1Client.captured
+        if "/playbook/templates" in item["url"]
+    )
+    assert request["params"] == {"category": "telefonia-movel"}
+
+
+def test_mark_won_sends_idempotency_key_with_bearer(monkeypatch):
+    Phase1Client.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", Phase1Client)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+        integration_key="integration-test",
+    )
+    result = client.mark_won(
+        1234,
+        idempotency_key="123e4567-e89b-42d3-a456-426614174000",
+    )
+
+    assert result["opportunity"]["status"] == "won"
+    request = next(
+        item for item in Phase1Client.captured
+        if item["url"].endswith("/api/capture/leads/1234/win")
+    )
+    assert request["headers"]["Authorization"] == "Bearer bearer-test"
+    assert request["headers"]["Idempotency-Key"] == "123e4567-e89b-42d3-a456-426614174000"
+    assert "X-Integration-Key" not in request["headers"]
+
+
+def test_contract_webhook_uses_only_integration_key(monkeypatch):
+    Phase1Client.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", Phase1Client)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+        integration_key="integration-test",
+    )
+    result = client.send_contract_webhook(
+        protocol="CRM-TEST-1234",
+        file_name="contrato.pdf",
+        pdf_base64="TEST-PDF",
+    )
+
+    assert result["ok"] is True
+    request = next(
+        item for item in Phase1Client.captured
+        if item["url"].endswith("/webhook/contrato")
+    )
+    assert request["headers"]["X-Integration-Key"] == "integration-test"
+    assert "Authorization" not in request["headers"]
+
+
+def test_agent_contract_generate_is_capability_guarded(monkeypatch):
+    Phase1Client.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", Phase1Client)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+    )
+    result = client.generate_agent_contract(1234)
+
+    assert result["templateId"] == "tpl-800"
+    request = next(
+        item for item in Phase1Client.captured
+        if item["url"].endswith(
+            "/api/integracoes/agent/v1/opportunities/1234/contract/generate"
+        )
+    )
+    assert request["headers"]["Authorization"] == "Bearer bearer-test"
+
+
+
+class SanitizedErrorClient:
+    def __init__(self, *, headers: dict[str, str], **_: Any):
+        self.headers = headers
+
+    def __enter__(self) -> "SanitizedErrorClient":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        response = FakeResponse()
+        response.status_code = 422
+        response.payload = {
+            "error": "Documento 11111111111 inválido para a@b.co",
+            "code": "VALIDATION_ERROR",
+            "clientCpf": "11111111111",
+            "clientEmail": "a@b.co",
+            "safeField": "faltando",
+        }
+        return response
+
+
+def test_crm_error_exposes_only_sanitized_diagnostics(monkeypatch):
+    monkeypatch.setattr(crm_module.httpx, "Client", SanitizedErrorClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+    )
+    try:
+        client.playbook(1234, category="fibra")
+    except crm_module.CRMIntegrationError as exc:
+        assert exc.status_code == 422
+        assert exc.method == "GET"
+        assert "/playbook" in exc.path
+        assert exc.error_code == "VALIDATION_ERROR"
+        assert "11111111111" not in str(exc)
+        assert "a@b.co" not in str(exc)
+        assert exc.response_body["clientCpf"] == "[REDACTED]"
+        assert exc.response_body["clientEmail"] == "[REDACTED]"
+        assert exc.response_body["safeField"] == "faltando"
+        assert exc.as_dict()["statusCode"] == 422
+    else:
+        raise AssertionError("Era esperado CRMIntegrationError.")
+
+
+
+def test_agent_contract_generate_does_not_call_planned_route_without_capability(monkeypatch):
+    CapabilityV2Client.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", CapabilityV2Client)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+    )
+    try:
+        client.generate_agent_contract(1234)
+    except crm_module.CRMIntegrationError as exc:
+        assert exc.status_code == 501
+        assert exc.error_code == "CRM_AGENT_CONTRACT_NOT_AVAILABLE"
+    else:
+        raise AssertionError("Endpoint planejado não pode ser chamado sem capability.")
+
+    urls = [item["url"] for item in CapabilityV2Client.captured]
+    assert not any("/contract/generate" in url for url in urls)
