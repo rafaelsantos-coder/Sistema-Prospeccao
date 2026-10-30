@@ -9,16 +9,19 @@ from app.services.crm_sulnet import (
 from app.services.ai_seller import (
     MOBILE_SIGNATURE_TYPE,
     _apply_mobile_answer,
+    _apply_billing_form_answer,
     _billing_local,
     _extract_address_number,
     _extract_birth_date,
     _extract_cep,
     _extract_cpf,
     _extract_email,
+    _extract_iccids,
     _extract_name,
     _mobile_missing_fields,
     _mobile_next_step,
     _mobile_values,
+    _category_values,
     _playbook_code_key,
     _playbook_step_for_item,
     _prompt_for_step,
@@ -125,12 +128,13 @@ def test_mobile_contract_type_new_number_skips_iccid_number_due_day_and_fee():
     assert _mobile_next_step(values) == "MOBILE_PAYMENT_METHOD"
 
 
-def test_mobile_contract_type_rejects_m2m():
+def test_mobile_contract_type_accepts_m2m_and_requests_quantity_in_fallback():
     values = _mobile_values({})
     ok, message = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "M2M", values)
-    assert ok is False
-    assert "Portabilidade" in message
-    assert "Número novo" in message
+    assert ok is True
+    assert message == ""
+    assert values["tipo_contratacao"] == "M2M"
+    assert _mobile_next_step(values) == "MOBILE_M2M_QTY"
 
 
 def test_mobile_portability_requires_number_and_holder_data_but_not_iccid_or_date():
@@ -255,6 +259,7 @@ def test_seller_step_buttons_cover_predefined_mobile_questions():
     assert _seller_step_buttons("MOBILE_CONTRACT_TYPE") == [
         {"id": "portabilidade", "label": "Portabilidade"},
         {"id": "numero_novo", "label": "Número novo"},
+        {"id": "m2m", "label": "M2M"},
     ]
     assert _seller_step_buttons("MOBILE_PORT_TITULAR") == [
         {"id": "sim", "label": "Sim"},
@@ -295,6 +300,7 @@ def test_seller_followup_keeps_exact_closing_step():
     assert _seller_step_buttons(state.step, text) == [
         {"id": "portabilidade", "label": "Portabilidade"},
         {"id": "numero_novo", "label": "Número novo"},
+        {"id": "m2m", "label": "M2M"},
     ]
 
 
@@ -468,7 +474,7 @@ def test_playbook_mobile_existing_field_maps_to_existing_closer_step():
     assert _playbook_step_for_item(item, state, collected) == "MOBILE_CONTRACT_TYPE"
 
 
-def test_phase3_mobile_field_is_recorded_but_does_not_break_phase2():
+def test_phase3_mobile_iccid_is_now_driven_by_playbook():
     item = CRMPlaybookMissingItem(
         code="novo_iccid",
         question="Qual é o ICCID do chip?",
@@ -496,9 +502,9 @@ def test_phase3_mobile_field_is_recorded_but_does_not_break_phase2():
         fallback_step="MOBILE_PAYMENT_METHOD",
     )
 
-    assert step == "MOBILE_PAYMENT_METHOD"
-    assert question is None
-    assert collected["_playbook_unmapped_code"] == "novo_iccid"
+    assert step == "MOBILE_NEW_ICCID"
+    assert question == "Qual é o ICCID do chip?"
+    assert collected["_playbook_code"] == "novo_iccid"
     assert collected["_playbook_mode"] == "active"
 
 
@@ -519,3 +525,145 @@ def test_playbook_code_normalization_handles_snake_and_camel_case():
     assert _playbook_code_key("clientEmail") == "clientemail"
     assert _playbook_code_key("tipo_contratacao") == "tipocontratacao"
     assert _playbook_code_key("port_cpf_cnpj") == "portcpfcnpj"
+
+
+
+def test_phase3_mobile_new_line_fields_are_validated():
+    values = _mobile_values({})
+
+    ok, _ = _apply_mobile_answer("MOBILE_NEW_ICCID", "8955000000000000001", values)
+    assert ok is True
+    assert values["novo_iccid"] == "8955000000000000001"
+
+    ok, _ = _apply_mobile_answer("MOBILE_NEW_NUMBER", "(55) 99999-0000", values)
+    assert ok is True
+    assert values["numero_novo"] == "55999990000"
+
+
+def test_phase3_portability_supports_iccid_and_date():
+    values = _mobile_values({})
+
+    ok, _ = _apply_mobile_answer("MOBILE_PORT_ICCID", "8955000000000000002", values)
+    assert ok is True
+    assert values["port_iccid"] == "8955000000000000002"
+
+    ok, _ = _apply_mobile_answer("MOBILE_PORT_DATE", "15/11/2026", values)
+    assert ok is True
+    assert values["port_data"] == "2026-11-15"
+
+
+def test_phase3_m2m_requires_exact_iccid_count():
+    values = _mobile_values({})
+    ok, _ = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "M2M", values)
+    assert ok is True
+
+    ok, _ = _apply_mobile_answer("MOBILE_M2M_QTY", "2", values)
+    assert ok is True
+    assert values["m2m_quantidade"] == 2
+
+    ok, message = _apply_mobile_answer(
+        "MOBILE_M2M_ICCIDS",
+        "8955000000000000001",
+        values,
+    )
+    assert ok is False
+    assert "2 ICCID" in message
+
+    ok, _ = _apply_mobile_answer(
+        "MOBILE_M2M_ICCIDS",
+        "8955000000000000001, 8955000000000000002",
+        values,
+    )
+    assert ok is True
+    assert values["m2m_iccids"] == [
+        "8955000000000000001",
+        "8955000000000000002",
+    ]
+
+
+def test_extract_iccids_keeps_multiple_distinct_values():
+    assert _extract_iccids(
+        "8955000000000000001, 8955000000000000002"
+    ) == [
+        "8955000000000000001",
+        "8955000000000000002",
+    ]
+
+
+def test_phase3_mobile_due_day_and_activation_fee():
+    values = _mobile_values({})
+
+    ok, _ = _apply_mobile_answer("MOBILE_DUE_DAY", "dia 10", values)
+    assert ok is True
+    assert values["vencimento"] == 10
+
+    ok, _ = _apply_mobile_answer("MOBILE_ACTIVATION_FEE", "Sim", values)
+    assert ok is True
+    assert values["taxa_ativacao"] == "Sim"
+
+    ok, _ = _apply_mobile_answer("MOBILE_ACTIVATION_VALUE", "R$ 49,90", values)
+    assert ok is True
+    assert values["taxa_valor"] == 49.90
+
+
+def test_phase3_fiber_billing_uses_category_form_fields():
+    values = _category_values({})
+
+    ok, _ = _apply_billing_form_answer("BILLING_PAYMENT_METHOD", "Boleto", values)
+    assert ok is True
+    assert values["forma_pagamento"] == "Boleto"
+
+    ok, _ = _apply_billing_form_answer("BILLING_INVOICE_DELIVERY", "WhatsApp e e-mail", values)
+    assert ok is True
+    assert values["envio_fatura"] == ["WhatsApp", "E-mail"]
+
+    ok, _ = _apply_billing_form_answer("BILLING_DUE_DAY", "vencimento dia 15", values)
+    assert ok is True
+    assert values["vencimento"] == 15
+
+    assert values["tipo_assinatura_contrato"] == MOBILE_SIGNATURE_TYPE
+
+
+def test_phase3_playbook_maps_billing_differently_for_fiber_and_mobile():
+    item = CRMPlaybookMissingItem(
+        code="vencimento",
+        question="Qual o vencimento?",
+        patch_key="productInfo.categoryForm.values.vencimento",
+    )
+
+    fiber_state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        credit_status="",
+        step="EMAIL",
+    )
+    assert _playbook_step_for_item(item, fiber_state, {}) == "BILLING_DUE_DAY"
+
+    mobile_state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="EMAIL",
+    )
+    assert _playbook_step_for_item(
+        item,
+        mobile_state,
+        {"categoryName": "Telefonia Móvel"},
+    ) == "MOBILE_DUE_DAY"
+
+
+def test_phase3_signature_is_automatic_and_never_becomes_customer_question():
+    item = CRMPlaybookMissingItem(
+        code="tipo_assinatura_contrato",
+        question="Como deseja assinar?",
+        patch_key="productInfo.categoryForm.values.tipo_assinatura_contrato",
+    )
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        credit_status="",
+        step="EMAIL",
+    )
+    values = _category_values({})
+    assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
+    assert _playbook_step_for_item(item, state, {}) is None
