@@ -1256,9 +1256,9 @@ def _apply_billing_form_answer(
 SIGNED_CONTRACT_STATUSES = {
     "assinado",
     "signed",
-    "concluido",
-    "completed",
-    "finalizado",
+    "contrato_assinado",
+    "assinatura_concluida",
+    "signature_completed",
 }
 
 
@@ -1363,6 +1363,8 @@ def _prepare_contract_before_win(
 
     if sign_url:
         state.sign_url = sign_url
+        if not state.contract_status:
+            state.contract_status = "aguardando_assinatura"
         state.step = "WAITING_SIGNATURE"
         return (
             "Seu cadastro foi concluído e o contrato está pronto para assinatura. "
