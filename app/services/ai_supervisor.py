@@ -775,6 +775,32 @@ def _reviewed_followup_audit_ids(
     return result
 
 
+def _recent_error_followup_audit_ids(
+    db: Session,
+    audit_ids: list[int],
+) -> set[int]:
+    if not audit_ids:
+        return set()
+    threshold = utcnow() - timedelta(minutes=5)
+    rows = list(
+        db.scalars(
+            select(AuditLog).where(
+                AuditLog.action == ERROR_ACTION,
+                AuditLog.entity_type == "followup_audit",
+                AuditLog.entity_id.in_([str(item) for item in audit_ids]),
+                AuditLog.created_at >= threshold,
+            )
+        )
+    )
+    result: set[int] = set()
+    for row in rows:
+        try:
+            result.add(int(row.entity_id or ""))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
 def next_followup_for_shadow_review(
     db: Session,
     *,
@@ -796,12 +822,11 @@ def next_followup_for_shadow_review(
     )
     if not candidates:
         return None
-    reviewed = _reviewed_followup_audit_ids(
-        db,
-        [item.id for item in candidates],
-    )
+    candidate_ids = [item.id for item in candidates]
+    reviewed = _reviewed_followup_audit_ids(db, candidate_ids)
+    recent_errors = _recent_error_followup_audit_ids(db, candidate_ids)
     for item in candidates:
-        if item.id not in reviewed:
+        if item.id not in reviewed and item.id not in recent_errors:
             return item
     return None
 
