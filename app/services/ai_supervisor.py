@@ -216,6 +216,15 @@ def _catalog_snapshot() -> dict[str, Any]:
     }
 
 
+def _agent_role_for_user(db: Session, user_id: int | None) -> str:
+    if not user_id:
+        return ""
+    agent = db.scalar(
+        select(AIAgentProfile).where(AIAgentProfile.user_id == user_id)
+    )
+    return str(agent.role_type or "") if agent else ""
+
+
 def _actual_outbound_after_run(
     db: Session,
     run: AIRun,
@@ -509,6 +518,11 @@ def build_supervisor_context(
             "id": actual_outbound.id if actual_outbound else None,
             "type": actual_outbound.message_type if actual_outbound else "",
             "body": _redact_text(actual_outbound.body) if actual_outbound else "",
+            "sender_role": (
+                _agent_role_for_user(db, actual_outbound.sender_user_id)
+                if actual_outbound
+                else ""
+            ),
         },
         "history": history,
         "current_state": {
@@ -616,6 +630,265 @@ def run_supervisor_review(context: dict[str, Any]) -> SupervisorReview:
     if not isinstance(review, SupervisorReview):
         review = SupervisorReview.model_validate(review)
     return _apply_shadow_guardrails(review, context)
+
+
+def _followup_source_context(
+    db: Session,
+    audit: AuditLog,
+) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(audit.payload_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    try:
+        conversation_id = int(audit.entity_id or payload.get("conversation_id") or 0)
+        message_id = int(payload.get("message_id") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not conversation_id or not message_id:
+        return None
+
+    message = db.get(Message, message_id)
+    conversation = db.get(Conversation, conversation_id)
+    if not message or not conversation:
+        return None
+
+    agent = db.scalar(
+        select(AIAgentProfile).where(
+            AIAgentProfile.user_id == message.sender_user_id
+        )
+    )
+    role = str(agent.role_type if agent else "").upper() or (
+        "CLOSER" if audit.action == "AI_CLOSER_FOLLOWUP_SENT" else "SDR"
+    )
+    history = list(
+        db.scalars(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.direction.in_(["INBOUND", "OUTBOUND"]),
+            )
+            .order_by(Message.id.desc())
+            .limit(24)
+        )
+    )
+    history.reverse()
+    history_rows = [
+        {
+            "id": item.id,
+            "direction": item.direction,
+            "type": item.message_type,
+            "body": _redact_text(item.body),
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+        }
+        for item in history
+    ]
+
+    ai_state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == conversation_id
+        )
+    )
+    closing = _closing_context(db, conversation_id)
+    lead_stage = str(conversation.lead.stage or "") if conversation.lead else ""
+
+    pseudo_run = type(
+        "ShadowFollowup",
+        (),
+        {
+            "reply_text": message.body,
+            "conversation_id": conversation_id,
+        },
+    )()
+    findings = _deterministic_findings(
+        role=role,
+        run=pseudo_run,
+        run_output={
+            "followup_step": payload.get("step"),
+            "quick_replies": (
+                ["present"]
+                if int(payload.get("quick_reply_count") or payload.get("buttons") or 0) > 0
+                else []
+            ),
+        },
+        history=history_rows,
+        actual_outbound=message,
+        closing=closing,
+        ai_state=ai_state,
+        lead_stage=lead_stage,
+    )
+
+    return {
+        "mode": "SHADOW_ONLY_DO_NOT_INTERVENE",
+        "source": {
+            "type": "FOLLOWUP",
+            "audit_id": audit.id,
+            "action": audit.action,
+            "conversation_id": conversation_id,
+            "agent_role": role,
+            "agent_name": agent.name if agent else "",
+            "followup_step": payload.get("step"),
+            "theme": _redact_text(payload.get("theme")),
+            "reply_text": _redact_text(message.body),
+        },
+        "actual_outbound": {
+            "id": message.id,
+            "type": message.message_type,
+            "body": _redact_text(message.body),
+            "sender_role": role,
+        },
+        "history": history_rows,
+        "current_state": {
+            "ai_state": ai_state.state if ai_state else "",
+            "lead_stage": lead_stage,
+            "closing": closing,
+        },
+        "deterministic_findings": findings,
+        "approved_catalog": _catalog_snapshot(),
+    }
+
+
+def _reviewed_followup_audit_ids(
+    db: Session,
+    audit_ids: list[int],
+) -> set[int]:
+    if not audit_ids:
+        return set()
+    rows = list(
+        db.scalars(
+            select(AuditLog).where(
+                AuditLog.action == REVIEW_ACTION,
+                AuditLog.entity_type == "followup_audit",
+                AuditLog.entity_id.in_([str(item) for item in audit_ids]),
+            )
+        )
+    )
+    result: set[int] = set()
+    for row in rows:
+        try:
+            result.add(int(row.entity_id or ""))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def next_followup_for_shadow_review(
+    db: Session,
+    *,
+    lookback_minutes: int = 30,
+) -> AuditLog | None:
+    threshold = utcnow() - timedelta(minutes=max(5, lookback_minutes))
+    candidates = list(
+        db.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.action.in_(
+                    ["AI_SDR_FOLLOWUP_SENT", "AI_CLOSER_FOLLOWUP_SENT"]
+                ),
+                AuditLog.created_at >= threshold,
+            )
+            .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+            .limit(80)
+        )
+    )
+    if not candidates:
+        return None
+    reviewed = _reviewed_followup_audit_ids(
+        db,
+        [item.id for item in candidates],
+    )
+    for item in candidates:
+        if item.id not in reviewed:
+            return item
+    return None
+
+
+def record_followup_shadow_review(
+    db: Session,
+    *,
+    audit: AuditLog,
+    review: SupervisorReview,
+    context: dict[str, Any],
+) -> None:
+    source = context.get("source") or {}
+    payload = {
+        "source_type": "FOLLOWUP",
+        "source_audit_id": audit.id,
+        "conversation_id": source.get("conversation_id"),
+        "agent_role": source.get("agent_role"),
+        "verdict": review.verdict,
+        "risk": review.risk,
+        "confidence": review.confidence,
+        "quality_score": review.quality_score,
+        "issue_codes": review.issue_codes,
+        "rationale": review.rationale,
+        "suggested_reply": review.suggested_reply,
+        "suggested_state": review.suggested_state,
+        "suggested_buttons": review.suggested_buttons,
+        "checks": review.checks.model_dump(),
+        "deterministic_findings": context.get("deterministic_findings") or [],
+        "shadow_only": True,
+        "intervened": False,
+    }
+    write_audit(
+        db,
+        user=None,
+        action=REVIEW_ACTION,
+        entity_type="followup_audit",
+        entity_id=audit.id,
+        payload=payload,
+    )
+
+
+def process_next_followup_shadow_review(db: Session) -> bool:
+    if not supervisor_operational():
+        return False
+    audit = next_followup_for_shadow_review(db)
+    if not audit:
+        return False
+    context = _followup_source_context(db, audit)
+    if not context:
+        return False
+    try:
+        review = run_supervisor_review(context)
+        record_followup_shadow_review(
+            db,
+            audit=audit,
+            review=review,
+            context=context,
+        )
+        db.commit()
+        source = context.get("source") or {}
+        LOG.info(
+            "ai_supervisor_shadow_followup audit=%s conversation=%s role=%s verdict=%s risk=%s",
+            audit.id,
+            source.get("conversation_id"),
+            source.get("agent_role"),
+            review.verdict,
+            review.risk,
+        )
+        return True
+    except Exception as exc:
+        db.rollback()
+        write_audit(
+            db,
+            user=None,
+            action=ERROR_ACTION,
+            entity_type="followup_audit",
+            entity_id=audit.id,
+            payload={
+                "source_type": "FOLLOWUP",
+                "conversation_id": (context.get("source") or {}).get("conversation_id"),
+                "error": _redact_text(str(exc))[:1200],
+                "shadow_only": True,
+            },
+        )
+        db.commit()
+        LOG.exception("ai_supervisor_shadow_followup_failed audit=%s", audit.id)
+        return False
 
 
 def _reviewed_run_ids(
@@ -813,15 +1086,17 @@ def run_shadow_supervisor_loop(stop_event: threading.Event | None = None) -> Non
             time.sleep(max(10, poll))
             continue
 
-        processed = False
+        processed_run = False
+        processed_followup = False
         db = SessionLocal()
         try:
-            processed = process_next_shadow_review(db)
+            processed_run = process_next_shadow_review(db)
+            processed_followup = process_next_followup_shadow_review(db)
         except Exception:
             db.rollback()
             LOG.exception("Falha inesperada no loop do Supervisor IA sombra.")
         finally:
             db.close()
 
-        if not processed:
+        if not processed_run and not processed_followup:
             time.sleep(poll)
