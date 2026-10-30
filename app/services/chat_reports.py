@@ -1148,7 +1148,7 @@ def _build_supervisor_shadow_report(
             select(AuditLog)
             .where(
                 AuditLog.action == "AI_SUPERVISOR_SHADOW_REVIEW",
-                AuditLog.entity_type == "ai_run",
+                AuditLog.entity_type.in_(["ai_run", "followup_audit"]),
                 AuditLog.created_at >= start,
                 AuditLog.created_at <= end,
             )
