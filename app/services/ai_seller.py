@@ -1751,6 +1751,91 @@ def _win_idempotency_key(state: AIClosingState) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
+def _contract_pending_message(exc: CRMIntegrationError) -> str:
+    parts: list[str] = [str(exc or "")]
+    body = exc.response_body
+    if isinstance(body, dict):
+        for key in ("error", "message", "detail"):
+            value = body.get(key)
+            if value not in (None, ""):
+                parts.append(str(value))
+    return _norm(" ".join(parts))
+
+
+def _recover_contract_pending_field(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    exc: CRMIntegrationError,
+) -> str | None:
+    """Converte pendência do contract/generate em etapa conversacional segura.
+
+    O CRM é a fonte de verdade. Quando o gerador de contrato rejeita um campo
+    que o playbook havia aceitado, não insistimos em PATCH/retry automático:
+    pedimos novamente a escolha usando as opções publicadas pelo próprio CRM.
+    """
+    pending = _contract_pending_message(exc)
+    if exc.status_code != 400:
+        return None
+
+    if "tipo de contratacao movel" not in pending:
+        return None
+
+    if not state.opportunity_id:
+        return None
+
+    result = client.playbook(
+        state.opportunity_id,
+        category="telefonia-movel",
+    )
+    item = next(
+        (
+            current
+            for current in result.missing
+            if _playbook_code_key(current.code) == "tipocontratacao"
+        ),
+        None,
+    )
+
+    question = (
+        (item.question if item else "")
+        or result.next_question
+        or "Como você quer contratar sua linha móvel?"
+    )
+
+    collected["_contract_generation_requested"] = False
+    collected.pop("_contract_generation_response", None)
+    collected["_contract_generation_allowed"] = False
+    collected["_contract_recovery_reason"] = "mobile_contract_type"
+    collected["_playbook_step"] = "MOBILE_CONTRACT_TYPE"
+    collected["_playbook_code"] = item.code if item else "cf_tipo_contratacao"
+    collected["_playbook_patch_key"] = (
+        item.patch_key
+        if item and item.patch_key
+        else "productInfo.categoryForm.values.tipo_contratacao"
+    )
+    collected["_playbook_question"] = question
+    collected["_playbook_options"] = [
+        dict(option)
+        for option in (item.options if item else [])
+    ]
+
+    values = _mobile_values(collected)
+    values.pop("tipo_contratacao", None)
+    _store_category_values(collected, values, mobile=True)
+
+    state.step = "MOBILE_CONTRACT_TYPE"
+    state.contract_status = "aguardando_tipo_contratacao"
+
+    LOG.warning(
+        "seller_contract_pending_recovered opportunity=%s field=tipo_contratacao "
+        "options=%s",
+        state.opportunity_id,
+        len(item.options) if item else 0,
+    )
+    return question
+
+
 def _prepare_contract_before_win(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -1791,6 +1876,14 @@ def _prepare_contract_before_win(
                 require_ready_for_win=True,
             )
         except CRMIntegrationError as exc:
+            recovered = _recover_contract_pending_field(
+                client,
+                state,
+                collected,
+                exc,
+            )
+            if recovered is not None:
+                return recovered
             if exc.status_code not in {404, 405, 501}:
                 raise
             generated = {}
