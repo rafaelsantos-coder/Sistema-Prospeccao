@@ -794,3 +794,24 @@ def test_crm_error_exposes_only_sanitized_diagnostics(monkeypatch):
         assert exc.as_dict()["statusCode"] == 422
     else:
         raise AssertionError("Era esperado CRMIntegrationError.")
+
+
+
+def test_agent_contract_generate_does_not_call_planned_route_without_capability(monkeypatch):
+    CapabilityV2Client.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", CapabilityV2Client)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+    )
+    try:
+        client.generate_agent_contract(1234)
+    except crm_module.CRMIntegrationError as exc:
+        assert exc.status_code == 501
+        assert exc.error_code == "CRM_AGENT_CONTRACT_NOT_AVAILABLE"
+    else:
+        raise AssertionError("Endpoint planejado não pode ser chamado sem capability.")
+
+    urls = [item["url"] for item in CapabilityV2Client.captured]
+    assert not any("/contract/generate" in url for url in urls)
