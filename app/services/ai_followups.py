@@ -78,7 +78,7 @@ def schedule_followup(
             AIConversationState.conversation_id == conversation_id
         )
     )
-    if state and state.state in {"HANDOFF", "HUMAN_ACTIVE", "OPT_OUT", "ESCALATED", "COMPLETED"}:
+    if state and state.state in {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "OPT_OUT", "ESCALATED", "COMPLETED"}:
         return None
     closing = db.scalar(
         select(AIClosingState).where(
