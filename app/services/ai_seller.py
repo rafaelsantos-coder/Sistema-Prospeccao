@@ -2144,7 +2144,10 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50) -> int:
         if contract_type not in {"Número novo", "Número Portabilidade", "M2M"}:
             continue
 
-        next_step = _mobile_next_step(values) or "MOBILE_PAYMENT_METHOD"
+        next_step = _mobile_next_step(
+            values,
+            sdr_ia_funnel=_sdr_ia_mode(collected),
+        ) or "MOBILE_PAYMENT_METHOD"
         _store_category_values(collected, values, mobile=True)
         _save_collected(state, collected)
         state.step = next_step
@@ -2808,7 +2811,10 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     values = _mobile_values(collected)
                     collected["mobileCategoryValues"] = values
                     _persist_mobile_category_form(client, state, collected)
-                    fallback_step = _mobile_next_step(values) or "MOBILE_CONTRACT_TYPE"
+                    fallback_step = _mobile_next_step(
+                        values,
+                        sdr_ia_funnel=_sdr_ia_mode(collected),
+                    ) or "MOBILE_CONTRACT_TYPE"
                 else:
                     fallback_step = "BILLING"
                 _save_collected(state, collected)
@@ -2825,13 +2831,17 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 state.step,
                 text,
                 values,
+                sdr_ia_funnel=_sdr_ia_mode(collected),
             )
             if not accepted:
                 reply = error_reply
             else:
                 collected["mobileCategoryValues"] = values
                 _persist_mobile_category_form(client, state, collected)
-                next_step = _mobile_next_step(values)
+                next_step = _mobile_next_step(
+                    values,
+                    sdr_ia_funnel=_sdr_ia_mode(collected),
+                )
                 if next_step:
                     reply = _advance_with_playbook(
                         client,
@@ -2840,7 +2850,10 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         fallback_step=next_step,
                     )
                 else:
-                    missing = _mobile_missing_fields(values)
+                    missing = _mobile_missing_fields(
+                        values,
+                        sdr_ia_funnel=_sdr_ia_mode(collected),
+                    )
                     if missing:
                         raise CRMIntegrationError(
                             "Checklist de Telefonia Móvel incompleto: " + ", ".join(missing)
