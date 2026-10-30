@@ -227,6 +227,19 @@ class _MobilePlanContextClient:
         self.updated.append((opportunity_id, payload))
         return {"opportunityId": opportunity_id}
 
+    def update_category_form(
+        self,
+        opportunity_id,
+        values,
+        *,
+        category_id=None,
+        plan_id=None,
+    ):
+        self.category_updates.append(
+            (opportunity_id, dict(values), category_id, plan_id)
+        )
+        return {"opportunityId": opportunity_id}
+
 
 def test_sync_plan_context_recovers_mobile_product_after_email():
     client = _MobilePlanContextClient()
@@ -317,6 +330,7 @@ class _PlaybookClient:
         self.responses = list(responses)
         self.playbook_calls = 0
         self.updated = []
+        self.category_updates = []
 
     def playbook(self, opportunity_id, *, category):
         self.playbook_calls += 1
@@ -667,3 +681,74 @@ def test_phase3_signature_is_automatic_and_never_becomes_customer_question():
     values = _category_values({})
     assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
     assert _playbook_step_for_item(item, state, {}) is None
+
+
+
+def test_phase3_signature_is_auto_persisted_then_playbook_advances():
+    signature = CRMPlaybookMissingItem(
+        code="tipo_assinatura_contrato",
+        question="Como deseja assinar?",
+        patch_key="productInfo.categoryForm.values.tipo_assinatura_contrato",
+    )
+    due_day = CRMPlaybookMissingItem(
+        code="vencimento",
+        question="Qual dia de vencimento?",
+        patch_key="productInfo.categoryForm.values.vencimento",
+    )
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[signature],
+            next_question="Como deseja assinar?",
+            category="fibra",
+        ),
+        _playbook_result(
+            missing=[due_day],
+            next_question="Qual dia de vencimento?",
+            category="fibra",
+        ),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        credit_status="",
+        step="EMAIL",
+    )
+    collected = {
+        "planId": 800,
+        "categoryId": 10,
+        "categoryName": "FIBRA",
+    }
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="BILLING",
+    )
+
+    assert step == "BILLING_DUE_DAY"
+    assert question == "Qual dia de vencimento?"
+    assert client.category_updates
+    _, values, category_id, plan_id = client.category_updates[0]
+    assert values["tipo_assinatura_contrato"] == "Assinatura Digital IA"
+    assert category_id == 10
+    assert plan_id == 800
+
+
+def test_phase3_structured_buttons_include_m2m_and_billing_choices():
+    assert _seller_step_buttons("MOBILE_CONTRACT_TYPE")[-1] == {
+        "id": "m2m",
+        "label": "M2M",
+    }
+    assert _seller_step_buttons("MOBILE_ACTIVATION_FEE") == [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ]
+    assert _seller_step_buttons("BILLING_PAYMENT_METHOD") == [
+        {"id": "boleto", "label": "Boleto"},
+        {"id": "debito", "label": "Débito em conta"},
+    ]
+    assert _seller_step_buttons("BILLING_UNIFY") == [
+        {"id": "sim", "label": "Sim"},
+        {"id": "nao", "label": "Não"},
+    ]
