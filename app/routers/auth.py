@@ -30,6 +30,7 @@ from app.security import (
     login_user,
     logout_user,
     password_needs_rehash,
+    rehash_legacy_password,
     validate_csrf,
     verify_password,
 )
@@ -191,7 +192,7 @@ def login(
     clear_failures(db, email=clean_email, ip=client_ip)
 
     if password_needs_rehash(user.password_hash):
-        user.password_hash = hash_password(password)
+        user.password_hash = rehash_legacy_password(password)
         write_audit(
             db,
             user=user,
