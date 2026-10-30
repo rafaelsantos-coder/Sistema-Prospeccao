@@ -299,7 +299,7 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
             AIConversationState.conversation_id == conversation.id
         )
     )
-    if state and state.state in {"HANDOFF", "HUMAN_ACTIVE", "OPT_OUT", "ESCALATED", "COMPLETED"}:
+    if state and state.state in {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "OPT_OUT", "ESCALATED", "COMPLETED"}:
         return False, state.state
     closing = db.scalar(
         select(AIClosingState).where(
