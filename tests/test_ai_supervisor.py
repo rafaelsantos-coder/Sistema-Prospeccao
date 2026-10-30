@@ -78,6 +78,64 @@ def test_shadow_detects_won_before_signature_as_critical():
     assert critical["severity"] == "CRITICAL"
 
 
+def test_shadow_detects_state_regression_after_customer_answered_no():
+    findings = _deterministic_findings(
+        role="SDR",
+        run=_run("Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"),
+        run_output={
+            "quick_replies": [{"id": "sim", "label": "Sim"}, {"id": "nao", "label": "Não"}],
+            "journey_state": "IDENTIFY_CUSTOMER",
+        },
+        history=[
+            {
+                "id": 1,
+                "direction": "OUTBOUND",
+                "body": "Você já possui algum serviço da Sulnet?",
+            },
+            {"id": 2, "direction": "INBOUND", "body": "Não"},
+            {
+                "id": 3,
+                "direction": "OUTBOUND",
+                "body": "Internet ou Telefonia Móvel?",
+            },
+            {"id": 4, "direction": "INBOUND", "body": "Internet"},
+        ],
+        actual_outbound=None,
+        closing={},
+        ai_state=SimpleNamespace(state="AI_ACTIVE"),
+        lead_stage="CONTATO_REALIZADO",
+    )
+
+    by_code = {item["code"]: item for item in findings}
+    assert by_code["STATE_REGRESSION"]["severity"] == "HIGH"
+    assert by_code["IGNORED_CONFIRMED_ANSWER"]["severity"] == "HIGH"
+
+
+def test_shadow_marks_near_duplicate_as_high_risk():
+    findings = _deterministic_findings(
+        role="SDR",
+        run=_run("Você já possui algum serviço da Sulnet?"),
+        run_output={
+            "quick_replies": [{"id": "sim", "label": "Sim"}, {"id": "nao", "label": "Não"}],
+            "journey_state": "IDENTIFY_CUSTOMER",
+        },
+        history=[
+            {
+                "id": 1,
+                "direction": "OUTBOUND",
+                "body": "Você já possui algum serviço da Sulnet?",
+            }
+        ],
+        actual_outbound=None,
+        closing={},
+        ai_state=SimpleNamespace(state="AI_ACTIVE"),
+        lead_stage="CONTATO_REALIZADO",
+    )
+
+    repeat = next(item for item in findings if item["code"] == "POSSIBLE_REPEAT")
+    assert repeat["severity"] == "HIGH"
+
+
 def test_shadow_guardrails_can_upgrade_model_approval_to_block():
     context = {
         "deterministic_findings": [
