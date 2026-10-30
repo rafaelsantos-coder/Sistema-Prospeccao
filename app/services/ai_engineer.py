@@ -132,7 +132,7 @@ def _incident_summary(db: Session, *, hours: int = 12) -> tuple[str, list[dict]]
     ]
     if not eligible:
         return "", evidence
-    fingerprint = "|".join(f"{code}:{count}" for code, count in eligible[:5])
+    fingerprint = "|".join(code for code, _count in eligible[:5])
     return fingerprint, evidence
 
 
