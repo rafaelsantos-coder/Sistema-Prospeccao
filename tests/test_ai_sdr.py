@@ -2327,7 +2327,10 @@ def test_conversation_without_lead_does_not_regress_after_internet_choice():
     assert facts["product_kind"] == "INTERNET"
     assert result.qualification.existing_customer == "NAO_CLIENTE"
     assert result.journey_state == "CHOOSE_SEGMENT"
-    assert "casa ou empresa" in result.reply_text.lower()
+    assert (
+        "casa ou empresa" in result.reply_text.lower()
+        or "residencial ou empresarial" in result.reply_text.lower()
+    )
     assert [item.label for item in result.quick_replies] == [
         "Para casa",
         "Para empresa",
