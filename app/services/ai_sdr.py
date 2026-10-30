@@ -5,6 +5,7 @@ import logging
 import re
 import unicodedata
 from datetime import timedelta
+from difflib import SequenceMatcher
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -124,6 +125,22 @@ class AIDecision(BaseModel):
     commercial_arguments_used: list[str] = Field(default_factory=list)
     proposal_summary: str = Field(default="", max_length=800)
     unanswered_question: str | None = Field(default=None, max_length=500)
+    journey_state: Literal[
+        "IDENTIFY_CUSTOMER",
+        "CHOOSE_PRODUCT",
+        "CHOOSE_SEGMENT",
+        "CONFIRM_CITY",
+        "SELECT_OFFER",
+        "HANDLE_OBJECTION",
+        "CONFIRM_PURCHASE",
+        "CLOSING",
+        "HUMAN_HANDOFF",
+        "OPT_OUT",
+        "DISCOVERY",
+    ] = "DISCOVERY"
+    journey_pending_action: str = Field(default="", max_length=600)
+    handoff_target: Literal["NONE", "CLOSER_AI", "HUMAN"] = "NONE"
+    stagnation_count: int = Field(default=0, ge=0, le=20)
 
 
 class AIConfigurationError(RuntimeError):
@@ -478,6 +495,62 @@ def _persist_confirmed_existing_customer(
     lead.raw_data = json.dumps(payload, ensure_ascii=False, default=str)
 
 
+def _journey_memory_from_lead(
+    lead: Lead | None,
+    *,
+    conversation_id: int | None = None,
+) -> dict:
+    if not lead:
+        return {}
+    try:
+        payload = json.loads(lead.raw_data or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    journey = payload.get("ai_journey")
+    if not isinstance(journey, dict):
+        return {}
+    stored_conversation_id = journey.get("conversation_id")
+    if (
+        conversation_id is not None
+        and stored_conversation_id is not None
+        and int(stored_conversation_id) != int(conversation_id)
+    ):
+        return {}
+    return dict(journey)
+
+
+def _persist_journey_memory(
+    lead: Lead,
+    decision: AIDecision,
+    *,
+    conversation_id: int,
+) -> None:
+    try:
+        payload = json.loads(lead.raw_data or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    payload["ai_journey"] = {
+        "state": decision.journey_state,
+        "pending_action": decision.journey_pending_action or decision.next_action,
+        "desired_product": decision.qualification.desired_product or "",
+        "customer_type": decision.qualification.customer_type,
+        "existing_customer": decision.qualification.existing_customer,
+        "offer_plan_code": decision.offer_plan_code or "",
+        "offer_price": decision.offer_price,
+        "objection": decision.objection,
+        "handoff_target": decision.handoff_target,
+        "stagnation_count": int(decision.stagnation_count or 0),
+        "conversation_id": conversation_id,
+        "updated_at": utcnow().isoformat(),
+    }
+    lead.raw_data = json.dumps(payload, ensure_ascii=False, default=str)
+
+
 def build_ai_context(
     db: Session,
     *,
@@ -534,6 +607,10 @@ def build_ai_context(
             "temperature": lead.temperature if lead else "FRIO",
             "confirmed_customer_type": _confirmed_customer_type_from_lead(lead),
             "confirmed_existing_customer": _confirmed_existing_customer_from_lead(lead),
+            "journey": _journey_memory_from_lead(
+                lead,
+                conversation_id=conversation.id,
+            ),
         },
         "previous_ai_state": {
             "qualification_score": state.qualification_score if state else 0,
@@ -2066,10 +2143,356 @@ def _sdr_reply_repeats_recent_outbound(decision: AIDecision, context: dict) -> b
     candidate = _fold_sales_text(decision.reply_text)
     if not candidate:
         return False
+    candidate_tokens = set(candidate.split())
     for previous in _recent_outbound_messages_for_repetition(context):
-        if candidate == _fold_sales_text(previous):
+        other = _fold_sales_text(previous)
+        if not other:
+            continue
+        if candidate == other:
             return True
+        if SequenceMatcher(None, candidate, other).ratio() >= 0.80:
+            return True
+        other_tokens = set(other.split())
+        if candidate_tokens and other_tokens:
+            containment = len(candidate_tokens & other_tokens) / min(
+                len(candidate_tokens),
+                len(other_tokens),
+            )
+            if containment >= 0.76:
+                return True
     return False
+
+
+_JOURNEY_PENDING_ACTIONS = {
+    "IDENTIFY_CUSTOMER": "Confirmar se a pessoa já é cliente Sulnet.",
+    "CHOOSE_PRODUCT": "Confirmar se deseja Internet, Telefonia Móvel ou nova conexão, conforme o perfil.",
+    "CHOOSE_SEGMENT": "Confirmar se a conexão de internet é para casa ou empresa.",
+    "CONFIRM_CITY": "Confirmar a cidade para validar os planos de internet disponíveis.",
+    "SELECT_OFFER": "Apresentar opções válidas e obter a escolha de um plano.",
+    "HANDLE_OBJECTION": "Resolver a objeção atual com um ângulo novo e avançar a decisão.",
+    "CONFIRM_PURCHASE": "Obter aceite explícito para contratar a oferta escolhida.",
+    "CLOSING": "Iniciar o Vendedor IA de Fechamento com todo o contexto coletado.",
+    "HUMAN_HANDOFF": "Transferir para atendimento humano porque o cliente pediu uma pessoa.",
+    "OPT_OUT": "Encerrar contato e cancelar follow-ups.",
+    "DISCOVERY": "Descobrir a próxima informação comercial necessária sem repetir perguntas.",
+}
+
+
+def _journey_memory_from_context(context: dict) -> dict:
+    value = (context.get("lead") or {}).get("journey")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _explicit_human_request(context: dict) -> bool:
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    cues = (
+        "quero falar com atendente",
+        "quero falar com um atendente",
+        "falar com atendente",
+        "falar com uma pessoa",
+        "falar com pessoa",
+        "quero falar com uma pessoa",
+        "quero falar com humano",
+        "atendimento humano",
+        "falar com vendedor",
+        "quero um vendedor",
+        "quero falar com vendedor",
+    )
+    return any(cue in latest for cue in cues)
+
+
+def _explicit_purchase_commitment(context: dict) -> bool:
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    cues = (
+        "quero contratar",
+        "pode fechar",
+        "pode fazer",
+        "vamos fechar",
+        "vamos fazer",
+        "quero esse plano",
+        "vou contratar",
+        "pode contratar",
+        "com essa condicao eu fecho",
+        "fechado",
+        "pode dar andamento",
+        "vamos dar andamento",
+        "pode seguir",
+        "pode prosseguir",
+        "eu aceito",
+        "aceito",
+    )
+    if any(cue in latest for cue in cues):
+        return True
+
+    previous = _fold_sales_text(_last_outbound_text(context))
+    purchase_question = any(
+        cue in previous
+        for cue in (
+            "quer contratar",
+            "contratar esse plano",
+            "quer seguir com o plano",
+            "quer aproveitar e contratar",
+            "contratar agora",
+        )
+    )
+    return purchase_question and latest in {
+        "sim",
+        "sim quero",
+        "quero",
+        "pode",
+        "vamos",
+        "confirmo",
+    }
+
+
+def _journey_product_kind(decision: AIDecision, context: dict) -> str:
+    memory = _journey_memory_from_context(context)
+    combined = _fold_sales_text(
+        " ".join(
+            [
+                str(decision.qualification.desired_product or ""),
+                str(decision.offer_plan_code or ""),
+                str(memory.get("desired_product") or ""),
+                str(memory.get("offer_plan_code") or ""),
+            ]
+        )
+    )
+    if any(token in combined for token in ("sulmovel", "telefonia movel", "mobile", "movel")):
+        return "MOBILE"
+    if any(token in combined for token in ("internet", "fibra", "ftth", "corp", "corporativo", "conexao")):
+        return "INTERNET"
+    return ""
+
+
+def _derive_journey_state(decision: AIDecision, context: dict) -> str:
+    if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
+        return "OPT_OUT"
+    if _explicit_human_request(context):
+        return "HUMAN_HANDOFF"
+    if _explicit_purchase_commitment(context):
+        return "CLOSING"
+
+    existing_customer = _existing_customer_from_context(context)
+    if existing_customer not in {"CLIENTE", "NAO_CLIENTE"}:
+        return "IDENTIFY_CUSTOMER"
+
+    product_kind = _journey_product_kind(decision, context)
+    if not product_kind:
+        return "CHOOSE_PRODUCT"
+
+    if product_kind == "MOBILE":
+        if decision.offer_plan_code:
+            return "HANDLE_OBJECTION" if decision.objection != "NONE" else "CONFIRM_PURCHASE"
+        return "SELECT_OFFER"
+
+    customer_type = _customer_type_from_context(context)
+    if customer_type not in {"EMPRESA", "RESIDENCIAL"}:
+        return "CHOOSE_SEGMENT"
+
+    city = _city_from_sales_context(decision, context)
+    if customer_type == "RESIDENCIAL" and not city:
+        return "CONFIRM_CITY"
+
+    if not decision.offer_plan_code:
+        return "SELECT_OFFER"
+    if decision.objection != "NONE":
+        return "HANDLE_OBJECTION"
+    return "CONFIRM_PURCHASE"
+
+
+def _apply_stagnation_strategy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    state = decision.journey_state
+    existing = _existing_customer_from_context(context)
+    customer_type = _customer_type_from_context(context)
+    previous_outbound = _recent_outbound_messages_for_repetition(context)
+
+    if state == "IDENTIFY_CUSTOMER":
+        decision = _show_existing_customer_question(decision)
+        if previous_outbound:
+            decision.reply_text = "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"
+        return decision
+
+    if state == "CHOOSE_PRODUCT":
+        if existing == "CLIENTE":
+            decision = _show_existing_customer_product_question(decision)
+            if previous_outbound:
+                decision.reply_text = "Para sua próxima contratação, prefere Telefonia Móvel ou internet em outro endereço?"
+            return decision
+        if existing == "NAO_CLIENTE":
+            decision = _show_new_customer_product_question(decision)
+            if previous_outbound:
+                decision.reply_text = "Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?"
+            return decision
+
+    if state == "CHOOSE_SEGMENT":
+        decision = _show_internet_segment_question(
+            decision,
+            existing_customer=existing == "CLIENTE",
+        )
+        if previous_outbound:
+            decision.reply_text = (
+                "E essa nova conexão será residencial ou empresarial?"
+                if existing == "CLIENTE"
+                else "Essa conexão será residencial ou empresarial?"
+            )
+        return decision
+
+    if state == "CONFIRM_CITY":
+        decision.reply_text = (
+            "Em qual cidade será instalada a conexão?"
+            if previous_outbound
+            else "Para eu te mostrar somente os planos disponíveis, qual é a sua cidade?"
+        )
+        decision.quick_replies = []
+        decision.intent = "QUALIFYING"
+        decision.sales_state = "DISCOVERY"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+        decision.next_action = _JOURNEY_PENDING_ACTIONS[state]
+        return decision
+
+    if state == "SELECT_OFFER":
+        if customer_type == "EMPRESA":
+            decision = _show_corporate_catalog(decision)
+            if previous_outbound:
+                decision.reply_text = "Qual das opções corporativas você prefere avaliar agora?"
+            return decision
+        if _journey_product_kind(decision, context) == "MOBILE":
+            decision = _show_mobile_catalog_page(decision, page=1)
+            if previous_outbound:
+                decision.reply_text = "Qual plano de Telefonia Móvel você quer avaliar agora?"
+            return decision
+        city = _city_from_sales_context(decision, context)
+        if city:
+            decision = _show_fiber_catalog(decision, context)
+            if previous_outbound:
+                decision.reply_text = f"Entre as opções disponíveis em {city}, qual velocidade você quer avaliar?"
+            return decision
+
+    if state == "HANDLE_OBJECTION":
+        if decision.objection == "PRICE":
+            decision.reply_text = "Para eu comparar de forma justa, quanto você paga hoje pela sua conexão?"
+            decision.quick_replies = []
+        else:
+            decision.reply_text = "Para eu te ajudar por outro ângulo, o que mais pesa na sua decisão hoje?"
+            decision.quick_replies = [
+                QuickReply(id="prioridade_preco", label="Preço"),
+                QuickReply(id="prioridade_qualidade", label="Qualidade"),
+                QuickReply(id="prioridade_momento", label="Momento"),
+            ]
+        decision.intent = "QUALIFYING"
+        decision.sales_state = "NEGOTIATING"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+        decision.next_action = _JOURNEY_PENDING_ACTIONS[state]
+        return decision
+
+    if state == "CONFIRM_PURCHASE":
+        decision.reply_text = "Para seguirmos daqui, você prefere contratar agora ou ver outra opção?"
+        decision.quick_replies = [
+            QuickReply(id="contratar_agora", label="Contratar agora"),
+            QuickReply(id="ver_outra_opcao", label="Ver outra opção"),
+        ]
+        decision.intent = "INTEREST"
+        decision.sales_state = "OFFERING"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+        decision.next_action = _JOURNEY_PENDING_ACTIONS[state]
+        return decision
+
+    return decision
+
+
+def _apply_journey_orchestration_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    state = _derive_journey_state(decision, context)
+    decision.journey_state = state
+    decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS.get(
+        state,
+        _JOURNEY_PENDING_ACTIONS["DISCOVERY"],
+    )
+
+    if state == "OPT_OUT":
+        decision.handoff_target = "NONE"
+        decision.handoff_recommended = False
+        decision.followup_needed = False
+    elif state == "HUMAN_HANDOFF":
+        decision.handoff_target = "HUMAN"
+        decision.handoff_recommended = True
+        decision.intent = "HUMAN_REQUEST"
+        decision.sales_state = "READY_FOR_HUMAN_SALES"
+        decision.handoff_reason = (
+            decision.handoff_reason
+            or "Cliente pediu explicitamente atendimento humano."
+        )
+        decision.followup_needed = False
+    elif state == "CLOSING":
+        decision.handoff_target = "CLOSER_AI"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+        decision.customer_commitment = True
+        decision.sales_state = "PURCHASE_INTENT"
+        if decision.intent in {"HUMAN_REQUEST", "UNKNOWN"}:
+            decision.intent = "HIGH_INTENT"
+        decision.next_action = _JOURNEY_PENDING_ACTIONS["CLOSING"]
+        decision.followup_needed = False
+    else:
+        decision.handoff_target = "NONE"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+        if decision.intent == "HUMAN_REQUEST":
+            decision.intent = (
+                "QUALIFYING"
+                if state in {"IDENTIFY_CUSTOMER", "CHOOSE_PRODUCT", "CHOOSE_SEGMENT", "CONFIRM_CITY"}
+                else "INTEREST"
+            )
+        decision.customer_commitment = False
+        if decision.sales_state in {"READY_FOR_HUMAN_SALES", "PURCHASE_INTENT"}:
+            decision.sales_state = "NEGOTIATING" if decision.objection != "NONE" else "OFFERING"
+
+    mandatory_gate_states = {
+        "IDENTIFY_CUSTOMER",
+        "CHOOSE_PRODUCT",
+        "CHOOSE_SEGMENT",
+        "CONFIRM_CITY",
+    }
+    if state in mandatory_gate_states:
+        decision = _apply_stagnation_strategy(decision, context)
+        decision.journey_state = state
+        decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS[state]
+        decision.handoff_target = "NONE"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+
+    previous = _journey_memory_from_context(context)
+    previous_state = str(previous.get("state") or "")
+    previous_pending = str(previous.get("pending_action") or "")
+    previous_count = int(previous.get("stagnation_count") or 0)
+    same_position = (
+        previous_state == state
+        and previous_pending == decision.journey_pending_action
+        and state not in {"CLOSING", "HUMAN_HANDOFF", "OPT_OUT"}
+    )
+    decision.stagnation_count = min(20, previous_count + 1) if same_position else 0
+
+    repetitive = _sdr_reply_repeats_recent_outbound(decision, context)
+    if repetitive or decision.stagnation_count >= 3:
+        decision = _apply_stagnation_strategy(decision, context)
+        decision.journey_state = state
+        decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS.get(
+            state,
+            _JOURNEY_PENDING_ACTIONS["DISCOVERY"],
+        )
+        decision.stagnation_count = 0 if repetitive else decision.stagnation_count
+
+    if not decision.next_action.strip():
+        decision.next_action = decision.journey_pending_action
+    return decision
 
 
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
@@ -2121,7 +2544,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "se o segmento confirmado for Empresa, liste os corporativos; caso contrário, ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
         "Se o cliente pedir uma velocidade/plano que não esteja disponível na cidade, isso NÃO é motivo de handoff: informe que aquela opção não está disponível, "
         "apresente somente os planos válidos do catálogo para a cidade e continue a venda até o cliente escolher uma opção. Se a cidade ainda não estiver confirmada, pergunte a cidade. "
-        "Handoff só deve ocorrer com pedido de humano, intenção clara de contratação em uma oferta válida ou exceção real que exija humano. "
+        "Pedido explícito de humano deve ir para atendimento humano. Intenção clara de contratação em oferta válida deve ir para o Vendedor IA de Fechamento, não para vendedor humano. "
         f"Modo efetivo: {effective_mode}.\n\n"
         + json.dumps(context, ensure_ascii=False, default=str)
     )
@@ -2149,6 +2572,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = _apply_secondary_decline_reengagement_policy(decision, context)
     decision = _apply_offer_rejection_diagnostic_policy(decision, context)
     decision = _apply_prospecting_entry_policy(decision, context)
+    decision = _apply_journey_orchestration_policy(decision, context)
     return _sanitize_unconfirmed_customer_facts(decision, context)
 
 
@@ -2287,6 +2711,11 @@ def _apply_crm_decision(
             qualification.existing_customer,
             conversation_id=conversation.id,
         )
+    _persist_journey_memory(
+        lead,
+        decision,
+        conversation_id=conversation.id,
+    )
 
     memory_parts = [
         f"Estado={decision.sales_state}",
@@ -2297,6 +2726,10 @@ def _apply_crm_decision(
         f"meses_gratis={decision.free_months}",
         f"segmento_confirmado={qualification.customer_type}",
         f"cliente_sulnet={qualification.existing_customer}",
+        f"jornada={decision.journey_state}",
+        f"pendencia={decision.journey_pending_action}",
+        f"handoff_destino={decision.handoff_target}",
+        f"estagnacao={decision.stagnation_count}",
     ]
     if qualification.current_provider:
         memory_parts.append(f"provedor={qualification.current_provider}")
@@ -2533,11 +2966,14 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             )
             sent_message = None
             wants_closer = (
-                decision.intent not in {"DO_NOT_CONTACT", "HUMAN_REQUEST"}
-                and decision.sales_state != "OPT_OUT"
-                and (
-                    decision.customer_commitment
-                    or decision.sales_state == "PURCHASE_INTENT"
+                decision.handoff_target == "CLOSER_AI"
+                or (
+                    decision.intent not in {"DO_NOT_CONTACT", "HUMAN_REQUEST"}
+                    and decision.sales_state != "OPT_OUT"
+                    and (
+                        decision.customer_commitment
+                        or decision.sales_state == "PURCHASE_INTENT"
+                    )
                 )
             )
             if wants_closer:
@@ -2548,6 +2984,29 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     job=job,
                     decision=decision,
                 )
+                if not closer_started:
+                    decision.handoff_target = "HUMAN"
+                    decision.handoff_recommended = True
+                    decision.handoff_reason = (
+                        "Vendedor IA de Fechamento indisponível no momento."
+                    )
+                    decision.journey_state = "HUMAN_HANDOFF"
+                    decision.journey_pending_action = (
+                        "Transferir para atendimento humano por indisponibilidade operacional do Vendedor IA."
+                    )
+                    decision.reply_text = (
+                        "Perfeito! Vou encaminhar seu atendimento para um vendedor "
+                        "concluir a contratação com você."
+                    )
+                    decision.quick_replies = []
+                    decision.followup_needed = False
+                    fallback_conversation = db.get(Conversation, job.conversation_id)
+                    if fallback_conversation and fallback_conversation.lead:
+                        _persist_journey_memory(
+                            fallback_conversation.lead,
+                            decision,
+                            conversation_id=fallback_conversation.id,
+                        )
 
             if not closer_started:
                 sent_message = _send_autonomous_reply(
@@ -2560,10 +3019,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
-            elif not closer_started and (
-                decision.handoff_recommended
-                or decision.sales_state == "READY_FOR_HUMAN_SALES"
-            ):
+            elif not closer_started and decision.handoff_target == "HUMAN":
                 _perform_handoff(
                     db,
                     agent=agent,
@@ -2587,6 +3043,10 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     conversation_id=job.conversation_id,
                     source_message_id=job.message_id,
                     step=1,
+                    pending_action=(
+                        decision.journey_pending_action
+                        or decision.next_action
+                    ),
                 )
         except Exception as exc:
             run.status = "FALHOU"
@@ -2600,6 +3060,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 job.status = "FALHOU"
             return "send_failed"
 
+    output = decision.model_dump()
     run.status = "CONCLUIDO"
     run.intent = decision.intent
     run.qualification_score = decision.qualification_score
@@ -2633,7 +3094,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             state.state = "SHADOW_REVIEW"
         elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
             state.state = "OPT_OUT"
-        elif decision.handoff_recommended or decision.sales_state == "READY_FOR_HUMAN_SALES":
+        elif decision.handoff_target == "HUMAN":
             state.state = "HANDOFF"
             state.handoff_at = utcnow()
         else:
@@ -2661,6 +3122,9 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             "score": decision.qualification_score,
             "temperature": decision.temperature,
             "handoff_recommended": decision.handoff_recommended,
+            "handoff_target": decision.handoff_target,
+            "journey_state": decision.journey_state,
+            "stagnation_count": decision.stagnation_count,
             "confidence": decision.confidence,
         },
     )

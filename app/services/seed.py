@@ -266,6 +266,8 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         or "SEGMENTO EMPRESA / MEMÓRIA PJ" not in ai_agent.system_prompt
         or "SLA de atendimento de até 8 horas" not in ai_agent.system_prompt
         or "ENTRADA DA PROSPECÇÃO - PRIMEIRO FILTRO OBRIGATÓRIO" not in ai_agent.system_prompt
+        or "CONTROLE DA JORNADA" not in ai_agent.system_prompt
+        or "HANDOFF E DESTINO" not in ai_agent.system_prompt
         or "tentativa 1 após 10 minutos" not in ai_agent.system_prompt
         or "ORIGEM DOS FATOS E ISOLAMENTO DE CONVERSA" not in ai_agent.system_prompt
     ):
