@@ -260,7 +260,7 @@ def _process_zapi_payload(
                     status="CONCLUIDA",
                     channel="WHATSAPP",
                     outcome=outcome,
-                    description=f"Mensagem recebida via Z-API: {message.body}",
+                    description="Mensagem recebida via Z-API; conteúdo disponível na conversa.",
                     completed_at=now,
                 )
             )

@@ -12,7 +12,11 @@ from app.models import (
     ServiceQueueZApiInstance,
     ZApiInstance,
 )
-from app.services.secret_store import decrypt_secret, encrypt_secret
+from app.services.secret_store import (
+    decrypt_secret,
+    decrypt_secret_with_source,
+    encrypt_secret,
+)
 from app.services.zapi import ZApiNotConfigured, ZApiService
 
 
@@ -45,6 +49,36 @@ def service_for_instance(instance: ZApiInstance) -> ZApiService:
         instance_token=decrypt_secret(instance.instance_token_encrypted),
         client_token=decrypt_secret(instance.client_token_encrypted),
     )
+
+
+def rotate_zapi_secrets(db: Session) -> int:
+    """Recriptografa credenciais antigas com DATA_ENCRYPTION_KEY.
+
+    A leitura continua aceitando a chave histórica durante a migração, então a
+    rotação não interrompe instâncias existentes.
+    """
+    rotated = 0
+    for instance in list(db.scalars(select(ZApiInstance))):
+        changed = False
+        if instance.instance_token_encrypted:
+            plain, source = decrypt_secret_with_source(
+                instance.instance_token_encrypted
+            )
+            if source != "primary":
+                instance.instance_token_encrypted = encrypt_secret(plain)
+                changed = True
+        if instance.client_token_encrypted:
+            plain, source = decrypt_secret_with_source(
+                instance.client_token_encrypted
+            )
+            if source != "primary":
+                instance.client_token_encrypted = encrypt_secret(plain)
+                changed = True
+        if changed:
+            rotated += 1
+    if rotated:
+        db.flush()
+    return rotated
 
 
 def format_device_phone(phone: str | None) -> str:

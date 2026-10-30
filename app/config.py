@@ -24,6 +24,9 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
     app_public_url: str = os.getenv("APP_PUBLIC_URL", "").rstrip("/")
     secret_key: str = os.getenv("SECRET_KEY", "dev-only-change-this-secret")
+    session_signing_key: str = os.getenv("SESSION_SIGNING_KEY", "").strip()
+    data_encryption_key: str = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
+    legacy_data_encryption_key: str = os.getenv("LEGACY_DATA_ENCRYPTION_KEY", "").strip()
     database_url: str = normalize_database_url(
         os.getenv(
             "DATABASE_URL",
@@ -31,6 +34,9 @@ class Settings:
         )
     )
     session_cookie: str = os.getenv("SESSION_COOKIE", "sulnet_prospecta_session")
+    login_max_attempts: int = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
+    login_window_seconds: int = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
+    login_block_seconds: int = int(os.getenv("LOGIN_BLOCK_SECONDS", "900"))
     bootstrap_admin_name: str = os.getenv("BOOTSTRAP_ADMIN_NAME", "Administrador Sulnet")
     bootstrap_admin_email: str = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "admin@sulnet.local")
     bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "Sulnet@2026!")
@@ -105,12 +111,22 @@ class Settings:
     media_s3_secret_access_key: str = os.getenv("MEDIA_S3_SECRET_ACCESS_KEY", "")
     media_s3_url_style: str = os.getenv("MEDIA_S3_URL_STYLE", "virtual-host")
     media_max_upload_mb: int = int(os.getenv("MEDIA_MAX_UPLOAD_MB", "50"))
+    media_remote_allowed_hosts: str = os.getenv("MEDIA_REMOTE_ALLOWED_HOSTS", "").strip()
+    trusted_hosts: str = os.getenv("TRUSTED_HOSTS", "").strip()
     whatsapp_presence_timeout_seconds: int = int(os.getenv("WHATSAPP_PRESENCE_TIMEOUT_SECONDS", "90"))
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "America/Sao_Paulo")
 
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
+    @property
+    def effective_session_signing_key(self) -> str:
+        return self.session_signing_key or self.secret_key
+
+    @property
+    def effective_data_encryption_key(self) -> str:
+        return self.data_encryption_key or self.secret_key
 
     @property
     def zapi_webhook_url(self) -> str:
@@ -164,6 +180,10 @@ def validate_production_settings() -> None:
     errors: list[str] = []
     if settings.secret_key == "dev-only-change-this-secret" or len(settings.secret_key) < 32:
         errors.append("SECRET_KEY deve ter ao menos 32 caracteres e não pode usar o valor padrão")
+    if len(settings.effective_session_signing_key) < 32:
+        errors.append("SESSION_SIGNING_KEY/SECRET_KEY deve ter ao menos 32 caracteres")
+    if len(settings.effective_data_encryption_key) < 32:
+        errors.append("DATA_ENCRYPTION_KEY/SECRET_KEY deve ter ao menos 32 caracteres")
     if settings.bootstrap_admin_password in {"Sulnet@2026!", "troque-esta-senha"}:
         errors.append("BOOTSTRAP_ADMIN_PASSWORD deve ser alterada")
     if len(settings.bootstrap_admin_password) < 12:

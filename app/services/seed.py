@@ -28,7 +28,11 @@ from app.security import hash_password
 from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT
 from app.services.followups import initial_next_action
 from app.services.scoring import calculate_sulnet_score
-from app.services.zapi_instances import bind_queue_instance, seed_default_zapi_instance
+from app.services.zapi_instances import (
+    bind_queue_instance,
+    rotate_zapi_secrets,
+    seed_default_zapi_instance,
+)
 from app.timeutils import utcnow
 
 
@@ -366,6 +370,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
             db.add(meta)
 
     seed_default_zapi_instance(db, created_by_id=admin.id)
+    rotate_zapi_secrets(db)
     dedicated_ai_queue = _ensure_dedicated_ai_queue(db, admin=admin)
 
     digital_queues = list(

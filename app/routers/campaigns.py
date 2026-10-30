@@ -17,6 +17,7 @@ from app.services.campaign_queue import campaign_queue_counts, enqueue_campaign
 from app.services.legacy_adapter import generate_message, rate_status
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
+from app.services.upload_security import UploadValidationError, validate_upload
 from app.services.queue_routing import available_queues_for_user, bind_campaign_queue, get_queue, queue_for_campaign
 from app.timeutils import utcnow
 from app.web import flash, render
@@ -125,28 +126,37 @@ async def create_campaign(
 
     attachments: list[dict[str, str]] = []
     storage = MediaStorage()
-    allowed_extensions = {
-        ".jpg", ".jpeg", ".png", ".webp", ".gif",
-        ".mp4", ".mov", ".m4v", ".3gp",
-        ".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".amr",
-    }
     for upload in media:
         if not upload or not upload.filename:
             continue
         filename = Path(upload.filename).name
         extension = Path(filename).suffix.lower()
         mime_type = (upload.content_type or "application/octet-stream").split(";")[0].strip().lower()
+        raw = await upload.read()
+        try:
+            validate_upload(
+                filename=filename,
+                mime_type=mime_type,
+                data=raw,
+            )
+        except UploadValidationError as exc:
+            db.rollback()
+            flash(request, f"{filename}: {exc}", "error")
+            return RedirectResponse("/campaigns", status_code=303)
+
         if not (
             mime_type.startswith("image/")
             or mime_type.startswith("video/")
             or mime_type.startswith("audio/")
-            or extension in allowed_extensions
+            or extension in {
+                ".jpg", ".jpeg", ".png", ".webp", ".gif",
+                ".mp4", ".mov", ".m4v", ".3gp",
+                ".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".amr",
+            }
         ):
             db.rollback()
-            flash(request, f"O arquivo {filename} não é uma imagem, vídeo ou áudio permitido.", "error")
+            flash(request, f"O arquivo {filename} não é uma mídia permitida para campanha.", "error")
             return RedirectResponse("/campaigns", status_code=303)
-
-        raw = await upload.read()
         kind = (
             "IMAGE" if mime_type.startswith("image/") or extension in {".jpg", ".jpeg", ".png", ".webp", ".gif"}
             else "VIDEO" if mime_type.startswith("video/") or extension in {".mp4", ".mov", ".m4v", ".3gp"}

@@ -16,6 +16,7 @@ from app.routers import ai_agents, api, auth, campaigns, conversations, dashboar
 from app.services.seed import seed_database
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import instance_webhook_url, list_zapi_instances, service_for_instance
+from app.security_middleware import install_security_middlewares
 from app.web import render
 
 
@@ -26,7 +27,8 @@ async def initialize_database(max_attempts: int = 12) -> None:
     """Cria o schema e dados-base, tolerando o tempo de subida do Postgres no Railway."""
     for attempt in range(1, max_attempts + 1):
         try:
-            Base.metadata.create_all(bind=engine)
+            if not settings.is_production:
+                Base.metadata.create_all(bind=engine)
             db = SessionLocal()
             try:
                 seed_database(db, include_demo=not settings.is_production)
@@ -99,12 +101,14 @@ app = FastAPI(
 
 app.add_middleware(
     SessionMiddleware,
-    secret_key=settings.secret_key,
+    secret_key=settings.effective_session_signing_key,
     session_cookie=settings.session_cookie,
     same_site="lax",
     https_only=settings.is_production,
     max_age=60 * 60 * 12,
 )
+
+install_security_middlewares(app)
 
 static_dir = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

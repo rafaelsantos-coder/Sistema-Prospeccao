@@ -466,7 +466,8 @@ def _recover_recent_unqueued_inbounds() -> int:
 
 
 def run() -> None:
-    Base.metadata.create_all(bind=engine)
+    if not settings.is_production:
+        Base.metadata.create_all(bind=engine)
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
         "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s supervisor_shadow=%s guardian=%s autocorrect=%s learning=%s engineer=%s openai_configured=%s poll=%ss",

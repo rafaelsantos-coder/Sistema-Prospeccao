@@ -9,8 +9,10 @@ from uuid import uuid4
 import boto3
 from botocore.client import Config
 import httpx
+from urllib.parse import urljoin
 
 from app.config import settings
+from app.services.network_security import RemoteURLValidationError, validate_remote_url
 
 
 class MediaStorageError(RuntimeError):
@@ -108,7 +110,11 @@ class MediaStorage:
         )
         extra: dict[str, str] = {
             "ContentType": mime_type or "application/octet-stream",
-            "ContentDisposition": f'inline; filename="{safe_name}"',
+            "ContentDisposition": (
+                f'inline; filename="{safe_name}"'
+                if (mime_type or "").startswith(("image/", "audio/", "video/"))
+                else f'attachment; filename="{safe_name}"'
+            ),
         }
         try:
             self._client().put_object(
@@ -167,13 +173,49 @@ class MediaStorage:
     ) -> tuple[str, str]:
         if not self.configured:
             return url, _safe_filename(filename, mime_type)
+        current_url = url
+        response = None
+        data = b""
         try:
-            with httpx.Client(timeout=40.0, follow_redirects=True) as client:
-                response = client.get(url)
-                response.raise_for_status()
-                data = response.content
-        except httpx.HTTPError as exc:
+            with httpx.Client(timeout=40.0, follow_redirects=False) as client:
+                for _redirect in range(4):
+                    validate_remote_url(current_url)
+                    with client.stream("GET", current_url) as streamed:
+                        if streamed.status_code in {301, 302, 303, 307, 308}:
+                            location = streamed.headers.get("location")
+                            if not location:
+                                raise MediaStorageError(
+                                    "Redirecionamento de mídia sem destino."
+                                )
+                            current_url = urljoin(current_url, location)
+                            continue
+
+                        streamed.raise_for_status()
+                        content_length = streamed.headers.get("content-length")
+                        if content_length and int(content_length) > self.max_bytes:
+                            raise MediaStorageError(
+                                f"A mídia remota excede o limite de {settings.media_max_upload_mb} MB."
+                            )
+                        chunks: list[bytes] = []
+                        total = 0
+                        for chunk in streamed.iter_bytes(64 * 1024):
+                            total += len(chunk)
+                            if total > self.max_bytes:
+                                raise MediaStorageError(
+                                    f"A mídia remota excede o limite de {settings.media_max_upload_mb} MB."
+                                )
+                            chunks.append(chunk)
+                        data = b"".join(chunks)
+                        response = streamed
+                        break
+                else:
+                    raise MediaStorageError("Muitos redirecionamentos de mídia.")
+        except (httpx.HTTPError, RemoteURLValidationError, ValueError) as exc:
             raise MediaStorageError("Nao foi possivel arquivar a midia recebida.") from exc
+
+        if response is None:
+            raise MediaStorageError("Nao foi possivel arquivar a midia recebida.")
+
         actual_mime = (
             mime_type
             or response.headers.get("content-type", "").split(";")[0].strip()
