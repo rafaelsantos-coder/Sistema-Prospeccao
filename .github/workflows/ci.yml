@@ -33,6 +33,20 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sulnet_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sulnet_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -57,6 +71,14 @@ jobs:
           DATABASE_URL: sqlite:////tmp/sulnet-prospecta-ci.db
           APP_ENV: test
         run: alembic upgrade head
+
+      - name: Validar migrações em PostgreSQL 18
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/sulnet_ci
+          APP_ENV: test
+        run: |
+          alembic upgrade head
+          alembic current | grep 0006_user_mfa
 
       - name: Executar testes
         run: pytest -q
