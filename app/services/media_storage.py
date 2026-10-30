@@ -12,6 +12,7 @@ import httpx
 from urllib.parse import urljoin
 
 from app.config import settings
+from app.services.antivirus import AntivirusError, MalwareDetectedError, scan_bytes
 from app.services.network_security import RemoteURLValidationError, validate_remote_url
 
 
@@ -102,6 +103,14 @@ class MediaStorage:
             raise MediaStorageError(
                 f"O arquivo excede o limite de {settings.media_max_upload_mb} MB."
             )
+        try:
+            scan_bytes(data)
+        except MalwareDetectedError as exc:
+            raise MediaStorageError(str(exc)) from exc
+        except AntivirusError as exc:
+            raise MediaStorageError(
+                "Não foi possível validar o arquivo no antivírus."
+            ) from exc
         key, safe_name = self.build_key(
             conversation_id=conversation_id,
             filename=filename,
@@ -141,6 +150,14 @@ class MediaStorage:
             raise MediaStorageError(
                 f"O arquivo excede o limite de {settings.media_max_upload_mb} MB."
             )
+        try:
+            scan_bytes(data)
+        except MalwareDetectedError as exc:
+            raise MediaStorageError(str(exc)) from exc
+        except AntivirusError as exc:
+            raise MediaStorageError(
+                "Não foi possível validar o arquivo no antivírus."
+            ) from exc
         safe_name = _safe_filename(filename, mime_type)
         now = datetime.now(timezone.utc)
         key = (
