@@ -706,6 +706,17 @@ def _sync_sdr_ia_defaults(
 ) -> bool:
     if not _sdr_ia_mode(collected):
         return False
+
+    # A política do pacote manda aplicar os defaults ao iniciar faturamento.
+    # Antes de produto/categoria existirem, apenas guardamos os defaults no estado.
+    if not collected.get("planId") or not collected.get("categoryId"):
+        try:
+            _sync_plan_context(client, state, collected)
+        except CRMIntegrationError:
+            return False
+    if not collected.get("planId") or not collected.get("categoryId"):
+        return False
+
     current = _category_values(collected)
     desired = dict(current)
     desired.update(_sdr_ia_defaults(collected))
