@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="form-card narrow-card">
+  <div class="section-heading">
+    <div>
+      <span class="eyebrow">SEGURANÇA DA CONTA</span>
+      <h2>Autenticação em duas etapas</h2>
+      <p>Proteja o acesso ao Prospecta com um aplicativo autenticador.</p>
+    </div>
+  </div>
+
+  {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
+
+  {% if mfa_enabled %}
+    <div class="report-callout success">
+      MFA está ativo para sua conta.
+    </div>
+    {% if not mfa_required %}
+    <form method="post" action="/mfa/disable" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field">
+        <span>Senha atual</span>
+        <input type="password" name="current_password" autocomplete="current-password" required>
+      </label>
+      <label class="field">
+        <span>Código atual do autenticador</span>
+        <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required>
+      </label>
+      <button type="submit" class="button button-ghost">Desativar MFA</button>
+    </form>
+    {% else %}
+      <p><strong>MFA é obrigatório para o seu perfil de acesso.</strong></p>
+    {% endif %}
+  {% else %}
+    <div class="stack-form">
+      <p>1. No Microsoft Authenticator, Google Authenticator, 1Password ou equivalente, adicione uma nova conta.</p>
+      {% if qr_data %}
+      <div style="display:flex;justify-content:center;margin:18px 0;">
+        <img src="{{ qr_data }}" alt="QR Code para configurar MFA" width="220" height="220">
+      </div>
+      {% endif %}
+      <p>2. Se preferir configuração manual, use esta chave:</p>
+      <code style="word-break:break-all;">{{ secret }}</code>
+      <p>3. Digite abaixo o código exibido pelo aplicativo.</p>
+      <form method="post" action="/mfa/setup" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field">
+          <span>Código de 6 dígitos</span>
+          <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+        </label>
+        <button type="submit" class="button button-primary">Ativar MFA</button>
+      </form>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}
