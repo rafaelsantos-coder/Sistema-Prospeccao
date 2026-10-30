@@ -375,10 +375,32 @@ def _extract_mobile_payment(text: str) -> str | None:
     return None
 
 
-def _mobile_values(collected: dict[str, Any]) -> dict[str, Any]:
-    raw = collected.get("mobileCategoryValues")
+def _category_values(collected: dict[str, Any]) -> dict[str, Any]:
+    raw = collected.get("categoryFormValues")
     values = dict(raw) if isinstance(raw, dict) else {}
+    legacy_mobile = collected.get("mobileCategoryValues")
+    if isinstance(legacy_mobile, dict):
+        values.update(legacy_mobile)
     values["tipo_assinatura_contrato"] = MOBILE_SIGNATURE_TYPE
+    return values
+
+
+def _store_category_values(
+    collected: dict[str, Any],
+    values: dict[str, Any],
+    *,
+    mobile: bool = False,
+) -> None:
+    normalized = dict(values)
+    normalized["tipo_assinatura_contrato"] = MOBILE_SIGNATURE_TYPE
+    collected["categoryFormValues"] = normalized
+    if mobile:
+        collected["mobileCategoryValues"] = normalized
+
+
+def _mobile_values(collected: dict[str, Any]) -> dict[str, Any]:
+    values = _category_values(collected)
+    _store_category_values(collected, values, mobile=True)
     return values
 
 
@@ -417,30 +439,56 @@ PLAYBOOK_STEP_BY_CODE = {
     "clientemail": "EMAIL",
     "email": "EMAIL",
     "tipocontratacao": "MOBILE_CONTRACT_TYPE",
+    "novoiccid": "MOBILE_NEW_ICCID",
+    "numeronovo": "MOBILE_NEW_NUMBER",
+    "porticcid": "MOBILE_PORT_ICCID",
     "numeroportado": "MOBILE_PORT_NUMBER",
     "porttitular": "MOBILE_PORT_TITULAR",
     "portnometitular": "MOBILE_PORT_NAME",
     "portcpfcnpj": "MOBILE_PORT_DOC",
-    "formapagamento": "MOBILE_PAYMENT_METHOD",
-    "enviofatura": "MOBILE_INVOICE_DELIVERY",
-    "debitobanco": "MOBILE_DEBIT_BANK",
-    "debitoagencia": "MOBILE_DEBIT_AGENCY",
-    "debitoconta": "MOBILE_DEBIT_ACCOUNT",
-    "debitotitular": "MOBILE_DEBIT_HOLDER",
-    "unificarfaturas": "MOBILE_UNIFY",
-    "unificarmotivo": "MOBILE_UNIFY_REASON",
+    "portdata": "MOBILE_PORT_DATE",
+    "m2mquantidade": "MOBILE_M2M_QTY",
+    "m2miccids": "MOBILE_M2M_ICCIDS",
 }
 
-PLAYBOOK_UNSUPPORTED_PHASE3_CODES = {
-    "novoiccid",
-    "numeronovo",
-    "porticcid",
-    "portdata",
-    "m2mquantidade",
-    "m2miccids",
-    "vencimento",
-    "taxaativacao",
-    "taxavalor",
+PLAYBOOK_BILLING_STEPS = {
+    "formapagamento": ("MOBILE_PAYMENT_METHOD", "BILLING_PAYMENT_METHOD"),
+    "enviofatura": ("MOBILE_INVOICE_DELIVERY", "BILLING_INVOICE_DELIVERY"),
+    "debitobanco": ("MOBILE_DEBIT_BANK", "BILLING_DEBIT_BANK"),
+    "debitoagencia": ("MOBILE_DEBIT_AGENCY", "BILLING_DEBIT_AGENCY"),
+    "debitoconta": ("MOBILE_DEBIT_ACCOUNT", "BILLING_DEBIT_ACCOUNT"),
+    "debitotitular": ("MOBILE_DEBIT_HOLDER", "BILLING_DEBIT_HOLDER"),
+    "unificarfaturas": ("MOBILE_UNIFY", "BILLING_UNIFY"),
+    "unificarmotivo": ("MOBILE_UNIFY_REASON", "BILLING_UNIFY_REASON"),
+    "vencimento": ("MOBILE_DUE_DAY", "BILLING_DUE_DAY"),
+    "taxaativacao": ("MOBILE_ACTIVATION_FEE", "BILLING_ACTIVATION_FEE"),
+    "taxavalor": ("MOBILE_ACTIVATION_VALUE", "BILLING_ACTIVATION_VALUE"),
+}
+
+PLAYBOOK_CATEGORY_FIELD_BY_CODE = {
+    "tipocontratacao": "tipo_contratacao",
+    "novoiccid": "novo_iccid",
+    "numeronovo": "numero_novo",
+    "porticcid": "port_iccid",
+    "numeroportado": "numero_portado",
+    "porttitular": "port_titular",
+    "portnometitular": "port_nome_titular",
+    "portcpfcnpj": "port_cpf_cnpj",
+    "portdata": "port_data",
+    "m2mquantidade": "m2m_quantidade",
+    "m2miccids": "m2m_iccids",
+    "vencimento": "vencimento",
+    "taxaativacao": "taxa_ativacao",
+    "taxavalor": "taxa_valor",
+    "formapagamento": "forma_pagamento",
+    "enviofatura": "envio_fatura",
+    "debitobanco": "debito_banco",
+    "debitoagencia": "debito_agencia",
+    "debitoconta": "debito_conta",
+    "debitotitular": "debito_titular",
+    "unificarfaturas": "unificar_faturas",
+    "unificarmotivo": "unificar_motivo",
+    "tipoassinaturacontrato": "tipo_assinatura_contrato",
 }
 
 
