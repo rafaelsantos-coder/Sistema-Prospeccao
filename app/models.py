@@ -870,3 +870,107 @@ class AIFollowupJob(Base):
     conversation: Mapped[Conversation] = relationship()
     source_message: Mapped[Message | None] = relationship()
 
+
+class AIAutocorrectionEvent(Base):
+    __tablename__ = "ai_autocorrection_events"
+    __table_args__ = (
+        Index("ix_ai_autocorrection_status_created", "status", "created_at"),
+        Index("ix_ai_autocorrection_conversation", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(40), default="", index=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    reason_code: Mapped[str] = mapped_column(String(120), default="", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="APPLIED", index=True)
+    before_json: Mapped[str] = mapped_column(Text, default="{}")
+    after_json: Mapped[str] = mapped_column(Text, default="{}")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    conversation: Mapped[Conversation | None] = relationship()
+
+
+class AIExperiment(Base):
+    __tablename__ = "ai_experiments"
+    __table_args__ = (
+        Index("ix_ai_experiments_status_scope", "status", "scope"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    scope: Mapped[str] = mapped_column(String(80), default="SDR_COPY", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="DRAFT", index=True)
+    hypothesis: Mapped[str] = mapped_column(Text, default="")
+    control_instruction: Mapped[str] = mapped_column(Text, default="")
+    variant_instruction: Mapped[str] = mapped_column(Text, default="")
+    metric: Mapped[str] = mapped_column(String(80), default="CLOSING_RATE")
+    winner: Mapped[str] = mapped_column(String(20), default="")
+    control_samples: Mapped[int] = mapped_column(Integer, default=0)
+    variant_samples: Mapped[int] = mapped_column(Integer, default=0)
+    control_conversions: Mapped[int] = mapped_column(Integer, default=0)
+    variant_conversions: Mapped[int] = mapped_column(Integer, default=0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    source_summary: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AIExperimentAssignment(Base):
+    __tablename__ = "ai_experiment_assignments"
+    __table_args__ = (
+        UniqueConstraint("experiment_id", "conversation_id", name="uq_ai_experiment_conversation"),
+        Index("ix_ai_experiment_assignment_variant", "experiment_id", "variant"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    experiment_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_experiments.id", ondelete="CASCADE"),
+        index=True,
+    )
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    variant: Mapped[str] = mapped_column(String(20), index=True)
+    converted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    converted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    experiment: Mapped[AIExperiment] = relationship()
+    conversation: Mapped[Conversation] = relationship()
+
+
+class AIEngineeringProposal(Base):
+    __tablename__ = "ai_engineering_proposals"
+    __table_args__ = (
+        Index("ix_ai_engineering_status_created", "status", "created_at"),
+        Index("ix_ai_engineering_fingerprint", "fingerprint", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(160), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="PROPOSED", index=True)
+    risk: Mapped[str] = mapped_column(String(20), default="MEDIUM", index=True)
+    title: Mapped[str] = mapped_column(String(240), default="")
+    diagnosis: Mapped[str] = mapped_column(Text, default="")
+    patch_plan_json: Mapped[str] = mapped_column(Text, default="{}")
+    test_plan_json: Mapped[str] = mapped_column(Text, default="{}")
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    branch_name: Mapped[str] = mapped_column(String(180), default="")
+    pull_request_url: Mapped[str] = mapped_column(Text, default="")
+    deployment_ref: Mapped[str] = mapped_column(String(180), default="")
+    rollback_ref: Mapped[str] = mapped_column(String(180), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
