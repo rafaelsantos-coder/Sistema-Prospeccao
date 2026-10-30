@@ -12,6 +12,7 @@
       <a class="button button-secondary" href="/reports/whatsapp/export/report.pdf{% if query_string %}?{{ query_string }}{% endif %}">PDF gerencial</a>
       <a class="button button-secondary" href="/reports/whatsapp/export/conversations.csv{% if query_string %}?{{ query_string }}{% endif %}">CSV conversas</a>
       <a class="button button-secondary" href="/reports/whatsapp/export/messages.csv{% if query_string %}?{{ query_string }}{% endif %}">CSV mensagens</a>
+      <a class="button button-secondary" href="/reports/whatsapp/export/ai-journey.csv{% if query_string %}?{{ query_string }}{% endif %}">CSV jornada IA</a>
       <a class="button button-dark" href="/reports/whatsapp/export/audit.csv{% if query_string %}?{{ query_string }}{% endif %}">CSV auditoria</a>
     </div>
   </section>
@@ -146,6 +147,135 @@
     <article class="report-kpi"><span>Leitura</span><strong>{{ '%.1f'|format(report.kpis.read_rate) }}%</strong><small>Entrega {{ '%.1f'|format(report.kpis.delivery_rate) }}%</small></article>
   </section>
 
+  {% set journey = report.ai_journey %}
+  {% set jk = journey.kpis %}
+  <section class="report-panel">
+    <header class="report-panel-header">
+      <div>
+        <span class="eyebrow">JORNADA COMERCIAL IA</span>
+        <h3>SDR → aceite → Vendedor IA → venda</h3>
+      </div>
+      <a class="report-inline-link" href="/reports/whatsapp/export/ai-journey.csv{% if query_string %}?{{ query_string }}{% endif %}">Exportar jornada</a>
+    </header>
+
+    <section class="report-kpis">
+      <article class="report-kpi"><span>Conversas com SDR IA</span><strong>{{ jk.ai_conversations }}</strong><small>{{ journey.period_run_count }} interação(ões) rastreadas</small></article>
+      <article class="report-kpi"><span>Ofertas definidas</span><strong>{{ jk.offer_defined }}</strong><small>{{ '%.1f'|format(jk.acceptance_rate) }}% chegaram ao aceite</small></article>
+      <article class="report-kpi emphasis"><span>Aceites explícitos</span><strong>{{ jk.purchase_acceptances }}</strong><small>{{ '%.1f'|format(jk.closer_start_rate) }}% iniciaram Vendedor IA no período</small></article>
+      <article class="report-kpi"><span>Fechamentos IA iniciados</span><strong>{{ jk.closer_started_period }}</strong><small>{{ jk.completed_period }} venda(s) concluída(s) no período</small></article>
+      <article class="report-kpi"><span>Interações até aceite</span><strong>{% if jk.avg_interactions_to_acceptance is not none %}{{ '%.1f'|format(jk.avg_interactions_to_acceptance) }}{% else %}—{% endif %}</strong><small>Média de turnos comerciais do SDR</small></article>
+      <article class="report-kpi"><span>Risco de estagnação</span><strong>{{ jk.at_risk }}</strong><small>{{ jk.stalled }} travada(s) · {{ jk.human_handoffs }} handoff(s) humano(s)</small></article>
+    </section>
+  </section>
+
+  <div class="report-grid two">
+    <section class="report-panel">
+      <header>
+        <div><span class="eyebrow">FUNIL DA IA</span><h3>Avanço comercial rastreado</h3></div>
+      </header>
+      <div class="sla-list">
+        {% for item in journey.funnel %}
+        <div class="sla-row">
+          <div><span>{{ item.label }}</span><strong>{{ item.value }}</strong></div>
+          <div class="sla-track"><i style="width: {{ '%.1f'|format(item.pct) }}%"></i></div>
+          <small>{{ '%.1f'|format(item.pct) }}%</small>
+        </div>
+        {% else %}
+        <div class="report-empty">Ainda não há interações da nova jornada no período selecionado.</div>
+        {% endfor %}
+      </div>
+      <div class="metric-definition">
+        <strong>Base do funil:</strong> conversas com decisão do SDR IA registrada no período. A venda concluída pode ocorrer depois do aceite, por isso o indicador de conclusão também é exibido separadamente acima.
+      </div>
+    </section>
+
+    <section class="report-panel">
+      <header>
+        <div><span class="eyebrow">SAÚDE DA JORNADA</span><h3>Onde o SDR está perdendo fluidez</h3></div>
+      </header>
+      <div class="sla-list">
+        <div class="sla-row">
+          <div><span>Gargalo atual</span><strong>{{ jk.bottleneck_current }}</strong></div>
+          <div class="sla-track"><i style="width: {{ (jk.bottleneck_current * 10)|min(100) }}%"></i></div>
+          <small>{{ jk.bottleneck_label }}</small>
+        </div>
+        <div class="sla-row">
+          <div><span>Interações por conversa</span><strong>{{ '%.1f'|format(jk.avg_interactions_per_conversation) }}</strong></div>
+          <div class="sla-track"><i style="width: {{ (jk.avg_interactions_per_conversation * 10)|min(100) }}%"></i></div>
+          <small>Média no período</small>
+        </div>
+        <div class="sla-row">
+          <div><span>Com objeção</span><strong>{{ jk.objection_conversations }}</strong></div>
+          <div class="sla-track"><i style="width: {{ ((jk.objection_conversations / jk.ai_conversations * 100) if jk.ai_conversations else 0)|round(1) }}%"></i></div>
+          <small>{% if jk.ai_conversations %}{{ '%.1f'|format(jk.objection_conversations / jk.ai_conversations * 100) }}%{% else %}0,0%{% endif %}</small>
+        </div>
+        <div class="sla-row">
+          <div><span>Travadas</span><strong>{{ jk.stalled }}</strong></div>
+          <div class="sla-track"><i style="width: {{ ((jk.stalled / jk.ai_conversations * 100) if jk.ai_conversations else 0)|round(1) }}%"></i></div>
+          <small>3+ interações sem avanço</small>
+        </div>
+      </div>
+      <div class="metric-definition">
+        <strong>Estagnação:</strong> a oportunidade permanece na mesma etapa e com a mesma pendência. A partir de 3 ocorrências, o sistema força mudança de pergunta, CTA ou argumento.
+      </div>
+    </section>
+  </div>
+
+  <section class="report-panel">
+    <header class="report-panel-header">
+      <div><span class="eyebrow">EFICIÊNCIA POR ETAPA</span><h3>Quantas interações cada passo está consumindo</h3></div>
+      <span class="report-caption">Uma interação corresponde a uma decisão completa do SDR após uma resposta do cliente.</span>
+    </header>
+    <div class="table-wrap">
+      <table class="report-table">
+        <thead>
+          <tr><th>Etapa</th><th>Conversas no período</th><th>Interações</th><th>Média por conversa</th><th>Atualmente aqui</th><th>Travadas</th></tr>
+        </thead>
+        <tbody>
+          {% for item in journey.stages %}
+          <tr>
+            <td><strong>{{ item.label }}</strong><small>{{ item.code }}</small></td>
+            <td>{{ item.conversations }}</td>
+            <td>{{ item.interactions }}</td>
+            <td>{{ '%.2f'|format(item.avg_interactions) }}</td>
+            <td>{{ item.current }}</td>
+            <td>{{ item.stalled }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if journey.stalled_conversations %}
+  <section class="report-panel">
+    <header class="report-panel-header">
+      <div><span class="eyebrow">AÇÃO NECESSÁRIA</span><h3>Conversas travadas na jornada</h3></div>
+      <span class="report-caption">Priorize as oportunidades com maior contador de estagnação.</span>
+    </header>
+    <div class="table-wrap">
+      <table class="report-table">
+        <thead>
+          <tr><th>Contato</th><th>Etapa</th><th>Pendência atual</th><th>Estagnação</th><th>Interações na etapa</th><th>Última mensagem</th><th>Abrir</th></tr>
+        </thead>
+        <tbody>
+          {% for item in journey.stalled_conversations %}
+          <tr>
+            <td><strong>{{ item.name }}</strong><small>{{ item.phone|phone_br }}</small></td>
+            <td>{{ item.stage_label }}</td>
+            <td>{{ item.pending_action or '—' }}</td>
+            <td><strong>{{ item.stagnation_count }}</strong></td>
+            <td>{{ item.interactions_in_stage }}</td>
+            <td>{{ item.last_message_at|datetime_br }}</td>
+            <td><a class="report-inline-link" href="/conversations/{{ item.id }}">Abrir chat</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
   <div class="report-grid two">
     <section class="report-panel">
       <header>
@@ -249,9 +379,14 @@
               {% if item.ai_state %}
               <strong>{{ item.ai_state|replace('_',' ') }}</strong>
               <small>
-                {% if item.closing_step %}Etapa: {{ item.closing_step|replace('_',' ') }} · {% endif %}
+                {% if item.closing_step %}Fechamento: {{ item.closing_step|replace('_',' ') }} · {% endif %}
                 {{ item.pending_followups }} follow-up pendente(s)
               </small>
+              {% if item.journey_label %}
+              <small title="{{ item.journey_pending_action }}">
+                Jornada: {{ item.journey_label }}{% if item.journey_stagnation_count %} · estagnação {{ item.journey_stagnation_count }}{% endif %}
+              </small>
+              {% endif %}
               {% if item.closing_error %}<small title="{{ item.closing_error }}">Último erro técnico registrado</small>{% endif %}
               {% else %}
               <span>—</span>
@@ -323,6 +458,9 @@
     <span><b>TMR:</b> início de cada turno do cliente → próxima resposta do operador.</span>
     <span><b>TMA · ciclo total:</b> abertura da conversa → encerramento. Não representa tempo ativo de tela do operador.</span>
     <span><b>Tempo até atribuição:</b> abertura da conversa → primeira atribuição a um responsável.</span>
+    <span><b>Interação SDR:</b> uma resposta do cliente processada pelo SDR e sua respectiva decisão comercial.</span>
+    <span><b>Estagnação:</b> repetição da mesma etapa e pendência sem avanço; 3 ou mais ocorrências entram como conversa travada.</span>
+    <span><b>Aceite explícito:</b> evidência de contratação na fala do cliente ou confirmação direta a uma CTA de compra.</span>
   </section>
 </div>
 {% endblock %}
