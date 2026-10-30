@@ -234,6 +234,7 @@ SDR_IA_SKIP_CODES = {
     "vencimento",
     "taxaativacao",
     "taxavalor",
+    "tipoassinaturacontrato",
 }
 SDR_IA_FORBIDDEN_STEPS = {
     "MOBILE_NEW_ICCID",
