@@ -186,6 +186,71 @@ def _closed_choice_question(text: str) -> bool:
     return any(pattern in folded for pattern in patterns)
 
 
+_EXISTING_CUSTOMER_QUESTION_CUES = (
+    "voce ja e cliente sulnet",
+    "ja e cliente sulnet",
+    "voce ja e nosso cliente",
+    "voce ja possui algum servico da sulnet",
+    "ja possui algum servico da sulnet",
+    "possui algum servico da sulnet",
+    "voce tem algum servico da sulnet",
+    "tem algum servico da sulnet",
+)
+
+
+def _asks_existing_customer_question(text: str | None) -> bool:
+    folded = _fold(text)
+    return bool(folded) and any(
+        cue in folded for cue in _EXISTING_CUSTOMER_QUESTION_CUES
+    )
+
+
+def _history_existing_customer_status(
+    history: list[dict[str, Any]],
+) -> str:
+    previous_outbound = ""
+    confirmed = ""
+    for item in history:
+        direction = str(item.get("direction") or "").upper()
+        body = str(item.get("body") or "")
+        folded = _fold(body)
+        if direction == "OUTBOUND":
+            previous_outbound = body
+            continue
+        if direction != "INBOUND" or not folded:
+            continue
+
+        if folded in {
+            "nao sou cliente",
+            "ainda nao sou cliente",
+            "nunca fui cliente",
+            "nao sou cliente sulnet",
+            "nao sou cliente da sulnet",
+            "nao tenho sulnet",
+        }:
+            confirmed = "NAO_CLIENTE"
+            continue
+        if folded in {
+            "sou cliente",
+            "ja sou cliente",
+            "sou cliente sulnet",
+            "sou cliente da sulnet",
+            "ja sou cliente sulnet",
+            "ja sou cliente da sulnet",
+            "ja tenho sulnet",
+            "tenho sulnet",
+        }:
+            confirmed = "CLIENTE"
+            continue
+
+        if _asks_existing_customer_question(previous_outbound):
+            if folded in {"sim", "sim sou", "sou", "ja sou", "sou sim"}:
+                confirmed = "CLIENTE"
+            elif folded in {"nao", "nao sou", "ainda nao", "nao ainda"}:
+                confirmed = "NAO_CLIENTE"
+    return confirmed
+
+
 def _catalog_snapshot() -> dict[str, Any]:
     return {
         "residential": [
@@ -336,8 +401,8 @@ def _deterministic_findings(
         findings.append(
             {
                 "code": "POSSIBLE_REPEAT",
-                "severity": "MEDIUM",
-                "detail": "A resposta é semanticamente muito parecida com uma saída recente.",
+                "severity": "HIGH",
+                "detail": "A resposta é semanticamente muito parecida com uma saída recente e não deve ser enviada.",
             }
         )
 
@@ -356,6 +421,41 @@ def _deterministic_findings(
         )
 
     if role == "SDR":
+        confirmed_existing_customer = _history_existing_customer_status(history)
+        proposed_journey_state = str(
+            run_output.get("journey_state")
+            or run_output.get("proposed_state")
+            or ""
+        ).upper()
+        if (
+            confirmed_existing_customer in {"CLIENTE", "NAO_CLIENTE"}
+            and proposed_journey_state == "IDENTIFY_CUSTOMER"
+        ):
+            findings.append(
+                {
+                    "code": "STATE_REGRESSION",
+                    "severity": "HIGH",
+                    "detail": (
+                        "A jornada tentou voltar para IDENTIFY_CUSTOMER apesar de "
+                        "o cliente já ter confirmado se é ou não cliente Sulnet."
+                    ),
+                }
+            )
+        if (
+            confirmed_existing_customer in {"CLIENTE", "NAO_CLIENTE"}
+            and _asks_existing_customer_question(reply)
+        ):
+            findings.append(
+                {
+                    "code": "IGNORED_CONFIRMED_ANSWER",
+                    "severity": "HIGH",
+                    "detail": (
+                        "A resposta refez a pergunta de cliente Sulnet após essa "
+                        "informação já ter sido confirmada pelo cliente."
+                    ),
+                }
+            )
+
         close_data_cues = (
             "qual seu cpf",
             "me informe seu cpf",
