@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import json
 import re
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from app.database import SessionLocal
 from app.main import app
+from app.models import (
+    AIAgentProfile,
+    AIClosingState,
+    AIConversationState,
+    AIJob,
+    AIRun,
+    Conversation,
+    Message,
+    ServiceQueue,
+    User,
+)
+from app.services.chat_reports import ChatReportFilters, build_chat_report
 from app.services.zapi import ZApiService
+from app.timeutils import utcnow
 
 
 def _csrf(html: str) -> str:
@@ -137,3 +153,145 @@ def test_whatsapp_reports_requires_login():
         response = client.get("/reports/whatsapp", follow_redirects=False)
         assert response.status_code == 303
         assert response.headers["location"] == "/login"
+
+
+
+def test_ai_journey_report_counts_acceptance_and_completed_sale(monkeypatch):
+    with TestClient(app) as client:
+        _login(client)
+        location = _create_conversation_with_message(client, monkeypatch, "AI-JOURNEY")
+        conversation_id = int(location.rsplit("/", 1)[-1])
+
+        db = SessionLocal()
+        try:
+            conversation = db.get(Conversation, conversation_id)
+            assert conversation is not None
+            message = db.scalar(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+            assert message is not None
+
+            agent = db.scalar(
+                select(AIAgentProfile)
+                .where(AIAgentProfile.role_type == "SDR")
+                .order_by(AIAgentProfile.id.asc())
+                .limit(1)
+            )
+            assert agent is not None
+            queue = db.scalar(select(ServiceQueue).order_by(ServiceQueue.id.asc()).limit(1))
+            assert queue is not None
+
+            job = AIJob(
+                agent_id=agent.id,
+                queue_id=queue.id,
+                conversation_id=conversation_id,
+                message_id=message.id,
+                status="CONCLUIDO",
+                available_at=utcnow(),
+            )
+            db.add(job)
+            db.flush()
+
+            run = AIRun(
+                job_id=job.id,
+                agent_id=agent.id,
+                conversation_id=conversation_id,
+                message_id=message.id,
+                execution_mode="AUTO",
+                model="gpt-6-luna",
+                status="CONCLUIDO",
+                intent="HIGH_INTENT",
+                qualification_score=100,
+                temperature="QUENTE",
+                confidence=0.99,
+                handoff_recommended=False,
+                reply_text="",
+                summary="Cliente aceitou a oferta.",
+                input_snapshot_json="{}",
+                output_json=json.dumps(
+                    {
+                        "journey_state": "CLOSING",
+                        "journey_pending_action": "Iniciar Vendedor IA.",
+                        "handoff_target": "CLOSER_AI",
+                        "offer_plan_code": "FTTH_800",
+                        "offer_price": 119.90,
+                        "objection": "NONE",
+                        "stagnation_count": 0,
+                    },
+                    ensure_ascii=False,
+                ),
+                started_at=utcnow(),
+                finished_at=utcnow(),
+                created_at=utcnow(),
+            )
+            db.add(run)
+            db.flush()
+
+            ai_state = db.scalar(
+                select(AIConversationState).where(
+                    AIConversationState.conversation_id == conversation_id
+                )
+            )
+            if not ai_state:
+                ai_state = AIConversationState(
+                    conversation_id=conversation_id,
+                    agent_id=agent.id,
+                    state="COMPLETED",
+                    summary="Venda concluída em teste.",
+                    qualification_score=100,
+                    temperature="QUENTE",
+                    last_intent="PURCHASE_INTENT",
+                    last_run_id=run.id,
+                )
+                db.add(ai_state)
+            else:
+                ai_state.agent_id = agent.id
+                ai_state.state = "COMPLETED"
+                ai_state.last_run_id = run.id
+
+            closing = db.scalar(
+                select(AIClosingState).where(
+                    AIClosingState.conversation_id == conversation_id
+                )
+            )
+            if not closing:
+                closing = AIClosingState(
+                    conversation_id=conversation_id,
+                    agent_id=agent.id,
+                    external_id=f"report-test-{conversation_id}",
+                    step="COMPLETED",
+                    plan_label="800 Mega",
+                    offer_price=119.90,
+                    completed_at=utcnow(),
+                )
+                db.add(closing)
+            else:
+                closing.step = "COMPLETED"
+                closing.completed_at = utcnow()
+
+            db.commit()
+
+            admin = db.scalar(
+                select(User).where(User.email == "admin@sulnet.local")
+            )
+            assert admin is not None
+            report = build_chat_report(
+                db,
+                admin,
+                ChatReportFilters.defaults(),
+            )
+            journey = report["ai_journey"]
+            assert journey["kpis"]["ai_conversations"] >= 1
+            assert journey["kpis"]["offer_defined"] >= 1
+            assert journey["kpis"]["purchase_acceptances"] >= 1
+            assert journey["kpis"]["closer_started_period"] >= 1
+            assert journey["kpis"]["completed_period"] >= 1
+            assert any(
+                item["label"] == "Aceite explícito" and item["value"] >= 1
+                for item in journey["funnel"]
+            )
+        finally:
+            db.close()
