@@ -336,3 +336,68 @@ def test_update_opportunity_prefers_generic_route_without_capture_404(monkeypatc
     ]
     assert any(url.endswith("/api/opportunities/1234") for url in patch_urls)
     assert not any(url.endswith("/api/capture/leads/1234") for url in patch_urls)
+
+
+
+class WinFallbackClient:
+    captured: list[dict[str, Any]] = []
+
+    def __init__(self, *, headers: dict[str, str], **_: Any):
+        self.headers = headers
+
+    def __enter__(self) -> "WinFallbackClient":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.__class__.captured.append(
+            {"method": method, "url": url, "json": kwargs.get("json")}
+        )
+        response = FakeResponse()
+        if method == "POST" and url.endswith("/api/capture/leads/1234/win"):
+            response.status_code = 404
+            response.payload = {"error": "Rota não encontrada."}
+        elif method == "GET" and url.endswith("/api/capture/context"):
+            response.status_code = 200
+            response.payload = {
+                "stages": [
+                    {"id": 110, "name": "DADOS E PLANO"},
+                    {"id": 120, "name": "GANHO"},
+                ]
+            }
+        elif method == "PATCH" and url.endswith("/api/opportunities/1234"):
+            response.status_code = 200
+            response.payload = {
+                "id": 1234,
+                "status": "won",
+                "backofficeCopy": {"id": 9001},
+            }
+        elif method == "GET" and url.endswith("/api/capture/leads/1234/status"):
+            response.status_code = 404
+            response.payload = {"error": "Rota não encontrada."}
+        return response
+
+
+def test_mark_won_falls_back_to_generic_opportunity_when_capture_route_missing(monkeypatch):
+    WinFallbackClient.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", WinFallbackClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="service-token-value",
+    )
+    result = client.mark_won(1234)
+
+    patch = next(
+        item
+        for item in WinFallbackClient.captured
+        if item["method"] == "PATCH"
+        and item["url"].endswith("/api/opportunities/1234")
+    )
+    assert patch["json"]["status"] == "won"
+    assert patch["json"]["stageId"] == 120
+    assert result["opportunity"]["status"] == "won"
+    assert result["backofficeOpportunityId"] == 9001
+    assert result["contract"]["status"] == "aguardando_backoffice"
