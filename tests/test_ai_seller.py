@@ -613,6 +613,33 @@ def test_playbook_code_normalization_handles_snake_and_camel_case():
     assert _playbook_code_key("clientEmail") == "clientemail"
     assert _playbook_code_key("tipo_contratacao") == "tipocontratacao"
     assert _playbook_code_key("port_cpf_cnpj") == "portcpfcnpj"
+    assert _playbook_code_key("cf_envio_fatura") == "enviofatura"
+    assert _playbook_code_key("cf_port_data") == "portdata"
+
+
+def test_cf_invoice_delivery_maps_to_billing_step():
+    item = CRMPlaybookMissingItem(
+        code="cf_envio_fatura",
+        question="Como deseja receber a fatura?",
+    )
+    state = SimpleNamespace(plan_label="800 Mega")
+    collected = {}
+
+    assert (
+        _playbook_step_for_item(item, state, collected)
+        == "BILLING_INVOICE_DELIVERY"
+    )
+
+
+def test_cf_port_data_is_skipped_in_sdr_ia_funnel():
+    item = CRMPlaybookMissingItem(
+        code="cf_port_data",
+        question="Qual a data da portabilidade?",
+    )
+    state = SimpleNamespace(plan_label="Sulmóvel 15GB")
+    collected = {"_sdr_ia_funnel": True}
+
+    assert _playbook_step_for_item(item, state, collected) is None
 
 
 
@@ -998,8 +1025,19 @@ class _Phase4ContractClient:
     def supports(self, capability):
         return capability == "contract" and self.contract
 
-    def generate_agent_contract(self, opportunity_id):
+    def generate_agent_contract(
+        self,
+        opportunity_id,
+        *,
+        send_signature=True,
+        require_ready_for_win=True,
+    ):
         self.generate_calls += 1
+        self.last_generate_args = {
+            "opportunity_id": opportunity_id,
+            "send_signature": send_signature,
+            "require_ready_for_win": require_ready_for_win,
+        }
         return dict(self.generated)
 
     def start_contract(self, opportunity_id):
@@ -1060,6 +1098,11 @@ def test_phase4_ready_for_win_generates_contract_before_any_win():
     )
 
     assert client.generate_calls == 1
+    assert client.last_generate_args == {
+        "opportunity_id": 11754,
+        "send_signature": True,
+        "require_ready_for_win": True,
+    }
     assert client.mark_won_calls == []
     assert state.step == "WAITING_SIGNATURE"
     assert state.sign_url == "https://sign.example/11754"
@@ -1068,6 +1111,32 @@ def test_phase4_ready_for_win_generates_contract_before_any_win():
     assert collected["_contract_product_name"] == (
         "SULNET RESID FIBRA - 800MB - 2-25 (sem desconto)"
     )
+
+
+def test_phase4_sdr_skipped_fields_allow_crm_to_decide_readiness():
+    client = _Phase4ContractClient(
+        generated={
+            "status": "aguardando_assinatura",
+            "signUrl": "https://sign.example/11771",
+            "signatureReused": True,
+        },
+    )
+    state = _phase4_state(opportunity_id=11771)
+    collected = {
+        "_playbook_ready_for_win": False,
+        "_contract_generation_allowed": True,
+    }
+
+    reply = _prepare_contract_before_win(
+        client,
+        state,
+        collected,
+    )
+
+    assert client.generate_calls == 1
+    assert state.step == "WAITING_SIGNATURE"
+    assert state.sign_url == "https://sign.example/11771"
+    assert "assinar" in reply.lower()
 
 
 def test_phase4_not_ready_never_generates_contract_or_marks_won():
