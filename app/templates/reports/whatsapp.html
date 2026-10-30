@@ -230,10 +230,16 @@
   <section class="report-panel">
     <header class="report-panel-header">
       <div>
-        <span class="eyebrow">SUPERVISOR IA · MODO SOMBRA</span>
-        <h3>Auditoria independente do SDR e do Vendedor IA</h3>
+        <span class="eyebrow">SUPERVISOR IA · {{ 'GUARDIÃO ATIVO' if supervisor.mode == 'GUARDIAN' else 'MODO SOMBRA' }}</span>
+        <h3>{{ 'Intervenção em tempo real no SDR e no Vendedor IA' if supervisor.mode == 'GUARDIAN' else 'Auditoria independente do SDR e do Vendedor IA' }}</h3>
       </div>
-      <span class="report-caption">Observa e recomenda; nesta fase não altera mensagens, estado, CRM ou follow-up.</span>
+      <span class="report-caption">
+        {% if supervisor.mode == 'GUARDIAN' %}
+        Valida antes do envio e pode aprovar, reescrever, bloquear ou corrigir estado seguro.
+        {% else %}
+        Observa e recomenda; nesta fase não altera mensagens, estado, CRM ou follow-up.
+        {% endif %}
+      </span>
     </header>
 
     <section class="report-kpis">
@@ -248,14 +254,14 @@
         <small>{{ supervisor.approve }} ação(ões) sem correção</small>
       </article>
       <article class="report-kpi">
-        <span>Corrigiria</span>
+        <span>{{ 'Corrigiu' if supervisor.mode == 'GUARDIAN' else 'Corrigiria' }}</span>
         <strong>{{ supervisor.correct }}</strong>
-        <small>Reescrita ou ajuste de estado recomendado</small>
+        <small>{{ 'Reescrita/estado corrigido antes do envio' if supervisor.mode == 'GUARDIAN' else 'Reescrita ou ajuste de estado recomendado' }}</small>
       </article>
       <article class="report-kpi">
-        <span>Bloquearia</span>
+        <span>{{ 'Bloqueou' if supervisor.mode == 'GUARDIAN' else 'Bloquearia' }}</span>
         <strong>{{ supervisor.block }}</strong>
-        <small>Erro objetivo que o futuro Guardião deveria impedir</small>
+        <small>{{ 'Ação impedida antes de chegar ao cliente' if supervisor.mode == 'GUARDIAN' else 'Erro objetivo que o futuro Guardião deveria impedir' }}</small>
       </article>
       <article class="report-kpi">
         <span>Intervenção sugerida</span>

@@ -57,6 +57,13 @@ class Settings:
         os.getenv("AI_SUPERVISOR_REASONING_EFFORT", "low").strip() or "low"
     )
     ai_supervisor_poll_seconds: int = int(os.getenv("AI_SUPERVISOR_POLL_SECONDS", "4"))
+    ai_supervisor_guardian_enabled: bool = os.getenv(
+        "AI_SUPERVISOR_GUARDIAN_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    ai_supervisor_guardian_timeout_seconds: int = int(
+        os.getenv("AI_SUPERVISOR_GUARDIAN_TIMEOUT_SECONDS", "30")
+    )
     sulnet_crm_base_url: str = os.getenv("SULNET_CRM_BASE_URL", "").rstrip("/")
     sulnet_crm_bearer_token: str = os.getenv("SULNET_CRM_BEARER_TOKEN", "")
     sulnet_ai_integration_key: str = os.getenv("SULNET_AI_INTEGRATION_KEY", "")
@@ -98,6 +105,10 @@ class Settings:
             ),
             "ai_supervisor_shadow": bool(
                 self.ai_supervisor_shadow_enabled
+                and self.openai_api_key
+            ),
+            "ai_supervisor_guardian": bool(
+                self.ai_supervisor_guardian_enabled
                 and self.openai_api_key
             ),
         }

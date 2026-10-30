@@ -1139,6 +1139,7 @@ def _build_supervisor_shadow_report(
         "closer_reviews": 0,
         "top_issues": [],
         "recent_findings": [],
+        "guardian_reviews": 0,
     }
     if not conversation_ids:
         return empty
@@ -1147,8 +1148,11 @@ def _build_supervisor_shadow_report(
         db.scalars(
             select(AuditLog)
             .where(
-                AuditLog.action == "AI_SUPERVISOR_SHADOW_REVIEW",
-                AuditLog.entity_type.in_(["ai_run", "followup_audit"]),
+                AuditLog.action.in_([
+                    "AI_SUPERVISOR_SHADOW_REVIEW",
+                    "AI_SUPERVISOR_GUARDIAN_REVIEW",
+                ]),
+                AuditLog.entity_type.in_(["ai_run", "followup_audit", "conversation"]),
                 AuditLog.created_at >= start,
                 AuditLog.created_at <= end,
             )
@@ -1175,6 +1179,11 @@ def _build_supervisor_shadow_report(
             {
                 "id": row.id,
                 "created_at": row.created_at,
+                "review_mode": (
+                    "GUARDIAN"
+                    if row.action == "AI_SUPERVISOR_GUARDIAN_REVIEW"
+                    else "SHADOW"
+                ),
                 "conversation_id": conversation_id,
                 "ai_run_id": payload.get("ai_run_id"),
                 "agent_role": str(payload.get("agent_role") or ""),
@@ -1213,12 +1222,24 @@ def _build_supervisor_shadow_report(
             high_risk += 1
 
     total = len(reviews)
-    non_approved = verdicts["CORRECT"] + verdicts["BLOCK"]
+    guardian_reviews = sum(
+        1 for item in reviews if item.get("review_mode") == "GUARDIAN"
+    )
+    non_approved = (
+        verdicts["CORRECT"]
+        + verdicts["REWRITE"]
+        + verdicts["CORRECT_STATE"]
+        + verdicts["BLOCK"]
+    )
     return {
-        "mode": "SHADOW",
+        "mode": "GUARDIAN" if guardian_reviews else "SHADOW",
         "reviews": total,
         "approve": verdicts["APPROVE"],
-        "correct": verdicts["CORRECT"],
+        "correct": (
+            verdicts["CORRECT"]
+            + verdicts["REWRITE"]
+            + verdicts["CORRECT_STATE"]
+        ),
         "block": verdicts["BLOCK"],
         "approval_rate": (verdicts["APPROVE"] / total * 100) if total else 0.0,
         "intervention_rate": (non_approved / total * 100) if total else 0.0,
@@ -1235,6 +1256,7 @@ def _build_supervisor_shadow_report(
         "recent_findings": [
             item for item in reviews if item["verdict"] != "APPROVE"
         ][:20],
+        "guardian_reviews": guardian_reviews,
     }
 
 

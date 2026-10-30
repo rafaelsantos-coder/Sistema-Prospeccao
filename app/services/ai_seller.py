@@ -27,6 +27,7 @@ from app.models import (
     Lead,
     Message,
 )
+from app.services.ai_guardian import GuardianBlockedError, guard_outbound_message
 from app.services.audit import write_audit
 from app.services.crm_sulnet import (
     CRMIntegrationError,
@@ -1705,15 +1706,44 @@ def _send_text(
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone:
         raise CRMIntegrationError("Contato sem telefone para WhatsApp.")
+    closing = db.scalar(
+        select(AIClosingState).where(
+            AIClosingState.conversation_id == conversation.id
+        )
+    )
+    guardian = guard_outbound_message(
+        db,
+        agent=agent,
+        conversation=conversation,
+        reply_text=text,
+        buttons=[],
+        source="CLOSER_TEXT",
+        proposed_state=str(closing.step if closing else ""),
+        metadata={"closing_step": str(closing.step if closing else "")},
+    )
+    if not guardian.should_send:
+        raise GuardianBlockedError(guardian)
+    if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+        text = guardian.reply_text
+
     zapi = service_for_conversation(db, conversation.id)
-    result = zapi.send_text(phone=phone, message=text)
+    if len(guardian.buttons) >= 2:
+        result = zapi.send_button_list(
+            phone=phone,
+            message=text,
+            buttons=guardian.buttons,
+        )
+        message_type = "BUTTONS"
+    else:
+        result = zapi.send_text(phone=phone, message=text)
+        message_type = "TEXT"
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
     message = register_message(
         db,
         conversation,
         direction="OUTBOUND",
-        message_type="TEXT",
+        message_type=message_type,
         body=text,
         sender_user_id=agent.user_id,
         provider_message_id=provider_id,
@@ -1801,6 +1831,22 @@ def _send_step_message(
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone:
         raise CRMIntegrationError("Contato sem telefone para WhatsApp.")
+    guardian = guard_outbound_message(
+        db,
+        agent=agent,
+        conversation=conversation,
+        reply_text=text,
+        buttons=buttons,
+        source="CLOSER_STEP",
+        proposed_state=state.step,
+        metadata={"closing_step": state.step},
+    )
+    if not guardian.should_send:
+        raise GuardianBlockedError(guardian)
+    if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+        text = guardian.reply_text
+        buttons = guardian.buttons
+
     zapi = service_for_conversation(db, conversation.id)
     result = zapi.send_button_list(
         phone=phone,
@@ -3240,6 +3286,34 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         })
         _finish_run(db, run=run, job=job, state=state, reply=reply, output=output)
         return "completed"
+    except GuardianBlockedError as exc:
+        state.step = str(state_snapshot["step"])
+        state.collected_json = str(state_snapshot["collected_json"])
+        state.plan_label = str(state_snapshot["plan_label"])
+        state.offer_price = state_snapshot["offer_price"]
+        state.credit_status = str(state_snapshot["credit_status"])
+        state.credit_analysis_id = state_snapshot["credit_analysis_id"]
+        state.contract_status = str(state_snapshot["contract_status"])
+        state.sign_url = str(state_snapshot["sign_url"])
+        state.opportunity_id = state_snapshot["opportunity_id"]
+        state.protocol = str(state_snapshot["protocol"])
+        state.last_error = str(exc)
+
+        run.status = "FALHOU"
+        run.error = str(exc)[:1200]
+        run.finished_at = utcnow()
+        job.status = "PENDENTE"
+        job.error = str(exc)[:1200]
+        job.locked_at = None
+        job.available_at = utcnow() + timedelta(minutes=2)
+        LOG.warning(
+            "seller_guardian_blocked conversation=%s job=%s step=%s issues=%s",
+            conversation.id,
+            job.id,
+            state.step,
+            ",".join(exc.result.issue_codes) or "-",
+        )
+        return "guardian_blocked"
     except (CRMIntegrationError, ZApiError) as exc:
         # Nunca deixa uma falha transitória avançar o estado local parcialmente.
         # Assim a mesma resposta do cliente não é reinterpretada como resposta da etapa seguinte.
