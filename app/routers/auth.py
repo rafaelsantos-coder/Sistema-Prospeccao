@@ -14,6 +14,7 @@ from app.security import (
     hash_password,
     login_user,
     logout_user,
+    password_needs_rehash,
     validate_csrf,
     verify_password,
 )
@@ -60,6 +61,16 @@ def login(
             email=email,
             status_code=422,
         )
+    if password_needs_rehash(user.password_hash):
+        user.password_hash = hash_password(password)
+        write_audit(
+            db,
+            user=user,
+            action="PASSWORD_REHASHED_ARGON2ID",
+            entity_type="user",
+            entity_id=user.id,
+        )
+
     login_user(request, user)
     leave_whatsapp(db, user)
     write_audit(
