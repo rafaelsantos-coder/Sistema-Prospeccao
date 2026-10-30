@@ -1229,6 +1229,26 @@ def test_phase4_crm_already_won_completes_without_second_mark_won():
     assert collected["_backoffice_opportunity_id"] == 99001
 
 
+def test_phase4_agent_contract_waits_for_crm_auto_win_after_signature():
+    client = _Phase4ContractClient()
+    state = _phase4_state(
+        step="WAITING_SIGNATURE",
+        contract_status="assinado",
+    )
+    collected = {"_contract_generation_requested": True}
+
+    result = _finalize_signed_sale(
+        client,
+        state,
+        collected,
+    )
+
+    assert result["pendingAutoWin"] is True
+    assert client.mark_won_calls == []
+    assert state.step == "WAITING_SIGNATURE"
+    assert collected["_awaiting_crm_auto_win"] is True
+
+
 def test_phase4_signed_contract_marks_won_with_stable_idempotency_key():
     client = _Phase4ContractClient()
     state = _phase4_state(
