@@ -18,6 +18,11 @@ from app.services.ai_seller import (
     _extract_email,
     _extract_iccids,
     _extract_name,
+    _contract_is_signed,
+    _finalize_signed_sale,
+    _finish_sale_contract,
+    _prepare_contract_before_win,
+    _win_idempotency_key,
     _mobile_missing_fields,
     _mobile_next_step,
     _mobile_values,
@@ -765,3 +770,241 @@ def test_phase3_structured_buttons_include_m2m_and_billing_choices():
         {"id": "sim", "label": "Sim"},
         {"id": "nao", "label": "Não"},
     ]
+
+
+
+class _Phase4ContractClient:
+    def __init__(
+        self,
+        *,
+        agent_generate=True,
+        contract=True,
+        generated=None,
+        started=None,
+        won=None,
+    ):
+        self.agent_generate = agent_generate
+        self.contract = contract
+        self.generated = dict(generated or {})
+        self.started = dict(started or {})
+        self.won = dict(
+            won
+            or {
+                "alreadyWon": False,
+                "opportunity": {"status": "won"},
+            }
+        )
+        self.generate_calls = 0
+        self.start_calls = 0
+        self.mark_won_calls = []
+
+    def supports_any(self, *capabilities):
+        return self.agent_generate
+
+    def supports(self, capability):
+        return capability == "contract" and self.contract
+
+    def generate_agent_contract(self, opportunity_id):
+        self.generate_calls += 1
+        return dict(self.generated)
+
+    def start_contract(self, opportunity_id):
+        self.start_calls += 1
+        return dict(self.started)
+
+    def mark_won(self, opportunity_id, *, idempotency_key=None):
+        self.mark_won_calls.append((opportunity_id, idempotency_key))
+        return dict(self.won)
+
+
+def _phase4_state(**overrides):
+    data = {
+        "opportunity_id": 11754,
+        "external_id": "prospecta-conversation-99",
+        "step": "BILLING_DUE_DAY",
+        "contract_status": "",
+        "sign_url": "",
+        "completed_at": None,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
+def test_phase4_ready_for_win_generates_contract_before_any_win():
+    client = _Phase4ContractClient(
+        generated={
+            "status": "aguardando_assinatura",
+            "signUrl": "https://sign.example/11754",
+        },
+    )
+    state = _phase4_state()
+    collected = {"_playbook_ready_for_win": True}
+
+    reply = _finish_sale_contract(
+        client,
+        state,
+        collected,
+    )
+
+    assert client.generate_calls == 1
+    assert client.mark_won_calls == []
+    assert state.step == "WAITING_SIGNATURE"
+    assert state.sign_url == "https://sign.example/11754"
+    assert "assinar" in reply.lower()
+
+
+def test_phase4_not_ready_never_generates_contract_or_marks_won():
+    client = _Phase4ContractClient()
+    state = _phase4_state()
+    collected = {"_playbook_ready_for_win": False}
+
+    reply = _prepare_contract_before_win(
+        client,
+        state,
+        collected,
+    )
+
+    assert client.generate_calls == 0
+    assert client.start_calls == 0
+    assert client.mark_won_calls == []
+    assert state.step == "WAITING_CRM_READY"
+    assert state.contract_status == "aguardando_validacao_crm"
+    assert "crm" in reply.lower()
+
+
+def test_phase4_contract_without_sign_url_stays_pending_and_not_won():
+    client = _Phase4ContractClient(
+        generated={
+            "status": "gerado",
+            "pdfUrl": "https://crm.example/contrato.pdf",
+        },
+        contract=False,
+    )
+    state = _phase4_state()
+    collected = {"_playbook_ready_for_win": True}
+
+    _finish_sale_contract(
+        client,
+        state,
+        collected,
+    )
+
+    assert state.step == "WAITING_CONTRACT"
+    assert state.contract_status == "gerado"
+    assert client.mark_won_calls == []
+
+
+def test_phase4_signed_contract_marks_won_with_stable_idempotency_key():
+    client = _Phase4ContractClient()
+    state = _phase4_state(
+        step="WAITING_SIGNATURE",
+        contract_status="assinado",
+    )
+    collected = {}
+
+    expected_key = _win_idempotency_key(state)
+    result = _finalize_signed_sale(
+        client,
+        state,
+        collected,
+    )
+
+    assert result["opportunity"]["status"] == "won"
+    assert client.mark_won_calls == [(11754, expected_key)]
+    assert collected["_win_idempotency_key"] == expected_key
+    assert collected["_won_after_signature"] is True
+    assert state.step == "COMPLETED"
+    assert state.completed_at is not None
+
+
+def test_phase4_idempotency_key_is_deterministic_across_retries():
+    state1 = _phase4_state()
+    state2 = _phase4_state()
+
+    assert _win_idempotency_key(state1) == _win_idempotency_key(state2)
+
+
+def test_phase4_unsigned_contract_cannot_mark_won():
+    client = _Phase4ContractClient()
+    state = _phase4_state(
+        step="WAITING_SIGNATURE",
+        contract_status="aguardando_assinatura",
+    )
+    collected = {}
+
+    try:
+        _finalize_signed_sale(
+            client,
+            state,
+            collected,
+        )
+    except CRMIntegrationError as exc:
+        assert exc.error_code == "CRM_CONTRACT_NOT_SIGNED"
+    else:
+        raise AssertionError("Contrato não assinado não pode ser marcado como ganho.")
+
+    assert client.mark_won_calls == []
+
+
+def test_phase4_contract_status_normalization_is_conservative():
+    assert _contract_is_signed("assinado") is True
+    assert _contract_is_signed("SIGNED") is True
+    assert _contract_is_signed("concluído") is True
+    assert _contract_is_signed("aguardando_assinatura") is False
+    assert _contract_is_signed("contrato_gerado") is False
+
+
+def test_phase4_playbook_without_missing_but_not_ready_waits_crm():
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[],
+            ready=False,
+            category="fibra",
+        )
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        credit_status="",
+        step="BILLING_DUE_DAY",
+    )
+    collected = {}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="__FINISH__",
+    )
+
+    assert step == "WAITING_CRM_READY"
+    assert question is None
+    assert collected["_playbook_ready_for_win"] is False
+
+
+def test_phase4_ready_playbook_releases_contract_generation():
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[],
+            ready=True,
+            category="fibra",
+        )
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        credit_status="",
+        step="BILLING_DUE_DAY",
+    )
+    collected = {}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="__FINISH__",
+    )
+
+    assert step == "__FINISH__"
+    assert question is None
+    assert collected["_playbook_ready_for_win"] is True
