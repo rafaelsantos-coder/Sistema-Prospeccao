@@ -1004,7 +1004,7 @@ def _apply_mobile_answer(
     if step == "MOBILE_CONTRACT_TYPE":
         contract_type = _extract_mobile_contract_type(text)
         if not contract_type:
-            return False, "Escolha uma das opções: Portabilidade ou Número novo."
+            return False, "Escolha uma das opções: Portabilidade, Número novo ou M2M."
         previous = str(values.get("tipo_contratacao") or "")
         values["tipo_contratacao"] = contract_type
         if previous and previous != contract_type:
@@ -1014,6 +1014,27 @@ def _apply_mobile_answer(
                 "m2m_quantidade", "m2m_iccids",
             ):
                 values.pop(key, None)
+        return True, ""
+
+    if step == "MOBILE_NEW_ICCID":
+        iccid = _extract_iccid(text)
+        if not iccid:
+            return False, "Informe o ICCID completo do chip, com 18 a 22 dígitos."
+        values["novo_iccid"] = iccid
+        return True, ""
+
+    if step == "MOBILE_NEW_NUMBER":
+        number = _extract_mobile_number(text)
+        if not number:
+            return False, "Informe o número completo com DDD."
+        values["numero_novo"] = number
+        return True, ""
+
+    if step == "MOBILE_PORT_ICCID":
+        iccid = _extract_iccid(text)
+        if not iccid:
+            return False, "Informe o ICCID completo do chip atual, com 18 a 22 dígitos."
+        values["port_iccid"] = iccid
         return True, ""
 
     if step == "MOBILE_PORT_NUMBER":
@@ -1042,6 +1063,57 @@ def _apply_mobile_answer(
         if not document:
             return False, "Informe o CPF ou CNPJ completo do titular da linha."
         values["port_cpf_cnpj"] = document
+        return True, ""
+
+    if step == "MOBILE_PORT_DATE":
+        port_date = _extract_generic_date(text)
+        if not port_date:
+            return False, "Informe a data da portabilidade no formato DD/MM/AAAA."
+        values["port_data"] = port_date
+        return True, ""
+
+    if step == "MOBILE_M2M_QTY":
+        quantity = _extract_positive_int(text)
+        if not quantity:
+            return False, "Informe a quantidade de chips M2M."
+        values["m2m_quantidade"] = quantity
+        values.pop("m2m_iccids", None)
+        return True, ""
+
+    if step == "MOBILE_M2M_ICCIDS":
+        iccids = _extract_iccids(text)
+        quantity = int(values.get("m2m_quantidade") or 0)
+        if not iccids:
+            return False, "Informe os ICCIDs dos chips M2M, separados por espaço ou vírgula."
+        if quantity and len(iccids) != quantity:
+            return False, (
+                f"Preciso de {quantity} ICCID(s) e recebi {len(iccids)}. "
+                "Envie todos os ICCIDs na mesma mensagem."
+            )
+        values["m2m_iccids"] = iccids
+        return True, ""
+
+    if step == "MOBILE_DUE_DAY":
+        due_day = _extract_due_day(text)
+        if not due_day:
+            return False, "Informe o dia de vencimento, entre 1 e 31."
+        values["vencimento"] = due_day
+        return True, ""
+
+    if step == "MOBILE_ACTIVATION_FEE":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não sobre a taxa de ativação."
+        values["taxa_ativacao"] = "Sim" if answer == "SIM" else "Não"
+        if answer == "NAO":
+            values.pop("taxa_valor", None)
+        return True, ""
+
+    if step == "MOBILE_ACTIVATION_VALUE":
+        amount = _extract_money(text)
+        if amount is None:
+            return False, "Informe o valor da taxa de ativação."
+        values["taxa_valor"] = amount
         return True, ""
 
     if step == "MOBILE_PAYMENT_METHOD":
@@ -1092,6 +1164,89 @@ def _apply_mobile_answer(
         return True, ""
 
     return False, "Não consegui interpretar esta etapa da contratação móvel."
+
+
+def _apply_billing_form_answer(
+    step: str,
+    text: str,
+    values: dict[str, Any],
+) -> tuple[bool, str]:
+    if step == "BILLING_PAYMENT_METHOD":
+        method = _extract_mobile_payment(text)
+        if not method:
+            return False, "Escolha boleto ou débito em conta."
+        values["forma_pagamento"] = method
+        if method == "Boleto":
+            for key in ("debito_banco", "debito_agencia", "debito_conta", "debito_titular"):
+                values.pop(key, None)
+        else:
+            values.pop("envio_fatura", None)
+        return True, ""
+
+    if step == "BILLING_INVOICE_DELIVERY":
+        delivery = _extract_invoice_delivery(text)
+        if not delivery:
+            return False, "Escolha WhatsApp, e-mail ou ambos para receber a fatura."
+        values["envio_fatura"] = delivery
+        return True, ""
+
+    if step == "BILLING_DUE_DAY":
+        due_day = _extract_due_day(text)
+        if not due_day:
+            return False, "Informe o dia de vencimento, entre 1 e 31."
+        values["vencimento"] = due_day
+        return True, ""
+
+    if step == "BILLING_ACTIVATION_FEE":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não sobre a taxa de ativação."
+        values["taxa_ativacao"] = "Sim" if answer == "SIM" else "Não"
+        if answer == "NAO":
+            values.pop("taxa_valor", None)
+        return True, ""
+
+    if step == "BILLING_ACTIVATION_VALUE":
+        amount = _extract_money(text)
+        if amount is None:
+            return False, "Informe o valor da taxa de ativação."
+        values["taxa_valor"] = amount
+        return True, ""
+
+    text_value = re.sub(r"\s+", " ", (text or "").strip())
+    if step in {
+        "BILLING_DEBIT_BANK",
+        "BILLING_DEBIT_AGENCY",
+        "BILLING_DEBIT_ACCOUNT",
+        "BILLING_DEBIT_HOLDER",
+    }:
+        if not text_value:
+            return False, "Preciso dessa informação para configurar o débito em conta."
+        field = {
+            "BILLING_DEBIT_BANK": "debito_banco",
+            "BILLING_DEBIT_AGENCY": "debito_agencia",
+            "BILLING_DEBIT_ACCOUNT": "debito_conta",
+            "BILLING_DEBIT_HOLDER": "debito_titular",
+        }[step]
+        values[field] = text_value[:160]
+        return True, ""
+
+    if step == "BILLING_UNIFY":
+        answer = _yes_no(text)
+        if answer == "NAO_INFORMADO":
+            return False, "Responda sim ou não para unificar as faturas."
+        values["unificar_faturas"] = "Sim" if answer == "SIM" else "Não"
+        if answer == "SIM":
+            values.pop("unificar_motivo", None)
+        return True, ""
+
+    if step == "BILLING_UNIFY_REASON":
+        if len(text_value) < 3:
+            return False, "Informe o motivo para não unificar as faturas."
+        values["unificar_motivo"] = text_value[:300]
+        return True, ""
+
+    return False, "Não consegui interpretar esta informação de faturamento."
 
 
 def _finish_sale_contract(client: SulnetCRMClient, state: AIClosingState) -> str:
