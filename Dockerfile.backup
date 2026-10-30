@@ -1,0 +1,23 @@
+FROM postgres:18
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir boto3 cryptography
+
+COPY app /app/app
+
+RUN groupadd --system app \
+    && useradd --system --gid app --home-dir /app app \
+    && chown -R app:app /app
+
+USER app
+
+CMD ["python", "-m", "app.workers.backup_worker"]
