@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -1118,6 +1118,126 @@ def _build_ai_performance_management(
     }
 
 
+def _build_supervisor_shadow_report(
+    db: Session,
+    *,
+    conversation_ids: list[int],
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    empty = {
+        "mode": "SHADOW",
+        "reviews": 0,
+        "approve": 0,
+        "correct": 0,
+        "block": 0,
+        "approval_rate": 0.0,
+        "intervention_rate": 0.0,
+        "high_risk": 0,
+        "avg_quality_score": None,
+        "sdr_reviews": 0,
+        "closer_reviews": 0,
+        "top_issues": [],
+        "recent_findings": [],
+    }
+    if not conversation_ids:
+        return empty
+
+    logs = list(
+        db.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "AI_SUPERVISOR_SHADOW_REVIEW",
+                AuditLog.entity_type == "ai_run",
+                AuditLog.created_at >= start,
+                AuditLog.created_at <= end,
+            )
+            .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            .limit(5000)
+        )
+    )
+    selected = set(conversation_ids)
+    reviews: list[dict[str, Any]] = []
+    for row in logs:
+        try:
+            payload = json.loads(row.payload_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        try:
+            conversation_id = int(payload.get("conversation_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if conversation_id not in selected:
+            continue
+        reviews.append(
+            {
+                "id": row.id,
+                "created_at": row.created_at,
+                "conversation_id": conversation_id,
+                "ai_run_id": payload.get("ai_run_id"),
+                "agent_role": str(payload.get("agent_role") or ""),
+                "verdict": str(payload.get("verdict") or "APPROVE").upper(),
+                "risk": str(payload.get("risk") or "LOW").upper(),
+                "confidence": float(payload.get("confidence") or 0.0),
+                "quality_score": int(payload.get("quality_score") or 0),
+                "issue_codes": [
+                    str(item)
+                    for item in (payload.get("issue_codes") or [])
+                    if str(item)
+                ],
+                "rationale": str(payload.get("rationale") or ""),
+                "suggested_reply": str(payload.get("suggested_reply") or ""),
+                "suggested_state": str(payload.get("suggested_state") or ""),
+                "suggested_buttons": [
+                    str(item)
+                    for item in (payload.get("suggested_buttons") or [])
+                    if str(item)
+                ],
+            }
+        )
+
+    if not reviews:
+        return empty
+
+    verdicts = Counter(item["verdict"] for item in reviews)
+    roles = Counter(item["agent_role"] for item in reviews)
+    issue_counts: Counter[str] = Counter()
+    scores: list[int] = []
+    high_risk = 0
+    for item in reviews:
+        issue_counts.update(item["issue_codes"])
+        scores.append(item["quality_score"])
+        if item["risk"] in {"HIGH", "CRITICAL"}:
+            high_risk += 1
+
+    total = len(reviews)
+    non_approved = verdicts["CORRECT"] + verdicts["BLOCK"]
+    return {
+        "mode": "SHADOW",
+        "reviews": total,
+        "approve": verdicts["APPROVE"],
+        "correct": verdicts["CORRECT"],
+        "block": verdicts["BLOCK"],
+        "approval_rate": (verdicts["APPROVE"] / total * 100) if total else 0.0,
+        "intervention_rate": (non_approved / total * 100) if total else 0.0,
+        "high_risk": high_risk,
+        "avg_quality_score": (
+            statistics.mean(scores) if scores else None
+        ),
+        "sdr_reviews": roles["SDR"],
+        "closer_reviews": roles["CLOSER"],
+        "top_issues": [
+            {"code": code, "count": count}
+            for code, count in issue_counts.most_common(8)
+        ],
+        "recent_findings": [
+            item for item in reviews if item["verdict"] != "APPROVE"
+        ][:20],
+    }
+
+
 def build_chat_report(
     db: Session,
     user: User,
@@ -1230,6 +1350,12 @@ def build_chat_report(
         "kpis": previous_journey["kpis"],
     }
     journey_current_map = journey_report["current_by_conversation"]
+    supervisor_shadow = _build_supervisor_shadow_report(
+        db,
+        conversation_ids=conversation_ids,
+        start=start,
+        end=end,
+    )
 
     rows: list[dict[str, Any]] = []
     all_period_messages: list[Message] = []
@@ -1465,6 +1591,7 @@ def build_chat_report(
         "connected_phones": _connected_phones(db, start, end),
         "operators": operator_rows,
         "ai_journey": journey_report,
+        "ai_supervisor_shadow": supervisor_shadow,
         "daily": [
             {"date": key, **value}
             for key, value in sorted(daily.items())
