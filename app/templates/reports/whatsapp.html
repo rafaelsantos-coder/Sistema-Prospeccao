@@ -226,6 +226,94 @@
     </div>
   </section>
 
+  {% set supervisor = report.ai_supervisor_shadow %}
+  <section class="report-panel">
+    <header class="report-panel-header">
+      <div>
+        <span class="eyebrow">SUPERVISOR IA · MODO SOMBRA</span>
+        <h3>Auditoria independente do SDR e do Vendedor IA</h3>
+      </div>
+      <span class="report-caption">Observa e recomenda; nesta fase não altera mensagens, estado, CRM ou follow-up.</span>
+    </header>
+
+    <section class="report-kpis">
+      <article class="report-kpi emphasis">
+        <span>Ações auditadas</span>
+        <strong>{{ supervisor.reviews }}</strong>
+        <small>{{ supervisor.sdr_reviews }} SDR · {{ supervisor.closer_reviews }} Vendedor IA</small>
+      </article>
+      <article class="report-kpi">
+        <span>Aprovaria</span>
+        <strong>{{ '%.1f'|format(supervisor.approval_rate) }}%</strong>
+        <small>{{ supervisor.approve }} ação(ões) sem correção</small>
+      </article>
+      <article class="report-kpi">
+        <span>Corrigiria</span>
+        <strong>{{ supervisor.correct }}</strong>
+        <small>Reescrita ou ajuste de estado recomendado</small>
+      </article>
+      <article class="report-kpi">
+        <span>Bloquearia</span>
+        <strong>{{ supervisor.block }}</strong>
+        <small>Erro objetivo que o futuro Guardião deveria impedir</small>
+      </article>
+      <article class="report-kpi">
+        <span>Intervenção sugerida</span>
+        <strong>{{ '%.1f'|format(supervisor.intervention_rate) }}%</strong>
+        <small>{{ supervisor.high_risk }} caso(s) de risco alto/crítico</small>
+      </article>
+      <article class="report-kpi">
+        <span>Qualidade média</span>
+        <strong>{% if supervisor.avg_quality_score is not none %}{{ '%.1f'|format(supervisor.avg_quality_score) }}/100{% else %}—{% endif %}</strong>
+        <small>Nota dada pelo Supervisor por ação</small>
+      </article>
+    </section>
+
+    {% if supervisor.top_issues %}
+    <div class="metric-definition">
+      <strong>Problemas mais encontrados:</strong>
+      {% for item in supervisor.top_issues %}
+        {{ item.code }} ({{ item.count }}){% if not loop.last %} · {% endif %}
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="metric-definition">
+      <strong>Calibração:</strong> o Supervisor começa a formar uma base de concordância a partir das novas decisões do SDR e do Vendedor IA.
+    </div>
+    {% endif %}
+
+    {% if supervisor.recent_findings %}
+    <div class="table-wrap">
+      <table class="report-table">
+        <thead>
+          <tr><th>Quando</th><th>Agente</th><th>Veredito</th><th>Risco</th><th>Diagnóstico</th><th>Correção sugerida</th><th>Chat</th></tr>
+        </thead>
+        <tbody>
+          {% for item in supervisor.recent_findings[:10] %}
+          <tr>
+            <td>{{ item.created_at|datetime_br }}</td>
+            <td>{{ 'Vendedor IA' if item.agent_role == 'CLOSER' else item.agent_role }}</td>
+            <td><strong>{{ item.verdict }}</strong></td>
+            <td>{{ item.risk }}</td>
+            <td>
+              {{ item.rationale or '—' }}
+              {% if item.issue_codes %}<small>{{ item.issue_codes|join(', ') }}</small>{% endif %}
+            </td>
+            <td>
+              {% if item.suggested_state %}<strong>Estado: {{ item.suggested_state }}</strong>{% endif %}
+              <small>{{ item.suggested_reply or 'Sem reescrita sugerida.' }}</small>
+            </td>
+            <td><a class="report-inline-link" href="/conversations/{{ item.conversation_id }}">Abrir</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="report-empty">Ainda não há divergências registradas pelo Supervisor no período selecionado.</div>
+    {% endif %}
+  </section>
+
   <section class="report-panel">
     <header class="report-panel-header">
       <div>
