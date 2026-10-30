@@ -52,21 +52,31 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
     text = unicodedata.normalize("NFKD", raw_text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
 
-    if "cliente sulnet" in text or "nosso cliente" in text:
+    if (
+        ("telefonia movel" in text or "sulmovel" in text)
+        and ("nova conexao" in text or "outro endereco" in text)
+    ):
         return [
-            {"id": "sim", "label": "Sim"},
-            {"id": "nao", "label": "Não"},
+            {"id": "movel", "label": "Telefonia Móvel"},
+            {"id": "nova_conexao", "label": "Nova conexão"},
         ]
 
     if "internet" in text and ("telefonia movel" in text or "sulmovel" in text):
-        if "nova conexao" in text or "outro endereco" in text:
-            return [
-                {"id": "movel", "label": "Telefonia Móvel"},
-                {"id": "nova_conexao", "label": "Nova conexão"},
-            ]
         return [
             {"id": "internet", "label": "Internet"},
             {"id": "movel", "label": "Telefonia Móvel"},
+        ]
+
+    if (
+        "ja e cliente sulnet" in text
+        or "voce e cliente sulnet" in text
+        or "voce ja e cliente sulnet" in text
+        or "ja e nosso cliente" in text
+        or "voce ja e nosso cliente" in text
+    ):
+        return [
+            {"id": "sim", "label": "Sim"},
+            {"id": "nao", "label": "Não"},
         ]
 
     if "fibra optica" in text and ("movel" in text or "sulmovel" in text):
