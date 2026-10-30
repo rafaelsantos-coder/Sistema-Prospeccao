@@ -256,7 +256,7 @@ class _MobilePlanContextClient:
         return [
             {
                 "id": 392,
-                "name": "Meu Trabalho Comigo 15GB",
+                "name": "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26",
                 "monthlyValue": 69.80,
                 "categoryId": 83,
                 "categoryName": "TELEFONIA MÓVEL",
@@ -302,19 +302,19 @@ def test_sync_plan_context_recovers_mobile_product_after_email():
     assert collected["planId"] == 392
     assert collected["categoryId"] == 83
     assert collected["categoryName"] == "TELEFONIA MÓVEL"
-    assert collected["catalogPlanName"] == "Meu Trabalho Comigo 15GB"
+    assert collected["catalogPlanName"] == "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26"
     assert state.plan_label == "Sulmóvel 15GB"
     assert client.updated == [
         (
             11754,
             {
                 "planId": 392,
-                "planLabel": "Meu Trabalho Comigo 15GB",
+                "planLabel": "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26",
                 "catalogMonthlyValue": 69.80,
             },
         )
     ]
-    assert collected["contractProductName"] == "Meu Trabalho Comigo 15GB"
+    assert collected["contractProductName"] == "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26"
 
 
 def test_seller_step_buttons_cover_predefined_mobile_questions():
