@@ -101,6 +101,10 @@ def test_whatsapp_reports_page(monkeypatch):
         assert "GESTÃO AUTOMÁTICA DE PERFORMANCE" in response.text
         assert "Saúde da jornada" in response.text
         assert "Recomendação principal" in response.text
+        assert "SUPERVISOR IA · MODO SOMBRA" in response.text
+        assert "Auditoria independente do SDR e do Vendedor IA" in response.text
+        assert "Aprovaria" in response.text
+        assert "Bloquearia" in response.text
 
 
 def test_whatsapp_reports_csv_exports(monkeypatch):
