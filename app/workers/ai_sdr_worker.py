@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -32,17 +33,66 @@ logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger("sulnet_ai_sdr_worker")
 
 
+def _real_mode_cutoff():
+    raw = os.getenv("AI_REAL_MODE_SINCE", "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        LOG.error("AI_REAL_MODE_SINCE inválido: %s", raw)
+        return None
+
+
+def _cancel_pre_real_mode_work() -> tuple[int, int]:
+    cutoff = _real_mode_cutoff()
+    if not cutoff:
+        return 0, 0
+    db = SessionLocal()
+    cancelled_jobs = 0
+    cancelled_followups = 0
+    try:
+        jobs = list(db.scalars(select(AIJob).where(
+            AIJob.status.in_(["PENDENTE", "PROCESSANDO"]),
+            AIJob.created_at < cutoff,
+        )))
+        for job in jobs:
+            job.status = "CANCELADO"
+            job.locked_at = None
+            job.error = "Cancelado pelo marco de início dos casos reais."
+            cancelled_jobs += 1
+
+        followups = list(db.scalars(select(AIFollowupJob).where(
+            AIFollowupJob.status.in_(["PENDENTE", "PROCESSANDO"]),
+            AIFollowupJob.created_at < cutoff,
+        )))
+        for job in followups:
+            job.status = "CANCELADO"
+            job.locked_at = None
+            job.error = "Cancelado pelo marco de início dos casos reais."
+            cancelled_followups += 1
+        db.commit()
+    finally:
+        db.close()
+    return cancelled_jobs, cancelled_followups
+
+
 def _recover_stale_jobs() -> int:
     db = SessionLocal()
     recovered = 0
     try:
         threshold = utcnow() - timedelta(minutes=10)
+        cutoff = _real_mode_cutoff()
         jobs = list(
             db.scalars(
                 select(AIJob).where(
                     AIJob.status == "PROCESSANDO",
                     AIJob.locked_at.is_not(None),
                     AIJob.locked_at < threshold,
+                    *( [AIJob.created_at >= cutoff] if cutoff else [] ),
                 )
             )
         )
@@ -63,12 +113,14 @@ def _recover_stale_followups() -> int:
     recovered = 0
     try:
         threshold = utcnow() - timedelta(minutes=10)
+        cutoff = _real_mode_cutoff()
         jobs = list(
             db.scalars(
                 select(AIFollowupJob).where(
                     AIFollowupJob.status == "PROCESSANDO",
                     AIFollowupJob.locked_at.is_not(None),
                     AIFollowupJob.locked_at < threshold,
+                    *( [AIFollowupJob.created_at >= cutoff] if cutoff else [] ),
                 )
             )
         )
@@ -89,11 +141,13 @@ def _reschedule_initial_pending_followups() -> int:
     updated = 0
     try:
         now = utcnow()
+        cutoff = _real_mode_cutoff()
         jobs = list(
             db.scalars(
                 select(AIFollowupJob).where(
                     AIFollowupJob.status == "PENDENTE",
                     AIFollowupJob.step <= 6,
+                    *( [AIFollowupJob.created_at >= cutoff] if cutoff else [] ),
                 )
             )
         )
@@ -118,6 +172,7 @@ def _recover_closer_capture_patch_failures() -> int:
     recovered = 0
     try:
         closer = active_closer(db)
+        cutoff = _real_mode_cutoff()
         if not closer:
             return 0
 
@@ -127,7 +182,7 @@ def _recover_closer_capture_patch_failures() -> int:
                 .where(
                     AIClosingState.step == "ESCALATED",
                     AIClosingState.last_error.ilike("%Falha repetida na integração CRM:%"),
-                    AIClosingState.updated_at >= utcnow() - timedelta(hours=12),
+                    AIClosingState.updated_at >= max(utcnow() - timedelta(hours=12), cutoff) if cutoff else AIClosingState.updated_at >= utcnow() - timedelta(hours=12),
                 )
                 .order_by(AIClosingState.updated_at.desc())
                 .limit(50)
@@ -224,12 +279,13 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
     db = SessionLocal()
     created = 0
     try:
+        cutoff = _real_mode_cutoff()
         states = list(
             db.scalars(
                 select(AIConversationState)
                 .where(
                     AIConversationState.state.in_(["AI_ACTIVE", "CLOSING"]),
-                    AIConversationState.updated_at >= utcnow() - timedelta(days=30),
+                    AIConversationState.updated_at >= max(utcnow() - timedelta(days=30), cutoff) if cutoff else AIConversationState.updated_at >= utcnow() - timedelta(days=30),
                 )
                 .order_by(AIConversationState.updated_at.desc())
                 .limit(limit)
@@ -276,6 +332,8 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
                 .limit(1)
             )
             if not latest or latest.direction != "OUTBOUND":
+                continue
+            if cutoff and latest.created_at and latest.created_at < cutoff:
                 continue
 
             source_inbound_id = db.scalar(
@@ -347,7 +405,10 @@ def _recover_recent_unqueued_inbounds() -> int:
     reasons: Counter[str] = Counter()
     inspected: list[str] = []
     try:
+        cutoff = _real_mode_cutoff()
         threshold = utcnow() - timedelta(minutes=30)
+        if cutoff and cutoff > threshold:
+            threshold = cutoff
         messages = list(
             db.scalars(
                 select(Message)
@@ -507,6 +568,9 @@ def run() -> None:
             name="sulia-engineer",
             daemon=True,
         ).start()
+    cancelled_jobs, cancelled_followups = _cancel_pre_real_mode_work()
+    if cancelled_jobs or cancelled_followups:
+        LOG.warning("Modo real ativado: jobs antigos cancelados=%s followups antigos cancelados=%s cutoff=%s", cancelled_jobs, cancelled_followups, _real_mode_cutoff())
     _recover_stale_jobs()
     _recover_stale_followups()
     recovered_closer = _recover_closer_capture_patch_failures()
@@ -519,7 +583,7 @@ def run() -> None:
     resumed_mobile = 0
     db = SessionLocal()
     try:
-        resumed_mobile = resume_simplified_mobile_states(db)
+        resumed_mobile = resume_simplified_mobile_states(db, since=_real_mode_cutoff())
         db.commit()
     finally:
         db.close()
@@ -564,12 +628,15 @@ def run() -> None:
 
         if now_mono - last_stale_recovery >= 300:
             try:
+                old_jobs, old_followups = _cancel_pre_real_mode_work()
                 stale_jobs = _recover_stale_jobs()
                 stale_followups = _recover_stale_followups()
                 backfilled = _backfill_missing_followups(limit=250)
-                if stale_jobs or stale_followups or backfilled:
+                if old_jobs or old_followups or stale_jobs or stale_followups or backfilled:
                     LOG.info(
-                        "Recuperação periódica stale jobs=%s followups=%s backfilled=%s",
+                        "Recuperação periódica old_jobs=%s old_followups=%s stale jobs=%s followups=%s backfilled=%s",
+                        old_jobs,
+                        old_followups,
                         stale_jobs,
                         stale_followups,
                         backfilled,
