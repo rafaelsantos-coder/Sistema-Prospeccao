@@ -571,7 +571,22 @@ PLAYBOOK_CATEGORY_FIELD_BY_CODE = {
 
 def _playbook_code_key(value: str) -> str:
     folded = _norm(value)
-    return re.sub(r"[^a-z0-9]+", "", folded)
+    compact = re.sub(r"[^a-z0-9]+", "", folded)
+
+    # O CRM publica alguns campos customizados como cf_<nome>. Para o Vendedor
+    # IA, o prefixo "cf" é apenas namespace do CRM; a semântica continua sendo
+    # a mesma do campo já mapeado (ex.: cf_envio_fatura -> enviofatura).
+    if compact.startswith("cf") and len(compact) > 2:
+        without_prefix = compact[2:]
+        known_codes = (
+            set(PLAYBOOK_STEP_BY_CODE)
+            | set(PLAYBOOK_BILLING_STEPS)
+            | set(PLAYBOOK_CATEGORY_FIELD_BY_CODE)
+            | set(SDR_IA_SKIP_CODES)
+        )
+        if without_prefix in known_codes:
+            return without_prefix
+    return compact
 
 
 def _playbook_category(
@@ -854,6 +869,12 @@ def _query_playbook_guidance(
                 state.opportunity_id,
                 skipped,
             )
+            if result.sdr_ia_funnel:
+                # Esses campos foram explicitamente vetados no fluxo SDR IA.
+                # O endpoint contract/generate é responsável por aplicar defaults
+                # comerciais homologados e validar readiness do lado do CRM.
+                collected["_contract_generation_allowed"] = True
+                return fallback_step, None
             return "WAITING_CRM_READY", None
 
         first = actionable[0]
@@ -1535,9 +1556,14 @@ def _prepare_contract_before_win(
     if not state.opportunity_id:
         raise CRMIntegrationError("Oportunidade do CRM não disponível para gerar contrato.")
 
-    # readyForWin significa cadastro comercial completo. Na Fase 4 ele libera
-    # a geração do contrato, mas NÃO marca a oportunidade como ganha.
-    if collected.get("_playbook_ready_for_win") is not True:
+    # A validação definitiva de readiness pertence ao CRM. Em SDR IA, o
+    # playbook pode retornar campos intencionalmente vetados (ex.: port_data)
+    # mesmo quando contract/generate consegue aplicar os defaults homologados.
+    can_attempt_contract = bool(
+        collected.get("_playbook_ready_for_win") is True
+        or collected.get("_contract_generation_allowed") is True
+    )
+    if not can_attempt_contract:
         state.step = "WAITING_CRM_READY"
         state.contract_status = "aguardando_validacao_crm"
         return _prompt_for_step(state, collected)
@@ -1554,24 +1580,41 @@ def _prepare_contract_before_win(
     state.step = "WAITING_CONTRACT"
     generated: dict[str, Any] = {}
 
-    if client.supports_any(
-        "agentContractGenerate",
-        "contractGenerate",
-        "contractGeneration",
-    ):
-        if not collected.get("_contract_generation_requested"):
-            generated = client.generate_agent_contract(state.opportunity_id)
+    if not collected.get("_contract_generation_requested"):
+        try:
+            generated = client.generate_agent_contract(
+                state.opportunity_id,
+                send_signature=True,
+                require_ready_for_win=True,
+            )
+        except CRMIntegrationError as exc:
+            if exc.status_code not in {404, 405, 501}:
+                raise
+            generated = {}
+            collected["_contract_generation_endpoint_unavailable"] = True
+        else:
             collected["_contract_generation_requested"] = True
             collected["_contract_generation_response"] = {
                 key: generated.get(key)
-                for key in ("protocol", "templateId", "status")
+                for key in (
+                    "protocol",
+                    "templateId",
+                    "status",
+                    "signatureReused",
+                )
                 if generated.get(key) not in (None, "")
             }
-    elif client.supports("contract"):
+
+    if not generated and client.supports("contract"):
         if not collected.get("_contract_start_requested"):
             generated = client.start_contract(state.opportunity_id)
             collected["_contract_start_requested"] = True
-    else:
+
+    if (
+        not generated
+        and collected.get("_contract_generation_endpoint_unavailable")
+        and not client.supports("contract")
+    ):
         state.contract_status = "aguardando_capability_contrato"
         return _prompt_for_step(state, collected)
 
