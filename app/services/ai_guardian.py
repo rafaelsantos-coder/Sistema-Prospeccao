@@ -22,6 +22,7 @@ from app.services.ai_supervisor import (
     _catalog_snapshot,
     _closing_context,
     _deterministic_findings,
+    _normalized_similarity,
     _redact_object,
     _redact_text,
 )
@@ -197,6 +198,8 @@ def build_guardian_context(
         run_output={
             "quick_replies": normalized_buttons,
             "step_after": proposed_state or closing.get("step"),
+            "journey_state": proposed_state,
+            "proposed_state": proposed_state,
         },
         history=history,
         actual_outbound=None,
@@ -362,6 +365,14 @@ def _apply_guardrails(
         review.risk = "HIGH"
         review.quality_score = min(review.quality_score, 55)
 
+    elif "STATE_REGRESSION" in high:
+        # Estado regressivo não pode ser corrigido só trocando a frase.
+        # O SDR precisa reconstruir a decisão com os fatos confirmados.
+        review.verdict = "BLOCK"
+        review.risk = "HIGH"
+        review.quality_score = min(review.quality_score, 35)
+        review.reply_text = ""
+
     # Pergunta fechada sem botões: corrige antes do envio.
     if "MISSING_QUICK_REPLIES" in high and review.verdict != "BLOCK":
         labels = _buttons_from_labels(review.suggested_buttons)
@@ -421,6 +432,29 @@ def _apply_guardrails(
 
     if review.verdict == "APPROVE":
         final_buttons = _normalize_buttons(original_text, original_buttons)
+
+    # A reescrita do próprio Guardião também precisa passar pelo anti-repetição.
+    # Caso contrário ele poderia detectar repetição e devolver uma paráfrase
+    # praticamente idêntica, que ainda assim chegaria ao cliente.
+    if review.verdict != "BLOCK" and final_text:
+        prior_outbounds = [
+            str(item.get("body") or "")
+            for item in context.get("history") or []
+            if str(item.get("direction") or "").upper() == "OUTBOUND"
+        ]
+        if any(
+            _normalized_similarity(final_text, previous) >= 0.88
+            for previous in prior_outbounds[-5:]
+        ):
+            review.verdict = "BLOCK"
+            review.risk = "HIGH"
+            review.quality_score = min(review.quality_score, 45)
+            if "POSSIBLE_REPEAT" not in review.issue_codes:
+                review.issue_codes.append("POSSIBLE_REPEAT")
+            review.rationale = (
+                review.rationale
+                or "A saída final continuou repetitiva após a revisão do Guardião."
+            )
 
     should_send = review.verdict != "BLOCK"
     if review.verdict == "BLOCK":

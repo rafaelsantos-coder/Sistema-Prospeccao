@@ -404,7 +404,7 @@ def _conversation_messages(
                 Message.direction.in_({"INBOUND", "OUTBOUND"}),
             )
             .order_by(Message.id.desc())
-            .limit(max(4, min(limit, 80)))
+            .limit(max(4, min(limit, 200)))
         )
     )
     return list(reversed(rows))
@@ -534,12 +534,31 @@ def _persist_journey_memory(
     if not isinstance(payload, dict):
         payload = {}
 
+    previous = payload.get("ai_journey")
+    previous = previous if isinstance(previous, dict) else {}
+
+    existing_customer = str(decision.qualification.existing_customer or "").upper()
+    if existing_customer not in {"CLIENTE", "NAO_CLIENTE"}:
+        existing_customer = str(previous.get("existing_customer") or "").upper()
+    if existing_customer not in {"CLIENTE", "NAO_CLIENTE"}:
+        existing_customer = ""
+
+    customer_type = str(decision.qualification.customer_type or "").upper()
+    if customer_type not in {"EMPRESA", "RESIDENCIAL"}:
+        customer_type = str(previous.get("customer_type") or "").upper()
+    if customer_type not in {"EMPRESA", "RESIDENCIAL"}:
+        customer_type = ""
+
+    desired_product = str(decision.qualification.desired_product or "").strip()
+    if not desired_product:
+        desired_product = str(previous.get("desired_product") or "").strip()
+
     payload["ai_journey"] = {
         "state": decision.journey_state,
         "pending_action": decision.journey_pending_action or decision.next_action,
-        "desired_product": decision.qualification.desired_product or "",
-        "customer_type": decision.qualification.customer_type,
-        "existing_customer": decision.qualification.existing_customer,
+        "desired_product": desired_product,
+        "customer_type": customer_type,
+        "existing_customer": existing_customer,
         "offer_plan_code": decision.offer_plan_code or "",
         "offer_price": decision.offer_price,
         "objection": decision.objection,
@@ -575,6 +594,65 @@ def build_ai_context(
         conversation.id,
         limit=max(40, int(agent.max_history_messages or 24)),
     )
+    fact_history = _conversation_messages(
+        db,
+        conversation.id,
+        limit=max(160, int(agent.max_history_messages or 24)),
+    )
+    confirmed_facts = _confirmed_facts_from_history(fact_history)
+
+    # Memória factual por conversa: o input do último run guarda os fatos que já
+    # haviam sido reconstruídos de falas INBOUND. Isso mantém continuidade mesmo
+    # quando a confirmação original já saiu da janela recente de mensagens.
+    if state and state.last_run_id:
+        previous_run = db.get(AIRun, state.last_run_id)
+        if previous_run:
+            try:
+                previous_snapshot = json.loads(previous_run.input_snapshot_json or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                previous_snapshot = {}
+            previous_facts = (
+                previous_snapshot.get("confirmed_facts")
+                if isinstance(previous_snapshot, dict)
+                else {}
+            )
+            if isinstance(previous_facts, dict):
+                for key in (
+                    "existing_customer",
+                    "customer_type",
+                    "product_kind",
+                    "desired_product",
+                    "city",
+                ):
+                    if not confirmed_facts.get(key) and previous_facts.get(key):
+                        confirmed_facts[key] = previous_facts[key]
+                confirmed_facts["answered_questions"] = sorted(
+                    set(confirmed_facts.get("answered_questions") or [])
+                    | set(previous_facts.get("answered_questions") or [])
+                )
+
+    lead_existing = _confirmed_existing_customer_from_lead(lead)
+    if (
+        not confirmed_facts.get("existing_customer")
+        and lead_existing in {"CLIENTE", "NAO_CLIENTE"}
+    ):
+        confirmed_facts["existing_customer"] = lead_existing
+        confirmed_facts["answered_questions"] = sorted(
+            set(confirmed_facts.get("answered_questions") or [])
+            | {"EXISTING_CUSTOMER"}
+        )
+
+    lead_customer_type = _confirmed_customer_type_from_lead(lead)
+    if (
+        not confirmed_facts.get("customer_type")
+        and lead_customer_type in {"EMPRESA", "RESIDENCIAL"}
+    ):
+        confirmed_facts["customer_type"] = lead_customer_type
+        confirmed_facts["answered_questions"] = sorted(
+            set(confirmed_facts.get("answered_questions") or [])
+            | {"CUSTOMER_TYPE"}
+        )
+
     knowledge = retrieve_knowledge(db, agent=agent, query=message.body or "")
     knowledge_meta_rows = list(
         db.scalars(
@@ -598,6 +676,7 @@ def build_ai_context(
             "name": queue.name if queue else "",
             "team": queue.team if queue else "",
         },
+        "confirmed_facts": confirmed_facts,
         "lead": {
             "id": lead.id if lead else None,
             "contact_name": lead.contact_name if lead else "",
@@ -670,6 +749,139 @@ def _fold_sales_text(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+_EXISTING_CUSTOMER_QUESTION_CUES = (
+    "voce ja e cliente sulnet",
+    "ja e cliente sulnet",
+    "voce ja e nosso cliente",
+    "voce ja possui algum servico da sulnet",
+    "ja possui algum servico da sulnet",
+    "possui algum servico da sulnet",
+    "voce tem algum servico da sulnet",
+    "tem algum servico da sulnet",
+)
+
+
+def _asks_existing_customer(value: str | None) -> bool:
+    folded = _fold_sales_text(value)
+    return bool(folded) and any(
+        cue in folded for cue in _EXISTING_CUSTOMER_QUESTION_CUES
+    )
+
+
+def _product_kind_from_text(
+    value: str | None,
+    *,
+    previous_outbound: str | None = None,
+) -> str:
+    folded = _fold_sales_text(value)
+    previous = _fold_sales_text(previous_outbound)
+    if not folded:
+        return ""
+
+    mobile = {
+        "movel",
+        "telefonia movel",
+        "plano movel",
+        "planos moveis",
+        "sulmovel",
+        "celular",
+    }
+    internet = {
+        "internet",
+        "fibra",
+        "fibra optica",
+        "plano de internet",
+        "planos de internet",
+    }
+    if folded in mobile:
+        return "MOBILE"
+    if folded in internet:
+        return "INTERNET"
+
+    product_question = (
+        "internet" in previous
+        and any(token in previous for token in ("telefonia movel", "movel"))
+    )
+    if product_question:
+        if folded in {"internet", "fibra", "fibra optica"}:
+            return "INTERNET"
+        if folded in {"movel", "telefonia movel", "sulmovel", "celular"}:
+            return "MOBILE"
+    return ""
+
+
+def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
+    facts: dict[str, object] = {
+        "existing_customer": "",
+        "customer_type": "",
+        "product_kind": "",
+        "desired_product": "",
+        "city": "",
+        "answered_questions": [],
+    }
+    answered: set[str] = set()
+    previous_outbound = ""
+
+    for row in rows:
+        if isinstance(row, dict):
+            direction = str(row.get("direction") or "").upper()
+            body = str(row.get("body") or "")
+        else:
+            direction = str(row.direction or "").upper()
+            body = str(row.body or "")
+
+        if direction == "OUTBOUND":
+            previous_outbound = body
+            continue
+        if direction != "INBOUND":
+            continue
+
+        existing = _existing_customer_from_text(
+            body,
+            previous_outbound=previous_outbound,
+        )
+        if existing:
+            facts["existing_customer"] = existing
+            answered.add("EXISTING_CUSTOMER")
+
+        customer_type = _customer_type_from_text(body)
+        if customer_type:
+            facts["customer_type"] = customer_type
+            answered.add("CUSTOMER_TYPE")
+
+        product_kind = _product_kind_from_text(
+            body,
+            previous_outbound=previous_outbound,
+        )
+        if product_kind:
+            facts["product_kind"] = product_kind
+            facts["desired_product"] = (
+                "Internet" if product_kind == "INTERNET" else "Telefonia Móvel"
+            )
+            answered.add("PRODUCT")
+
+        folded = _fold_sales_text(body)
+        previous_folded = _fold_sales_text(previous_outbound)
+        asks_city = any(
+            cue in previous_folded
+            for cue in (
+                "qual e a sua cidade",
+                "qual sua cidade",
+                "em qual cidade",
+                "qual cidade",
+            )
+        )
+        for service_city in SERVICE_CITIES:
+            city_key = _fold_sales_text(service_city)
+            if folded == city_key or (asks_city and city_key in folded):
+                facts["city"] = service_city
+                answered.add("CITY")
+                break
+
+    facts["answered_questions"] = sorted(answered)
+    return facts
+
+
 def _existing_customer_from_text(
     value: str | None,
     *,
@@ -708,14 +920,7 @@ def _existing_customer_from_text(
     if folded in positive_exact or any(cue in folded for cue in positive_sulnet_cues):
         return "CLIENTE"
 
-    status_question = any(
-        cue in previous
-        for cue in (
-            "voce ja e cliente sulnet",
-            "ja e cliente sulnet",
-            "voce ja e nosso cliente",
-        )
-    )
+    status_question = _asks_existing_customer(previous_outbound)
     if status_question:
         if folded in {"sim", "sim sou", "sou", "ja sou", "sou sim"}:
             return "CLIENTE"
@@ -725,6 +930,11 @@ def _existing_customer_from_text(
 
 
 def _existing_customer_from_context(context: dict) -> str:
+    facts = context.get("confirmed_facts") or {}
+    fact_value = str(facts.get("existing_customer") or "").upper()
+    if fact_value in {"CLIENTE", "NAO_CLIENTE"}:
+        return fact_value
+
     previous = _last_outbound_text(context)
     latest = _existing_customer_from_text(
         str(context.get("latest_customer_message") or ""),
@@ -739,13 +949,29 @@ def _existing_customer_from_context(context: dict) -> str:
     if confirmed in {"CLIENTE", "NAO_CLIENTE"}:
         return confirmed
 
-    for row in reversed(context.get("history") or []):
-        if str(row.get("direction") or "").upper() != "INBOUND":
+    journey_value = str(
+        _journey_memory_from_context(context).get("existing_customer") or ""
+    ).upper()
+    if journey_value in {"CLIENTE", "NAO_CLIENTE"}:
+        return journey_value
+
+    previous_outbound = ""
+    reconstructed = ""
+    for row in context.get("history") or []:
+        direction = str(row.get("direction") or "").upper()
+        body = str(row.get("body") or "")
+        if direction == "OUTBOUND":
+            previous_outbound = body
             continue
-        value = _existing_customer_from_text(str(row.get("body") or ""))
+        if direction != "INBOUND":
+            continue
+        value = _existing_customer_from_text(
+            body,
+            previous_outbound=previous_outbound,
+        )
         if value:
-            return value
-    return ""
+            reconstructed = value
+    return reconstructed
 
 
 def _customer_type_from_text(value: str | None) -> str:
@@ -801,6 +1027,11 @@ def _customer_type_from_text(value: str | None) -> str:
 
 
 def _customer_type_from_context(context: dict) -> str:
+    facts = context.get("confirmed_facts") or {}
+    fact_value = str(facts.get("customer_type") or "").upper()
+    if fact_value in {"EMPRESA", "RESIDENCIAL"}:
+        return fact_value
+
     latest_type = _customer_type_from_text(
         str(context.get("latest_customer_message") or "")
     )
@@ -937,6 +1168,10 @@ def _normalized_city(value: str | None) -> str:
 
 
 def _city_from_sales_context(decision: AIDecision, context: dict) -> str:
+    fact_city = str((context.get("confirmed_facts") or {}).get("city") or "").strip()
+    if fact_city:
+        return fact_city
+
     lead_city = str((context.get("lead") or {}).get("city") or "").strip()
     if lead_city:
         return lead_city
@@ -2246,6 +2481,18 @@ def _explicit_purchase_commitment(context: dict) -> bool:
 
 
 def _journey_product_kind(decision: AIDecision, context: dict) -> str:
+    facts = context.get("confirmed_facts") or {}
+    fact_kind = str(facts.get("product_kind") or "").upper()
+    if fact_kind in {"INTERNET", "MOBILE"}:
+        return fact_kind
+
+    latest_kind = _product_kind_from_text(
+        str(context.get("latest_customer_message") or ""),
+        previous_outbound=_last_outbound_text(context),
+    )
+    if latest_kind:
+        return latest_kind
+
     memory = _journey_memory_from_context(context)
     combined = _fold_sales_text(
         " ".join(
@@ -2298,6 +2545,47 @@ def _derive_journey_state(decision: AIDecision, context: dict) -> str:
     if decision.objection != "NONE":
         return "HANDLE_OBJECTION"
     return "CONFIRM_PURCHASE"
+
+
+def _journey_integrity_issues(
+    decision: AIDecision,
+    context: dict,
+) -> list[str]:
+    issues: list[str] = []
+    state = str(decision.journey_state or "").upper()
+    existing_customer = _existing_customer_from_context(context)
+    product_kind = _journey_product_kind(decision, context)
+    customer_type = _customer_type_from_context(context)
+    city = _city_from_sales_context(decision, context)
+
+    if existing_customer in {"CLIENTE", "NAO_CLIENTE"}:
+        if state == "IDENTIFY_CUSTOMER":
+            issues.append("STATE_REGRESSION_EXISTING_CUSTOMER")
+        if _asks_existing_customer(decision.reply_text):
+            issues.append("IGNORED_CONFIRMED_EXISTING_CUSTOMER")
+
+    if product_kind in {"INTERNET", "MOBILE"} and state == "CHOOSE_PRODUCT":
+        issues.append("STATE_REGRESSION_PRODUCT")
+
+    if (
+        product_kind == "INTERNET"
+        and customer_type in {"EMPRESA", "RESIDENCIAL"}
+        and state == "CHOOSE_SEGMENT"
+    ):
+        issues.append("STATE_REGRESSION_CUSTOMER_TYPE")
+
+    if (
+        product_kind == "INTERNET"
+        and customer_type == "RESIDENCIAL"
+        and city
+        and state == "CONFIRM_CITY"
+    ):
+        issues.append("STATE_REGRESSION_CITY")
+
+    if _sdr_reply_repeats_recent_outbound(decision, context):
+        issues.append("REPEATED_QUESTION")
+
+    return list(dict.fromkeys(issues))
 
 
 def _apply_stagnation_strategy(
@@ -2511,7 +2799,10 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "uso, satisfação, residência ou empresa apenas porque o SulIA mencionou isso antes. A seção customer_evidence contém "
         "somente falas reais do cliente e é a fonte principal para esses fatos. Dados de memória/CRM gerados pela IA não devem "
         "ser tratados como confirmação do cliente. Quando algo não estiver confirmado, pergunte em vez de assumir. "
-        "Produza a decisão estruturada do SDR. Antes de qualquer oferta, se lead.confirmed_existing_customer estiver vazio, "
+        "A seção confirmed_facts é memória factual reconstruída das respostas INBOUND do cliente e tem precedência sobre inferências do modelo. "
+        "Nunca volte a perguntar uma questão presente em confirmed_facts.answered_questions, salvo se o próprio cliente corrigir explicitamente a resposta. "
+        "Uma informação confirmada não pode regredir para NAO_INFORMADO nem fazer a jornada voltar para uma etapa anterior. "
+        "Produza a decisão estruturada do SDR. Antes de qualquer oferta, se lead.confirmed_existing_customer estiver vazio e confirmed_facts.existing_customer também estiver vazio, "
         "a primeira qualificação é perguntar se a pessoa já é cliente Sulnet; cliente existente segue para Telefonia Móvel ou nova conexão para outro endereço, "
         "e não cliente segue para Internet ou Telefonia Móvel. Não repita essa pergunta se a memória já estiver confirmada. "
         "Além da resposta, classifique objeção, estado comercial, plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
@@ -2922,20 +3213,57 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     try:
         decision = run_ai_decision(agent, context)
-        if _sdr_reply_repeats_recent_outbound(decision, context):
+        integrity_issues = _journey_integrity_issues(decision, context)
+        if integrity_issues:
             retry_context = dict(context)
+            retry_context["integrity_guard"] = {
+                "issues": integrity_issues,
+                "instruction": (
+                    "A primeira decisão violou a integridade da jornada. "
+                    "Preserve confirmed_facts, não volte a perguntas já respondidas, "
+                    "não repita mensagens anteriores e avance somente para a próxima "
+                    "informação realmente pendente."
+                ),
+            }
             retry_context["anti_repetition"] = {
                 "forbidden_previous_messages": _recent_outbound_messages_for_repetition(
                     context
                 ),
-                "reason": "A primeira decisão repetiu uma mensagem já enviada nesta conversa.",
+                "reason": (
+                    "A primeira decisão repetiu ou regrediu uma etapa já concluída."
+                ),
             }
-            LOG.info(
-                "ai_sdr_repeat_regeneration job=%s conversation=%s",
+            LOG.warning(
+                "ai_sdr_integrity_regeneration job=%s conversation=%s issues=%s",
                 job.id,
                 job.conversation_id,
+                ",".join(integrity_issues),
             )
             decision = run_ai_decision(agent, retry_context)
+            integrity_issues = _journey_integrity_issues(decision, context)
+
+        if integrity_issues:
+            run.status = "FALHOU"
+            run.error = (
+                "Integridade da jornada bloqueou a decisão antes do envio: "
+                + ", ".join(integrity_issues)
+            )[:2000]
+            run.finished_at = utcnow()
+            job.error = run.error
+            if int(job.attempts or 0) < 3:
+                job.status = "PENDENTE"
+                job.available_at = utcnow() + timedelta(minutes=2)
+                job.locked_at = None
+            else:
+                job.status = "FALHOU"
+            LOG.error(
+                "ai_sdr_integrity_blocked job=%s conversation=%s attempts=%s issues=%s",
+                job.id,
+                job.conversation_id,
+                job.attempts,
+                ",".join(integrity_issues),
+            )
+            return "integrity_blocked"
     except Exception as exc:
         run.status = "FALHOU"
         run.error = str(exc)[:2000]
@@ -3024,6 +3352,29 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     QuickReply.model_validate(item)
                     for item in guardian.buttons
                 ]
+
+            post_guard_issues = _journey_integrity_issues(decision, context)
+            if post_guard_issues:
+                run.status = "FALHOU"
+                run.error = (
+                    "Integridade da jornada bloqueou a saída final do Guardião: "
+                    + ", ".join(post_guard_issues)
+                )[:2000]
+                run.finished_at = utcnow()
+                job.error = run.error
+                if int(job.attempts or 0) < 3:
+                    job.status = "PENDENTE"
+                    job.available_at = utcnow() + timedelta(minutes=2)
+                    job.locked_at = None
+                else:
+                    job.status = "FALHOU"
+                LOG.error(
+                    "ai_sdr_integrity_post_guard_block job=%s conversation=%s issues=%s",
+                    job.id,
+                    job.conversation_id,
+                    ",".join(post_guard_issues),
+                )
+                return "integrity_blocked"
 
             output = decision.model_dump()
 
