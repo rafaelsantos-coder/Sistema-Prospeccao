@@ -22,6 +22,7 @@ from app.services.ai_seller import (
     _finalize_signed_sale,
     _finish_sale_contract,
     _prepare_contract_before_win,
+    _persist_category_form,
     _win_idempotency_key,
     _mobile_missing_fields,
     _mobile_next_step,
@@ -921,6 +922,49 @@ def test_non_sdr_playbook_keeps_full_mobile_fields_available():
         state,
         collected,
     ) == "MOBILE_DUE_DAY"
+
+
+
+def test_sdr_ia_defaults_override_stale_values_in_every_billing_patch():
+    client = _PlaybookClient([])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="800 Mega",
+        offer_price=119.90,
+    )
+    collected = {
+        "_sdr_ia_funnel": True,
+        "_sdr_ia_defaults": {
+            "vencimento": "10",
+            "taxa_ativacao": "Não",
+            "tipo_assinatura_contrato": "Assinatura Digital IA",
+        },
+        "planId": 800,
+        "categoryId": 10,
+        "categoryName": "FIBRA",
+    }
+    stale = {
+        "forma_pagamento": "Boleto",
+        "envio_fatura": ["WhatsApp"],
+        "vencimento": "15",
+        "taxa_ativacao": "Sim",
+        "tipo_assinatura_contrato": "Manual",
+    }
+
+    _persist_category_form(
+        client,
+        state,
+        collected,
+        stale,
+    )
+
+    _, sent, category_id, plan_id = client.category_updates[-1]
+    assert sent["forma_pagamento"] == "Boleto"
+    assert sent["vencimento"] == "10"
+    assert sent["taxa_ativacao"] == "Não"
+    assert sent["tipo_assinatura_contrato"] == "Assinatura Digital IA"
+    assert category_id == 10
+    assert plan_id == 800
 
 
 class _Phase4ContractClient:
