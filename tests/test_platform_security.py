@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pyotp
 
-from app.config import settings
+from app.routers import auth
 from app.routers.auth import _allowed_oidc_email
 from app.services.ai_seller import _money, _money_for_api
 
@@ -26,10 +26,11 @@ def test_totp_round_trip():
 
 def test_oidc_domain_allowlist(monkeypatch):
     monkeypatch.setattr(
-        settings,
-        "oidc_allowed_domains",
-        "sulnet.com.br,empresa.example",
-        raising=False,
+        auth,
+        "settings",
+        SimpleNamespace(
+            oidc_allowed_domains="sulnet.com.br,empresa.example",
+        ),
     )
     assert _allowed_oidc_email("rafael@sulnet.com.br") is True
     assert _allowed_oidc_email("user@empresa.example") is True
