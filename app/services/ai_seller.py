@@ -2969,29 +2969,47 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
     states = list(
         db.scalars(
             select(AIClosingState).where(
-                AIClosingState.step.in_(["CREDIT_REVIEW", "WAITING_CONTRACT", "WAITING_SIGNATURE"]),
+                AIClosingState.step.in_(
+                    [
+                        "CREDIT_REVIEW",
+                        "WAITING_CRM_READY",
+                        "WAITING_CONTRACT",
+                        "WAITING_SIGNATURE",
+                    ]
+                ),
                 AIClosingState.updated_at <= utcnow() - timedelta(seconds=45),
             ).order_by(AIClosingState.updated_at.asc()).limit(limit)
         )
     )
     processed = 0
     client = SulnetCRMClient.from_settings()
+
     for state in states:
         if not state.opportunity_id:
             continue
         conversation = db.get(Conversation, state.conversation_id)
         agent = db.get(AIAgentProfile, state.agent_id)
-        if not conversation or not agent or not agent.active or agent.execution_mode != "AUTO":
+        if (
+            not conversation
+            or not agent
+            or not agent.active
+            or agent.execution_mode != "AUTO"
+        ):
             continue
+
+        collected = _load_collected(state)
         try:
-            status = client.get_status(state.opportunity_id)
             if state.step == "CREDIT_REVIEW":
+                status = client.get_status(state.opportunity_id)
                 opportunity = status.get("opportunity") or {}
                 credit_status = str(opportunity.get("creditStatus") or "")
                 state.credit_status = credit_status
                 normalized_credit = _norm(credit_status)
-                collected = _load_collected(state)
-                if any(token in normalized_credit for token in ("aprovado", "pre-aprovado", "liberado")):
+
+                if any(
+                    token in normalized_credit
+                    for token in ("aprovado", "pre-aprovado", "liberado")
+                ):
                     prompt = _advance_with_playbook(
                         client,
                         state,
@@ -3036,20 +3054,85 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     state.updated_at = utcnow()
                 continue
 
+            if state.step == "WAITING_CRM_READY":
+                playbook_step, playbook_question = _query_playbook_guidance(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="__FINISH__",
+                )
+                if playbook_step == "__FINISH__":
+                    reply = _finish_sale_contract(client, state, collected)
+                    _save_collected(state, collected)
+                    if state.step == "WAITING_SIGNATURE" and state.sign_url:
+                        _send_text(
+                            db,
+                            agent=agent,
+                            conversation=conversation,
+                            text=reply,
+                        )
+                        _schedule_seller_followup(
+                            db,
+                            state=state,
+                            conversation=conversation,
+                            source_message_id=None,
+                            step=1,
+                        )
+                        processed += 1
+                    else:
+                        state.updated_at = utcnow()
+                    continue
+
+                if playbook_step != "WAITING_CRM_READY":
+                    state.step = playbook_step
+                    prompt = playbook_question or _prompt_for_step(state, collected)
+                    _save_collected(state, collected)
+                    _send_step_message(
+                        db,
+                        agent=agent,
+                        conversation=conversation,
+                        state=state,
+                        text=prompt,
+                    )
+                    _schedule_seller_followup(
+                        db,
+                        state=state,
+                        conversation=conversation,
+                        source_message_id=None,
+                        step=1,
+                    )
+                    processed += 1
+                else:
+                    _save_collected(state, collected)
+                    state.updated_at = utcnow()
+                continue
+
+            status = client.get_status(state.opportunity_id)
             contract = status.get("contract") or {}
-            contract_status = str(contract.get("status") or "")
-            sign_url = str(contract.get("signUrl") or "").strip()
-            state.contract_status = contract_status
-            if contract_status == "assinado":
-                state.step = "COMPLETED"
-                state.completed_at = utcnow()
+            if client.supports("contract"):
+                detailed = client.get_contract(state.opportunity_id)
+                if isinstance(detailed, dict) and detailed:
+                    contract = {**contract, **detailed}
+
+            contract_status = _contract_status(contract)
+            sign_url = _contract_sign_url(contract)
+            if contract_status:
+                state.contract_status = contract_status
+
+            if _contract_is_signed(state.contract_status):
+                _finalize_signed_sale(
+                    client,
+                    state,
+                    collected,
+                )
+                _save_collected(state, collected)
                 _send_text(
                     db,
                     agent=agent,
                     conversation=conversation,
                     text=(
-                        "Contrato assinado com sucesso! Sua contratação está concluída. "
-                        "A ativação segue para a operação da Sulnet, com previsão de até 48 horas."
+                        "Contrato assinado com sucesso! Sua contratação foi concluída "
+                        "e seguirá para a operação da Sulnet."
                     ),
                 )
                 if conversation.lead:
@@ -3057,35 +3140,72 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     conversation.lead.next_action_at = None
                 processed += 1
                 continue
-            if not sign_url and state.step == "WAITING_CONTRACT":
-                try:
-                    started = client.start_contract(state.opportunity_id)
-                    sign_url = str(started.get("signUrl") or "").strip()
-                    contract_status = str(started.get("status") or contract_status)
-                    state.contract_status = contract_status
-                except CRMIntegrationError:
-                    pass
-            if sign_url and sign_url != state.sign_url:
+
+            if sign_url:
+                is_new_link = sign_url != state.sign_url
                 state.sign_url = sign_url
                 state.step = "WAITING_SIGNATURE"
-                _send_text(
-                    db,
-                    agent=agent,
-                    conversation=conversation,
-                    text=f"Seu contrato ficou pronto. Você pode assinar por este link: {sign_url}",
-                )
-                _schedule_seller_followup(
-                    db,
-                    state=state,
-                    conversation=conversation,
-                    source_message_id=None,
-                    step=1,
-                )
-                processed += 1
+                if is_new_link:
+                    _send_text(
+                        db,
+                        agent=agent,
+                        conversation=conversation,
+                        text=(
+                            "Seu contrato ficou pronto. "
+                            f"Você pode assinar por este link: {sign_url}"
+                        ),
+                    )
+                    _schedule_seller_followup(
+                        db,
+                        state=state,
+                        conversation=conversation,
+                        source_message_id=None,
+                        step=1,
+                    )
+                    processed += 1
+                else:
+                    state.updated_at = utcnow()
+                continue
+
+            if state.step == "WAITING_CONTRACT":
+                previous_url = state.sign_url
+                _prepare_contract_before_win(client, state, collected)
+                _save_collected(state, collected)
+                if (
+                    state.step == "WAITING_SIGNATURE"
+                    and state.sign_url
+                    and state.sign_url != previous_url
+                ):
+                    _send_text(
+                        db,
+                        agent=agent,
+                        conversation=conversation,
+                        text=(
+                            "Seu contrato ficou pronto. "
+                            f"Você pode assinar por este link: {state.sign_url}"
+                        ),
+                    )
+                    _schedule_seller_followup(
+                        db,
+                        state=state,
+                        conversation=conversation,
+                        source_message_id=None,
+                        step=1,
+                    )
+                    processed += 1
+                else:
+                    state.updated_at = utcnow()
             else:
                 state.updated_at = utcnow()
+
         except CRMIntegrationError as exc:
             state.last_error = str(exc)[:1200]
             state.updated_at = utcnow()
-            LOG.warning("seller_contract_poll_failed state=%s error=%s", state.id, exc)
+            LOG.warning(
+                "seller_contract_poll_failed state=%s step=%s error=%s",
+                state.id,
+                state.step,
+                exc,
+            )
+
     return processed
