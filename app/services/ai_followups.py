@@ -387,7 +387,8 @@ def _generate_followup(
     prompt = (
         "Crie APENAS a próxima mensagem de follow-up comercial para WhatsApp. "
         "Ela deve retomar a conversa com naturalidade, usar o contexto real, ter um motivo comercial e "
-        "estimular resposta. REGRA DE EVIDÊNCIA: apenas mensagens INBOUND/customer_evidence são falas do cliente. "
+        "estimular resposta. A 'Pendência atual' registrada no objetivo/jornada tem prioridade: o follow-up deve tentar "
+        "resolver exatamente essa pendência sem reabrir etapas já concluídas. REGRA DE EVIDÊNCIA: apenas mensagens INBOUND/customer_evidence são falas do cliente. "
         "Mensagens OUTBOUND são falas do SulIA e jamais podem virar fato sobre provedor, preço, velocidade, uso, "
         "satisfação, residência ou empresa. Se um dado não foi confirmado pelo cliente, pergunte; não assuma. "
         "É PROIBIDO repetir qualquer mensagem OUTBOUND anterior, inclusive com pequenas trocas de palavras. "
