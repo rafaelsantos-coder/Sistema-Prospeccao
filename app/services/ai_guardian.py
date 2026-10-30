@@ -67,6 +67,10 @@ Regras obrigatórias:
 7.1. Se o estado do closer já contém sign_url e a etapa proposta é WAITING_SIGNATURE,
      o contrato está pronto para ser enviado ao cliente. "Aguardando assinatura" é o
      status esperado nesse momento e NÃO é conflito nem pedido prematuro de assinatura.
+7.2. Se proposed_action.metadata.crm_playbook_required=true, o próprio CRM acabou de
+     informar que aquele campo continua pendente. Nesse caso, voltar à etapa indicada
+     por crm_playbook_step NÃO é regressão: é recuperação autoritativa do fechamento.
+     Isso só vale para o campo/patchKey explicitamente presentes no metadata atual.
 8. Em REWRITE preserve todos os fatos comerciais válidos da mensagem original. Não acrescente
    valores, velocidades, benefícios ou condições que não estejam comprovados no contexto.
 9. CORRECT_STATE só deve ser usado quando o contexto provar o estado correto. Não adivinhe.
@@ -368,6 +372,46 @@ def _apply_guardrails(
             if code not in signature_false_positives
         ]
 
+    metadata = proposed.get("metadata") or {}
+    playbook_recovery = bool(
+        str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER"
+        and metadata.get("crm_playbook_required") is True
+        and str(metadata.get("crm_playbook_code") or "").strip()
+        and str(metadata.get("crm_playbook_patch_key") or "").strip()
+        and str(metadata.get("crm_playbook_step") or "").strip()
+        == str(proposed.get("proposed_state") or "").strip()
+    )
+    playbook_false_positives = {
+        "STATE_HISTORY_CONFLICT",
+        "CLOSING_STEP_REGRESSION",
+        "CLOSING_SEQUENCE_CONFLICT",
+        "RECENT_QUESTION_REPEAT",
+        "SDR_FUNNEL_PROHIBITED_STEP",
+    }
+    if playbook_recovery:
+        model_codes = set(review.issue_codes) - deterministic_codes
+        remaining_model_codes = model_codes - playbook_false_positives
+        if (
+            model_codes
+            and not remaining_model_codes
+            and not high
+            and review.verdict in {"BLOCK", "REWRITE", "CORRECT_STATE"}
+        ):
+            review.verdict = "APPROVE"
+            review.risk = "LOW"
+            review.quality_score = max(review.quality_score, 90)
+            review.reply_text = ""
+            review.corrected_state = ""
+            review.rationale = (
+                "O playbook atual do CRM exige este campo; reposicionar para a "
+                "etapa indicada pelo próprio CRM é recuperação válida do fechamento."
+            )
+        review.issue_codes = [
+            code
+            for code in review.issue_codes
+            if code not in playbook_false_positives
+        ]
+
     # Invariantes que o modelo não pode afrouxar.
     if "WON_BEFORE_SIGNATURE" in critical:
         review.verdict = "BLOCK"
@@ -479,7 +523,7 @@ def _apply_guardrails(
     # A reescrita do próprio Guardião também precisa passar pelo anti-repetição.
     # Caso contrário ele poderia detectar repetição e devolver uma paráfrase
     # praticamente idêntica, que ainda assim chegaria ao cliente.
-    if review.verdict != "BLOCK" and final_text:
+    if review.verdict != "BLOCK" and final_text and not playbook_recovery:
         prior_outbounds = [
             str(item.get("body") or "")
             for item in context.get("history") or []

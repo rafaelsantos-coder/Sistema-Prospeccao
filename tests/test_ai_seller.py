@@ -29,7 +29,9 @@ from app.services.ai_seller import (
     _mobile_next_step,
     _mobile_values,
     _category_values,
+    _canonical_playbook_value,
     _playbook_code_key,
+    _playbook_recovery_metadata,
     _playbook_step_for_item,
     _prompt_for_step,
     _query_playbook_guidance,
@@ -729,6 +731,92 @@ def test_prompt_for_step_prefers_playbook_question_when_step_matches():
     }
 
     assert _prompt_for_step(state, collected) == "Qual e-mail deseja usar no contrato?"
+
+
+def test_playbook_canonical_value_uses_crm_option_value():
+    item = CRMPlaybookMissingItem(
+        code="cf_tipo_contratacao",
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+        options=[
+            {
+                "id": "portabilidade",
+                "label": "Portabilidade",
+                "value": "PORTABILITY",
+            },
+            {
+                "id": "numero_novo",
+                "label": "Número novo",
+                "value": "NEW_NUMBER",
+            },
+        ],
+    )
+
+    matched, value = _canonical_playbook_value(
+        item,
+        "Número Portabilidade",
+    )
+
+    assert matched is True
+    assert value == "PORTABILITY"
+
+
+def test_playbook_canonical_value_refuses_ambiguous_option():
+    item = CRMPlaybookMissingItem(
+        code="cf_tipo_contratacao",
+        options=[
+            {"id": "novo_a", "label": "Novo A", "value": "A"},
+            {"id": "novo_b", "label": "Novo B", "value": "B"},
+        ],
+    )
+
+    matched, value = _canonical_playbook_value(item, "novo")
+
+    assert matched is False
+    assert value is None
+
+
+def test_playbook_recovery_metadata_requires_current_crm_field():
+    state = SimpleNamespace(step="MOBILE_CONTRACT_TYPE")
+    collected = {
+        "_playbook_step": "MOBILE_CONTRACT_TYPE",
+        "_playbook_code": "cf_tipo_contratacao",
+        "_playbook_patch_key": (
+            "productInfo.categoryForm.values.tipo_contratacao"
+        ),
+    }
+
+    metadata = _playbook_recovery_metadata(state, collected)
+
+    assert metadata["crm_playbook_required"] is True
+    assert metadata["crm_playbook_step"] == "MOBILE_CONTRACT_TYPE"
+    assert metadata["crm_playbook_code"] == "cf_tipo_contratacao"
+
+
+def test_mapped_playbook_step_uses_crm_options_as_buttons():
+    collected = {
+        "_playbook_step": "MOBILE_CONTRACT_TYPE",
+        "_playbook_options": [
+            {
+                "id": "portabilidade",
+                "label": "Portabilidade",
+                "value": "PORTABILITY",
+            },
+            {
+                "id": "numero_novo",
+                "label": "Número novo",
+                "value": "NEW_NUMBER",
+            },
+        ],
+    }
+
+    assert _seller_step_buttons(
+        "MOBILE_CONTRACT_TYPE",
+        "Como você quer contratar o Sulmóvel?",
+        collected,
+    ) == [
+        {"id": "portabilidade", "label": "Portabilidade"},
+        {"id": "numero_novo", "label": "Número novo"},
+    ]
 
 
 def test_playbook_code_normalization_handles_snake_and_camel_case():

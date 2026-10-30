@@ -239,3 +239,106 @@ def test_guardian_allows_real_sign_url_in_waiting_signature():
     assert result.risk == "LOW"
     assert "CONTRACT_STATUS_CONFLICT" not in result.issue_codes
     assert "PREMATURE_SIGNATURE_REQUEST" not in result.issue_codes
+
+
+
+def test_guardian_allows_authoritative_crm_playbook_recovery():
+    review = GuardianReview(
+        verdict="BLOCK",
+        risk="HIGH",
+        confidence=0.9,
+        quality_score=55,
+        issue_codes=[
+            "STATE_HISTORY_CONFLICT",
+            "CLOSING_STEP_REGRESSION",
+            "SDR_FUNNEL_PROHIBITED_STEP",
+        ],
+        rationale="Pareceria regressão sem o playbook atual.",
+    )
+    context = _context([], role="CLOSER")
+    context["history"] = []
+    context["proposed_action"] = {
+        "proposed_state": "MOBILE_CONTRACT_TYPE",
+        "metadata": {
+            "closing_step": "MOBILE_CONTRACT_TYPE",
+            "crm_playbook_required": True,
+            "crm_playbook_step": "MOBILE_CONTRACT_TYPE",
+            "crm_playbook_code": "cf_tipo_contratacao",
+            "crm_playbook_patch_key": (
+                "productInfo.categoryForm.values.tipo_contratacao"
+            ),
+        },
+    }
+    context["current_state"] = {"closing": {"step": "MOBILE_CONTRACT_TYPE"}}
+
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=context,
+        original_text="Como você quer contratar o Sulmóvel?",
+        original_buttons=[
+            {"id": "portabilidade", "label": "Portabilidade"},
+            {"id": "numero_novo", "label": "Número novo"},
+        ],
+    )
+
+    assert result.verdict == "APPROVE"
+    assert result.should_send is True
+    assert result.risk == "LOW"
+    assert "STATE_HISTORY_CONFLICT" not in result.issue_codes
+    assert "CLOSING_STEP_REGRESSION" not in result.issue_codes
+    assert "SDR_FUNNEL_PROHIBITED_STEP" not in result.issue_codes
+
+
+def test_guardian_does_not_override_real_forbidden_sdr_closer_step():
+    state = SimpleNamespace(step="MOBILE_PORT_ICCID", last_error="")
+
+    class FakeDB:
+        def scalar(self, _query):
+            return state
+
+    review = GuardianReview(
+        verdict="APPROVE",
+        risk="LOW",
+        confidence=0.9,
+        quality_score=95,
+        issue_codes=["SDR_FUNNEL_PROHIBITED_STEP"],
+    )
+    context = _context(
+        [
+            {
+                "code": "SDR_IA_FORBIDDEN_CLOSING_STEP",
+                "severity": "CRITICAL",
+                "detail": "Etapa proibida no funil SDR IA.",
+            }
+        ],
+        role="CLOSER",
+    )
+    context["history"] = []
+    context["proposed_action"] = {
+        "proposed_state": "MOBILE_PORT_ICCID",
+        "metadata": {
+            "closing_step": "MOBILE_PORT_ICCID",
+            "crm_playbook_required": True,
+            "crm_playbook_step": "MOBILE_PORT_ICCID",
+            "crm_playbook_code": "cf_port_iccid",
+            "crm_playbook_patch_key": (
+                "productInfo.categoryForm.values.port_iccid"
+            ),
+        },
+    }
+    context["current_state"] = {"closing": {"step": "MOBILE_PORT_ICCID"}}
+
+    result = _apply_guardrails(
+        FakeDB(),
+        review=review,
+        context=context,
+        original_text="Qual é o ICCID?",
+        original_buttons=[],
+    )
+
+    assert result.verdict == "CORRECT_STATE"
+    assert result.state_corrected is True
+    assert result.corrected_state == "WAITING_CRM_READY"
+    assert state.step == "WAITING_CRM_READY"
+    assert "SDR_IA_FORBIDDEN_CLOSING_STEP" in result.issue_codes
