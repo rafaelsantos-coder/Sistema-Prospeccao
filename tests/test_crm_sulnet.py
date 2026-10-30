@@ -489,6 +489,16 @@ class CapabilityV2Client:
                     {"id": 120, "name": "GANHO"},
                 ],
             }
+        elif method == "GET" and url.endswith("/api/catalog/products"):
+            response.payload = [
+                {
+                    "id": 501,
+                    "name": "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26",
+                    "monthlyValue": 69.80,
+                    "categoryId": 83,
+                    "categoryName": "TELEFONIA MÓVEL",
+                }
+            ]
         elif method == "GET" and url.endswith("/api/capture/products"):
             response.payload = [
                 {"id": 501, "name": "Sulmóvel 15GB", "monthlyValue": 69.80}
@@ -536,7 +546,8 @@ def test_v2_profile_uses_capture_contract_routes(monkeypatch):
     assert client.start_contract(1234)["signUrl"] == "https://sign.example/123"
 
     urls = [item["url"] for item in CapabilityV2Client.captured]
-    assert not any("/api/catalog/products" in url for url in urls)
+    assert any("/api/catalog/products" in url for url in urls)
+    assert not any("/api/capture/products" in url for url in urls)
     assert not any("/api/opportunities/1234" in url for url in urls)
     assert any(url.endswith("/api/capture/leads/1234/win") for url in urls)
 
