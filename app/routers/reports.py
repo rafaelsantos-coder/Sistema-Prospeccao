@@ -241,10 +241,37 @@ def export_ai_journey_csv(request: Request, db: Session = Depends(get_db)):
     report = build_chat_report(db, user, filters)
     journey = report["ai_journey"]
 
+    performance = journey.get("performance") or {}
+    comparison = performance.get("comparison") or {}
     rows: list[list[str]] = [
+        ["DIAGNÓSTICO AUTOMÁTICO DA IA"],
+        ["Saúde", str(performance.get("status_label") or "—")],
+        ["Score", str(performance.get("score") if performance.get("score") is not None else "—")],
+        ["Alertas críticos", str(performance.get("critical_count") or 0)],
+        ["Alertas de atenção", str(performance.get("warning_count") or 0)],
+        ["Recomendação principal", str(performance.get("primary_recommendation") or "—")],
+        ["Período atual", str(comparison.get("current_label") or "")],
+        ["Período anterior", str(comparison.get("previous_label") or "")],
+        [],
+        ["ALERTAS E RECOMENDAÇÕES"],
+        ["Severidade", "Alerta", "Diagnóstico", "Recomendação", "Métrica", "Valor", "Delta"],
+    ]
+    for item in performance.get("alerts", []):
+        rows.append([
+            str(item.get("severity") or ""),
+            str(item.get("title") or ""),
+            str(item.get("detail") or ""),
+            str(item.get("recommendation") or ""),
+            str(item.get("metric") or ""),
+            "" if item.get("value") is None else f'{float(item["value"]):.2f}',
+            "" if item.get("delta") is None else f'{float(item["delta"]):+.2f}',
+        ])
+
+    rows.extend([
+        [],
         ["FUNIL COMERCIAL IA"],
         ["Etapa", "Conversas", "% da base SDR IA"],
-    ]
+    ])
     for item in journey["funnel"]:
         rows.append([
             item["label"],
@@ -253,6 +280,27 @@ def export_ai_journey_csv(request: Request, db: Session = Depends(get_db)):
         ])
 
     rows.extend([
+        [],
+        ["COMPARAÇÃO COM O PERÍODO ANTERIOR"],
+        ["Indicador", "Atual", "Anterior", "Delta"],
+        [
+            "Taxa oferta → aceite",
+            f'{float(journey["kpis"]["acceptance_rate"]):.1f}%',
+            f'{float(comparison.get("previous_acceptance_rate") or 0):.1f}%',
+            "" if comparison.get("acceptance_rate_delta") is None else f'{float(comparison["acceptance_rate_delta"]):+.1f} p.p.',
+        ],
+        [
+            "Aceite → Vendedor IA",
+            f'{float(journey["kpis"]["closer_start_rate"]):.1f}%',
+            f'{float(comparison.get("previous_closer_start_rate") or 0):.1f}%',
+            "" if comparison.get("closer_start_rate_delta") is None else f'{float(comparison["closer_start_rate_delta"]):+.1f} p.p.',
+        ],
+        [
+            "Conclusão do fechamento",
+            f'{float(journey["kpis"]["completion_rate"]):.1f}%',
+            f'{float(comparison.get("previous_completion_rate") or 0):.1f}%',
+            "" if comparison.get("completion_rate_delta") is None else f'{float(comparison["completion_rate_delta"]):+.1f} p.p.',
+        ],
         [],
         ["DESEMPENHO POR ETAPA"],
         [
