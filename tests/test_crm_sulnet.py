@@ -61,7 +61,10 @@ def test_crm_capture_uses_service_bearer_and_not_integration_key(monkeypatch):
         base_url="https://crm.example",
         bearer_token="service-token-value",
     )
-    assert client.config() == {"originId": 77}
+    config = client.config()
+    assert config["originId"] == 77
+    assert config["apiVersion"] == 1
+    assert config["legacy"] is True
 
     headers = FakeClient.captured_headers or {}
     assert headers["Authorization"] == "Bearer service-token-value"
