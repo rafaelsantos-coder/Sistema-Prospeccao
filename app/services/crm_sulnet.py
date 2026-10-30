@@ -5,7 +5,8 @@ import json
 import logging
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Literal
+import uuid
 
 import httpx
 
@@ -16,9 +17,159 @@ LOG = logging.getLogger("sulnet_crm_client")
 
 
 class CRMIntegrationError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        method: str = "",
+        path: str = "",
+        error_code: str = "",
+        response_body: Any = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.method = method
+        self.path = path
+        self.error_code = error_code
+        self.response_body = response_body
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "message": str(self),
+            "statusCode": self.status_code,
+            "method": self.method,
+            "path": self.path,
+            "errorCode": self.error_code,
+            "responseBody": self.response_body,
+        }
+
+
+@dataclass(slots=True)
+class CRMPlaybookMissingItem:
+    code: str
+    label: str = ""
+    question: str = ""
+    group: str = ""
+    patch_key: str = ""
+    suggested_value: Any = None
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "CRMPlaybookMissingItem | None":
+        if not isinstance(payload, dict):
+            return None
+        code = str(payload.get("code") or "").strip()
+        if not code:
+            return None
+        return cls(
+            code=code,
+            label=str(payload.get("label") or "").strip(),
+            question=str(payload.get("question") or "").strip(),
+            group=str(payload.get("group") or "").strip(),
+            patch_key=str(payload.get("patchKey") or "").strip(),
+            suggested_value=payload.get("suggestedValue"),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "label": self.label,
+            "question": self.question,
+            "group": self.group,
+            "patchKey": self.patch_key,
+            "suggestedValue": self.suggested_value,
+        }
+
+
+@dataclass(slots=True)
+class CRMPlaybookResult:
+    opportunity_id: int
+    protocol: str = ""
+    category: str = ""
+    crm_ok: bool = True
+    next_step: str = ""
+    next_question: str = ""
+    ready_for_win: bool = False
+    credit_status: str = ""
+    credit_approved: bool = False
+    credit_rejected: bool = False
+    sdr_ia_funnel: bool = False
+    missing: list[CRMPlaybookMissingItem] = field(default_factory=list)
+
+    @classmethod
+    def from_payload(
+        cls,
+        opportunity_id: int,
+        payload: Any,
+        *,
+        category: str,
+    ) -> "CRMPlaybookResult":
+        source = payload if isinstance(payload, dict) else {}
+        opportunity = source.get("opportunity")
+        if not isinstance(opportunity, dict):
+            opportunity = {}
+        credit = source.get("credit")
+        if not isinstance(credit, dict):
+            credit = {}
+
+        missing: list[CRMPlaybookMissingItem] = []
+        raw_missing = source.get("missing")
+        if isinstance(raw_missing, list):
+            for item in raw_missing:
+                normalized = CRMPlaybookMissingItem.from_payload(item)
+                if normalized:
+                    missing.append(normalized)
+
+        next_question = str(source.get("nextQuestion") or "").strip()
+        if not next_question and missing:
+            next_question = missing[0].question
+
+        protocol = str(
+            source.get("protocol")
+            or opportunity.get("protocol")
+            or ""
+        ).strip()
+        return cls(
+            opportunity_id=int(
+                source.get("opportunityId")
+                or opportunity.get("id")
+                or opportunity_id
+            ),
+            protocol=protocol,
+            category=category,
+            crm_ok=bool(source.get("crmOk", True)),
+            next_step=str(source.get("nextStep") or "").strip(),
+            next_question=next_question,
+            ready_for_win=bool(source.get("readyForWin")),
+            credit_status=str(credit.get("status") or "").strip(),
+            credit_approved=bool(credit.get("approved")),
+            credit_rejected=bool(credit.get("rejected")),
+            sdr_ia_funnel=bool(source.get("sdrIaFunnel")),
+            missing=missing,
+        )
+
+    @property
+    def missing_codes(self) -> list[str]:
+        return [item.code for item in self.missing]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "opportunityId": self.opportunity_id,
+            "protocol": self.protocol,
+            "step": self.next_step or "playbook",
+            "crmOk": self.crm_ok,
+            "category": self.category,
+            "credit": {
+                "status": self.credit_status,
+                "approved": self.credit_approved,
+                "rejected": self.credit_rejected,
+            },
+            "readyForWin": self.ready_for_win,
+            "nextQuestion": self.next_question,
+            "missingCodes": self.missing_codes,
+            "missing": [item.as_dict() for item in self.missing],
+            "sdrIaFunnel": self.sdr_ia_funnel,
+        }
 
 
 @dataclass(slots=True)
@@ -41,6 +192,79 @@ class SulnetCRMClient:
             integration_key=settings.sulnet_ai_integration_key,
         )
 
+    @staticmethod
+    def _sanitize_log_value(value: Any, *, key: str = "") -> Any:
+        sensitive_keys = {
+            "authorization",
+            "token",
+            "bearer",
+            "password",
+            "secret",
+            "integrationkey",
+            "integration_key",
+            "clientcpf",
+            "cpf",
+            "cnpj",
+            "clientphone",
+            "phone",
+            "clientemail",
+            "email",
+            "debito_conta",
+            "debito_agencia",
+            "debito_banco",
+            "pdfbase64",
+        }
+        key_folded = re.sub(r"[^a-z0-9_]+", "", str(key or "").casefold())
+        if key_folded in sensitive_keys:
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {
+                str(item_key): SulnetCRMClient._sanitize_log_value(
+                    item_value,
+                    key=str(item_key),
+                )
+                for item_key, item_value in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                SulnetCRMClient._sanitize_log_value(item)
+                for item in value[:20]
+            ]
+        text = str(value or "")
+        text = re.sub(r"(?<!\d)\d{11,14}(?!\d)", "[DOCUMENTO]", text)
+        text = re.sub(r"(?<!\d)\d{5}-?\d{3}(?!\d)", "[CEP]", text)
+        text = re.sub(
+            r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+            "[EMAIL]",
+            text,
+        )
+        text = re.sub(
+            r"(?i)(bearer\s+)[A-Za-z0-9._~+\-/=]+",
+            r"\1[REDACTED]",
+            text,
+        )
+        return text[:1200]
+
+    def _auth_headers(
+        self,
+        auth_mode: Literal["bearer", "integration", "none"],
+    ) -> dict[str, str]:
+        if auth_mode == "bearer":
+            if not self.bearer_token:
+                raise CRMIntegrationError(
+                    "Token Bearer do CRM Sulnet não configurado.",
+                    error_code="CRM_BEARER_NOT_CONFIGURED",
+                )
+            return {"Authorization": f"Bearer {self.bearer_token}"}
+        if auth_mode == "integration":
+            if not self.integration_key:
+                raise CRMIntegrationError(
+                    "Chave de integração do CRM Sulnet não configurada.",
+                    error_code="CRM_INTEGRATION_KEY_NOT_CONFIGURED",
+                )
+            return {"X-Integration-Key": self.integration_key}
+        return {}
+
     def _request(
         self,
         method: str,
@@ -49,60 +273,108 @@ class SulnetCRMClient:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         timeout: float | None = None,
+        auth_mode: Literal["bearer", "integration", "none"] = "bearer",
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         url = f"{self.base_url}/{path.lstrip('/')}"
+        method_upper = method.upper()
+        headers = {
+            **self._auth_headers(auth_mode),
+            "Accept": "application/json",
+            "User-Agent": "Sulnet-Prospecta-Vendedor-IA/3.0",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+
         try:
             with httpx.Client(
                 timeout=timeout or self.timeout,
                 follow_redirects=False,
-                headers={
-                    **(
-                        {"Authorization": f"Bearer {self.bearer_token}"}
-                        if self.bearer_token
-                        else {}
-                    ),
-                    **(
-                        {"X-Integration-Key": self.integration_key}
-                        if self.integration_key
-                        else {}
-                    ),
-                    "Accept": "application/json",
-                    "User-Agent": "Sulnet-Prospecta-Vendedor-IA/2.0",
-                },
+                headers=headers,
             ) as client:
                 response = client.request(
-                    method.upper(),
+                    method_upper,
                     url,
                     json=json_body,
                     params=params,
                 )
         except httpx.HTTPError as exc:
-            raise CRMIntegrationError("CRM Sulnet indisponível no momento.") from exc
+            LOG.warning(
+                "crm_http_error method=%s path=%s error=%s",
+                method_upper,
+                path,
+                self._sanitize_log_value(str(exc)),
+            )
+            raise CRMIntegrationError(
+                "CRM Sulnet indisponível no momento.",
+                method=method_upper,
+                path=path,
+                error_code="CRM_HTTP_ERROR",
+            ) from exc
 
         LOG.info(
-            "crm_http method=%s path=%s status=%s",
-            method.upper(),
+            "crm_http method=%s path=%s status=%s auth=%s",
+            method_upper,
             path,
             response.status_code,
+            auth_mode,
         )
 
         try:
             payload = response.json()
         except ValueError as exc:
+            LOG.warning(
+                "crm_invalid_json method=%s path=%s status=%s",
+                method_upper,
+                path,
+                response.status_code,
+            )
             raise CRMIntegrationError(
                 f"CRM Sulnet retornou resposta inválida (HTTP {response.status_code}).",
                 status_code=response.status_code,
+                method=method_upper,
+                path=path,
+                error_code="CRM_INVALID_JSON",
             ) from exc
 
         if response.status_code >= 400:
+            safe_payload = self._sanitize_log_value(payload)
+            error_code = ""
+            if isinstance(payload, dict):
+                error_code = str(
+                    payload.get("code")
+                    or payload.get("errorCode")
+                    or payload.get("error_code")
+                    or ""
+                ).strip()
             message = (
                 payload.get("error")
                 if isinstance(payload, dict)
                 else None
+            ) or (
+                payload.get("message")
+                if isinstance(payload, dict)
+                else None
             ) or f"Falha no CRM Sulnet (HTTP {response.status_code})."
+            LOG.warning(
+                "crm_http_failed method=%s path=%s status=%s code=%s body=%s",
+                method_upper,
+                path,
+                response.status_code,
+                error_code or "-",
+                json.dumps(
+                    safe_payload,
+                    ensure_ascii=False,
+                    default=str,
+                )[:1600],
+            )
             raise CRMIntegrationError(
-                str(message)[:600],
+                str(self._sanitize_log_value(message))[:600],
                 status_code=response.status_code,
+                method=method_upper,
+                path=path,
+                error_code=error_code,
+                response_body=safe_payload,
             )
         return payload
 
@@ -150,6 +422,114 @@ class SulnetCRMClient:
             isinstance(capabilities, dict)
             and capabilities.get(capability) is True
         )
+
+    def supports_any(self, *capabilities: str) -> bool:
+        return any(self.supports(capability) for capability in capabilities)
+
+    @staticmethod
+    def normalize_playbook_category(category: str) -> str:
+        folded = unicodedata.normalize(
+            "NFD",
+            str(category or "").strip().casefold(),
+        )
+        folded = "".join(
+            ch for ch in folded
+            if unicodedata.category(ch) != "Mn"
+        )
+        compact = re.sub(r"[^a-z0-9]+", "-", folded).strip("-")
+        if compact in {"fibra", "fiber", "ftth", "internet"}:
+            return "fibra"
+        if compact in {
+            "telefonia-movel",
+            "telefonia-mob",
+            "movel",
+            "mobile",
+            "sulmovel",
+        }:
+            return "telefonia-movel"
+        raise CRMIntegrationError(
+            "Categoria de playbook inválida.",
+            error_code="CRM_PLAYBOOK_CATEGORY_INVALID",
+        )
+
+    def playbook(
+        self,
+        opportunity_id: int,
+        *,
+        category: str,
+    ) -> CRMPlaybookResult:
+        normalized_category = self.normalize_playbook_category(category)
+        result = self._request(
+            "GET",
+            f"/api/integracoes/agent/v1/opportunities/{opportunity_id}/playbook",
+            params={"category": normalized_category},
+        )
+        return CRMPlaybookResult.from_payload(
+            opportunity_id,
+            result,
+            category=normalized_category,
+        )
+
+    def playbook_template(self, *, category: str) -> dict[str, Any]:
+        normalized_category = self.normalize_playbook_category(category)
+        result = self._request(
+            "GET",
+            "/api/integracoes/agent/v1/playbook/templates",
+            params={"category": normalized_category},
+        )
+        if isinstance(result, dict):
+            return dict(result)
+        return {
+            "category": normalized_category,
+            "items": [dict(item) for item in result if isinstance(item, dict)],
+        }
+
+    def generate_agent_contract(self, opportunity_id: int) -> dict[str, Any]:
+        if not self.supports_any(
+            "agentContractGenerate",
+            "contractGenerate",
+            "contractGeneration",
+        ):
+            raise CRMIntegrationError(
+                "Geração de contrato pelo endpoint agent ainda não foi publicada pelo CRM.",
+                status_code=501,
+                method="POST",
+                path=(
+                    f"/api/integracoes/agent/v1/opportunities/"
+                    f"{opportunity_id}/contract/generate"
+                ),
+                error_code="CRM_AGENT_CONTRACT_NOT_AVAILABLE",
+            )
+        result = self._request(
+            "POST",
+            (
+                f"/api/integracoes/agent/v1/opportunities/"
+                f"{opportunity_id}/contract/generate"
+            ),
+            json_body={},
+            timeout=60.0,
+        )
+        return result if isinstance(result, dict) else {}
+
+    def send_contract_webhook(
+        self,
+        *,
+        protocol: str,
+        file_name: str,
+        pdf_base64: str,
+    ) -> dict[str, Any]:
+        result = self._request(
+            "POST",
+            "/webhook/contrato",
+            json_body={
+                "protocol": protocol,
+                "fileName": file_name,
+                "pdfBase64": pdf_base64,
+            },
+            auth_mode="integration",
+            timeout=60.0,
+        )
+        return result if isinstance(result, dict) else {}
 
     def context(self) -> dict[str, Any]:
         return self.integration_profile()
@@ -660,12 +1040,28 @@ class SulnetCRMClient:
         # apiVersion/capabilities.
         return self._catalog_products_fallback(query)
 
-    def mark_won(self, opportunity_id: int) -> dict[str, Any]:
+    def mark_won(
+        self,
+        opportunity_id: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        request_key = str(idempotency_key or uuid.uuid4())
+        try:
+            uuid.UUID(request_key)
+        except (ValueError, AttributeError) as exc:
+            raise CRMIntegrationError(
+                "Idempotency-Key inválido para marcar ganho.",
+                error_code="CRM_IDEMPOTENCY_KEY_INVALID",
+            ) from exc
+
+        idempotency_headers = {"Idempotency-Key": request_key}
         if self.supports("markWon"):
             result = self._request(
                 "POST",
                 f"/api/capture/leads/{opportunity_id}/win",
                 json_body={},
+                extra_headers=idempotency_headers,
             )
             return result if isinstance(result, dict) else {}
 
@@ -688,6 +1084,7 @@ class SulnetCRMClient:
             "PATCH",
             f"/api/opportunities/{opportunity_id}",
             json_body=win_payload,
+            extra_headers=idempotency_headers,
         )
         if not isinstance(updated, dict):
             updated = {}
