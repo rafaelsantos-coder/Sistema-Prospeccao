@@ -149,6 +149,83 @@
 
   {% set journey = report.ai_journey %}
   {% set jk = journey.kpis %}
+  {% set performance = journey.performance %}
+  {% set comparison = performance.comparison %}
+
+  <section class="report-panel">
+    <header class="report-panel-header">
+      <div>
+        <span class="eyebrow">GESTÃO AUTOMÁTICA DE PERFORMANCE</span>
+        <h3>Diagnóstico do SDR e do Vendedor IA</h3>
+      </div>
+      <span class="report-caption">Comparação: {{ comparison.current_label }} versus {{ comparison.previous_label }}</span>
+    </header>
+
+    <section class="report-kpis">
+      <article class="report-kpi emphasis">
+        <span>Saúde da jornada</span>
+        <strong>{{ performance.score }}/100</strong>
+        <small>{{ performance.status_label }}</small>
+      </article>
+      <article class="report-kpi">
+        <span>Alertas críticos</span>
+        <strong>{{ performance.critical_count }}</strong>
+        <small>{{ performance.warning_count }} alerta(s) de atenção</small>
+      </article>
+      <article class="report-kpi">
+        <span>Oferta → aceite</span>
+        <strong>{{ '%.1f'|format(jk.acceptance_rate) }}%</strong>
+        <small>
+          {% if comparison.acceptance_rate_delta is not none %}
+            {{ '%+.1f'|format(comparison.acceptance_rate_delta) }} p.p. vs. período anterior
+          {% else %}
+            Sem base comparável
+          {% endif %}
+        </small>
+      </article>
+      <article class="report-kpi">
+        <span>Aceite → Vendedor IA</span>
+        <strong>{{ '%.1f'|format(jk.closer_start_rate) }}%</strong>
+        <small>
+          {% if comparison.closer_start_rate_delta is not none %}
+            {{ '%+.1f'|format(comparison.closer_start_rate_delta) }} p.p. vs. período anterior
+          {% else %}
+            Sem base comparável
+          {% endif %}
+        </small>
+      </article>
+      <article class="report-kpi">
+        <span>Conclusão do fechamento</span>
+        <strong>{{ '%.1f'|format(jk.completion_rate) }}%</strong>
+        <small>
+          {% if comparison.completion_rate_delta is not none %}
+            {{ '%+.1f'|format(comparison.completion_rate_delta) }} p.p. vs. período anterior
+          {% else %}
+            Sem base comparável
+          {% endif %}
+        </small>
+      </article>
+      <article class="report-kpi">
+        <span>Recomendação principal</span>
+        <strong>{% if performance.critical_count %}Prioridade alta{% elif performance.warning_count %}Ajustar{% else %}Monitorar{% endif %}</strong>
+        <small>{{ performance.primary_recommendation or 'A jornada está sem recomendação crítica neste período.' }}</small>
+      </article>
+    </section>
+
+    <div class="report-log-list audit">
+      {% for item in performance.alerts %}
+      <div class="report-audit-log">
+        <time>{{ item.severity }}</time>
+        <strong>{{ item.title }}</strong>
+        <p>{{ item.detail }}</p>
+        <small><b>Ação recomendada:</b> {{ item.recommendation }}</small>
+      </div>
+      {% else %}
+      <div class="report-empty">Ainda não há base suficiente para gerar diagnóstico automático.</div>
+      {% endfor %}
+    </div>
+  </section>
+
   <section class="report-panel">
     <header class="report-panel-header">
       <div>
