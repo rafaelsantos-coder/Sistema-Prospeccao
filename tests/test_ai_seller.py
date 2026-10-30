@@ -345,6 +345,19 @@ class _PlaybookClient:
         self.updated.append((opportunity_id, payload))
         return {"opportunityId": opportunity_id}
 
+    def update_category_form(
+        self,
+        opportunity_id,
+        values,
+        *,
+        category_id=None,
+        plan_id=None,
+    ):
+        self.category_updates.append(
+            (opportunity_id, dict(values), category_id, plan_id)
+        )
+        return {"opportunityId": opportunity_id}
+
 
 def _playbook_result(*, missing=None, next_question="", ready=False, category="fibra"):
     return CRMPlaybookResult(
