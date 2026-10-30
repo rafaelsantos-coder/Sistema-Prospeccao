@@ -123,17 +123,32 @@ def test_extract_birth_date_normalizes_to_iso():
 
 
 
-def test_mobile_contract_type_new_number_skips_iccid_number_due_day_and_fee():
-    values = _mobile_values({})
+def test_sdr_ia_mobile_new_number_uses_defaults_and_skips_forbidden_fields():
+    collected = {
+        "_sdr_ia_funnel": True,
+        "_sdr_ia_defaults": {
+            "vencimento": "10",
+            "taxa_ativacao": "Não",
+            "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+        },
+    }
+    values = _mobile_values(collected)
+    assert values["vencimento"] == "10"
+    assert values["taxa_ativacao"] == "Não"
     assert values["tipo_assinatura_contrato"] == MOBILE_SIGNATURE_TYPE
 
-    ok, _ = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "numero_novo", values)
+    ok, _ = _apply_mobile_answer(
+        "MOBILE_CONTRACT_TYPE",
+        "numero_novo",
+        values,
+        sdr_ia_funnel=True,
+    )
     assert ok is True
     assert values["tipo_contratacao"] == "Número novo"
-    assert _mobile_next_step(values) == "MOBILE_PAYMENT_METHOD"
+    assert _mobile_next_step(values, sdr_ia_funnel=True) == "MOBILE_PAYMENT_METHOD"
 
 
-def test_mobile_contract_type_accepts_m2m_and_requests_quantity_in_fallback():
+def test_non_sdr_mobile_contract_type_still_accepts_m2m():
     values = _mobile_values({})
     ok, message = _apply_mobile_answer("MOBILE_CONTRACT_TYPE", "M2M", values)
     assert ok is True
@@ -142,20 +157,47 @@ def test_mobile_contract_type_accepts_m2m_and_requests_quantity_in_fallback():
     assert _mobile_next_step(values) == "MOBILE_M2M_QTY"
 
 
-def test_mobile_portability_requires_number_and_holder_data_but_not_iccid_or_date():
+def test_sdr_ia_mobile_contract_type_rejects_m2m():
+    values = _mobile_values({"_sdr_ia_funnel": True})
+    ok, message = _apply_mobile_answer(
+        "MOBILE_CONTRACT_TYPE",
+        "M2M",
+        values,
+        sdr_ia_funnel=True,
+    )
+    assert ok is False
+    assert "Portabilidade" in message
+    assert "Número novo" in message
+    assert "M2M" not in message
+
+
+def test_mobile_portability_does_not_repeat_holder_data_when_same_holder():
     values = {
         "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
         "tipo_contratacao": "Número Portabilidade",
         "numero_portado": "5555999990000",
         "port_titular": "Sim",
+        "forma_pagamento": "Boleto",
+        "envio_fatura": ["WhatsApp"],
+        "unificar_faturas": "Sim",
+    }
+    missing = _mobile_missing_fields(values)
+    assert "port_nome_titular" not in missing
+    assert "port_cpf_cnpj" not in missing
+    assert "port_iccid" not in missing
+    assert "port_data" not in missing
+
+
+def test_mobile_portability_asks_holder_data_only_when_different_holder():
+    values = {
+        "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+        "tipo_contratacao": "Número Portabilidade",
+        "numero_portado": "5555999990000",
+        "port_titular": "Não",
     }
     missing = _mobile_missing_fields(values)
     assert "port_nome_titular" in missing
     assert "port_cpf_cnpj" in missing
-    assert "port_iccid" not in missing
-    assert "port_data" not in missing
-    assert "vencimento" not in missing
-    assert "taxa_ativacao" not in missing
 
 
 def test_mobile_boleto_billing_requires_delivery_and_unification_reason():
@@ -364,7 +406,16 @@ class _PlaybookClient:
         return {"opportunityId": opportunity_id}
 
 
-def _playbook_result(*, missing=None, next_question="", ready=False, category="fibra"):
+def _playbook_result(
+    *,
+    missing=None,
+    next_question="",
+    ready=False,
+    category="fibra",
+    sdr_ia_funnel=False,
+    sdr_defaults=None,
+    field_policy=None,
+):
     return CRMPlaybookResult(
         opportunity_id=11754,
         protocol="CRM-TEST",
@@ -376,7 +427,9 @@ def _playbook_result(*, missing=None, next_question="", ready=False, category="f
         credit_status="Aprovado",
         credit_approved=True,
         credit_rejected=False,
-        sdr_ia_funnel=True,
+        sdr_ia_funnel=sdr_ia_funnel,
+        sdr_ia_defaults=dict(sdr_defaults or {}),
+        sdr_ia_field_policy=dict(field_policy or {}),
         missing=list(missing or []),
     )
 
