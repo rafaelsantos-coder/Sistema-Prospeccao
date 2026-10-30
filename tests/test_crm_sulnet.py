@@ -359,7 +359,10 @@ class WinFallbackClient:
             {"method": method, "url": url, "json": kwargs.get("json")}
         )
         response = FakeResponse()
-        if method == "POST" and url.endswith("/api/capture/leads/1234/win"):
+        if method == "GET" and url.endswith("/api/capture/config"):
+            response.status_code = 404
+            response.payload = {"error": "Rota não encontrada."}
+        elif method == "POST" and url.endswith("/api/capture/leads/1234/win"):
             response.status_code = 404
             response.payload = {"error": "Rota não encontrada."}
         elif method == "GET" and url.endswith("/api/capture/context"):
