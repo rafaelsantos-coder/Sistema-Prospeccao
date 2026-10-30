@@ -32,7 +32,10 @@ class FakeClient:
         self.__class__.captured_url = url
         self.__class__.captured_json = kwargs.get("json")
         response = FakeResponse()
-        if url.endswith("/api/capture/context"):
+        if url.endswith("/api/capture/config"):
+            response.status_code = 404
+            response.payload = {"error": "Rota não encontrada."}
+        elif url.endswith("/api/capture/context"):
             response.payload = {"originId": 77}
         elif url.endswith("/api/capture/leads"):
             response.payload = {"lead": {"id": 1234, "protocol": "CRM-2026-1234"}}
@@ -401,3 +404,19 @@ def test_mark_won_falls_back_to_generic_opportunity_when_capture_route_missing(m
     assert result["opportunity"]["status"] == "won"
     assert result["backofficeOpportunityId"] == 9001
     assert result["contract"]["status"] == "aguardando_backoffice"
+
+
+
+def test_crm_sends_official_integration_key_when_configured(monkeypatch):
+    monkeypatch.setattr(crm_module.httpx, "Client", FakeClient)
+
+    credential = "x" * 32
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        integration_key=credential,
+    )
+    assert client.config()["originId"] == 77
+
+    headers = FakeClient.captured_headers or {}
+    assert headers["X-Integration-Key"] == credential
+    assert "Authorization" not in headers
