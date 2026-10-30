@@ -1756,6 +1756,11 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         return "Agora falta o faturamento: como prefere pagar/receber a fatura e qual dia de vencimento você prefere?"
     if state.step == "CREDIT_REJECTED":
         return "A consulta cadastral não foi aprovada automaticamente. Se quiser, posso encaminhar para análise de um atendente."
+    if state.step == "WAITING_CRM_READY":
+        return (
+            "Seus dados já foram enviados ao CRM. Estou aguardando a validação final "
+            "para preparar o contrato e sigo automaticamente por aqui assim que liberar."
+        )
     if state.step == "WAITING_CONTRACT":
         return "Seu cadastro comercial já foi concluído e o contrato está sendo preparado. Assim que o link de assinatura estiver disponível, eu envio por aqui."
     if state.step == "WAITING_SIGNATURE":
