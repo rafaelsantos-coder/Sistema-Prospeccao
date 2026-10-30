@@ -27,6 +27,10 @@ class Settings:
     session_signing_key: str = os.getenv("SESSION_SIGNING_KEY", "").strip()
     data_encryption_key: str = os.getenv("DATA_ENCRYPTION_KEY", "").strip()
     legacy_data_encryption_key: str = os.getenv("LEGACY_DATA_ENCRYPTION_KEY", "").strip()
+    database_pool_size: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
+    database_max_overflow: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
+    database_pool_timeout_seconds: int = int(os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "15"))
+    database_pool_recycle_seconds: int = int(os.getenv("DATABASE_POOL_RECYCLE_SECONDS", "1800"))
     database_url: str = normalize_database_url(
         os.getenv(
             "DATABASE_URL",
@@ -34,9 +38,16 @@ class Settings:
         )
     )
     session_cookie: str = os.getenv("SESSION_COOKIE", "sulnet_prospecta_session")
+    redis_url: str = os.getenv("REDIS_URL", "").strip()
+    session_max_age_seconds: int = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 12)))
     login_max_attempts: int = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
     login_window_seconds: int = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
     login_block_seconds: int = int(os.getenv("LOGIN_BLOCK_SECONDS", "900"))
+    mfa_required_roles: str = os.getenv("MFA_REQUIRED_ROLES", "").strip()
+    oidc_metadata_url: str = os.getenv("OIDC_METADATA_URL", "").strip()
+    oidc_client_id: str = os.getenv("OIDC_CLIENT_ID", "").strip()
+    oidc_client_secret: str = os.getenv("OIDC_CLIENT_SECRET", "").strip()
+    oidc_allowed_domains: str = os.getenv("OIDC_ALLOWED_DOMAINS", "").strip()
     bootstrap_admin_name: str = os.getenv("BOOTSTRAP_ADMIN_NAME", "Administrador Sulnet")
     bootstrap_admin_email: str = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "admin@sulnet.local")
     bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "Sulnet@2026!")
@@ -53,6 +64,10 @@ class Settings:
     ai_sdr_enabled: bool = os.getenv("AI_SDR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
+    ai_maintenance_enabled: bool = os.getenv(
+        "AI_MAINTENANCE_ENABLED",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
     ai_seller_enabled: bool = os.getenv("AI_SELLER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     ai_supervisor_shadow_enabled: bool = os.getenv(
         "AI_SUPERVISOR_SHADOW_ENABLED",
@@ -111,7 +126,21 @@ class Settings:
     media_s3_secret_access_key: str = os.getenv("MEDIA_S3_SECRET_ACCESS_KEY", "")
     media_s3_url_style: str = os.getenv("MEDIA_S3_URL_STYLE", "virtual-host")
     media_max_upload_mb: int = int(os.getenv("MEDIA_MAX_UPLOAD_MB", "50"))
+    backup_encryption_key: str = os.getenv("BACKUP_ENCRYPTION_KEY", "").strip()
+    backup_retention_days: int = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
+    backup_s3_endpoint: str = os.getenv("BACKUP_S3_ENDPOINT", "").strip()
+    backup_s3_bucket: str = os.getenv("BACKUP_S3_BUCKET", "").strip()
+    backup_s3_region: str = os.getenv("BACKUP_S3_REGION", "auto").strip() or "auto"
+    backup_s3_access_key_id: str = os.getenv("BACKUP_S3_ACCESS_KEY_ID", "").strip()
+    backup_s3_secret_access_key: str = os.getenv("BACKUP_S3_SECRET_ACCESS_KEY", "").strip()
+    backup_s3_url_style: str = os.getenv("BACKUP_S3_URL_STYLE", "virtual-host").strip()
     media_remote_allowed_hosts: str = os.getenv("MEDIA_REMOTE_ALLOWED_HOSTS", "").strip()
+    clamav_host: str = os.getenv("CLAMAV_HOST", "").strip()
+    clamav_port: int = int(os.getenv("CLAMAV_PORT", "3310"))
+    clamav_required: bool = os.getenv(
+        "CLAMAV_REQUIRED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
     trusted_hosts: str = os.getenv("TRUSTED_HOSTS", "").strip()
     whatsapp_presence_timeout_seconds: int = int(os.getenv("WHATSAPP_PRESENCE_TIMEOUT_SECONDS", "90"))
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "America/Sao_Paulo")
@@ -119,6 +148,22 @@ class Settings:
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
+    @property
+    def oidc_configured(self) -> bool:
+        return bool(
+            self.oidc_metadata_url
+            and self.oidc_client_id
+            and self.oidc_client_secret
+        )
+
+    @property
+    def required_mfa_roles(self) -> set[str]:
+        return {
+            item.strip().upper()
+            for item in self.mfa_required_roles.split(",")
+            if item.strip()
+        }
 
     @property
     def effective_session_signing_key(self) -> str:
@@ -161,6 +206,9 @@ class Settings:
             "ai_autocorrect": bool(self.ai_autocorrect_enabled),
             "ai_learning": bool(self.ai_learning_enabled and self.openai_api_key),
             "ai_engineer": bool(self.ai_engineer_enabled and self.openai_api_key),
+            "redis": bool(self.redis_url),
+            "clamav": bool(self.clamav_host),
+            "oidc_sso": self.oidc_configured,
             "ai_engineer_autonomous_pr": bool(
                 self.ai_engineer_enabled
                 and self.ai_engineer_autonomous_pr_enabled
