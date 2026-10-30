@@ -989,6 +989,7 @@ def _phase4_state(**overrides):
         "opportunity_id": 11754,
         "external_id": "prospecta-conversation-99",
         "plan_label": "800 Mega",
+        "offer_price": 119.90,
         "step": "BILLING_DUE_DAY",
         "contract_status": "",
         "sign_url": "",
