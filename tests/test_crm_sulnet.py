@@ -738,3 +738,51 @@ def test_agent_contract_generate_is_capability_guarded(monkeypatch):
         )
     )
     assert request["headers"]["Authorization"] == "Bearer bearer-test"
+
+
+
+class SanitizedErrorClient:
+    def __init__(self, *, headers: dict[str, str], **_: Any):
+        self.headers = headers
+
+    def __enter__(self) -> "SanitizedErrorClient":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        response = FakeResponse()
+        response.status_code = 422
+        response.payload = {
+            "error": "Documento 11111111111 inválido para a@b.co",
+            "code": "VALIDATION_ERROR",
+            "clientCpf": "11111111111",
+            "clientEmail": "a@b.co",
+            "safeField": "faltando",
+        }
+        return response
+
+
+def test_crm_error_exposes_only_sanitized_diagnostics(monkeypatch):
+    monkeypatch.setattr(crm_module.httpx, "Client", SanitizedErrorClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="bearer-test",
+    )
+    try:
+        client.playbook(1234, category="fibra")
+    except crm_module.CRMIntegrationError as exc:
+        assert exc.status_code == 422
+        assert exc.method == "GET"
+        assert "/playbook" in exc.path
+        assert exc.error_code == "VALIDATION_ERROR"
+        assert "11111111111" not in str(exc)
+        assert "a@b.co" not in str(exc)
+        assert exc.response_body["clientCpf"] == "[REDACTED]"
+        assert exc.response_body["clientEmail"] == "[REDACTED]"
+        assert exc.response_body["safeField"] == "faltando"
+        assert exc.as_dict()["statusCode"] == 422
+    else:
+        raise AssertionError("Era esperado CRMIntegrationError.")
