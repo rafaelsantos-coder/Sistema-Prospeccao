@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import unicodedata
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -700,7 +701,8 @@ def _query_playbook_guidance(
 
         if not result.missing:
             _playbook_clear_question(collected)
-            return fallback_step, None
+            collected["_playbook_ready_for_win"] = False
+            return "WAITING_CRM_READY", None
 
         first = result.missing[0]
         if _sync_known_playbook_missing(
@@ -1251,25 +1253,168 @@ def _apply_billing_form_answer(
     return False, "Não consegui interpretar esta informação de faturamento."
 
 
-def _finish_sale_contract(client: SulnetCRMClient, state: AIClosingState) -> str:
-    won = client.mark_won(state.opportunity_id or 0)
-    contract = won.get("contract") or {}
-    state.contract_status = str(contract.get("status") or "aguardando_backoffice")
+SIGNED_CONTRACT_STATUSES = {
+    "assinado",
+    "signed",
+    "concluido",
+    "completed",
+    "finalizado",
+}
+
+
+def _contract_is_signed(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", _norm(status)).strip("_")
+    return normalized in SIGNED_CONTRACT_STATUSES
+
+
+def _contract_sign_url(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in (
+        "signUrl",
+        "signatureUrl",
+        "sign_url",
+        "signature_url",
+        "urlAssinatura",
+        "url_assinatura",
+    ):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    nested = payload.get("contract")
+    if isinstance(nested, dict):
+        return _contract_sign_url(nested)
+    return ""
+
+
+def _contract_status(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("status", "contractStatus", "contract_status"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    nested = payload.get("contract")
+    if isinstance(nested, dict):
+        return _contract_status(nested)
+    return ""
+
+
+def _win_idempotency_key(state: AIClosingState) -> str:
+    seed = f"sulnet-prospecta:won:{state.external_id}:{state.opportunity_id or 0}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def _prepare_contract_before_win(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> str:
+    if not state.opportunity_id:
+        raise CRMIntegrationError("Oportunidade do CRM não disponível para gerar contrato.")
+
+    # readyForWin significa cadastro comercial completo. Na Fase 4 ele libera
+    # a geração do contrato, mas NÃO marca a oportunidade como ganha.
+    if collected.get("_playbook_ready_for_win") is not True:
+        state.step = "WAITING_CRM_READY"
+        state.contract_status = "aguardando_validacao_crm"
+        return _prompt_for_step(state, collected)
+
     state.step = "WAITING_CONTRACT"
-    try:
-        started = client.start_contract(state.opportunity_id or 0)
-    except CRMIntegrationError:
-        started = contract
-    sign_url = str(started.get("signUrl") or "").strip()
-    state.contract_status = str(started.get("status") or state.contract_status)
+    generated: dict[str, Any] = {}
+
+    if client.supports_any(
+        "agentContractGenerate",
+        "contractGenerate",
+        "contractGeneration",
+    ):
+        if not collected.get("_contract_generation_requested"):
+            generated = client.generate_agent_contract(state.opportunity_id)
+            collected["_contract_generation_requested"] = True
+            collected["_contract_generation_response"] = {
+                key: generated.get(key)
+                for key in ("protocol", "templateId", "status")
+                if generated.get(key) not in (None, "")
+            }
+    elif client.supports("contract"):
+        if not collected.get("_contract_start_requested"):
+            generated = client.start_contract(state.opportunity_id)
+            collected["_contract_start_requested"] = True
+    else:
+        state.contract_status = "aguardando_capability_contrato"
+        return _prompt_for_step(state, collected)
+
+    sign_url = _contract_sign_url(generated)
+    contract_status = _contract_status(generated)
+    if contract_status:
+        state.contract_status = contract_status
+    elif not state.contract_status:
+        state.contract_status = "contrato_em_preparacao"
+
+    # Alguns CRMs separam "generate" de "start/sign". Se a geração não trouxe
+    # o link e a capability de contrato existe, iniciamos a etapa de assinatura.
+    if not sign_url and client.supports("contract") and not collected.get("_contract_start_requested"):
+        started = client.start_contract(state.opportunity_id)
+        collected["_contract_start_requested"] = True
+        sign_url = _contract_sign_url(started)
+        started_status = _contract_status(started)
+        if started_status:
+            state.contract_status = started_status
+
     if sign_url:
         state.sign_url = sign_url
         state.step = "WAITING_SIGNATURE"
         return (
-            "Seu cadastro foi concluído e o contrato já está pronto para assinatura. "
+            "Seu cadastro foi concluído e o contrato está pronto para assinatura. "
             f"Você pode assinar por este link: {sign_url}"
         )
-    return _prompt_for_step(state, {})
+
+    return _prompt_for_step(state, collected)
+
+
+def _finalize_signed_sale(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> dict[str, Any]:
+    if not state.opportunity_id:
+        raise CRMIntegrationError("Oportunidade do CRM não disponível para concluir a venda.")
+    if not _contract_is_signed(state.contract_status):
+        raise CRMIntegrationError(
+            "A venda não pode ser marcada como ganha antes da assinatura do contrato.",
+            error_code="CRM_CONTRACT_NOT_SIGNED",
+        )
+
+    idempotency_key = _win_idempotency_key(state)
+    collected["_win_idempotency_key"] = idempotency_key
+    won = client.mark_won(
+        state.opportunity_id,
+        idempotency_key=idempotency_key,
+    )
+    opportunity = won.get("opportunity") if isinstance(won, dict) else {}
+    status = str((opportunity or {}).get("status") or "").strip().lower()
+    already_won = bool(won.get("alreadyWon")) if isinstance(won, dict) else False
+    if status != "won" and not already_won:
+        raise CRMIntegrationError(
+            "CRM não confirmou a oportunidade como ganha após a assinatura.",
+            error_code="CRM_WIN_NOT_CONFIRMED",
+        )
+
+    collected["_won_after_signature"] = True
+    backoffice_id = won.get("backofficeOpportunityId") if isinstance(won, dict) else None
+    if backoffice_id not in (None, ""):
+        collected["_backoffice_opportunity_id"] = backoffice_id
+    state.step = "COMPLETED"
+    state.completed_at = utcnow()
+    return won
+
+
+def _finish_sale_contract(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> str:
+    return _prepare_contract_before_win(client, state, collected)
 
 
 
