@@ -74,6 +74,10 @@ def test_whatsapp_reports_page(monkeypatch):
         assert "CSV mensagens" in response.text
         assert 'name="queue_id"' in response.text
         assert "<span>Fila</span>" in response.text
+        assert "JORNADA COMERCIAL IA" in response.text
+        assert "EFICIÊNCIA POR ETAPA" in response.text
+        assert "CSV jornada IA" in response.text
+        assert "Interações até aceite" in response.text
 
 
 def test_whatsapp_reports_csv_exports(monkeypatch):
@@ -87,11 +91,22 @@ def test_whatsapp_reports_csv_exports(monkeypatch):
         text = summary.content.decode("utf-8-sig")
         assert "Conversa;Contato;Telefone" in text
         assert "Clínica Horizonte" in text
+        assert "Jornada IA" in text
+        assert "Pendência da jornada" in text
+        assert "Estagnação" in text
 
         messages = client.get("/reports/whatsapp/export/messages.csv")
         assert messages.status_code == 200
         message_text = messages.content.decode("utf-8-sig")
         assert "Mensagem para relatório de atendimento." in message_text
+
+        journey = client.get("/reports/whatsapp/export/ai-journey.csv")
+        assert journey.status_code == 200
+        journey_text = journey.content.decode("utf-8-sig")
+        assert "FUNIL COMERCIAL IA" in journey_text
+        assert "DESEMPENHO POR ETAPA" in journey_text
+        assert "CONVERSAS TRAVADAS" in journey_text
+        assert "Confirmar compra" in journey_text
 
         conversation_id = location.rsplit("/", 1)[-1]
         transcript = client.get(f"/reports/whatsapp/conversations/{conversation_id}.csv")
