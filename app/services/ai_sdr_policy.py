@@ -4,6 +4,9 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 
+PLAN_CHANGE_SERVICE_PHONE = "(55) 3520-8000"
+
+
 CORE_COMMERCIAL_POLICY = {
     "objective": (
         "Fechar vendas de internet e Telefonia Móvel: a IA deve conduzir o lead até intenção clara de contratação "
@@ -337,6 +340,19 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "ou uma nova conexão de internet para outro endereço. Se escolher nova conexão, confirmar se o novo endereço é residencial ou empresarial. "
             "A resposta cliente/não cliente deve ser guardada como memória confirmada do próprio cliente e não deve ser perguntada novamente em mensagens futuras. "
             "Se o cliente fizer opt-out explícito ou pedir atendimento humano, respeitar isso sem forçar a qualificação."
+        ),
+    },
+    {
+        "title": "Cliente atual pedindo aumento ou troca de plano",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "cliente atual,upgrade,troca de plano,aumentar plano,mais velocidade,3520-8000",
+        "content": (
+            "Quando a pessoa informar que já possui um plano/conexão Sulnet e quiser aumentar velocidade, trocar, mudar, alterar ou fazer upgrade do plano atual, "
+            "não tratar como nova venda, não iniciar Vendedor IA, não pedir nome/CPF e não ofertar uma nova conexão para o mesmo serviço. "
+            "Orientar de forma curta que alterações de plano de clientes atuais são feitas pelo canal de atendimento (55) 3520-8000. "
+            "Exemplo: 'Entendi! Como você já é cliente e quer aumentar/trocar o seu plano atual, essa alteração é feita pelo nosso atendimento. "
+            "Entre em contato pelo (55) 3520-8000 que a equipe consegue verificar as opções para sua conexão.' "
+            "Depois desse direcionamento, encerrar a tratativa comercial daquela conversa e não gerar follow-up de prospecção."
         ),
     },
     {
