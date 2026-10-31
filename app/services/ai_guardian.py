@@ -71,6 +71,12 @@ Regras obrigatórias:
      informar que aquele campo continua pendente. Nesse caso, voltar à etapa indicada
      por crm_playbook_step NÃO é regressão: é recuperação autoritativa do fechamento.
      Isso só vale para o campo/patchKey explicitamente presentes no metadata atual.
+7.3. Se proposed_action.metadata.authoritative_contract_knowledge=true, a mensagem foi
+     construída deterministicamente a partir da base contratual oficial da Sulnet para
+     responder uma dúvida objetiva do cliente. Preserve integralmente os fatos e a resposta
+     original. Não troque a resposta por CTA, não mande consultar o contrato, não invente
+     incerteza e não adicione botões apenas para retomar o playbook. O playbook permanece
+     no mesmo estado e será retomado depois da resposta.
 8. Em REWRITE preserve todos os fatos comerciais válidos da mensagem original. Não acrescente
    valores, velocidades, benefícios ou condições que não estejam comprovados no contexto.
 9. CORRECT_STATE só deve ser usado quando o contexto provar o estado correto. Não adivinhe.
@@ -373,6 +379,30 @@ def _apply_guardrails(
         ]
 
     metadata = proposed.get("metadata") or {}
+    authoritative_contract_knowledge = bool(
+        str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER"
+        and metadata.get("authoritative_contract_knowledge") is True
+    )
+
+    # Dúvidas contratuais resolvidas pela base oficial são fatos autoritativos.
+    # O Guardião continua podendo bloquear um risco objetivo HIGH/CRITICAL, mas
+    # não pode substituir a resposta por CTA, incerteza ou leitura do contrato.
+    if authoritative_contract_knowledge and not critical and not high:
+        review.verdict = "APPROVE"
+        review.risk = "LOW"
+        review.confidence = max(review.confidence, 0.95)
+        review.quality_score = max(review.quality_score, 95)
+        review.reply_text = ""
+        review.suggested_buttons = []
+        review.corrected_state = ""
+        review.issue_codes = [
+            code for code in review.issue_codes if code in deterministic_codes
+        ]
+        review.rationale = (
+            "Resposta contratual construída deterministicamente a partir da "
+            "base oficial; preservar texto e fatos originais."
+        )
+
     playbook_recovery = bool(
         str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER"
         and metadata.get("crm_playbook_required") is True
@@ -523,7 +553,12 @@ def _apply_guardrails(
     # A reescrita do próprio Guardião também precisa passar pelo anti-repetição.
     # Caso contrário ele poderia detectar repetição e devolver uma paráfrase
     # praticamente idêntica, que ainda assim chegaria ao cliente.
-    if review.verdict != "BLOCK" and final_text and not playbook_recovery:
+    if (
+        review.verdict != "BLOCK"
+        and final_text
+        and not playbook_recovery
+        and not authoritative_contract_knowledge
+    ):
         prior_outbounds = [
             str(item.get("body") or "")
             for item in context.get("history") or []
