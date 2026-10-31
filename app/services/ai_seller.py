@@ -2484,6 +2484,7 @@ def _send_step_message(
     conversation: Conversation,
     state: AIClosingState,
     text: str,
+    authoritative_contract_knowledge: bool = False,
 ) -> Message:
     recent_duplicate = db.scalar(
         select(Message)
@@ -2521,6 +2522,12 @@ def _send_step_message(
         state,
         collected,
     )
+    if authoritative_contract_knowledge:
+        guardian_metadata = {
+            **guardian_metadata,
+            "authoritative_contract_knowledge": True,
+            "knowledge_source": "FTTH_CONTRACT_POLICY",
+        }
     buttons = _seller_step_buttons(
         state.step,
         text,
@@ -4164,6 +4171,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 conversation=conversation,
                 state=state,
                 text=reply,
+                authoritative_contract_knowledge=bool(contract_knowledge_reply),
             )
             _schedule_seller_followup(
                 db,
