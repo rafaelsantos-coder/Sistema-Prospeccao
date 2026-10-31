@@ -1760,3 +1760,55 @@ def test_seller_contract_knowledge_keeps_mobile_out_of_ftth_rules():
     )
 
     assert reply is None
+
+
+def test_seller_contract_penalty_after_eight_months_returns_real_value():
+    state = SimpleNamespace(
+        plan_label="800 Mega",
+        offer_price=119.90,
+        handoff_summary="",
+    )
+    reply = _seller_contract_knowledge_reply(
+        state,
+        {"freeMonths": 0},
+        "qual o valor da multa de contrato, se eu só usar 8 meses?",
+    )
+
+    assert reply is not None
+    assert "faltam 4 meses" in reply
+    assert "R$ 860,00" in reply
+    assert "R$ 286,67" in reply
+
+
+def test_seller_contract_penalty_includes_two_free_months():
+    state = SimpleNamespace(
+        plan_label="800 Mega",
+        offer_price=119.90,
+        handoff_summary="",
+    )
+    reply = _seller_contract_knowledge_reply(
+        state,
+        {"freeMonths": 2},
+        "se eu cancelar depois de 8 meses qual a multa?",
+    )
+
+    assert reply is not None
+    assert "2 mensalidades grátis" in reply
+    assert "R$ 1.099,80" in reply
+    assert "R$ 366,60" in reply
+
+
+def test_seller_contract_penalty_after_twelve_months_is_zero():
+    state = SimpleNamespace(
+        plan_label="800 Mega",
+        offer_price=119.90,
+        handoff_summary="",
+    )
+    reply = _seller_contract_knowledge_reply(
+        state,
+        {"freeMonths": 0},
+        "se eu cancelar depois de 12 meses tem multa?",
+    )
+
+    assert reply is not None
+    assert "não há multa de permanência" in reply.lower()
