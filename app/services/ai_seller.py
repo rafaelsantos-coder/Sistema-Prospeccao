@@ -29,6 +29,7 @@ from app.models import (
     Message,
 )
 from app.services.ai_guardian import GuardianBlockedError, guard_outbound_message
+from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE
 from app.services.audit import write_audit
 from app.services.crm_sulnet import (
     CRMIntegrationError,
@@ -144,6 +145,163 @@ def _extract_cpf(text: str) -> str | None:
         d = _digits(item)
         if len(d) in {11, 14}:
             return d
+    return None
+
+
+def _seller_ftth_plan(state: AIClosingState, collected: dict[str, Any]) -> dict[str, Any] | None:
+    if _is_mobile_plan(state, collected):
+        return None
+    haystack = " ".join(
+        str(value or "")
+        for value in (
+            state.plan_label,
+            collected.get("planLabel"),
+            collected.get("catalogPlanName"),
+            collected.get("productName"),
+            collected.get("offerPlanCode"),
+        )
+    )
+    numbers = {int(value) for value in re.findall(r"\\b(250|500|650|800)\\b", haystack)}
+    for plan in FTTH_PLANS:
+        if int(plan.get("download_mbps") or 0) in numbers:
+            return plan
+    return None
+
+
+def _seller_brl(value: float | int | Decimal) -> str:
+    return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _seller_contract_knowledge_reply(
+    state: AIClosingState,
+    collected: dict[str, Any],
+    text: str,
+) -> str | None:
+    plan = _seller_ftth_plan(state, collected)
+    if not plan:
+        return None
+
+    key = _norm(text)
+    asks_fidelity = any(term in key for term in (
+        "fidelidade",
+        "fidelizacao",
+        "fidelização",
+        "permanencia",
+        "permanência",
+        "prazo do contrato",
+        "prazo de contrato",
+        "tempo de contrato",
+        "duracao do contrato",
+        "duração do contrato",
+        "quantos meses",
+    ))
+    asks_no_fidelity = any(term in key for term in (
+        "sem fidelidade",
+        "sem fidelizacao",
+        "sem fidelização",
+        "nao quero fidelidade",
+        "não quero fidelidade",
+    ))
+    asks_installation_deadline = any(term in key for term in (
+        "prazo de instalacao",
+        "prazo da instalacao",
+        "prazo de instalação",
+        "prazo da instalação",
+        "quanto tempo para instalar",
+        "tempo de instalacao",
+        "tempo de instalação",
+    ))
+    asks_activation_fee = any(term in key for term in (
+        "taxa de instalacao",
+        "taxa de instalação",
+        "taxa de habilitacao",
+        "taxa de habilitação",
+        "valor da instalacao",
+        "valor da instalação",
+        "custo da instalacao",
+        "custo da instalação",
+    ))
+    asks_cancel_penalty = any(term in key for term in (
+        "multa",
+        "cancelamento",
+        "cancelar antes",
+        "quebrar fidelidade",
+        "quebra de fidelidade",
+    ))
+    asks_renewal = any(term in key for term in (
+        "renovacao",
+        "renovação",
+        "renova automaticamente",
+        "renovacao automatica",
+        "renovação automática",
+    ))
+    asks_equipment = any(term in key for term in (
+        "comodato",
+        "equipamento",
+        "roteador e meu",
+        "roteador é meu",
+        "roteador fica comigo",
+    ))
+    asks_late_fee = any(term in key for term in (
+        "atraso",
+        "juros",
+        "multa por atraso",
+        "atrasar a fatura",
+        "atrasar o pagamento",
+    ))
+
+    speed = int(plan.get("download_mbps") or 0)
+    fidelity_price = _seller_brl(plan.get("price_fidelity") or 0)
+    no_fidelity_price = _seller_brl(plan.get("price_no_fidelity") or 0)
+
+    if asks_no_fidelity:
+        return (
+            f"Sim. O plano de {speed} Mega também possui opção sem fidelidade: "
+            f"R$ {no_fidelity_price} por mês, com taxa de instalação/habilitação de R$ 860,00. "
+            f"Com fidelidade de 12 meses, ele fica em R$ {fidelity_price} por mês e essa taxa é integralmente isenta."
+        )
+
+    if asks_installation_deadline:
+        return (
+            "O prazo contratual para instalação é de até 45 dias úteis. "
+            "A equipe segue com o agendamento conforme a disponibilidade técnica do endereço."
+        )
+
+    if asks_activation_fee:
+        return (
+            "Com fidelidade de 12 meses, a taxa de instalação/habilitação de R$ 860,00 é integralmente isenta. "
+            f"Na opção sem fidelidade, a taxa de R$ 860,00 é mantida e o plano de {speed} Mega fica em R$ {no_fidelity_price} por mês."
+        )
+
+    if asks_cancel_penalty:
+        return (
+            "Se houver cancelamento antes do fim dos 12 meses de fidelidade, pode existir multa proporcional "
+            "aos benefícios concedidos e aos meses restantes. A regra contratual usa a proporcionalidade "
+            "M = (valor total do benefício / 12) × meses restantes."
+        )
+
+    if asks_renewal:
+        return (
+            "Depois dos 12 meses, o serviço pode continuar normalmente. "
+            "Uma nova fidelidade não começa automaticamente: para existir novo período de permanência é necessário um novo termo/contrato de permanência."
+        )
+
+    if asks_equipment:
+        return (
+            "Os equipamentos fornecidos para o serviço são disponibilizados em comodato, ou seja, permanecem de propriedade da Sulnet durante a contratação."
+        )
+
+    if asks_late_fee:
+        return (
+            "Em caso de atraso, o contrato prevê juros de 1% ao mês, multa de 2% e correção monetária conforme o índice previsto no contrato."
+        )
+
+    if asks_fidelity:
+        return (
+            f"Para o plano residencial de {speed} Mega, a fidelidade/permanência é de 12 meses. "
+            "Depois desse período o serviço pode continuar normalmente, e uma nova fidelidade não é criada automaticamente sem um novo termo de permanência."
+        )
+
     return None
 
 
@@ -3279,7 +3437,15 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     }
 
     try:
-        if _seller_existing_customer_plan_change_requested(
+        contract_knowledge_reply = _seller_contract_knowledge_reply(
+            state,
+            collected,
+            text,
+        )
+        if contract_knowledge_reply:
+            reply = contract_knowledge_reply
+
+        elif _seller_existing_customer_plan_change_requested(
             db,
             conversation.id,
             text,
