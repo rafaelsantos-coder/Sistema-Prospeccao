@@ -495,7 +495,9 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "correção por IGPM/INPC/IPCA conforme contrato. Cancelamento antecipado pode gerar multa proporcional aos benefícios "
             "concedidos e meses restantes: M=(VTB/12)*MR. Após os 12 meses o serviço pode renovar automaticamente, mas uma nova "
             "fidelidade não nasce automaticamente; exige novo contrato de permanência. Suspensão do serviço suspende também a "
-            "contagem da fidelidade pelo mesmo período."
+            "contagem da fidelidade pelo mesmo período. REGRA DE ATENDIMENTO: quando o cliente perguntar sobre qualquer uma dessas "
+            "condições e a resposta existir nesta base, responder diretamente com a informação oficial. Não mandar o cliente ler o contrato, "
+            "não dizer que a informação não está disponível e não encaminhar para humano apenas para consultar uma cláusula já conhecida."
         ),
     },
     {
