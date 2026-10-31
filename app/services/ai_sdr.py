@@ -29,7 +29,7 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
-from app.services.ai_sdr_policy import CORPORATE_PLANS, FTTH_PLANS, MOBILE_PLANS, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
+from app.services.ai_sdr_policy import CORPORATE_PLANS, FTTH_PLANS, MOBILE_PLANS, PLAN_CHANGE_SERVICE_PHONE, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.timeutils import is_past, utcnow
@@ -141,6 +141,7 @@ class AIDecision(BaseModel):
     journey_pending_action: str = Field(default="", max_length=600)
     handoff_target: Literal["NONE", "CLOSER_AI", "HUMAN"] = "NONE"
     stagnation_count: int = Field(default=0, ge=0, le=20)
+    service_redirect: bool = False
 
 
 class AIConfigurationError(RuntimeError):
@@ -1775,6 +1776,92 @@ def _reset_entry_offer(decision: AIDecision) -> None:
     decision.followup_needed = True
 
 
+def _existing_customer_plan_change_requested(context: dict) -> bool:
+    latest_raw = str(context.get("latest_customer_message") or "")
+    latest = _fold_sales_text(latest_raw)
+    recent_inbound = [
+        _fold_sales_text(str(item.get("body") or ""))
+        for item in (context.get("history") or [])[-12:]
+        if str(item.get("direction") or "").upper() == "INBOUND"
+    ]
+    combined = " | ".join([*recent_inbound, latest])
+
+    change_cues = (
+        "aumentar",
+        "aumentar meu plano",
+        "aumentar o plano",
+        "mais velocidade",
+        "mais mega",
+        "subir meu plano",
+        "subir o plano",
+        "trocar meu plano",
+        "trocar o plano",
+        "mudar meu plano",
+        "mudar o plano",
+        "alterar meu plano",
+        "alterar o plano",
+        "upgrade",
+        "melhorar meu plano",
+    )
+    existing_service_cues = (
+        "ja tenho um plano",
+        "tenho um plano",
+        "ja tenho plano",
+        "meu plano",
+        "sou cliente sulnet",
+        "ja sou cliente sulnet",
+        "tenho internet da sulnet",
+        "ja tenho internet da sulnet",
+        "minha internet sulnet",
+        "minha conexao sulnet",
+    )
+
+    wants_change = any(cue in latest for cue in change_cues)
+    if not wants_change:
+        return False
+
+    confirmed_existing = _existing_customer_from_context(context) == "CLIENTE"
+    mentions_existing_service = any(cue in combined for cue in existing_service_cues)
+    return confirmed_existing or mentions_existing_service
+
+
+def _apply_existing_customer_plan_change_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    if not _existing_customer_plan_change_requested(context):
+        return decision
+
+    decision.reply_text = (
+        "Entendi! Como você já é cliente e quer aumentar ou trocar o seu plano atual, "
+        f"essa alteração é feita pelo nosso atendimento. Entre em contato pelo {PLAN_CHANGE_SERVICE_PHONE} "
+        "que a equipe consegue verificar as opções para sua conexão."
+    )
+    decision.quick_replies = []
+    decision.intent = "INFORMATION"
+    decision.sales_state = "WAITING_CUSTOMER"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.existing_customer = "CLIENTE"
+    decision.handoff_target = "NONE"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = False
+    decision.followup_needed = False
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    decision.concession_level = 0
+    decision.free_months = 0
+    decision.summary = (
+        "Cliente atual pediu aumento/troca do plano existente e foi direcionado ao canal "
+        f"{PLAN_CHANGE_SERVICE_PHONE}."
+    )
+    decision.next_action = "Tratativa comercial encerrada; alteração de plano segue pelo atendimento."
+    decision.journey_state = "DISCOVERY"
+    decision.journey_pending_action = "Nenhuma ação comercial pendente."
+    decision.service_redirect = True
+    return decision
+
+
 def _show_existing_customer_question(decision: AIDecision) -> AIDecision:
     decision.reply_text = "Antes de te mostrar as opções, você já é cliente Sulnet?"
     decision.quick_replies = [
@@ -2890,6 +2977,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = _apply_offer_rejection_diagnostic_policy(decision, context)
     decision = _apply_prospecting_entry_policy(decision, context)
     decision = _apply_journey_orchestration_policy(decision, context)
+    decision = _apply_existing_customer_plan_change_policy(decision, context)
     return _sanitize_unconfirmed_customer_facts(decision, context)
 
 
@@ -3462,7 +3550,12 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     decision=decision,
                 )
 
-            if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
+            if decision.service_redirect:
+                from app.services.ai_followups import cancel_pending_followups
+                cancel_pending_followups(db, job.conversation_id, reason="EXISTING_CUSTOMER_PLAN_CHANGE")
+                conversation.status = "RESOLVIDO"
+                conversation.closed_at = utcnow()
+            elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
             elif not closer_started and decision.handoff_target == "HUMAN":
@@ -3477,6 +3570,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 and sent_message is not None
                 and decision.intent not in {"DO_NOT_CONTACT", "HUMAN_REQUEST"}
                 and decision.sales_state != "OPT_OUT"
+                and not decision.service_redirect
             ):
                 # Toda conversa comercial ativa recebe follow-up persistente.
                 # O agendamento não depende mais de o modelo lembrar de marcar
@@ -3543,6 +3637,8 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         elif decision.handoff_target == "HUMAN":
             state.state = "HANDOFF"
             state.handoff_at = utcnow()
+        elif decision.service_redirect:
+            state.state = "COMPLETED"
         else:
             state.state = "AI_ACTIVE"
         state.summary = decision.summary
