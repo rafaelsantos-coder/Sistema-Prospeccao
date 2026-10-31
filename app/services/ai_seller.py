@@ -161,7 +161,7 @@ def _seller_ftth_plan(state: AIClosingState, collected: dict[str, Any]) -> dict[
             collected.get("offerPlanCode"),
         )
     )
-    numbers = {int(value) for value in re.findall(r"\\b(250|500|650|800)\\b", haystack)}
+    numbers = {int(value) for value in re.findall(r"(?<!\\d)(250|500|650|800)(?!\\d)", haystack)}
     for plan in FTTH_PLANS:
         if int(plan.get("download_mbps") or 0) in numbers:
             return plan
@@ -273,6 +273,11 @@ def _seller_contract_knowledge_reply(
             f"Na opção sem fidelidade, a taxa de R$ 860,00 é mantida e o plano de {speed} Mega fica em R$ {no_fidelity_price} por mês."
         )
 
+    if asks_late_fee:
+        return (
+            "Em caso de atraso, o contrato prevê juros de 1% ao mês, multa de 2% e correção monetária conforme o índice previsto no contrato."
+        )
+
     if asks_cancel_penalty:
         return (
             "Se houver cancelamento antes do fim dos 12 meses de fidelidade, pode existir multa proporcional "
@@ -289,11 +294,6 @@ def _seller_contract_knowledge_reply(
     if asks_equipment:
         return (
             "Os equipamentos fornecidos para o serviço são disponibilizados em comodato, ou seja, permanecem de propriedade da Sulnet durante a contratação."
-        )
-
-    if asks_late_fee:
-        return (
-            "Em caso de atraso, o contrato prevê juros de 1% ao mês, multa de 2% e correção monetária conforme o índice previsto no contrato."
         )
 
     if asks_fidelity:
