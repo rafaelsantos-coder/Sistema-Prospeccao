@@ -342,3 +342,58 @@ def test_guardian_does_not_override_real_forbidden_sdr_closer_step():
     assert result.corrected_state == "WAITING_CRM_READY"
     assert state.step == "WAITING_CRM_READY"
     assert "SDR_IA_FORBIDDEN_CLOSING_STEP" in result.issue_codes
+
+
+def test_guardian_preserves_authoritative_contract_knowledge():
+    review = GuardianReview(
+        verdict="REWRITE",
+        risk="MEDIUM",
+        confidence=0.88,
+        quality_score=70,
+        issue_codes=[
+            "IGNORA_CONTEXTO_RECENTE",
+            "CTA_REPETIDO",
+            "PLAYBOOK_PENDENTE",
+        ],
+        rationale="Modelo tentou retomar o playbook.",
+        reply_text=(
+            "Não tenho a fidelidade confirmada nas informações disponíveis. "
+            "Confirme no contrato."
+        ),
+        suggested_buttons=["Sim", "Não"],
+    )
+    context = _context([], role="CLOSER")
+    context["history"] = []
+    context["proposed_action"] = {
+        "proposed_state": "WAITING_SIGNATURE",
+        "metadata": {
+            "closing_step": "WAITING_SIGNATURE",
+            "authoritative_contract_knowledge": True,
+            "knowledge_source": "FTTH_CONTRACT_POLICY",
+        },
+    }
+    context["current_state"] = {
+        "closing": {
+            "step": "WAITING_SIGNATURE",
+            "has_sign_url": True,
+        }
+    }
+
+    original = (
+        "Para o plano residencial de 800 Mega, a fidelidade/permanência "
+        "é de 12 meses."
+    )
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=context,
+        original_text=original,
+        original_buttons=[],
+    )
+
+    assert result.verdict == "APPROVE"
+    assert result.should_send is True
+    assert result.reply_text == original
+    assert result.buttons == []
+    assert result.risk == "LOW"
+    assert "PLAYBOOK_PENDENTE" not in result.issue_codes
