@@ -147,6 +147,59 @@ def _extract_cpf(text: str) -> str | None:
     return None
 
 
+def _seller_existing_customer_plan_change_requested(
+    db: Session,
+    conversation_id: int,
+    text: str,
+) -> bool:
+    latest = _norm(text)
+    change_cues = (
+        "aumentar",
+        "aumentar meu plano",
+        "aumentar o plano",
+        "mais velocidade",
+        "mais mega",
+        "subir meu plano",
+        "subir o plano",
+        "trocar meu plano",
+        "trocar o plano",
+        "mudar meu plano",
+        "mudar o plano",
+        "alterar meu plano",
+        "alterar o plano",
+        "upgrade",
+        "melhorar meu plano",
+    )
+    if not any(cue in latest for cue in change_cues):
+        return False
+
+    recent = list(
+        db.scalars(
+            select(Message.body)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.direction == "INBOUND",
+            )
+            .order_by(Message.id.desc())
+            .limit(10)
+        )
+    )
+    combined = " | ".join(_norm(str(item or "")) for item in recent)
+    existing_service_cues = (
+        "ja tenho um plano",
+        "tenho um plano",
+        "ja tenho plano",
+        "meu plano",
+        "sou cliente sulnet",
+        "ja sou cliente sulnet",
+        "tenho internet da sulnet",
+        "ja tenho internet da sulnet",
+        "minha internet sulnet",
+        "minha conexao sulnet",
+    )
+    return any(cue in combined for cue in existing_service_cues)
+
+
 def _wants_other_cpf(text: str) -> bool:
     key = _norm(text)
     phrases = (
@@ -3226,7 +3279,21 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     }
 
     try:
-        if _sdr_ia_mode(collected) and (
+        if _seller_existing_customer_plan_change_requested(
+            db,
+            conversation.id,
+            text,
+        ):
+            state.step = "COMPLETED"
+            state.completed_at = utcnow()
+            collected["_service_redirect"] = "EXISTING_CUSTOMER_PLAN_CHANGE"
+            reply = (
+                "Entendi! Como você já é cliente e quer aumentar ou trocar o seu plano atual, "
+                f"essa alteração é feita pelo nosso atendimento. Entre em contato pelo {PLAN_CHANGE_SERVICE_PHONE} "
+                "que a equipe consegue verificar as opções para sua conexão."
+            )
+
+        elif _sdr_ia_mode(collected) and (
             state.step in SDR_IA_FORBIDDEN_STEPS or state.step == "BILLING"
         ):
             values = _category_values(collected)
@@ -3939,6 +4006,15 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 source_message_id=message.id,
                 step=1,
             )
+            if collected.get("_service_redirect") == "EXISTING_CUSTOMER_PLAN_CHANGE":
+                from app.services.ai_followups import cancel_pending_followups
+                cancel_pending_followups(
+                    db,
+                    conversation.id,
+                    reason="EXISTING_CUSTOMER_PLAN_CHANGE",
+                )
+                conversation.status = "RESOLVIDO"
+                conversation.closed_at = utcnow()
         _record_activity(
             db,
             conversation=conversation,
