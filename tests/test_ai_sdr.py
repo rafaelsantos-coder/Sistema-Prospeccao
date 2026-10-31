@@ -31,6 +31,7 @@ from app.services.ai_sdr import (
     QualificationData,
     _apply_catalog_navigation_policy,
     _apply_corporate_customer_policy,
+    _apply_existing_customer_plan_change_policy,
     _apply_journey_orchestration_policy,
     _apply_offer_rejection_diagnostic_policy,
     _apply_prospecting_entry_policy,
@@ -2899,3 +2900,28 @@ def test_followup_theme_recovers_current_pending_action():
     assert _pending_action_from_theme(theme) == (
         "Confirmar se a conexão é para casa ou empresa."
     )
+
+
+def test_existing_customer_plan_change_redirects_to_service_channel():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Queria aumentar meu plano",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "CLIENTE",
+        },
+        "history": [
+            {"direction": "INBOUND", "body": "Já tenho um plano"},
+            {"direction": "INBOUND", "body": "Queria aumentar"},
+        ],
+    }
+
+    result = _apply_existing_customer_plan_change_policy(decision, context)
+
+    assert result.service_redirect is True
+    assert result.qualification.existing_customer == "CLIENTE"
+    assert result.handoff_target == "NONE"
+    assert result.followup_needed is False
+    assert result.offer_plan_code is None
+    assert "(55) 3520-8000" in result.reply_text
+    assert "aumentar ou trocar" in result.reply_text
