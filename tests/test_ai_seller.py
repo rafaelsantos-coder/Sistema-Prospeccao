@@ -38,6 +38,7 @@ from app.services.ai_seller import (
     _redact,
     _sync_plan_context,
     _seller_followup_prompt,
+    _seller_contract_knowledge_reply,
     _seller_existing_customer_plan_change_requested,
     _seller_step_buttons,
     _yes_no,
@@ -1706,3 +1707,56 @@ def test_seller_does_not_redirect_new_sale_without_existing_plan_context():
         123,
         "Queria mais velocidade",
     ) is False
+
+
+def test_seller_contract_knowledge_answers_ftth_fidelity_without_sending_customer_to_contract():
+    state = SimpleNamespace(plan_label="RES_800")
+    reply = _seller_contract_knowledge_reply(
+        state,
+        {},
+        "qual a fidelidade?",
+    )
+
+    assert reply is not None
+    assert "12 meses" in reply
+    assert "800 Mega" in reply
+    assert "consultar" not in reply.lower()
+    assert "contrato" not in reply.lower() or "novo termo" in reply.lower()
+
+
+def test_seller_contract_knowledge_answers_contract_term_as_12_month_permanence():
+    state = SimpleNamespace(plan_label="Plano 800 Mega")
+    reply = _seller_contract_knowledge_reply(
+        state,
+        {},
+        "qual o prazo do contrato?",
+    )
+
+    assert reply is not None
+    assert "12 meses" in reply
+    assert "fidelidade" in reply.lower() or "permanência" in reply.lower()
+
+
+def test_seller_contract_knowledge_answers_no_fidelity_price_from_official_catalog():
+    state = SimpleNamespace(plan_label="800 Mega")
+    reply = _seller_contract_knowledge_reply(
+        state,
+        {},
+        "tem opção sem fidelidade?",
+    )
+
+    assert reply is not None
+    assert "R$ 159,90" in reply
+    assert "R$ 860,00" in reply
+    assert "R$ 119,90" in reply
+
+
+def test_seller_contract_knowledge_keeps_mobile_out_of_ftth_rules():
+    state = SimpleNamespace(plan_label="Sulmóvel 15GB")
+    reply = _seller_contract_knowledge_reply(
+        state,
+        {"categoryName": "Telefonia Móvel"},
+        "qual a fidelidade?",
+    )
+
+    assert reply is None
