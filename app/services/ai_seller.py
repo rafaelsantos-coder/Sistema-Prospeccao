@@ -6,7 +6,7 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -172,6 +172,52 @@ def _seller_brl(value: float | int | Decimal) -> str:
     return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _seller_contract_months_used(text: str) -> int | None:
+    key = _norm(text)
+    matches = re.findall(r"(?<!\\d)(\\d{1,2})\\s*mes(?:es)?\\b", key)
+    for raw in matches:
+        months = int(raw)
+        if 0 <= months <= 12:
+            return months
+    return None
+
+
+def _seller_free_months(state: AIClosingState, collected: dict[str, Any]) -> int:
+    for key in ("freeMonths", "free_months", "mesesGratis", "meses_gratis"):
+        if key in collected:
+            try:
+                return max(0, min(3, int(collected.get(key) or 0)))
+            except (TypeError, ValueError):
+                pass
+
+    summary = _norm(str(getattr(state, "handoff_summary", "") or ""))
+    match = re.search(r"meses? gratis\\s*[=:]?\\s*([0-3])", summary)
+    if match:
+        return int(match.group(1))
+    return 0
+
+
+def _seller_contract_penalty_value(
+    state: AIClosingState,
+    collected: dict[str, Any],
+    plan: dict[str, Any],
+    *,
+    months_used: int,
+) -> tuple[Decimal, Decimal, int, int]:
+    remaining = max(0, 12 - int(months_used))
+    monthly = Decimal(str(
+        getattr(state, "offer_price", None)
+        or plan.get("price_fidelity")
+        or 0
+    ))
+    free_months = _seller_free_months(state, collected)
+    total_benefit = Decimal("860.00") + (monthly * Decimal(free_months))
+    penalty = (
+        (total_benefit / Decimal("12")) * Decimal(remaining)
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return penalty, total_benefit, remaining, free_months
+
+
 def _seller_contract_knowledge_reply(
     state: AIClosingState,
     collected: dict[str, Any],
@@ -279,10 +325,53 @@ def _seller_contract_knowledge_reply(
         )
 
     if asks_cancel_penalty:
+        months_used = _seller_contract_months_used(text)
+        if months_used is not None:
+            if months_used >= 12:
+                return (
+                    "Após cumprir os 12 meses de fidelidade, não há multa de permanência "
+                    "por cancelamento antecipado."
+                )
+
+            no_fidelity = Decimal(str(plan.get("price_no_fidelity") or 0))
+            offered = Decimal(str(getattr(state, "offer_price", None) or 0))
+            if offered and no_fidelity and abs(offered - no_fidelity) < Decimal("0.01"):
+                return (
+                    "Nesta contratação sem fidelidade não há multa de permanência "
+                    "por cancelamento antecipado."
+                )
+
+            penalty, total_benefit, remaining, free_months = _seller_contract_penalty_value(
+                state,
+                collected,
+                plan,
+                months_used=months_used,
+            )
+            monthly = Decimal(str(
+                getattr(state, "offer_price", None)
+                or plan.get("price_fidelity")
+                or 0
+            ))
+
+            if free_months:
+                benefit_detail = (
+                    f"R$ 860,00 de instalação/habilitação isenta + {free_months} "
+                    f"mensalidade{'s' if free_months != 1 else ''} grátis de R$ {_seller_brl(monthly)}"
+                )
+            else:
+                benefit_detail = "R$ 860,00 de instalação/habilitação isenta"
+
+            return (
+                f"Se você usar {months_used} meses de uma fidelidade de 12 meses, faltam {remaining} meses. "
+                f"Considerando os benefícios desta contratação ({benefit_detail}), o benefício total é "
+                f"R$ {_seller_brl(total_benefit)}. Pela fórmula proporcional do contrato, a multa nesse ponto "
+                f"fica em R$ {_seller_brl(penalty)}."
+            )
+
         return (
-            "Se houver cancelamento antes do fim dos 12 meses de fidelidade, pode existir multa proporcional "
-            "aos benefícios concedidos e aos meses restantes. A regra contratual usa a proporcionalidade "
-            "M = (valor total do benefício / 12) × meses restantes."
+            "A multa de cancelamento é proporcional aos benefícios da contratação e aos meses que faltarem "
+            "para completar os 12 meses. Se você me disser com quantos meses pretende cancelar, eu calculo "
+            "o valor em reais para você."
         )
 
     if asks_renewal:
@@ -3241,6 +3330,14 @@ def start_closing_from_sdr(
     if known_name:
         collected["name"] = known_name
     collected["handoffReason"] = str(getattr(decision, "handoff_reason", "") or "")
+    collected["freeMonths"] = max(
+        0,
+        min(3, int(getattr(decision, "free_months", 0) or 0)),
+    )
+    collected["concessionLevel"] = max(
+        0,
+        min(3, int(getattr(decision, "concession_level", 0) or 0)),
+    )
     _save_collected(state, collected)
 
     if created_state:
