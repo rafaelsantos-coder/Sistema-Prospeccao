@@ -38,6 +38,7 @@ from app.services.ai_seller import (
     _redact,
     _sync_plan_context,
     _seller_followup_prompt,
+    _seller_existing_customer_plan_change_requested,
     _seller_step_buttons,
     _yes_no,
 )
@@ -1681,3 +1682,27 @@ def test_phase4_ready_playbook_releases_contract_generation():
     assert step == "__FINISH__"
     assert question is None
     assert collected["_playbook_ready_for_win"] is True
+
+
+def test_seller_detects_existing_customer_plan_upgrade_from_recent_messages():
+    class FakeDB:
+        def scalars(self, statement):
+            return ["Queria aumentar", "Já tenho um plano"]
+
+    assert _seller_existing_customer_plan_change_requested(
+        FakeDB(),
+        123,
+        "Queria aumentar",
+    ) is True
+
+
+def test_seller_does_not_redirect_new_sale_without_existing_plan_context():
+    class FakeDB:
+        def scalars(self, statement):
+            return ["Quero contratar", "Queria mais velocidade"]
+
+    assert _seller_existing_customer_plan_change_requested(
+        FakeDB(),
+        123,
+        "Queria mais velocidade",
+    ) is False
