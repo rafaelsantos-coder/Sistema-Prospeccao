@@ -2419,7 +2419,8 @@ def _interpret_ambiguous(
 ) -> SellerInterpretation:
     if not settings.openai_api_key:
         return SellerInterpretation()
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     instructions = (agent.system_prompt or "").strip()
     knowledge = _seller_knowledge(db, agent)
@@ -2443,7 +2444,7 @@ def _interpret_ambiguous(
         output_type=SellerInterpretation,
     )
     try:
-        result = Runner.run_sync(interpreter, prompt)
+        result = run_agent_sync(interpreter, prompt)
         output = result.final_output
         return output if isinstance(output, SellerInterpretation) else SellerInterpretation.model_validate(output)
     except Exception:

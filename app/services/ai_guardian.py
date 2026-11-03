@@ -248,7 +248,8 @@ def build_guardian_context(
 
 
 def _run_guardian_model(context: dict[str, Any]) -> GuardianReview:
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     prompt = (
         "Valide esta ação antes do envio. Use os achados determinísticos como evidência, "
@@ -269,7 +270,7 @@ def _run_guardian_model(context: dict[str, Any]) -> GuardianReview:
         },
         output_type=GuardianReview,
     )
-    result = Runner.run_sync(guardian, prompt)
+    result = run_agent_sync(guardian, prompt)
     review = result.final_output
     return review if isinstance(review, GuardianReview) else GuardianReview.model_validate(review)
 

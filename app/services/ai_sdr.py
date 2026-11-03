@@ -2954,7 +2954,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
 
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     instructions = (agent.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
     effective_mode = _effective_execution_mode(agent)
@@ -3020,7 +3021,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         },
         output_type=AIDecision,
     )
-    result = Runner.run_sync(sdr, prompt)
+    result = run_agent_sync(sdr, prompt)
     decision = result.final_output
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
