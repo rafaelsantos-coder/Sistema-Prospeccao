@@ -476,28 +476,81 @@ def distribute_waiting_conversations(
     return assigned_count
 
 
-def apply_conversation_scope(stmt, user: User):
+HUMAN_REQUESTED_AI_STATES = {"HANDOFF", "HUMAN_ACTIVE"}
+
+
+def _ai_reserved_queue_ids():
+    return select(AIQueueBinding.queue_id).where(
+        AIQueueBinding.active.is_(True),
+        AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY"}),
+    )
+
+
+def _consultant_manual_queue_waiting(user: User):
+    """Conversas sem dono que o vendedor pode pegar numa fila MANUAL.
+
+    Disparos e campanhas nunca entram aqui: só o que pediu atendimento humano
+    (handoff da IA) ou recebeu resposta do cliente numa fila sem IA.
+    """
+    manual_queue_ids = (
+        select(ServiceQueueMember.queue_id)
+        .join(ServiceQueue, ServiceQueue.id == ServiceQueueMember.queue_id)
+        .where(
+            ServiceQueueMember.user_id == user.id,
+            ServiceQueueMember.active.is_(True),
+            ServiceQueue.active.is_(True),
+            ServiceQueue.routing_strategy == "MANUAL",
+        )
+    )
+    manual_conversation_ids = select(ConversationQueueLink.conversation_id).where(
+        ConversationQueueLink.queue_id.in_(manual_queue_ids)
+    )
+    human_requested_ids = select(AIConversationState.conversation_id).where(
+        AIConversationState.state.in_(HUMAN_REQUESTED_AI_STATES)
+    )
+    waiting_for_human = Conversation.id.in_(human_requested_ids)
+    if settings.ai_sdr_enabled and settings.ai_autonomous_enabled:
+        human_queue_conversation_ids = select(ConversationQueueLink.conversation_id).where(
+            ConversationQueueLink.queue_id.in_(manual_queue_ids),
+            ConversationQueueLink.queue_id.not_in(_ai_reserved_queue_ids()),
+        )
+    else:
+        human_queue_conversation_ids = manual_conversation_ids
+    customer_replied_in_human_queue = (Conversation.unread_count > 0) & Conversation.id.in_(
+        human_queue_conversation_ids
+    )
+    return (
+        Conversation.assigned_user_id.is_(None)
+        & Conversation.status.in_(OPEN_CONVERSATION_STATUSES)
+        & Conversation.id.in_(manual_conversation_ids)
+        & or_(waiting_for_human, customer_replied_in_human_queue)
+    )
+
+
+def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
+    """Restringe as conversas que cada perfil enxerga.
+
+    - ADMIN/GESTOR: tudo, inclusive disparos e conversas com a IA.
+    - SUPERVISOR: a própria filial/equipe; na caixa de entrada (inbox=True),
+      somente o que já está com algum vendedor.
+    - CONSULTOR: somente as conversas atribuídas a ele. A exceção são filas
+      MANUAL, em que ele vê o que pediu atendimento humano para poder pegar.
+    """
     if user.role in {"ADMIN", "GESTOR"}:
         return stmt
     if user.role == "SUPERVISOR":
         if user.branch_id:
-            return stmt.where(Conversation.branch_id == user.branch_id)
-        return stmt.where(Conversation.team == user.team)
+            stmt = stmt.where(Conversation.branch_id == user.branch_id)
+        else:
+            stmt = stmt.where(Conversation.team == user.team)
+        if inbox:
+            stmt = stmt.where(Conversation.assigned_user_id.is_not(None))
+        return stmt
     if user.role == "CONSULTOR":
-        member_queue_ids = select(ServiceQueueMember.queue_id).where(
-            ServiceQueueMember.user_id == user.id,
-            ServiceQueueMember.active.is_(True),
-        )
-        visible_unassigned_ids = select(ConversationQueueLink.conversation_id).where(
-            ConversationQueueLink.queue_id.in_(member_queue_ids)
-        )
         return stmt.where(
             or_(
                 Conversation.assigned_user_id == user.id,
-                (
-                    Conversation.assigned_user_id.is_(None)
-                    & Conversation.id.in_(visible_unassigned_ids)
-                ),
+                _consultant_manual_queue_waiting(user),
             )
         )
     return stmt.where(Conversation.assigned_user_id == user.id)
@@ -507,6 +560,8 @@ def conversation_visible_to_user(conversation: Conversation, user: User) -> bool
     if user.role in {"ADMIN", "GESTOR"}:
         return True
     if user.role == "SUPERVISOR":
+        if conversation.assigned_user_id is None:
+            return False
         if user.branch_id:
             return conversation.branch_id == user.branch_id
         return conversation.team == user.team

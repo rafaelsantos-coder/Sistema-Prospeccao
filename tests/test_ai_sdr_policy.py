@@ -264,6 +264,8 @@ def test_autonomous_ai_queue_holds_lead_until_handoff(monkeypatch):
                     )
                 )
             )
-            assert [item.id for item in visible] == [conversation.id]
+            # Enquanto a IA atende, a conversa não aparece para o vendedor:
+            # ela só chega a ele quando o carrossel atribui após o handoff.
+            assert visible == []
         finally:
             db.close()

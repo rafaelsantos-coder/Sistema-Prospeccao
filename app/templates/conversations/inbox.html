@@ -20,7 +20,7 @@
     <div class="inbox-tabs">
       <a href="/conversations?view=active" class="{% if view == 'active' %}active{% endif %}">Ativas <b id="count-active">{{ counts.active }}</b></a>
       <a href="/conversations?view=unread" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
-      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+      {% if current_user.role in ['ADMIN','GESTOR'] %}
       <a href="/conversations?view=queue" class="{% if view == 'queue' %}active{% endif %}">Fila <b id="count-queue">{{ counts.queue }}</b></a>
       {% endif %}
       <a href="/conversations?view=closed" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>

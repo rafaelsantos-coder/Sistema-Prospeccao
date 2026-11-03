@@ -69,6 +69,7 @@ def _conversation_stmt(user: User):
             selectinload(Conversation.branch),
         ),
         user,
+        inbox=True,
     )
 
 
@@ -173,7 +174,7 @@ def _inbox_query(db: Session, user: User, *, q: str, view: str) -> list[Conversa
 
 
 def _inbox_counts(db: Session, user: User) -> dict[str, int]:
-    scoped = list(db.scalars(apply_conversation_scope(select(Conversation), user)))
+    scoped = list(db.scalars(apply_conversation_scope(select(Conversation), user, inbox=True)))
     return {
         "active": sum(1 for item in scoped if item.status in OPEN_CONVERSATION_STATUSES),
         "unread": sum(1 for item in scoped if item.unread_count > 0),
