@@ -3640,6 +3640,83 @@ def _perform_handoff(
     )
 
 
+HUMAN_FALLBACK_NOTICE = (
+    "Quero te responder com precisão, então vou chamar um consultor da Sulnet "
+    "para continuar com você por aqui. Ele já vê toda a nossa conversa."
+)
+
+
+def _send_human_fallback(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    run: AIRun,
+    decision: AIDecision,
+    reason: str,
+) -> str:
+    """Depois de tentativas sem resposta aprovada, passa para um humano com aviso.
+
+    Antes, o job era reagendado a cada 2 minutos indefinidamente (Guardião) ou
+    falhava em silêncio (integridade), e o cliente ficava sem resposta.
+    """
+    fallback = decision.model_copy(deep=True)
+    fallback.reply_text = HUMAN_FALLBACK_NOTICE
+    fallback.quick_replies = []
+    fallback.handoff_target = "HUMAN"
+    fallback.handoff_recommended = True
+    fallback.handoff_reason = reason[:600]
+    fallback.sales_state = "READY_FOR_HUMAN_SALES"
+    fallback.journey_state = "HUMAN_HANDOFF"
+    fallback.customer_commitment = False
+    fallback.followup_needed = False
+
+    _apply_crm_decision(db, agent=agent, job=job, decision=fallback)
+    message = _send_autonomous_reply(db, agent=agent, job=job, decision=fallback)
+    _perform_handoff(db, agent=agent, job=job, decision=fallback)
+
+    state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == job.conversation_id
+        )
+    )
+    if not state:
+        state = AIConversationState(conversation_id=job.conversation_id, agent_id=agent.id)
+        db.add(state)
+    state.state = "HANDOFF"
+    state.handoff_at = utcnow()
+    state.last_run_id = run.id
+
+    output = fallback.model_dump()
+    output["human_fallback_reason"] = reason
+    run.status = "CONCLUIDO"
+    run.error = reason[:2000]
+    run.reply_text = fallback.reply_text
+    run.output_json = json.dumps(output, ensure_ascii=False, default=str)
+    run.finished_at = utcnow()
+    job.status = "CONCLUIDO"
+    job.error = reason[:2000]
+    write_audit(
+        db,
+        user=agent.user,
+        action="AI_SDR_HUMAN_FALLBACK",
+        entity_type="conversation",
+        entity_id=job.conversation_id,
+        payload={
+            "ai_run_id": run.id,
+            "reason": reason[:500],
+            "message_id": message.id if message else None,
+        },
+    )
+    LOG.warning(
+        "ai_sdr_human_fallback job=%s conversation=%s reason=%s",
+        job.id,
+        job.conversation_id,
+        reason[:300],
+    )
+    return "human_fallback"
+
+
 def process_ai_job(db: Session, job: AIJob) -> str:
     agent = db.get(AIAgentProfile, job.agent_id)
     if not agent or not agent.active:
@@ -3737,6 +3814,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             decision = run_ai_decision(agent, retry_context)
             integrity_issues = _journey_integrity_issues(decision, context)
 
+        if (
+            integrity_issues
+            and effective_mode == "AUTO"
+            and int(job.attempts or 0) >= 3
+        ):
+            return _send_human_fallback(
+                db,
+                agent=agent,
+                job=job,
+                run=run,
+                decision=decision,
+                reason="Integridade da jornada bloqueou as respostas: " + ", ".join(integrity_issues),
+            )
+
         if integrity_issues:
             run.status = "FALHOU"
             run.error = (
@@ -3829,6 +3920,19 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     },
                 )
 
+            if not guardian.should_send and int(job.attempts or 0) >= 2:
+                return _send_human_fallback(
+                    db,
+                    agent=agent,
+                    job=job,
+                    run=run,
+                    decision=decision,
+                    reason=(
+                        "Guardião bloqueou as respostas geradas: "
+                        + (", ".join(guardian.issue_codes) or guardian.rationale)
+                    ),
+                )
+
             if not guardian.should_send:
                 run.status = "FALHOU"
                 run.error = (
@@ -3850,6 +3954,15 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 ]
 
             post_guard_issues = _journey_integrity_issues(decision, context)
+            if post_guard_issues and int(job.attempts or 0) >= 3:
+                return _send_human_fallback(
+                    db,
+                    agent=agent,
+                    job=job,
+                    run=run,
+                    decision=decision,
+                    reason="Integridade bloqueou a saída do Guardião: " + ", ".join(post_guard_issues),
+                )
             if post_guard_issues:
                 run.status = "FALHOU"
                 run.error = (

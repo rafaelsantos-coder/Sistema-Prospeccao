@@ -106,3 +106,41 @@ def test_sdr_agent_receives_catalog_and_manual_tools(monkeypatch):
     assert captured["tools"] == ["consultar_catalogo", "buscar_manual"]
     assert "consultar_catalogo" in captured["prompt"]
     assert isinstance(decision, AIDecision)
+
+
+def test_human_fallback_sends_notice_and_hands_off(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_sdr, "_apply_crm_decision", lambda db, **kw: calls.append(("crm", kw["decision"].handoff_target)))
+    monkeypatch.setattr(
+        ai_sdr,
+        "_send_autonomous_reply",
+        lambda db, **kw: calls.append(("send", kw["decision"].reply_text)) or SimpleNamespace(id=77),
+    )
+    monkeypatch.setattr(ai_sdr, "_perform_handoff", lambda db, **kw: calls.append(("handoff", kw["decision"].handoff_reason)))
+    monkeypatch.setattr(ai_sdr, "write_audit", lambda db, **kw: calls.append(("audit", kw["action"])))
+
+    class _Db:
+        added = []
+
+        def scalar(self, _stmt):
+            return None
+
+        def add(self, obj):
+            self.added.append(obj)
+
+    db = _Db()
+    job = SimpleNamespace(id=1, conversation_id=10, status="PROCESSANDO", error=None, attempts=2)
+    run = SimpleNamespace(id=5, status="PROCESSANDO", error=None, reply_text="", output_json="", finished_at=None)
+    agent = SimpleNamespace(id=3, user=None)
+
+    outcome = ai_sdr._send_human_fallback(
+        db, agent=agent, job=job, run=run, decision=_decision(), reason="Guardião bloqueou: X",
+    )
+
+    assert outcome == "human_fallback"
+    assert ("send", ai_sdr.HUMAN_FALLBACK_NOTICE) in calls
+    assert ("crm", "HUMAN") in calls
+    assert ("audit", "AI_SDR_HUMAN_FALLBACK") in calls
+    assert job.status == "CONCLUIDO"
+    assert db.added[0].state == "HANDOFF"
+    assert not ai_sdr._sdr_exposes_internal_handoff(ai_sdr.HUMAN_FALLBACK_NOTICE)
