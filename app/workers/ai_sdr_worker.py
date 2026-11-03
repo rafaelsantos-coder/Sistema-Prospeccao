@@ -379,7 +379,21 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
                         AIClosingState.conversation_id == conversation.id
                     )
                 )
-                if not closing or closing.step not in SELLER_CUSTOMER_INPUT_STEPS:
+                owner = db.get(AIAgentProfile, state.agent_id)
+                if (
+                    not closing
+                    or not owner
+                    or owner.role_type != "CLOSER"
+                    or int(closing.agent_id or 0) != int(state.agent_id or 0)
+                ):
+                    LOG.error(
+                        "closing_owner_inconsistent conversation=%s ai_agent=%s closing_agent=%s",
+                        conversation.id,
+                        state.agent_id,
+                        closing.agent_id if closing else None,
+                    )
+                    continue
+                if closing.step not in SELLER_CUSTOMER_INPUT_STEPS:
                     # Crédito em análise, geração de contrato e outras etapas
                     # sistêmicas são tratadas pelos pollers, não por cobrança ao cliente.
                     continue
