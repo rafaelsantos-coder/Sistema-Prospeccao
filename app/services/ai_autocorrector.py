@@ -14,6 +14,7 @@ from app.database import SessionLocal
 from app.models import (
     AIAgentProfile,
     AIAutocorrectionEvent,
+    AIClosingState,
     AIConversationState,
     AIFollowupJob,
     AIJob,
@@ -253,6 +254,242 @@ def _repair_failed_followups(db: Session, *, limit: int = 40) -> int:
     return repaired
 
 
+def _repair_closing_ownership(db: Session, *, limit: int = 80) -> int:
+    repaired = 0
+    closings = list(
+        db.scalars(
+            select(AIClosingState)
+            .where(
+                AIClosingState.step.not_in(["COMPLETED", "ESCALATED"]),
+                AIClosingState.updated_at >= utcnow() - timedelta(days=7),
+            )
+            .order_by(AIClosingState.updated_at.desc())
+            .limit(limit)
+        )
+    )
+    for closing in closings:
+        conversation = db.get(Conversation, closing.conversation_id)
+        closer = db.get(AIAgentProfile, closing.agent_id)
+        if (
+            not conversation
+            or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+            or not closer
+            or not closer.active
+            or closer.role_type != "CLOSER"
+        ):
+            continue
+
+        state = db.scalar(
+            select(AIConversationState).where(
+                AIConversationState.conversation_id == conversation.id
+            )
+        )
+        consistent = bool(
+            state
+            and state.state == "CLOSING"
+            and int(state.agent_id or 0) == int(closing.agent_id or 0)
+            and int(conversation.assigned_user_id or 0) == int(closer.user_id or 0)
+        )
+        if consistent:
+            continue
+
+        if _already_applied(
+            db,
+            source_type="conversation",
+            source_id=conversation.id,
+            action="REPAIR_CLOSER_OWNERSHIP",
+            hours=2,
+        ):
+            continue
+
+        before = {
+            "ai_state": state.state if state else None,
+            "ai_agent_id": state.agent_id if state else None,
+            "assigned_user_id": conversation.assigned_user_id,
+            "closing_agent_id": closing.agent_id,
+            "closing_step": closing.step,
+        }
+
+        if not state:
+            state = AIConversationState(
+                conversation_id=conversation.id,
+                agent_id=closing.agent_id,
+                state="CLOSING",
+                summary=closing.handoff_summary or "",
+                qualification_score=100,
+                temperature="QUENTE",
+                last_intent="PURCHASE_INTENT",
+                handoff_at=utcnow(),
+            )
+            db.add(state)
+        else:
+            state.agent_id = closing.agent_id
+            state.state = "CLOSING"
+            state.last_intent = "PURCHASE_INTENT"
+            state.handoff_at = state.handoff_at or utcnow()
+
+        conversation.assigned_user_id = closer.user_id
+        conversation.status = "EM_ATENDIMENTO"
+
+        stale_followups = list(
+            db.scalars(
+                select(AIFollowupJob).where(
+                    AIFollowupJob.conversation_id == conversation.id,
+                    AIFollowupJob.status.in_(["PENDENTE", "PROCESSANDO"]),
+                    AIFollowupJob.agent_id != closing.agent_id,
+                )
+            )
+        )
+        for followup in stale_followups:
+            followup.status = "CANCELADO"
+            followup.locked_at = None
+            followup.error = "OWNERSHIP_MOVED_TO_CLOSER"
+
+        after = {
+            "ai_state": "CLOSING",
+            "ai_agent_id": closing.agent_id,
+            "assigned_user_id": closer.user_id,
+            "cancelled_stale_followups": len(stale_followups),
+        }
+        _record(
+            db,
+            conversation_id=conversation.id,
+            source_type="conversation",
+            source_id=conversation.id,
+            action="REPAIR_CLOSER_OWNERSHIP",
+            reason_code="CLOSING_STATE_OWNER_MISMATCH",
+            before=before,
+            after=after,
+        )
+        repaired += 1
+
+    return repaired
+
+
+def _repair_missed_purchase_intent(db: Session, *, limit: int = 80) -> int:
+    repaired = 0
+    states = list(
+        db.scalars(
+            select(AIConversationState)
+            .where(
+                AIConversationState.state == "AI_ACTIVE",
+                AIConversationState.updated_at >= utcnow() - timedelta(days=7),
+            )
+            .order_by(AIConversationState.updated_at.desc())
+            .limit(limit)
+        )
+    )
+    from app.services.ai_sdr import _explicit_purchase_commitment, enqueue_ai_job
+
+    for state in states:
+        conversation = db.get(Conversation, state.conversation_id)
+        owner = db.get(AIAgentProfile, state.agent_id)
+        if (
+            not conversation
+            or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+            or not owner
+            or owner.role_type == "CLOSER"
+        ):
+            continue
+
+        closing_exists = db.scalar(
+            select(AIClosingState.id).where(
+                AIClosingState.conversation_id == conversation.id
+            ).limit(1)
+        )
+        if closing_exists:
+            continue
+
+        latest_inbound = db.scalar(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.direction == "INBOUND",
+                Message.message_type == "TEXT",
+            )
+            .order_by(Message.id.desc())
+            .limit(1)
+        )
+        if not latest_inbound or not _explicit_purchase_commitment(
+            {"latest_customer_message": latest_inbound.body or ""}
+        ):
+            continue
+
+        if _already_applied(
+            db,
+            source_type="message",
+            source_id=latest_inbound.id,
+            action="REPROCESS_MISSED_PURCHASE_INTENT",
+            hours=72,
+        ):
+            continue
+
+        pending_followups = list(
+            db.scalars(
+                select(AIFollowupJob).where(
+                    AIFollowupJob.conversation_id == conversation.id,
+                    AIFollowupJob.status.in_(["PENDENTE", "PROCESSANDO"]),
+                )
+            )
+        )
+        for followup in pending_followups:
+            followup.status = "CANCELADO"
+            followup.locked_at = None
+            followup.error = "MISSED_PURCHASE_INTENT_REPAIR"
+
+        job = db.scalar(
+            select(AIJob).where(AIJob.message_id == latest_inbound.id).limit(1)
+        )
+        before = {
+            "message_id": latest_inbound.id,
+            "job_id": job.id if job else None,
+            "job_status": job.status if job else None,
+            "cancelled_followups": len(pending_followups),
+        }
+
+        if job:
+            job.agent_id = state.agent_id
+            job.status = "PENDENTE"
+            job.attempts = 0
+            job.available_at = utcnow()
+            job.locked_at = None
+            job.error = None
+        else:
+            job = enqueue_ai_job(
+                db,
+                conversation=conversation,
+                message=latest_inbound,
+            )
+
+        if not job:
+            continue
+
+        state.last_intent = "PURCHASE_INTENT"
+        state.summary = (
+            (state.summary or "").rstrip()
+            + "\n[Autocorreção] Intenção explícita de compra reprocessada."
+        ).strip()[-5000:]
+
+        _record(
+            db,
+            conversation_id=conversation.id,
+            source_type="message",
+            source_id=latest_inbound.id,
+            action="REPROCESS_MISSED_PURCHASE_INTENT",
+            reason_code="PURCHASE_INTENT_STUCK_IN_SDR",
+            before=before,
+            after={
+                "job_id": job.id,
+                "job_status": job.status,
+                "agent_id": job.agent_id,
+                "followups_cancelled": len(pending_followups),
+            },
+        )
+        repaired += 1
+
+    return repaired
+
+
 def _restore_replied_closed_conversations(db: Session, *, limit: int = 30) -> int:
     restored = 0
     conversations = list(
@@ -339,9 +576,17 @@ def _restore_replied_closed_conversations(db: Session, *, limit: int = 30) -> in
 
 def run_autocorrection_cycle(db: Session) -> dict[str, int]:
     if not settings.ai_autocorrect_enabled:
-        return {"jobs": 0, "followups": 0, "conversations": 0}
+        return {
+            "jobs": 0,
+            "followups": 0,
+            "conversations": 0,
+            "ownership": 0,
+            "purchase_intent": 0,
+        }
 
     result = {
+        "ownership": _repair_closing_ownership(db),
+        "purchase_intent": _repair_missed_purchase_intent(db),
         "jobs": _repair_failed_jobs(db),
         "followups": _repair_failed_followups(db),
         "conversations": _restore_replied_closed_conversations(db),
