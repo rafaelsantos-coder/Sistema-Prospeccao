@@ -1812,3 +1812,59 @@ def test_seller_contract_penalty_after_twelve_months_is_zero():
 
     assert reply is not None
     assert "não há multa de permanência" in reply.lower()
+
+
+def _penalty_state():
+    return SimpleNamespace(plan_label="800 Mega", offer_price=119.90, handoff_summary="")
+
+
+def test_seller_contract_penalty_understands_ordinal_month():
+    # Caso real da conversa 114: "qual a multa se eu quiser cancelar no setimo mes ?"
+    reply = _seller_contract_knowledge_reply(
+        _penalty_state(),
+        {"freeMonths": 0},
+        "qual a multa se eu quiser cancelar no setimo mes ?",
+    )
+
+    assert reply is not None
+    assert "faltam 5 meses" in reply
+    assert "R$ 358,33" in reply
+
+
+def test_seller_contract_penalty_understands_numeric_ordinal():
+    reply = _seller_contract_knowledge_reply(
+        _penalty_state(),
+        {"freeMonths": 0},
+        "e a multa se eu cancelar no 7º mês?",
+    )
+
+    assert reply is not None
+    assert "faltam 5 meses" in reply
+
+
+def test_seller_contract_penalty_uses_bare_number_after_asking_months():
+    collected = {"freeMonths": 0}
+    first = _seller_contract_knowledge_reply(
+        _penalty_state(),
+        collected,
+        "qual o valor da multa de contrato?",
+    )
+    assert first is not None
+    assert "quantos meses" in first
+    assert collected.get("_pending_penalty_months") is True
+
+    second = _seller_contract_knowledge_reply(_penalty_state(), collected, "7")
+
+    assert second is not None
+    assert "faltam 5 meses" in second
+    assert "R$ 358,33" in second
+    assert "_pending_penalty_months" not in collected
+
+
+def test_seller_contract_penalty_pending_question_does_not_capture_other_answers():
+    collected = {"freeMonths": 0, "_pending_penalty_months": True}
+
+    reply = _seller_contract_knowledge_reply(_penalty_state(), collected, "Boleto")
+
+    assert reply is None
+    assert "_pending_penalty_months" not in collected
