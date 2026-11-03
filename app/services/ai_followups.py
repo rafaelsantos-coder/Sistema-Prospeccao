@@ -384,7 +384,8 @@ def _generate_followup(
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY não configurada.")
 
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     conversation = db.get(Conversation, job.conversation_id)
     lead = db.get(Lead, conversation.lead_id) if conversation and conversation.lead_id else None
@@ -487,7 +488,7 @@ def _generate_followup(
         },
         output_type=FollowupDecision,
     )
-    result = Runner.run_sync(followup_agent, prompt)
+    result = run_agent_sync(followup_agent, prompt)
     value = result.final_output
     if not isinstance(value, FollowupDecision):
         value = FollowupDecision.model_validate(value)

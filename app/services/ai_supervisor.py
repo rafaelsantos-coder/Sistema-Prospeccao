@@ -703,7 +703,8 @@ def run_supervisor_review(context: dict[str, Any]) -> SupervisorReview:
     if not supervisor_operational():
         raise RuntimeError("Supervisor IA sombra não está operacional.")
 
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     prompt = (
         "Audite esta ação concluída pelo SDR IA ou Vendedor IA. "
@@ -725,7 +726,7 @@ def run_supervisor_review(context: dict[str, Any]) -> SupervisorReview:
         },
         output_type=SupervisorReview,
     )
-    result = Runner.run_sync(supervisor, prompt)
+    result = run_agent_sync(supervisor, prompt)
     review = result.final_output
     if not isinstance(review, SupervisorReview):
         review = SupervisorReview.model_validate(review)

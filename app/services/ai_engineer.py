@@ -282,7 +282,8 @@ def _run_engineer_model(
     evidence: list[dict],
     source_context: dict[str, str] | None = None,
 ) -> EngineerPatchPlan:
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     prompt = f"""
 Você é o Engineer IA do Sulnet Prospecta.
@@ -331,7 +332,7 @@ TRECHOS DE CÓDIGO AUTORIZADOS:
         },
         output_type=EngineerPatchPlan,
     )
-    result = Runner.run_sync(agent, prompt)
+    result = run_agent_sync(agent, prompt)
     value = result.final_output
     if isinstance(value, EngineerPatchPlan):
         return value
