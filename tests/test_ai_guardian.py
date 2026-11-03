@@ -397,3 +397,43 @@ def test_guardian_preserves_authoritative_contract_knowledge():
     assert result.buttons == []
     assert result.risk == "LOW"
     assert "PLAYBOOK_PENDENTE" not in result.issue_codes
+
+
+def test_guardian_approves_operational_sdr_to_closer_handoff():
+    review = GuardianReview(
+        verdict="BLOCK",
+        risk="HIGH",
+        confidence=0.9,
+        quality_score=40,
+        issue_codes=[
+            "SDR_INTENTAO_DE_COMPRA_HANDOFF",
+            "ETAPA_INCORRETA",
+            "CTA_REPETIDO",
+        ],
+        rationale="Modelo tentou bloquear a fala do SDR antes do handoff.",
+    )
+    context = _context([], role="SDR")
+    context["history"] = []
+    context["proposed_action"] = {
+        "proposed_state": "CLOSING",
+        "metadata": {
+            "intent": "HIGH_INTENT",
+            "handoff_target": "CLOSER_AI",
+            "customer_commitment": True,
+        },
+    }
+
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=context,
+        original_text=(
+            "Perfeito. O Vendedor IA dará continuidade à contratação."
+        ),
+        original_buttons=[],
+    )
+
+    assert result.verdict == "APPROVE"
+    assert result.should_send is True
+    assert result.risk == "LOW"
+    assert result.issue_codes == []
