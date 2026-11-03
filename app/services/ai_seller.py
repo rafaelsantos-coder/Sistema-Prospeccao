@@ -2451,6 +2451,28 @@ def _interpret_ambiguous(
         return SellerInterpretation()
 
 
+def _assert_closer_owns_conversation(
+    db: Session,
+    *,
+    conversation: Conversation,
+    agent: AIAgentProfile,
+) -> None:
+    ai_state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == conversation.id
+        )
+    )
+    if (
+        not ai_state
+        or ai_state.state != "CLOSING"
+        or int(ai_state.agent_id or 0) != int(agent.id)
+        or agent.role_type != "CLOSER"
+    ):
+        raise CRMIntegrationError(
+            "Vendedor IA tentou enviar sem propriedade exclusiva da conversa."
+        )
+
+
 def _send_text(
     db: Session,
     *,
@@ -2465,6 +2487,11 @@ def _send_text(
 
     if not text.strip():
         raise ValueError("Mensagem vazia.")
+    _assert_closer_owns_conversation(
+        db,
+        conversation=conversation,
+        agent=agent,
+    )
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone:
         raise CRMIntegrationError("Contato sem telefone para WhatsApp.")
@@ -2575,6 +2602,11 @@ def _send_step_message(
     text: str,
     authoritative_contract_knowledge: bool = False,
 ) -> Message:
+    _assert_closer_owns_conversation(
+        db,
+        conversation=conversation,
+        agent=agent,
+    )
     recent_duplicate = db.scalar(
         select(Message)
         .where(
@@ -3267,7 +3299,11 @@ def start_closing_from_sdr(
     closer = active_closer(db)
     if not closer:
         return False
-    conversation = db.get(Conversation, job.conversation_id)
+    conversation = db.scalar(
+        select(Conversation)
+        .where(Conversation.id == job.conversation_id)
+        .with_for_update()
+    )
     if not conversation:
         return False
 
@@ -3385,6 +3421,10 @@ def start_closing_from_sdr(
         ai_state.state = "CLOSING"
         ai_state.handoff_at = utcnow()
         ai_state.last_intent = "PURCHASE_INTENT"
+
+    # A propriedade muda antes de qualquer mensagem do closer. A partir daqui,
+    # qualquer envio do SDR/follow-up antigo é rejeitado pelos gates de ownership.
+    db.flush()
 
     from app.services.ai_followups import cancel_pending_followups
     cancel_pending_followups(db, conversation.id, reason="HANDOFF_VENDEDOR_IA")
