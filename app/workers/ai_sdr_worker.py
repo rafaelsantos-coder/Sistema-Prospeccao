@@ -516,7 +516,11 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
             )
             if not latest or latest.direction != "OUTBOUND":
                 continue
-            if cutoff and latest.created_at and latest.created_at < cutoff:
+            if (
+                cutoff
+                and latest.created_at
+                and (utc_naive(latest.created_at) or latest.created_at) < cutoff
+            ):
                 continue
 
             source_inbound_id = db.scalar(
