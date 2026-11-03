@@ -113,7 +113,7 @@ class Settings:
     ).strip().lower() in {"1", "true", "yes", "on"}
     ai_engineer_github_repository: str = os.getenv(
         "AI_ENGINEER_GITHUB_REPOSITORY",
-        "rafaelsantos-coder/Sistema-Integrado",
+        "rafaelsantos-coder/Sistema-Prospeccao",
     ).strip()
     ai_engineer_github_token: str = os.getenv("AI_ENGINEER_GITHUB_TOKEN", "").strip()
     sulnet_crm_base_url: str = os.getenv("SULNET_CRM_BASE_URL", "").rstrip("/")
