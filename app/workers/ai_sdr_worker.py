@@ -170,6 +170,38 @@ def _recover_stale_jobs() -> int:
             )
         )
         for job in jobs:
+            state = db.scalar(
+                select(AIConversationState).where(
+                    AIConversationState.conversation_id == job.conversation_id
+                )
+            )
+            agent = db.get(AIAgentProfile, job.agent_id)
+            invalid_owner = bool(
+                state
+                and (
+                    (
+                        state.state == "CLOSING"
+                        and (
+                            not agent
+                            or agent.role_type != "CLOSER"
+                            or int(state.agent_id or 0) != int(job.agent_id)
+                        )
+                    )
+                    or (
+                        state.state == "AI_ACTIVE"
+                        and (
+                            not agent
+                            or agent.role_type == "CLOSER"
+                            or int(state.agent_id or 0) != int(job.agent_id)
+                        )
+                    )
+                )
+            )
+            if invalid_owner:
+                job.status = "IGNORADO"
+                job.locked_at = None
+                job.error = "Job antigo invalidado por mudança de ownership."
+                continue
             job.status = "PENDENTE"
             job.locked_at = None
             job.available_at = utcnow()
@@ -198,6 +230,38 @@ def _recover_stale_followups() -> int:
             )
         )
         for job in jobs:
+            state = db.scalar(
+                select(AIConversationState).where(
+                    AIConversationState.conversation_id == job.conversation_id
+                )
+            )
+            agent = db.get(AIAgentProfile, job.agent_id)
+            invalid_owner = bool(
+                state
+                and (
+                    (
+                        state.state == "CLOSING"
+                        and (
+                            not agent
+                            or agent.role_type != "CLOSER"
+                            or int(state.agent_id or 0) != int(job.agent_id)
+                        )
+                    )
+                    or (
+                        state.state == "AI_ACTIVE"
+                        and (
+                            not agent
+                            or agent.role_type == "CLOSER"
+                            or int(state.agent_id or 0) != int(job.agent_id)
+                        )
+                    )
+                )
+            )
+            if invalid_owner:
+                job.status = "CANCELADO"
+                job.locked_at = None
+                job.error = "Follow-up antigo invalidado por mudança de ownership."
+                continue
             job.status = "PENDENTE"
             job.locked_at = None
             job.due_at = utcnow()
@@ -225,6 +289,38 @@ def _reschedule_initial_pending_followups() -> int:
             )
         )
         for job in jobs:
+            state = db.scalar(
+                select(AIConversationState).where(
+                    AIConversationState.conversation_id == job.conversation_id
+                )
+            )
+            agent = db.get(AIAgentProfile, job.agent_id)
+            invalid_owner = bool(
+                state
+                and (
+                    (
+                        state.state == "CLOSING"
+                        and (
+                            not agent
+                            or agent.role_type != "CLOSER"
+                            or int(state.agent_id or 0) != int(job.agent_id)
+                        )
+                    )
+                    or (
+                        state.state == "AI_ACTIVE"
+                        and (
+                            not agent
+                            or agent.role_type == "CLOSER"
+                            or int(state.agent_id or 0) != int(job.agent_id)
+                        )
+                    )
+                )
+            )
+            if invalid_owner:
+                job.status = "CANCELADO"
+                job.locked_at = None
+                job.error = "Follow-up invalidado por mudança de ownership."
+                continue
             delay, theme = followup_spec(int(job.step or 1))
             job.theme = theme
             job.due_at = next_business_time(
