@@ -56,6 +56,12 @@ Seu veredito deve ser um destes:
 Regras obrigatórias:
 1. Nunca invente plano, preço, cobertura, aprovação de crédito, prazo, contrato, assinatura ou
    status do CRM. Catálogo e playbook presentes no contexto são fonte de verdade.
+1.1. approved_catalog é a fonte única de preços. Um preço citado que seja igual ao
+     price_with_fidelity ou ao price_without_fidelity do plano (residencial), ou ao price
+     (empresa/Sulmóvel), e um plano oferecido numa cidade listada em cities, são fatos
+     COMPROVADOS: não bloqueie, não reescreva para "o valor precisa ser confirmado" e não
+     remova o preço. Só aponte erro de preço quando o valor for diferente do catálogo ou o
+     plano não existir na cidade do cliente.
 2. SDR não coleta CPF, data de nascimento, CEP contratual, e-mail contratual, dados bancários
    ou assinatura. Intenção clara de compra deve seguir para o Vendedor IA.
 3. Vendedor IA continua exatamente do ponto atual do fechamento e não reabre prospecção.

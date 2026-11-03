@@ -290,6 +290,75 @@ SERVICE_CITIES = [
 ]
 
 
+
+# Regras comerciais numéricas aprovadas (base V2 · Condições contratuais FTTH).
+FTTH_FIDELITY_MONTHS = 12
+FTTH_ACTIVATION_FEE = 860.00
+FTTH_MAX_FREE_MONTHS = 3
+
+
+def plan_cities(plan: dict) -> list[str]:
+    """Cidades do plano, com "ALL_20" expandido para as cidades de atuação."""
+    cities = plan.get("cities")
+    if cities == "ALL_20":
+        return list(SERVICE_CITIES)
+    return [str(item) for item in (cities or [])]
+
+
+def approved_catalog() -> dict:
+    """Catálogo comercial único usado por SDR, Vendedor, Guardião e Supervisor.
+
+    Antes, o Guardião recebia os planos residenciais sem preço (lia a chave
+    inexistente "price_with_fidelity") e o 650 Mega com a cidade "ALL_20"; por
+    isso barrava respostas com preço correto (43 bloqueios, conversa 238).
+    """
+    return {
+        "residential": [
+            {
+                "code": plan["code"],
+                "name": plan["name"],
+                "speed": plan["download_mbps"],
+                "upload": plan.get("upload_mbps"),
+                "price_with_fidelity": plan["price_fidelity"],
+                "price_without_fidelity": plan.get("price_no_fidelity"),
+                "cities": plan_cities(plan),
+                "included_router_count": plan.get("included_router_count"),
+                "additional_router_monthly_price": plan.get("additional_router_monthly_price"),
+                "benefits": list(plan.get("benefits") or []),
+            }
+            for plan in FTTH_PLANS
+        ],
+        "corporate": [
+            {
+                "code": plan["code"],
+                "name": plan["name"],
+                "speed": plan["download_mbps"],
+                "upload": plan.get("upload_mbps"),
+                "price": plan["price"],
+            }
+            for plan in CORPORATE_PLANS
+        ],
+        "mobile": [
+            {
+                "code": plan["code"],
+                "name": plan["name"],
+                "gb": plan.get("data_gb"),
+                "price": plan["price"],
+                "minutes": plan.get("minutes"),
+                "sms": plan.get("sms"),
+                "unlimited_apps": list(plan.get("unlimited_apps") or []),
+            }
+            for plan in MOBILE_PLANS
+        ],
+        "ftth_rules": {
+            "fidelity_months": FTTH_FIDELITY_MONTHS,
+            "activation_fee": FTTH_ACTIVATION_FEE,
+            "activation_fee_waived_with_fidelity": True,
+            "max_free_months": FTTH_MAX_FREE_MONTHS,
+        },
+        "service_cities": list(SERVICE_CITIES),
+    }
+
 FOLLOWUP_CADENCE = [
     (1, timedelta(minutes=10), "reativação 1: retomar o contexto com uma pergunta curta e diferente da mensagem anterior"),
     (2, timedelta(minutes=30), "reativação 2: mudar o ângulo comercial e facilitar a resposta, preferindo botões quando fizer sentido"),
