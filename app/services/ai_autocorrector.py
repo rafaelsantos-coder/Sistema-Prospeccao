@@ -149,6 +149,35 @@ def _repair_failed_jobs(db: Session, *, limit: int = 40) -> int:
         if not conversation or conversation.status in {"BLOQUEADO", "RESOLVIDO"}:
             continue
 
+        state = db.scalar(
+            select(AIConversationState).where(
+                AIConversationState.conversation_id == job.conversation_id
+            )
+        )
+        current_agent = db.get(AIAgentProfile, job.agent_id)
+        if state and (
+            (
+                state.state == "CLOSING"
+                and (
+                    not current_agent
+                    or current_agent.role_type != "CLOSER"
+                    or int(state.agent_id or 0) != int(job.agent_id)
+                )
+            )
+            or (
+                state.state == "AI_ACTIVE"
+                and (
+                    not current_agent
+                    or current_agent.role_type == "CLOSER"
+                    or int(state.agent_id or 0) != int(job.agent_id)
+                )
+            )
+        ):
+            job.status = "IGNORADO"
+            job.locked_at = None
+            job.error = "Autocorreção cancelou retry de job sem ownership."
+            continue
+
         before = {
             "status": job.status,
             "attempts": job.attempts,
@@ -222,6 +251,35 @@ def _repair_failed_followups(db: Session, *, limit: int = 40) -> int:
             not conversation
             or conversation.status in {"BLOQUEADO", "RESOLVIDO", "ENCERRADO"}
         ):
+            continue
+
+        state = db.scalar(
+            select(AIConversationState).where(
+                AIConversationState.conversation_id == job.conversation_id
+            )
+        )
+        current_agent = db.get(AIAgentProfile, job.agent_id)
+        if state and (
+            (
+                state.state == "CLOSING"
+                and (
+                    not current_agent
+                    or current_agent.role_type != "CLOSER"
+                    or int(state.agent_id or 0) != int(job.agent_id)
+                )
+            )
+            or (
+                state.state == "AI_ACTIVE"
+                and (
+                    not current_agent
+                    or current_agent.role_type == "CLOSER"
+                    or int(state.agent_id or 0) != int(job.agent_id)
+                )
+            )
+        ):
+            job.status = "CANCELADO"
+            job.locked_at = None
+            job.error = "Autocorreção cancelou follow-up sem ownership."
             continue
 
         before = {
