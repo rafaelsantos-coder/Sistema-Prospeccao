@@ -64,6 +64,12 @@ class Settings:
     ai_sdr_enabled: bool = os.getenv("AI_SDR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     # Espera curta para juntar mensagens seguidas do cliente numa única resposta do SDR.
     ai_sdr_debounce_seconds: int = int(os.getenv("AI_SDR_DEBOUNCE_SECONDS", "6"))
+    # Regras fixas do SDR que só são observadas (registram o que mudariam, mas
+    # não reescrevem a resposta). As ferramentas de catálogo e manual cobrem esses fatos.
+    ai_sdr_observe_policies: str = os.getenv(
+        "AI_SDR_OBSERVE_POLICIES", "unavailable_plan,router_information"
+    )
+    ai_sdr_tools_enabled: bool = os.getenv("AI_SDR_TOOLS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
     ai_maintenance_enabled: bool = os.getenv(

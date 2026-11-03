@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -357,6 +359,65 @@ def approved_catalog() -> dict:
             "max_free_months": FTTH_MAX_FREE_MONTHS,
         },
         "service_cities": list(SERVICE_CITIES),
+    }
+
+
+def _fold_city(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).casefold()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def catalog_for(city: str = "", segment: str = "RESIDENCIAL") -> dict:
+    """Planos e preços oficiais para uma cidade/segmento (ferramenta do SDR)."""
+    catalog = approved_catalog()
+    seg = _fold_city(segment).upper()
+    if seg.startswith("EMP") or seg.startswith("CORP") or seg == "PJ":
+        return {
+            "segment": "EMPRESA",
+            "plans": catalog["corporate"],
+            "note": "Catálogo corporativo; não aplicar promoções residenciais.",
+        }
+    if seg.startswith("MOV") or "SULMOVEL" in seg or "CELULAR" in seg:
+        return {
+            "segment": "MOVEL",
+            "plans": catalog["mobile"],
+            "note": "Sulmóvel com área nacional e portabilidade; sem alçada de desconto.",
+        }
+
+    residential = sorted(catalog["residential"], key=lambda row: -int(row["speed"]))
+    city_key = _fold_city(city)
+    if not city_key:
+        return {
+            "segment": "RESIDENCIAL",
+            "city": None,
+            "note": "Cidade não informada: pergunte a cidade antes de ofertar plano e preço.",
+            "service_cities": catalog["service_cities"],
+            "plans": residential,
+            "ftth_rules": catalog["ftth_rules"],
+        }
+    known = {_fold_city(item): item for item in catalog["service_cities"]}
+    if city_key not in known:
+        return {
+            "segment": "RESIDENCIAL",
+            "city": city,
+            "available": False,
+            "note": "Cidade fora da área de atuação da Sulnet; não ofertar fibra residencial.",
+            "service_cities": catalog["service_cities"],
+            "plans": [],
+        }
+    plans = [
+        {key: value for key, value in row.items() if key != "cities"}
+        for row in residential
+        if city_key in {_fold_city(item) for item in row["cities"]}
+    ]
+    return {
+        "segment": "RESIDENCIAL",
+        "city": known[city_key],
+        "available": bool(plans),
+        "plans": plans,
+        "offer_order": "Começar pelo maior plano disponível na cidade.",
+        "ftth_rules": catalog["ftth_rules"],
     }
 
 FOLLOWUP_CADENCE = [

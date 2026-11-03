@@ -6,9 +6,9 @@ import re
 import unicodedata
 from datetime import timedelta
 from difflib import SequenceMatcher
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -56,6 +56,8 @@ class QualificationData(BaseModel):
 
 
 class AIDecision(BaseModel):
+    # O que as regras fixas mudaram (ou mudariam, em modo observação) nesta decisão.
+    _policy_observations: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     reply_text: str = Field(min_length=1, max_length=1800)
     quick_replies: list[QuickReply] = Field(default_factory=list, max_length=3)
     intent: Literal[
@@ -3226,6 +3228,19 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         + json.dumps(context, ensure_ascii=False, default=str)
     )
 
+    tools: list[Any] = []
+    if settings.ai_sdr_tools_enabled:
+        from app.services.ai_sdr_tools import build_sdr_tools
+
+        tools = build_sdr_tools(agent)
+        prompt = (
+            "FERRAMENTAS: antes de citar plano, velocidade ou preço, chame "
+            "consultar_catalogo(cidade, segmento); ela é a fonte oficial e vence qualquer valor "
+            "escrito neste texto. Para dúvidas sobre regras, contrato, roteador, instalação ou "
+            "atendimento, chame buscar_manual(pergunta). Se a ferramenta não trouxer a resposta, "
+            "não invente.\n\n" + prompt
+        )
+
     sdr = Agent(
         name=agent.name,
         instructions=instructions,
@@ -3235,6 +3250,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
             "verbosity": "low",
             "timeout": 45.0,
         },
+        tools=tools,
         output_type=AIDecision,
     )
     result = run_agent_sync(sdr, prompt)
@@ -3242,16 +3258,72 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
-    decision = _apply_catalog_navigation_policy(decision, context)
-    decision = _apply_unavailable_plan_policy(decision, context)
-    decision = _apply_router_information_policy(decision, context)
-    decision = _apply_corporate_customer_policy(decision, context)
-    decision = _apply_secondary_decline_reengagement_policy(decision, context)
-    decision = _apply_offer_rejection_diagnostic_policy(decision, context)
-    decision = _apply_prospecting_entry_policy(decision, context)
+    decision, observations = _apply_rewrite_policies(decision, context)
     decision = _apply_journey_orchestration_policy(decision, context)
     decision = _apply_existing_customer_plan_change_policy(decision, context)
-    return _sanitize_unconfirmed_customer_facts(decision, context)
+    decision = _sanitize_unconfirmed_customer_facts(decision, context)
+    decision._policy_observations = observations
+    return decision
+
+
+SDR_REWRITE_POLICIES = (
+    ("catalog_navigation", _apply_catalog_navigation_policy),
+    ("unavailable_plan", _apply_unavailable_plan_policy),
+    ("router_information", _apply_router_information_policy),
+    ("corporate_customer", _apply_corporate_customer_policy),
+    ("secondary_decline", _apply_secondary_decline_reengagement_policy),
+    ("offer_rejection", _apply_offer_rejection_diagnostic_policy),
+    ("prospecting_entry", _apply_prospecting_entry_policy),
+)
+
+
+def _observed_policy_names() -> set[str]:
+    return {
+        item.strip()
+        for item in str(settings.ai_sdr_observe_policies or "").split(",")
+        if item.strip()
+    }
+
+
+def _decision_signature(decision: AIDecision) -> dict[str, Any]:
+    return {
+        "reply_text": decision.reply_text,
+        "quick_replies": [item.label for item in decision.quick_replies],
+        "intent": decision.intent,
+        "sales_state": decision.sales_state,
+        "handoff_target": decision.handoff_target,
+        "handoff_recommended": decision.handoff_recommended,
+        "offer_plan_code": decision.offer_plan_code,
+        "journey_state": decision.journey_state,
+    }
+
+
+def _apply_rewrite_policies(
+    decision: AIDecision,
+    context: dict,
+) -> tuple[AIDecision, list[dict[str, Any]]]:
+    """Aplica as regras fixas que reescrevem a resposta, medindo cada uma.
+
+    Regras listadas em AI_SDR_OBSERVE_POLICIES só registram o que mudariam; as
+    demais continuam aplicadas. O registro vai para o AIRun e permite desligar
+    cada regra com base em dados, sem novo deploy.
+    """
+    observed = _observed_policy_names()
+    observations: list[dict[str, Any]] = []
+    for name, policy in SDR_REWRITE_POLICIES:
+        before = _decision_signature(decision)
+        candidate = policy(decision.model_copy(deep=True), context)
+        after = _decision_signature(candidate)
+        changed = [key for key in before if before[key] != after[key]]
+        if not changed:
+            continue
+        mode = "observe" if name in observed else "rewrite"
+        observations.append({"policy": name, "mode": mode, "changed": changed})
+        if mode == "rewrite":
+            decision = candidate
+    if observations:
+        LOG.info("sdr_policy_effects %s", json.dumps(observations, ensure_ascii=False))
+    return decision, observations
 
 
 def _send_autonomous_reply(
@@ -3705,6 +3777,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "failed"
 
     output = decision.model_dump()
+    output["policy_observations"] = list(decision._policy_observations)
     closer_started = False
 
     if effective_mode == "AUTO":
@@ -3800,6 +3873,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 return "integrity_blocked"
 
             output = decision.model_dump()
+            output["policy_observations"] = list(decision._policy_observations)
 
             _apply_crm_decision(
                 db,
@@ -3910,6 +3984,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             return "send_failed"
 
     output = decision.model_dump()
+    output["policy_observations"] = list(decision._policy_observations)
     run.status = "CONCLUIDO"
     run.intent = decision.intent
     run.qualification_score = decision.qualification_score
