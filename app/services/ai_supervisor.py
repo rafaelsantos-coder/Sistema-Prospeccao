@@ -26,7 +26,7 @@ from app.models import (
     Conversation,
     Message,
 )
-from app.services.ai_sdr_policy import CORPORATE_PLANS, FTTH_PLANS, MOBILE_PLANS
+from app.services.ai_sdr_policy import approved_catalog
 from app.services.audit import write_audit
 from app.timeutils import utcnow
 
@@ -252,33 +252,7 @@ def _history_existing_customer_status(
 
 
 def _catalog_snapshot() -> dict[str, Any]:
-    return {
-        "residential": [
-            {
-                "code": row.get("code"),
-                "speed": row.get("download_mbps"),
-                "price": row.get("price_with_fidelity"),
-                "cities": row.get("cities"),
-            }
-            for row in FTTH_PLANS
-        ],
-        "corporate": [
-            {
-                "code": row.get("code"),
-                "speed": row.get("download_mbps"),
-                "price": row.get("price"),
-            }
-            for row in CORPORATE_PLANS
-        ],
-        "mobile": [
-            {
-                "code": row.get("code"),
-                "gb": row.get("gb"),
-                "price": row.get("price"),
-            }
-            for row in MOBILE_PLANS
-        ],
-    }
+    return approved_catalog()
 
 
 def _agent_role_for_user(db: Session, user_id: int | None) -> str:
