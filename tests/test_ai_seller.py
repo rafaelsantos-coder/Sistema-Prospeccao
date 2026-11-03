@@ -1316,7 +1316,7 @@ def test_phase4_ready_for_win_generates_contract_before_any_win():
         },
     )
     state = _phase4_state()
-    collected = {"_playbook_ready_for_win": True}
+    collected = {"_playbook_ready_for_win": True, "_sale_accepted": True}
 
     reply = _finish_sale_contract(
         client,
@@ -1506,7 +1506,7 @@ def test_phase4_contract_without_sign_url_stays_pending_and_not_won():
         contract=False,
     )
     state = _phase4_state()
-    collected = {"_playbook_ready_for_win": True}
+    collected = {"_playbook_ready_for_win": True, "_sale_accepted": True}
 
     _finish_sale_contract(
         client,
@@ -2015,3 +2015,52 @@ def test_seller_followup_blocked_by_guardian_is_cancelled_not_retried(monkeypatc
     assert "REPEATED_QUESTION" in job.error
     assert scheduled == []
     assert audits and audits[0]["action"] == "AI_CLOSER_FOLLOWUP_BLOCKED"
+
+
+def test_contract_waits_for_explicit_acceptance():
+    """Conversa 114: o contrato saiu sem o cliente ter aceitado o resumo."""
+    client = _Phase4ContractClient(
+        generated={"status": "aguardando_assinatura", "signUrl": "https://sign.example/1"},
+    )
+    state = _phase4_state()
+    collected = {
+        "_playbook_ready_for_win": True,
+        "paymentMethod": "Boleto",
+        "dueDay": 10,
+    }
+
+    reply = _finish_sale_contract(client, state, collected)
+
+    assert client.generate_calls == 0
+    assert state.step == "CONFIRM_SALE"
+    assert "800 Mega" in reply
+    assert "119,90" in reply
+    assert "Boleto" in reply
+    assert "dia 10" in reply
+    assert "confirma" in reply.lower()
+
+    collected["_sale_accepted"] = True
+    _finish_sale_contract(client, state, collected)
+    assert client.generate_calls == 1
+    assert state.step == "WAITING_SIGNATURE"
+
+
+def test_sale_acceptance_answer_reads_buttons_and_free_text():
+    from app.services.ai_seller import _sale_acceptance_answer
+
+    assert _sale_acceptance_answer("Confirmo") == "SIM"
+    assert _sale_acceptance_answer("sim, pode gerar") == "SIM"
+    assert _sale_acceptance_answer("Quero ajustar") == "NAO"
+    assert _sale_acceptance_answer("não, quero pensar melhor") == "NAO"
+    assert _sale_acceptance_answer("qual a fidelidade?") == "NAO_INFORMADO"
+
+
+def test_confirm_sale_step_has_buttons_and_reminder_prompt():
+    from app.services.ai_seller import _prompt_for_step, _seller_step_buttons
+
+    state = _phase4_state(step="CONFIRM_SALE")
+    labels = [item["label"] for item in _seller_step_buttons("CONFIRM_SALE", "", {})]
+    assert labels == ["Confirmo", "Quero ajustar"]
+    prompt = _prompt_for_step(state, {})
+    assert "confirma" in prompt.lower()
+    assert "800 Mega" in prompt

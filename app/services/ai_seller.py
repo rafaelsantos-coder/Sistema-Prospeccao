@@ -672,6 +672,10 @@ MOBILE_CONTRACT_BUTTONS_SDR_IA = [
 ]
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
+    "CONFIRM_SALE": [
+        {"id": "confirmo", "label": "Confirmo"},
+        {"id": "ajustar", "label": "Quero ajustar"},
+    ],
     "CREDIT_REJECTED": [
         {"id": "outro_cpf", "label": "Tentar outro CPF"},
         {"id": "encerrar", "label": "Encerrar"},
@@ -2448,11 +2452,66 @@ def _finalize_signed_sale(
     return won
 
 
+SALE_ACCEPTANCE_STEP = "CONFIRM_SALE"
+
+
+def _sale_acceptance_prompt(
+    state: AIClosingState,
+    collected: dict[str, Any],
+    *,
+    reminder: bool = False,
+) -> str:
+    plan = (
+        str(collected.get("catalogPlanName") or "").strip()
+        or str(state.plan_label or "").strip()
+        or "plano escolhido"
+    )
+    price = _money(state.offer_price)
+    if price is None:
+        price = _money(collected.get("catalogMonthlyValue"))
+    price_text = f" por R$ {_seller_brl(price)}/mês" if price is not None else ""
+    if reminder:
+        return (
+            f"Só preciso da sua confirmação para gerar o contrato: confirma a "
+            f"contratação do {plan}{price_text}? Responda Sim ou Quero ajustar."
+        )
+    lines = [
+        "Antes de gerar o contrato, confira o resumo da sua contratação:",
+        f"• Plano: {plan}",
+    ]
+    if price is not None:
+        lines.append(f"• Mensalidade: R$ {_seller_brl(price)}")
+    if collected.get("paymentMethod"):
+        lines.append(f"• Pagamento: {collected['paymentMethod']}")
+    if collected.get("dueDay"):
+        lines.append(f"• Vencimento: dia {collected['dueDay']}")
+    lines.append("")
+    lines.append(
+        "Você confirma a contratação? Com o seu Sim, eu gero o contrato para "
+        "assinatura digital."
+    )
+    return "\n".join(lines)
+
+
+def _sale_acceptance_answer(text: str) -> str:
+    n = _norm(text)
+    if re.search(r"\b(ajust\w*|alterar|corrigir|desist\w*|cancel\w*|pensar)\b", n):
+        return "NAO"
+    if re.search(r"\b(confirmo|aceito|pode gerar|pode mandar|pode enviar|quero contratar)\b", n):
+        return "SIM"
+    return _yes_no(text)
+
+
 def _finish_sale_contract(
     client: SulnetCRMClient,
     state: AIClosingState,
     collected: dict[str, Any],
 ) -> str:
+    # O contrato só é gerado depois de um aceite explícito do resumo
+    # (conversa 114: o cliente recebeu o link e respondeu "eu nem contratei nada").
+    if not collected.get("_sale_accepted"):
+        state.step = SALE_ACCEPTANCE_STEP
+        return _sale_acceptance_prompt(state, collected)
     return _prepare_contract_before_win(client, state, collected)
 
 
@@ -2952,6 +3011,8 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
         if not collected.get("dueDay"):
             return "Certo. Qual dia de vencimento você prefere?"
         return "Vou confirmar os dados de faturamento para seguir."
+    if state.step == SALE_ACCEPTANCE_STEP:
+        return _sale_acceptance_prompt(state, collected, reminder=True)
     if state.step == "CREDIT_REJECTED":
         return "A consulta cadastral não foi aprovada. Quer tentar a contratação com outro CPF?"
     if state.step == "WAITING_CRM_READY":
@@ -2967,6 +3028,7 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
 
 
 SELLER_CUSTOMER_INPUT_STEPS = {
+    "CONFIRM_SALE",
     "NAME",
     "CPF",
     "BIRTH_DATE",
@@ -4374,6 +4436,47 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     state.step = playbook_step
                     reply = playbook_question or _prompt_for_step(state, collected)
 
+        elif state.step == SALE_ACCEPTANCE_STEP:
+            answer = _sale_acceptance_answer(text)
+            interpreted = SellerInterpretation()
+            if answer == "NAO_INFORMADO":
+                interpreted = _interpret_ambiguous(
+                    db,
+                    agent=agent,
+                    step=state.step,
+                    message=text,
+                    plan_label=state.plan_label,
+                )
+                answer = interpreted.confirmation
+            if interpreted.human_requested:
+                _handoff_to_human(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    reason="Cliente pediu atendente no resumo da contratação.",
+                )
+                reply = "Certo. Encaminhei a conversa para um atendente com todo o histórico."
+            elif answer == "SIM":
+                collected["_sale_accepted"] = True
+                collected["_sale_accepted_at"] = utcnow().isoformat()
+                collected["_sale_accepted_message_id"] = message.id
+                reply = _finish_sale_contract(client, state, collected)
+            elif answer == "NAO":
+                _handoff_to_human(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    reason="Cliente não confirmou o resumo da contratação e quer ajustar.",
+                )
+                reply = (
+                    "Sem problema, nada foi contratado. Um consultor da Sulnet vai "
+                    "continuar com você por aqui para ajustar o que for preciso."
+                )
+            else:
+                reply = _sale_acceptance_prompt(state, collected, reminder=True)
+
         elif state.step == "WAITING_CRM_READY":
             playbook_step, playbook_question = _query_playbook_guidance(
                 client,
@@ -4706,6 +4809,22 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                             db,
                             agent=agent,
                             conversation=conversation,
+                            text=reply,
+                        )
+                        _schedule_seller_followup(
+                            db,
+                            state=state,
+                            conversation=conversation,
+                            source_message_id=None,
+                            step=1,
+                        )
+                        processed += 1
+                    elif state.step == SALE_ACCEPTANCE_STEP:
+                        _send_step_message(
+                            db,
+                            agent=agent,
+                            conversation=conversation,
+                            state=state,
                             text=reply,
                         )
                         _schedule_seller_followup(
