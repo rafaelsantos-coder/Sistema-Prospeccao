@@ -128,6 +128,11 @@ def get_current_user(request: Request, db: Session) -> User | None:
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": "/change-password"},
         )
+    if user.must_change_password:
+        # Primeiro a troca da senha temporária; o MFA vem depois. Aplicar as
+        # duas regras ao mesmo tempo mandava /change-password -> /mfa/setup ->
+        # /change-password em ciclo (ERR_TOO_MANY_REDIRECTS no 1º acesso).
+        return user
     if (
         user.role.upper() in settings.required_mfa_roles
         and not user.mfa_enabled
