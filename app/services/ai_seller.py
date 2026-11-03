@@ -1258,8 +1258,12 @@ def _sync_known_playbook_missing(
         }
         client.update_opportunity(state.opportunity_id, payload)
     elif field == "categoryId":
-        # categoryId acompanha o produto; sozinho não deve forçar uma troca de plano.
-        return False
+        # categoryId acompanha o produto: grava junto com o plano já resolvido
+        # no catálogo, nunca sozinho (o que poderia trocar o plano).
+        try:
+            _persist_category_form(client, state, collected)
+        except CRMIntegrationError:
+            return False
     elif field.startswith("category:"):
         category_field = field.split(":", 1)[1]
         values = _category_values(collected)
@@ -2514,15 +2518,19 @@ def _assert_closer_owns_conversation(
     *,
     conversation: Conversation,
     agent: AIAgentProfile,
+    handoff_notice: bool = False,
 ) -> None:
     ai_state = db.scalar(
         select(AIConversationState).where(
             AIConversationState.conversation_id == conversation.id
         )
     )
+    # O aviso de transferência é a última mensagem do Vendedor: nesse momento a
+    # conversa já foi passada para um humano (HANDOFF_HUMAN) por este mesmo agente.
+    allowed_states = {"CLOSING", "HANDOFF_HUMAN"} if handoff_notice else {"CLOSING"}
     if (
         not ai_state
-        or ai_state.state != "CLOSING"
+        or ai_state.state not in allowed_states
         or int(ai_state.agent_id or 0) != int(agent.id)
         or agent.role_type != "CLOSER"
     ):
@@ -2539,6 +2547,7 @@ def _send_text(
     text: str,
     source: str = "CLOSER_TEXT",
     guardian_metadata: dict[str, Any] | None = None,
+    handoff_notice: bool = False,
 ) -> Message:
     from app.services.conversation_engine import register_message
     from app.services.zapi_instances import service_for_conversation
@@ -2549,6 +2558,7 @@ def _send_text(
         db,
         conversation=conversation,
         agent=agent,
+        handoff_notice=handoff_notice,
     )
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone:
@@ -2670,6 +2680,7 @@ def _send_step_message(
         db,
         conversation=conversation,
         agent=agent,
+        handoff_notice=state.step == "ESCALATED",
     )
     recent_duplicate = db.scalar(
         select(Message)
@@ -2726,6 +2737,7 @@ def _send_step_message(
             text=text,
             source="CLOSER_STEP",
             guardian_metadata=guardian_metadata,
+            handoff_notice=state.step == "ESCALATED",
         )
 
     from app.services.conversation_engine import register_message
@@ -4071,6 +4083,50 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     state,
                     collected,
                     fallback_step=fallback_step,
+                )
+
+        elif state.step == "PLAYBOOK_DYNAMIC_FIELD" and _playbook_code_key(
+            str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
+        ) == "categoryid":
+            # A categoria vem do plano escolhido, não de texto livre do cliente.
+            # Gravar "Internet" como texto deixava o campo pendente no CRM e o
+            # Vendedor pedia a mesma confirmação em ciclo (conversa 240).
+            category_attempts = int(collected.get("_category_sync_attempts") or 0) + 1
+            collected["_category_sync_attempts"] = category_attempts
+            try:
+                _persist_category_form(client, state, collected)
+                category_saved = True
+            except CRMIntegrationError:
+                category_saved = False
+            if category_saved:
+                for key in (
+                    "_playbook_dynamic_code",
+                    "_playbook_dynamic_patch_key",
+                    "_playbook_dynamic_label",
+                    "_playbook_dynamic_options",
+                ):
+                    collected.pop(key, None)
+                _save_collected(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="WAITING_CRM_READY",
+                )
+            still_pending = state.step == "PLAYBOOK_DYNAMIC_FIELD" and _playbook_code_key(
+                str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
+            ) == "categoryid"
+            if not category_saved or (still_pending and category_attempts >= 2):
+                _handoff_to_human(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    reason="Categoria do produto não registrada no CRM após confirmação do cliente.",
+                )
+                reply = (
+                    "Já registrei suas respostas. Para você não precisar repetir nada, "
+                    "um consultor da Sulnet vai concluir este último registro com você por aqui."
                 )
 
         elif state.step == "PLAYBOOK_DYNAMIC_FIELD":
