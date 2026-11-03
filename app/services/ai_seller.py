@@ -2563,13 +2563,14 @@ def _seller_is_question(text: str) -> bool:
     n = _norm(text)
     if len(n) < 6:
         return False
-    if "?" not in (text or "") and not _SELLER_QUESTION_START.match(n):
+    starts_as_question = bool(_SELLER_QUESTION_START.match(n))
+    if "?" not in (text or "") and not starts_as_question:
         return False
-    # Respostas da etapa escritas como pergunta ("posso pagar no boleto?")
-    # continuam sendo respostas, não dúvidas.
+    # Respostas da etapa escritas como pergunta ("posso pagar no boleto?",
+    # "sim, pode seguir?") continuam sendo respostas, não dúvidas.
     if _billing_local(text):
         return False
-    return _yes_no(text) == "NAO_INFORMADO"
+    return starts_as_question or _yes_no(text) == "NAO_INFORMADO"
 
 
 def _seller_question_reply(
