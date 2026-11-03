@@ -2533,15 +2533,38 @@ def _explicit_human_request(context: dict) -> bool:
 
 def _explicit_purchase_commitment(context: dict) -> bool:
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    if any(
+        cue in latest
+        for cue in (
+            "nao quero contratar",
+            "nao quero assinar",
+            "nao vou contratar",
+            "nao vou assinar",
+            "nao tenho interesse em assinar",
+            "sem interesse em contratar",
+        )
+    ):
+        return False
+
     cues = (
         "quero contratar",
+        "quero assinar",
+        "tenho interesse em assinar",
+        "interesse em assinar",
+        "gostaria de assinar",
+        "quero aderir",
+        "quero fechar",
         "pode fechar",
         "pode fazer",
         "vamos fechar",
         "vamos fazer",
+        "vamos assinar",
         "quero esse plano",
+        "quero esse pacote",
         "vou contratar",
+        "vou assinar",
         "pode contratar",
+        "pode assinar",
         "com essa condicao eu fecho",
         "fechado",
         "pode dar andamento",
@@ -2552,6 +2575,13 @@ def _explicit_purchase_commitment(context: dict) -> bool:
         "aceito",
     )
     if any(cue in latest for cue in cues):
+        return True
+
+    if re.search(
+        r"\b(?:quero|gostaria|pretendo|vou|tenho interesse em)\s+"
+        r"(?:contratar|assinar|fechar|aderir)\b",
+        latest,
+    ):
         return True
 
     previous = _fold_sales_text(_last_outbound_text(context))
@@ -2642,6 +2672,22 @@ def _derive_journey_state(decision: AIDecision, context: dict) -> str:
     return "CONFIRM_PURCHASE"
 
 
+def _sdr_exposes_internal_handoff(text: str | None) -> bool:
+    folded = _fold_sales_text(text)
+    if not folded:
+        return False
+    internal_cues = (
+        "vendedor ia",
+        "vendedor de fechamento",
+        "ia de fechamento",
+        "o vendedor vai continuar",
+        "o vendedor dara continuidade",
+        "o vendedor seguira",
+        "encaminhar seu interesse",
+    )
+    return any(cue in folded for cue in internal_cues)
+
+
 def _journey_integrity_issues(
     decision: AIDecision,
     context: dict,
@@ -2679,6 +2725,9 @@ def _journey_integrity_issues(
 
     if _sdr_reply_repeats_recent_outbound(decision, context):
         issues.append("REPEATED_QUESTION")
+
+    if _sdr_exposes_internal_handoff(decision.reply_text):
+        issues.append("SDR_EXPOSED_INTERNAL_HANDOFF")
 
     return list(dict.fromkeys(issues))
 
@@ -2995,6 +3044,31 @@ def _send_autonomous_reply(
         return None
     if decision.intent == "DO_NOT_CONTACT":
         return None
+
+    current_state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == conversation.id
+        )
+    )
+    if current_state and (
+        current_state.state != "AI_ACTIVE"
+        or int(current_state.agent_id or 0) != int(agent.id)
+    ):
+        LOG.warning(
+            "ai_sdr_send_blocked_by_owner conversation=%s agent=%s owner_agent=%s state=%s",
+            conversation.id,
+            agent.id,
+            current_state.agent_id,
+            current_state.state,
+        )
+        raise AIConfigurationError(
+            f"SDR perdeu a propriedade da conversa: {current_state.state}"
+        )
+
+    if _sdr_exposes_internal_handoff(decision.reply_text):
+        raise AIConfigurationError(
+            "SDR não pode anunciar Vendedor IA ao cliente; handoff deve ser operacional e silencioso."
+        )
 
     contact = conversation.contact
     phone = (contact.phone if contact else "").strip()
