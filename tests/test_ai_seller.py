@@ -1975,3 +1975,43 @@ def test_closer_ownership_allows_only_the_final_handoff_notice():
         pass
     else:
         raise AssertionError("Mensagem comum não pode sair depois do handoff humano.")
+
+
+def test_seller_followup_blocked_by_guardian_is_cancelled_not_retried(monkeypatch):
+    # Conversa 240: o bloqueio escapava, o worker desfazia a transação e o mesmo
+    # follow-up voltava a cada 10 minutos.
+    from app.services import ai_seller
+    from app.services.ai_guardian import GuardianBlockedError, GuardianResult
+
+    conversation = SimpleNamespace(id=240)
+    state = SimpleNamespace(step="CPF", conversation_id=240)
+    job = SimpleNamespace(id=359, conversation_id=240, step=3, status="PROCESSANDO", error=None, source_message_id=None)
+    agent = SimpleNamespace(user=None)
+    audits = []
+
+    class _Db:
+        def get(self, _model, _id):
+            return conversation
+
+        def scalar(self, _query):
+            return state
+
+    def _blocked(*_args, **_kwargs):
+        raise GuardianBlockedError(
+            GuardianResult(verdict="BLOCK", issue_codes=["REPEATED_QUESTION", "CATEGORY_CONFLICT"])
+        )
+
+    scheduled = []
+    monkeypatch.setattr(ai_seller, "_load_collected", lambda _state: {})
+    monkeypatch.setattr(ai_seller, "_seller_followup_prompt", lambda *_a, **_k: "Pode me enviar o CPF?")
+    monkeypatch.setattr(ai_seller, "_send_step_message", _blocked)
+    monkeypatch.setattr(ai_seller, "_schedule_seller_followup", lambda *_a, **_k: scheduled.append(1))
+    monkeypatch.setattr(ai_seller, "write_audit", lambda *_a, **kw: audits.append(kw))
+
+    outcome = ai_seller.process_seller_followup(_Db(), job, agent)
+
+    assert outcome == "guardian_blocked"
+    assert job.status == "CANCELADO"
+    assert "REPEATED_QUESTION" in job.error
+    assert scheduled == []
+    assert audits and audits[0]["action"] == "AI_CLOSER_FOLLOWUP_BLOCKED"
