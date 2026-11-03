@@ -379,6 +379,26 @@ def _apply_guardrails(
         ]
 
     metadata = proposed.get("metadata") or {}
+    sdr_closer_handoff = bool(
+        str((context.get("agent") or {}).get("role") or "").upper() == "SDR"
+        and str(metadata.get("handoff_target") or "") == "CLOSER_AI"
+        and metadata.get("customer_commitment") is True
+    )
+    if sdr_closer_handoff and not critical and not high:
+        review.verdict = "APPROVE"
+        review.risk = "LOW"
+        review.confidence = max(review.confidence, 0.95)
+        review.quality_score = max(review.quality_score, 95)
+        review.reply_text = ""
+        review.suggested_buttons = []
+        review.corrected_state = ""
+        review.issue_codes = [
+            code for code in review.issue_codes if code in deterministic_codes
+        ]
+        review.rationale = (
+            "Intenção de compra confirmada: o SDR não enviará esta mensagem; "
+            "a ação correta é o handoff operacional para o Vendedor IA."
+        )
     authoritative_contract_knowledge = bool(
         str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER"
         and metadata.get("authoritative_contract_knowledge") is True
