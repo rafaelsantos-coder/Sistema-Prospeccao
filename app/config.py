@@ -62,6 +62,8 @@ class Settings:
     resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     ai_sdr_enabled: bool = os.getenv("AI_SDR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    # Espera curta para juntar mensagens seguidas do cliente numa única resposta do SDR.
+    ai_sdr_debounce_seconds: int = int(os.getenv("AI_SDR_DEBOUNCE_SECONDS", "6"))
     ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
     ai_maintenance_enabled: bool = os.getenv(

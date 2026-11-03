@@ -268,13 +268,26 @@ def enqueue_ai_job(
         reason="CLIENTE_RESPONDEU",
     )
 
+    # Uma resposta por rajada de mensagens: o SDR lê o histórico inteiro, então
+    # o job da mensagem mais nova responde também às anteriores ainda na fila
+    # (conversa 63: 4 mensagens da IA em 4 minutos).
+    for pending in db.scalars(
+        select(AIJob).where(
+            AIJob.conversation_id == conversation.id,
+            AIJob.agent_id == binding.agent_id,
+            AIJob.status == "PENDENTE",
+        )
+    ):
+        pending.status = "IGNORADO"
+        pending.error = "AGRUPADA_COM_MENSAGEM_SEGUINTE"
+
     job = AIJob(
         agent_id=binding.agent_id,
         queue_id=binding.queue_id,
         conversation_id=conversation.id,
         message_id=message.id,
         status="PENDENTE",
-        available_at=utcnow(),
+        available_at=utcnow() + timedelta(seconds=max(0, settings.ai_sdr_debounce_seconds)),
     )
     db.add(job)
     db.flush()

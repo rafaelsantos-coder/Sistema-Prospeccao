@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import timedelta
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
 from pydantic import BaseModel, Field
@@ -24,7 +24,7 @@ from app.models import (
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT, followup_spec, next_business_time
 from app.services.audit import write_audit
-from app.timeutils import utcnow
+from app.timeutils import UTC, utc_naive, utc_to_local, utcnow
 
 
 LOG = logging.getLogger("sulnet_ai_followups")
@@ -56,6 +56,54 @@ def cancel_pending_followups(
     if jobs:
         db.flush()
     return len(jobs)
+
+
+def business_window_start(now: datetime) -> datetime:
+    """Primeiro instante (UTC sem fuso) em que a IA pode puxar conversa.
+
+    Usa o horário comercial já definido em next_business_time: dias úteis das
+    9h às 18h30 e sábado até 13h, no fuso configurado.
+    """
+    aware = now.replace(tzinfo=UTC) if now.tzinfo is None else now
+    return utc_naive(next_business_time(aware, settings.default_timezone))
+
+
+def _limit_one_unanswered_per_day(
+    db: Session,
+    conversation_id: int,
+    due: datetime,
+) -> datetime:
+    """No máximo um follow-up sem resposta do cliente por dia.
+
+    Antes, a cadência 10 min → 30 min → 2 h → 6 h mandava até 4 mensagens no
+    mesmo dia para quem não respondeu.
+    """
+    last_inbound_at = db.scalar(
+        select(Message.created_at)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "INBOUND",
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    sent_stmt = select(AIFollowupJob.sent_at).where(
+        AIFollowupJob.conversation_id == conversation_id,
+        AIFollowupJob.status == "ENVIADO",
+        AIFollowupJob.sent_at.is_not(None),
+    )
+    if last_inbound_at:
+        sent_stmt = sent_stmt.where(AIFollowupJob.sent_at > utc_naive(last_inbound_at))
+    last_sent = db.scalar(sent_stmt.order_by(AIFollowupJob.sent_at.desc()).limit(1))
+    if not last_sent:
+        return due
+    last_local = utc_to_local(utc_naive(last_sent))
+    if utc_to_local(due).date() > last_local.date():
+        return due
+    next_day = (last_local + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return business_window_start(next_day.astimezone(UTC).replace(tzinfo=None))
 
 
 def schedule_followup(
@@ -109,7 +157,8 @@ def schedule_followup(
     clean_pending = re.sub(r"\s+", " ", str(pending_action or "")).strip()
     if clean_pending:
         theme = f"{theme}. Pendência atual: {clean_pending[:500]}"
-    due = next_business_time(utcnow() + delay, settings.default_timezone)
+    due = business_window_start(utcnow() + delay)
+    due = _limit_one_unanswered_per_day(db, conversation_id, due)
     job = AIFollowupJob(
         agent_id=agent_id,
         queue_id=queue_id,
@@ -501,6 +550,18 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         job.status = "CANCELADO"
         job.error = reason
         return "cancelled"
+
+    # Reagendamentos internos (+5, +15, +30 min) não podiam sair de madrugada:
+    # houve mensagens às 00:12 e 23:40. Fora do horário, o job volta para a fila
+    # no início da próxima janela, sem contar como tentativa.
+    now = utcnow()
+    window_start = business_window_start(now)
+    if window_start > now:
+        job.status = "PENDENTE"
+        job.due_at = window_start
+        job.locked_at = None
+        job.attempts = max(0, int(job.attempts or 0) - 1)
+        return "outside_business_hours"
 
     if not settings.ai_autonomous_enabled:
         job.status = "PENDENTE"
