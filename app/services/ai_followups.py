@@ -79,8 +79,23 @@ def schedule_followup(
             AIConversationState.conversation_id == conversation_id
         )
     )
+    agent = db.get(AIAgentProfile, agent_id)
     if state and state.state in {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "OPT_OUT", "ESCALATED", "COMPLETED"}:
         return None
+    if state and state.state == "CLOSING":
+        if (
+            not agent
+            or agent.role_type != "CLOSER"
+            or int(state.agent_id or 0) != int(agent_id)
+        ):
+            return None
+    if state and state.state == "AI_ACTIVE":
+        if (
+            not agent
+            or agent.role_type == "CLOSER"
+            or int(state.agent_id or 0) != int(agent_id)
+        ):
+            return None
     closing = db.scalar(
         select(AIClosingState).where(
             AIClosingState.conversation_id == conversation_id
@@ -199,6 +214,20 @@ def _followup_question(value: str) -> str:
     return _normalize_followup_text(questions[-1].replace("?", " "))
 
 
+def _followup_exposes_internal_handoff(value: str | None) -> bool:
+    folded = _normalize_followup_text(str(value or ""))
+    cues = (
+        "vendedor ia",
+        "vendedor de fechamento",
+        "ia de fechamento",
+        "vendedor dara continuidade",
+        "vendedor continuara",
+        "vendedor seguira",
+        "encaminhar seu interesse",
+    )
+    return any(cue in folded for cue in cues)
+
+
 def _followup_is_repetitive(candidate: str, previous_messages: list[str]) -> bool:
     normalized_candidate = _normalize_followup_text(candidate)
     if not normalized_candidate:
@@ -311,8 +340,23 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
             AIConversationState.conversation_id == conversation.id
         )
     )
+    agent = db.get(AIAgentProfile, job.agent_id)
     if state and state.state in {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "OPT_OUT", "ESCALATED", "COMPLETED"}:
         return False, state.state
+    if state and state.state == "CLOSING":
+        if (
+            not agent
+            or agent.role_type != "CLOSER"
+            or int(state.agent_id or 0) != int(job.agent_id)
+        ):
+            return False, "OWNER_CLOSER_AI"
+    if state and state.state == "AI_ACTIVE":
+        if (
+            not agent
+            or agent.role_type == "CLOSER"
+            or int(state.agent_id or 0) != int(job.agent_id)
+        ):
+            return False, "OWNER_SDR_AI"
     closing = db.scalar(
         select(AIClosingState).where(
             AIClosingState.conversation_id == conversation.id
@@ -478,6 +522,20 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         previous_outbound = _recent_outbound_bodies(history)
         decision = _generate_followup(db, agent=agent, job=job)
 
+        if _followup_exposes_internal_handoff(decision.reply_text):
+            first_attempt = decision.reply_text
+            decision = _generate_followup(
+                db,
+                agent=agent,
+                job=job,
+                avoid_messages=previous_outbound + [first_attempt],
+            )
+            if _followup_exposes_internal_handoff(decision.reply_text):
+                decision = _unique_followup_fallback(
+                    step=job.step,
+                    previous_messages=previous_outbound + [first_attempt],
+                )
+
         if _followup_is_repetitive(decision.reply_text, previous_outbound):
             first_attempt = decision.reply_text
             decision = _generate_followup(
@@ -552,6 +610,16 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                 QuickReply.model_validate(item)
                 for item in guardian.buttons
             ]
+
+        if _followup_exposes_internal_handoff(decision.reply_text):
+            job.status = "CANCELADO"
+            job.error = "SDR_FOLLOWUP_INTERNAL_HANDOFF_BLOCKED"
+            LOG.warning(
+                "sdr_followup_internal_handoff_blocked conversation=%s job=%s",
+                job.conversation_id,
+                job.id,
+            )
+            return "cancelled"
 
         from app.services.conversation_engine import register_message
         from app.services.zapi_instances import service_for_conversation
