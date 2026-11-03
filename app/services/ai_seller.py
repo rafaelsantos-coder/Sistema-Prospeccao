@@ -3154,13 +3154,35 @@ def process_seller_followup(
         collected,
         followup_step=max(1, int(job.step or 1)),
     )
-    message = _send_step_message(
-        db,
-        agent=agent,
-        conversation=conversation,
-        state=state,
-        text=text,
-    )
+    try:
+        message = _send_step_message(
+            db,
+            agent=agent,
+            conversation=conversation,
+            state=state,
+            text=text,
+        )
+    except GuardianBlockedError as exc:
+        # Antes o erro escapava, o worker desfazia a transação e o mesmo
+        # follow-up voltava a cada 10 minutos, para sempre (conversa 240).
+        # Um follow-up é opcional: se o Guardião barrar, não insiste.
+        codes = ", ".join(exc.result.issue_codes) or "-"
+        job.status = "CANCELADO"
+        job.error = f"GUARDIAO_BLOQUEOU_FOLLOWUP: {codes}"[:1200]
+        write_audit(
+            db,
+            user=agent.user,
+            action="AI_CLOSER_FOLLOWUP_BLOCKED",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={
+                "followup_job_id": job.id,
+                "step": job.step,
+                "closing_step": state.step,
+                "issue_codes": list(exc.result.issue_codes),
+            },
+        )
+        return "guardian_blocked"
     job.status = "ENVIADO"
     job.sent_at = utcnow()
     job.error = None
