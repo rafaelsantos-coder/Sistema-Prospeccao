@@ -359,6 +359,11 @@ def _closing_context(
         "contract_status": state.contract_status,
         "has_opportunity": bool(state.opportunity_id),
         "has_sign_url": bool(state.sign_url),
+        # Dados já registrados no fechamento: o resumo de aceite os repete.
+        "catalog_plan_name": collected.get("catalogPlanName"),
+        "payment_method": collected.get("paymentMethod"),
+        "due_day": collected.get("dueDay"),
+        "sale_accepted": bool(collected.get("_sale_accepted")),
         "sdr_ia_funnel": bool(
             collected.get("_sdr_ia_funnel")
             or playbook.get("sdrIaFunnel")
