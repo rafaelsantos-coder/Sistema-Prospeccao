@@ -1911,3 +1911,67 @@ def test_billing_prompt_and_buttons_ask_one_thing_at_a_time():
     paid = {"paymentMethod": "Boleto"}
     assert "vencimento" in _prompt_for_step(state, paid)
     assert _seller_step_buttons("BILLING", "", paid) == []
+
+
+def test_playbook_category_id_is_persisted_with_resolved_plan():
+    # Conversa 240: o CRM pedia categoryId e o Vendedor perguntava ao cliente em
+    # ciclo. Com plano e categoria já resolvidos no catálogo, grava sem perguntar.
+    item = CRMPlaybookMissingItem(
+        code="categoryId",
+        label="Categoria do produto",
+        question="Confirme a categoria do produto (Telefonia Móvel).",
+        patch_key="",
+    )
+    client = _PlaybookClient([
+        _playbook_result(missing=[item], next_question=item.question),
+        _playbook_result(missing=[], ready=True),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Fibra 800 Mega",
+        offer_price=119.90,
+        credit_status="Aprovado",
+        step="WAITING_CONTRACT",
+    )
+    collected = {"planId": 77, "categoryId": 3, "categoryName": "Internet"}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="__FINISH__",
+    )
+
+    assert step == "__FINISH__"
+    assert question is None
+    assert [(opp, cat, plan) for opp, _values, cat, plan in client.category_updates] == [
+        (11754, 3, 77),
+    ]
+
+
+def test_closer_ownership_allows_only_the_final_handoff_notice():
+    from app.services.ai_seller import CRMIntegrationError, _assert_closer_owns_conversation
+
+    agent = SimpleNamespace(id=2, role_type="CLOSER")
+    conversation = SimpleNamespace(id=240)
+
+    class _Db:
+        def __init__(self, state):
+            self.state = state
+
+        def scalar(self, _query):
+            return SimpleNamespace(state=self.state, agent_id=2)
+
+    _assert_closer_owns_conversation(_Db("CLOSING"), conversation=conversation, agent=agent)
+    _assert_closer_owns_conversation(
+        _Db("HANDOFF_HUMAN"),
+        conversation=conversation,
+        agent=agent,
+        handoff_notice=True,
+    )
+    try:
+        _assert_closer_owns_conversation(_Db("HANDOFF_HUMAN"), conversation=conversation, agent=agent)
+    except CRMIntegrationError:
+        pass
+    else:
+        raise AssertionError("Mensagem comum não pode sair depois do handoff humano.")
