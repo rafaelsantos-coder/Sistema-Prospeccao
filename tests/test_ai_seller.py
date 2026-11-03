@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 from app.services.crm_sulnet import (
@@ -2064,3 +2065,85 @@ def test_confirm_sale_step_has_buttons_and_reminder_prompt():
     prompt = _prompt_for_step(state, {})
     assert "confirma" in prompt.lower()
     assert "800 Mega" in prompt
+
+
+def test_seller_question_detection_keeps_step_answers():
+    from app.services.ai_seller import _seller_is_question
+
+    assert _seller_is_question("Quanto tempo demora a instalação?")
+    assert _seller_is_question("e se eu mudar de endereço")
+    assert not _seller_is_question("posso pagar no boleto?")
+    assert not _seller_is_question("sim, pode seguir?")
+    assert not _seller_is_question("Rafael Santos")
+    assert not _seller_is_question("10")
+
+
+def test_seller_question_reply_answers_from_kb_and_resumes_step(monkeypatch):
+    from app.services import ai_runtime, ai_seller
+
+    captured = {}
+
+    def fake_run(agent, prompt):
+        captured["prompt"] = prompt
+        return SimpleNamespace(final_output=ai_seller.SellerKnowledgeAnswer(
+            answered=True,
+            answer="O prazo contratual de instalação é de até 45 dias úteis.",
+        ))
+
+    monkeypatch.setattr(ai_runtime, "run_agent_sync", fake_run)
+    monkeypatch.setattr(ai_seller, "_seller_knowledge", lambda db, agent, query="": "- Condições contratuais FTTH: até 45 dias úteis")
+    monkeypatch.setattr(ai_seller, "settings", replace(ai_seller.settings, openai_api_key="sk-test"))
+    state = _phase4_state(step="BILLING")
+    agent = SimpleNamespace(name="Vendedor", system_prompt="", model="m", reasoning_effort="low")
+
+    reply = ai_seller._seller_question_reply(
+        None, agent=agent, state=state, collected={}, text="Quanto tempo demora a instalação?",
+    )
+
+    assert reply.startswith("O prazo contratual de instalação é de até 45 dias úteis.")
+    assert "forma de pagamento" in reply
+    assert "45 dias úteis" in captured["prompt"]
+
+
+def test_seller_question_reply_never_invents_when_kb_has_no_answer(monkeypatch):
+    from app.services import ai_runtime, ai_seller
+
+    monkeypatch.setattr(
+        ai_runtime,
+        "run_agent_sync",
+        lambda agent, prompt: SimpleNamespace(final_output=ai_seller.SellerKnowledgeAnswer(answered=False)),
+    )
+    monkeypatch.setattr(ai_seller, "_seller_knowledge", lambda db, agent, query="": "- item")
+    monkeypatch.setattr(ai_seller, "settings", replace(ai_seller.settings, openai_api_key="sk-test"))
+    state = _phase4_state(step="BILLING")
+    agent = SimpleNamespace(name="Vendedor", system_prompt="", model="m", reasoning_effort="low")
+
+    reply = ai_seller._seller_question_reply(
+        None, agent=agent, state=state, collected={}, text="Vocês têm sinal de TV a cabo?",
+    )
+
+    assert "não tenho confirmada" in reply
+    assert "forma de pagamento" in reply
+
+
+def test_seed_gives_closer_its_own_knowledge_base():
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.main import app
+    from app.models import AIAgentProfile, AIKnowledgeItem
+
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            closer = db.scalar(select(AIAgentProfile).where(AIAgentProfile.slug == "sulia-vendedor-fechamento"))
+            assert closer is not None
+            titles = set(db.scalars(
+                select(AIKnowledgeItem.title).where(AIKnowledgeItem.agent_id == closer.id)
+            ))
+            assert "Condições contratuais FTTH" in titles
+            assert "Fechamento digital - resumo, aceite e assinatura" in titles
+            assert "Formas de pagamento e fatura no canal digital" in titles
+        finally:
+            db.close()
