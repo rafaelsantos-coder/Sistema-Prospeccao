@@ -1868,3 +1868,46 @@ def test_seller_contract_penalty_pending_question_does_not_capture_other_answers
 
     assert reply is None
     assert "_pending_penalty_months" not in collected
+
+
+def test_billing_merge_keeps_previous_answers_across_messages():
+    # Sequência real da conversa 62: "10" -> "Boleto" -> "10" entrava em ciclo.
+    from app.services.ai_seller import _billing_merge
+
+    collected = {}
+    first = _billing_merge(collected, "Boleto")
+    assert first == {"paymentMethod": "Boleto"}
+
+    collected["paymentMethod"] = first["paymentMethod"]
+    second = _billing_merge(collected, "10")
+    assert second == {"paymentMethod": "Boleto", "dueDay": 10}
+
+
+def test_billing_merge_keeps_due_day_when_payment_comes_later():
+    from app.services.ai_seller import _billing_merge
+
+    billing = _billing_merge({"dueDay": 10}, "Boleto")
+
+    assert billing == {"paymentMethod": "Boleto", "dueDay": 10}
+
+
+def test_billing_merge_ignores_bare_number_before_payment_method():
+    from app.services.ai_seller import _billing_merge
+
+    billing = _billing_merge({}, "10")
+
+    assert "dueDay" not in billing
+
+
+def test_billing_prompt_and_buttons_ask_one_thing_at_a_time():
+    from app.services.ai_seller import _prompt_for_step, _seller_step_buttons
+
+    state = SimpleNamespace(step="BILLING", plan_label="800 Mega")
+
+    assert "forma de pagamento" in _prompt_for_step(state, {})
+    assert "vencimento" not in _prompt_for_step(state, {})
+    assert {b["label"] for b in _seller_step_buttons("BILLING", "", {})} == {"Boleto", "Débito em conta"}
+
+    paid = {"paymentMethod": "Boleto"}
+    assert "vencimento" in _prompt_for_step(state, paid)
+    assert _seller_step_buttons("BILLING", "", paid) == []
