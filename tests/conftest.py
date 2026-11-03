@@ -16,6 +16,7 @@ for suffix in ("", "-shm", "-wal"):
         pass
 
 os.environ["APP_ENV"] = "development"
+os.environ.setdefault("AI_SDR_DEBOUNCE_SECONDS", "0")
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough"
 os.environ["BOOTSTRAP_ADMIN_EMAIL"] = "admin@sulnet.local"

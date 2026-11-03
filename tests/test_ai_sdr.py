@@ -3083,3 +3083,53 @@ def test_fast_purchase_ignores_messages_without_explicit_plan_intent():
         ),
     ):
         assert _fast_purchase_request(_fast_context(latest, history)) is None
+
+
+def test_burst_of_customer_messages_gets_a_single_sdr_job():
+    """Conversa 63: cada mensagem do cliente virava uma resposta separada."""
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            _agent, queue, _human = _create_bound_digital_queue(db, "BURST")
+            from app.models import LeadQueuePreference
+
+            lead = Lead(
+                business_name="Cliente Rajada",
+                contact_name="Cliente",
+                phone="5555988877399",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_BURST"))
+            db.commit()
+
+            jobs = []
+            for index, body in enumerate(("Oi", "Quero internet", "Para minha casa")):
+                conversation, message, _created = store_received_payload(
+                    db,
+                    {
+                        "phone": lead.phone,
+                        "messageId": f"AI-BURST-{index}",
+                        "senderName": "Cliente",
+                        "text": {"message": body},
+                        "fromMe": False,
+                        "status": "RECEIVED",
+                    },
+                )
+                db.commit()
+                jobs.append(db.scalar(select(AIJob).where(AIJob.message_id == message.id)))
+
+            statuses = [db.get(AIJob, job.id).status for job in jobs if job]
+            assert len(statuses) == 3
+            assert statuses[:2] == ["IGNORADO", "IGNORADO"]
+            assert statuses[2] == "PENDENTE"
+        finally:
+            db.close()
