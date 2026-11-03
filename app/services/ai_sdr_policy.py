@@ -988,3 +988,64 @@ def next_business_time(value: datetime, timezone_name: str = "America/Sao_Paulo"
     if local.weekday() == 6:
         local = (local + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
     return local.astimezone(value.tzinfo or tz)
+
+
+# Títulos da base comercial aprovada que o Vendedor IA também precisa consultar
+# no fechamento (contrato, preço, equipamentos, prazos e Sulmóvel).
+SELLER_SHARED_KNOWLEDGE_TITLES = (
+    "FTTH 800 Mega",
+    "FTTH 650 Mega",
+    "FTTH 500 e 250 Mega",
+    "Roteadores inclusos nos planos 800 e 650 Mega",
+    "Condições contratuais FTTH",
+    "Sulmóvel - planos confirmados por contrato",
+    "IP Fixo e telefonia fixa",
+    "Atendimento, suporte e proximidade regional",
+)
+
+SELLER_KNOWLEDGE_ITEMS = [
+    item for item in SYSTEM_KNOWLEDGE_ITEMS
+    if item["title"] in SELLER_SHARED_KNOWLEDGE_TITLES
+] + [
+    {
+        "title": "Fechamento digital - resumo, aceite e assinatura",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "contrato,assinatura,aceite,resumo,link,ativacao,48 horas",
+        "content": (
+            "Antes de gerar o contrato, o Vendedor IA envia o resumo da contratação "
+            "(plano, mensalidade, forma de pagamento e vencimento) e só gera o contrato "
+            "depois que o cliente confirma com Sim. O contrato é enviado por link para "
+            "assinatura digital, pelo próprio WhatsApp. A venda só é concluída depois do "
+            "contrato assinado e da confirmação do CRM. Após a assinatura, a ativação "
+            "ocorre em até 48 horas. Se o cliente quiser ajustar algo no resumo, um "
+            "consultor da Sulnet continua o atendimento sem gerar contrato."
+        ),
+    },
+    {
+        "title": "Formas de pagamento e fatura no canal digital",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "pagamento,boleto,debito em conta,vencimento,fatura,whatsapp,e-mail",
+        "content": (
+            "No fechamento pelo canal digital, a mensalidade pode ser paga por Boleto ou "
+            "Débito em conta. A cobrança é pós-paga. O dia de vencimento é escolhido entre "
+            "as opções aceitas pelo CRM. No boleto, a fatura pode ser enviada por WhatsApp, "
+            "e-mail ou ambos; no débito em conta são pedidos banco, agência, conta e "
+            "titular. Em atraso: juros de 1% ao mês, multa de 2% e correção monetária "
+            "conforme o contrato."
+        ),
+    },
+    {
+        "title": "Limites do Vendedor IA",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "limites,desconto,prazo,promessa,humano,consultor",
+        "content": (
+            "O Vendedor IA responde apenas com fatos desta base e do CRM. Não cria "
+            "desconto, não muda preço, não promete data de instalação diferente do prazo "
+            "contratual (até 45 dias úteis para FTTH; habilitação Sulmóvel em até 5 dias "
+            "úteis) e não confirma aprovação de crédito antes do CRM. Se a informação não "
+            "estiver na base, diz que não tem o dado confirmado e oferece um consultor. "
+            "Cliente que já é Sulnet e quer aumentar ou trocar de plano é atendido pela "
+            "central de atendimento, não pelo fluxo de nova venda."
+        ),
+    },
+]

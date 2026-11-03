@@ -2516,17 +2516,128 @@ def _finish_sale_contract(
 
 
 
-def _seller_knowledge(db: Session, agent: AIAgentProfile) -> str:
+def _seller_knowledge(db: Session, agent: AIAgentProfile, query: str = "") -> str:
     items = list(
         db.scalars(
             select(AIKnowledgeItem).where(
                 AIKnowledgeItem.agent_id == agent.id,
                 AIKnowledgeItem.active.is_(True),
-            ).order_by(AIKnowledgeItem.updated_at.desc()).limit(20)
+            ).order_by(AIKnowledgeItem.updated_at.desc()).limit(80)
         )
     )
-    text = "\n".join(f"- {item.title}: {item.content}" for item in items)
+    terms = {
+        token for token in re.findall(r"[a-z0-9]{3,}", _norm(query))
+        if token not in _SELLER_KB_STOPWORDS
+    }
+    if terms:
+        def score(item: AIKnowledgeItem) -> int:
+            haystack = _norm(f"{item.title} {item.tags or ''} {item.content}")
+            title = _norm(f"{item.title} {item.tags or ''}")
+            return sum(3 if term in title else 1 for term in terms if term in haystack)
+
+        items.sort(key=score, reverse=True)
+    text = "\n".join(f"- {item.title}: {item.content}" for item in items[:12])
     return text[:6000]
+
+
+_SELLER_KB_STOPWORDS = {
+    "que", "qual", "quais", "como", "quanto", "quantos", "quantas", "quando", "onde",
+    "para", "pra", "com", "sem", "uma", "um", "por", "mais", "tem", "ter", "voce",
+    "voces", "isso", "esse", "essa", "meu", "minha", "sulnet", "plano", "fica",
+}
+
+_SELLER_QUESTION_START = re.compile(
+    r"^(e\s+)?(qual|quais|quanto|quantos|quantas|quando|como|onde|por que|porque|pq|"
+    r"tem|terei|vou ter|posso|preciso|precisa|e se|o que|oque|existe|da pra|aceita|"
+    r"inclui|funciona)\b"
+)
+
+
+class SellerKnowledgeAnswer(BaseModel):
+    answered: bool = False
+    answer: str = Field(default="", max_length=700)
+    human_requested: bool = False
+
+
+def _seller_is_question(text: str) -> bool:
+    n = _norm(text)
+    if len(n) < 6:
+        return False
+    if "?" not in (text or "") and not _SELLER_QUESTION_START.match(n):
+        return False
+    # Respostas da etapa escritas como pergunta ("posso pagar no boleto?")
+    # continuam sendo respostas, não dúvidas.
+    if _billing_local(text):
+        return False
+    return _yes_no(text) == "NAO_INFORMADO"
+
+
+def _seller_question_reply(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    text: str,
+) -> str | None:
+    """Responde dúvidas do cliente no meio do fechamento usando a base aprovada.
+
+    Antes, uma pergunta ("quanto tempo para instalar?") era lida como resposta da
+    etapa e a IA repetia a pergunta anterior. Agora ela responde pela base de
+    conhecimento do Vendedor e retoma a etapa em que parou.
+    """
+    if state.step not in SELLER_CUSTOMER_INPUT_STEPS or not _seller_is_question(text):
+        return None
+    if not settings.openai_api_key:
+        return None
+    knowledge = _seller_knowledge(db, agent, text)
+    if not knowledge:
+        return None
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
+
+    plan = state.plan_label or "não informado"
+    prompt = (
+        "Você é o Vendedor IA da Sulnet no meio de um fechamento pelo WhatsApp. "
+        "O cliente fez uma pergunta. Responda em português, em no máximo 3 frases curtas, "
+        "usando SOMENTE os fatos da base abaixo. Não invente preço, prazo, desconto ou "
+        "condição. Não faça nenhuma pergunta ao cliente: a próxima etapa será enviada "
+        "depois da sua resposta. Se a base não tiver a resposta, devolva answered=false. "
+        "Se o cliente pedir uma pessoa ou atendente, devolva human_requested=true.\n"
+        f"Plano em negociação: {plan}.\n"
+        f"Pergunta do cliente: {_redact(text)}\n"
+        f"Base aprovada:\n{knowledge}"
+    )
+    answerer = Agent(
+        name=f"{agent.name} · dúvidas",
+        instructions=(agent.system_prompt or "").strip() or "Responda só com fatos aprovados.",
+        model=agent.model or "gpt-6-luna",
+        model_settings={
+            "reasoning": {"effort": agent.reasoning_effort or "low"},
+            "verbosity": "low",
+            "timeout": 30.0,
+        },
+        output_type=SellerKnowledgeAnswer,
+    )
+    try:
+        result = run_agent_sync(answerer, prompt)
+        output = result.final_output
+        answer = (
+            output if isinstance(output, SellerKnowledgeAnswer)
+            else SellerKnowledgeAnswer.model_validate(output)
+        )
+    except Exception:
+        LOG.exception("seller_question_answer_failed step=%s", state.step)
+        return None
+    if answer.human_requested:
+        return None
+    body = answer.answer.strip()
+    if not answer.answered or not body:
+        body = (
+            "Essa informação eu não tenho confirmada aqui, e prefiro não te passar "
+            "nada errado. Se quiser, posso chamar um consultor da Sulnet."
+        )
+    return f"{body}\n\n{_prompt_for_step(state, collected)}"
 
 
 def _interpret_ambiguous(
@@ -2543,7 +2654,7 @@ def _interpret_ambiguous(
     from app.services.ai_runtime import run_agent_sync
 
     instructions = (agent.system_prompt or "").strip()
-    knowledge = _seller_knowledge(db, agent)
+    knowledge = _seller_knowledge(db, agent, message)
     prompt = (
         "Você está interpretando uma resposta curta no fechamento de uma contratação Sulnet. "
         "Não invente dados. Extraia somente o que o cliente realmente informou. "
@@ -3766,6 +3877,17 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 f"essa alteração é feita pelo nosso atendimento. Entre em contato pelo {PLAN_CHANGE_SERVICE_PHONE} "
                 "que a equipe consegue verificar as opções para sua conexão."
             )
+
+        elif (
+            seller_question_reply := _seller_question_reply(
+                db,
+                agent=agent,
+                state=state,
+                collected=collected,
+                text=text,
+            )
+        ):
+            reply = seller_question_reply
 
         elif _sdr_ia_mode(collected) and (
             state.step in SDR_IA_FORBIDDEN_STEPS or state.step == "BILLING"
