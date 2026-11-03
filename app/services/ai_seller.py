@@ -161,7 +161,7 @@ def _seller_ftth_plan(state: AIClosingState, collected: dict[str, Any]) -> dict[
             collected.get("offerPlanCode"),
         )
     )
-    numbers = {int(value) for value in re.findall(r"(?<!\\d)(250|500|650|800)(?!\\d)", haystack)}
+    numbers = {int(value) for value in re.findall(r"(?<!\d)(250|500|650|800)(?!\d)", haystack)}
     for plan in FTTH_PLANS:
         if int(plan.get("download_mbps") or 0) in numbers:
             return plan
@@ -172,14 +172,42 @@ def _seller_brl(value: float | int | Decimal) -> str:
     return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+_SELLER_ORDINAL_MONTHS = {
+    "primeiro": 1,
+    "segundo": 2,
+    "terceiro": 3,
+    "quarto": 4,
+    "quinto": 5,
+    "sexto": 6,
+    "setimo": 7,
+    "oitavo": 8,
+    "nono": 9,
+    "decimo": 10,
+    "decimo primeiro": 11,
+    "decimo segundo": 12,
+}
+
+
 def _seller_contract_months_used(text: str) -> int | None:
     key = _norm(text)
-    matches = re.findall(r"(?<!\\d)(\\d{1,2})\\s*mes(?:es)?\\b", key)
+    matches = re.findall(r"(?<!\d)(\d{1,2})\s*[ºªo]?\s*mes(?:es)?\b", key)
     for raw in matches:
         months = int(raw)
         if 0 <= months <= 12:
             return months
+    for word, months in sorted(_SELLER_ORDINAL_MONTHS.items(), key=lambda item: -len(item[0])):
+        if re.search(rf"\b{word}\s+mes\b", key):
+            return months
     return None
+
+
+def _seller_bare_months_answer(text: str) -> int | None:
+    """Resposta curta ao "com quantos meses?", como "7" ou "7 meses"."""
+    match = re.fullmatch(r"\s*(\d{1,2})\s*(?:[ºªo]\s*)?(?:mes(?:es)?)?\s*[.!]?\s*", _norm(text))
+    if not match:
+        return None
+    months = int(match.group(1))
+    return months if 0 <= months <= 12 else None
 
 
 def _seller_free_months(state: AIClosingState, collected: dict[str, Any]) -> int:
@@ -191,7 +219,7 @@ def _seller_free_months(state: AIClosingState, collected: dict[str, Any]) -> int
                 pass
 
     summary = _norm(str(getattr(state, "handoff_summary", "") or ""))
-    match = re.search(r"meses? gratis\\s*[=:]?\\s*([0-3])", summary)
+    match = re.search(r"meses? gratis\s*[=:]?\s*([0-3])", summary)
     if match:
         return int(match.group(1))
     return 0
@@ -228,6 +256,10 @@ def _seller_contract_knowledge_reply(
         return None
 
     key = _norm(text)
+    # Resposta curta ("7") à pergunta "com quantos meses pretende cancelar?".
+    pending_months: int | None = None
+    if collected.pop("_pending_penalty_months", None):
+        pending_months = _seller_bare_months_answer(text)
     asks_fidelity = any(term in key for term in (
         "fidelidade",
         "fidelizacao",
@@ -324,8 +356,10 @@ def _seller_contract_knowledge_reply(
             "Em caso de atraso, o contrato prevê juros de 1% ao mês, multa de 2% e correção monetária conforme o índice previsto no contrato."
         )
 
-    if asks_cancel_penalty:
+    if asks_cancel_penalty or pending_months is not None:
         months_used = _seller_contract_months_used(text)
+        if months_used is None:
+            months_used = pending_months
         if months_used is not None:
             if months_used >= 12:
                 return (
@@ -368,6 +402,7 @@ def _seller_contract_knowledge_reply(
                 f"fica em R$ {_seller_brl(penalty)}."
             )
 
+        collected["_pending_penalty_months"] = True
         return (
             "A multa de cancelamento é proporcional aos benefícios da contratação e aos meses que faltarem "
             "para completar os 12 meses. Se você me disser com quantos meses pretende cancelar, eu calculo "
