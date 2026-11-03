@@ -2992,3 +2992,94 @@ def test_followup_cannot_announce_internal_closer_handoff():
     assert _followup_exposes_internal_handoff(
         "Ficou alguma dúvida sobre o plano?"
     ) is False
+
+
+_AD_MESSAGE = "Olá! Tenho interesse em assinar 650mb por R$99,90 da Sulnet!"
+_FAST_CITY_QUESTION = (
+    "Ótimo! Para confirmar a disponibilidade do plano de 650 Mega por R$ 99,90, "
+    "em qual cidade será a instalação?"
+)
+
+
+def _fast_context(latest, history, city=""):
+    return {
+        "latest_customer_message": latest,
+        "history": history,
+        "lead": {"city": city},
+        "confirmed_facts": {},
+    }
+
+
+def test_fast_purchase_asks_city_when_unknown():
+    # Conversas 239, 237, 72 e 68: o anúncio chegava pronto e não ia ao fechamento.
+    from app.services.ai_sdr import _fast_purchase_decision, _fast_purchase_request
+
+    request = _fast_purchase_request(
+        _fast_context(_AD_MESSAGE, [{"direction": "INBOUND", "body": _AD_MESSAGE}])
+    )
+
+    assert request is not None
+    assert request["plan"]["download_mbps"] == 650
+    assert request["city"] == ""
+    decision = _fast_purchase_decision(request["plan"], "", handoff=False)
+    assert "em qual cidade" in decision.reply_text
+    assert decision.handoff_target == "NONE"
+
+
+def test_fast_purchase_hands_off_when_city_is_known():
+    from app.services.ai_sdr import _fast_purchase_decision, _fast_purchase_request
+
+    request = _fast_purchase_request(
+        _fast_context(_AD_MESSAGE, [{"direction": "INBOUND", "body": _AD_MESSAGE}], city="Santa Rosa")
+    )
+
+    assert request["city"] == "Santa Rosa"
+    decision = _fast_purchase_decision(request["plan"], "Santa Rosa", handoff=True)
+    assert decision.handoff_target == "CLOSER_AI"
+    assert decision.sales_state == "PURCHASE_INTENT"
+    assert decision.offer_plan_code == "Fibra 650 Mega"
+    assert decision.offer_price == 99.9
+
+
+def test_fast_purchase_uses_city_answer_after_fast_question():
+    from app.services.ai_sdr import _fast_purchase_request
+
+    history = [
+        {"direction": "INBOUND", "body": _AD_MESSAGE},
+        {"direction": "OUTBOUND", "body": _FAST_CITY_QUESTION},
+        {"direction": "INBOUND", "body": "Santo Ângelo"},
+    ]
+    request = _fast_purchase_request(_fast_context("Santo Ângelo", history))
+
+    assert request["plan"]["download_mbps"] == 650
+    assert request["city"] == "Santo Ângelo"
+
+
+def test_fast_purchase_recognizes_ad_style_interest():
+    # Conversa 63: "tenho interesse em 650mb por R$99,90" recebia oferta de 800.
+    from app.services.ai_sdr import _fast_purchase_request
+
+    message = "Olá, tenho interesse em 650mb por R$99,90."
+    request = _fast_purchase_request(
+        _fast_context(message, [{"direction": "INBOUND", "body": message}])
+    )
+
+    assert request is not None
+    assert request["plan"]["download_mbps"] == 650
+
+
+def test_fast_purchase_ignores_messages_without_explicit_plan_intent():
+    from app.services.ai_sdr import _fast_purchase_request
+
+    for latest, history in (
+        ("Quero contratar", [{"direction": "INBOUND", "body": "Quero contratar"}]),
+        ("Hoje eu tenho 500mb.", [{"direction": "INBOUND", "body": "Hoje eu tenho 500mb."}]),
+        (
+            "Santa rosa",
+            [
+                {"direction": "OUTBOUND", "body": "Em qual cidade será instalada a conexão?"},
+                {"direction": "INBOUND", "body": "Santa rosa"},
+            ],
+        ),
+    ):
+        assert _fast_purchase_request(_fast_context(latest, history)) is None

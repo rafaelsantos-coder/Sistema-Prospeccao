@@ -2605,6 +2605,209 @@ def _explicit_purchase_commitment(context: dict) -> bool:
     }
 
 
+# Caminho rápido para quem já chega pedindo para contratar um plano específico
+# (ex.: anúncio "Tenho interesse em assinar 650mb por R$99,90"). Antes, essa
+# intenção passava pelo modelo, pelas regras fixas e pelo Guardião; quando um
+# deles divergia, o cliente ouvia "vou encaminhar" e a transferência não
+# acontecia (conversas 239, 237, 72 e 68).
+_FAST_PURCHASE_CITY_MARK = "para confirmar a disponibilidade do plano de"
+
+
+def _ftth_plan_by_speed(speed: int | None) -> dict | None:
+    if not speed:
+        return None
+    for plan in FTTH_PLANS:
+        if int(plan.get("download_mbps") or 0) == int(speed):
+            return plan
+    return None
+
+
+def _service_city_in_text(value: str | None) -> str:
+    folded = _fold_sales_text(value)
+    if not folded:
+        return ""
+    for service_city in sorted(SERVICE_CITIES, key=len, reverse=True):
+        city_key = _normalized_city(service_city)
+        if folded == city_key or re.search(rf"\b{re.escape(city_key)}\b", folded):
+            return service_city
+    return ""
+
+
+def _known_city_for_fast_path(context: dict) -> str:
+    facts_city = str((context.get("confirmed_facts") or {}).get("city") or "").strip()
+    if facts_city:
+        return facts_city
+    lead_city = str((context.get("lead") or {}).get("city") or "").strip()
+    if lead_city:
+        return lead_city
+    return _service_city_in_text(str(context.get("latest_customer_message") or ""))
+
+
+def _ad_style_plan_interest(value: str | None) -> bool:
+    """Mensagem no formato do anúncio: interesse + plano + preço na mesma frase."""
+    folded = _fold_sales_text(value)
+    return bool(
+        re.search(r"\binteresse\b", folded)
+        and re.search(r"\br\s*\d{2,3}\s*\d{2}\b", folded)
+    )
+
+
+def _fast_purchase_request(context: dict) -> dict | None:
+    """Intenção explícita de compra de um plano FTTH conhecido.
+
+    Devolve {"plan": <plano>, "city": <cidade ou "">} ou None. Considera a
+    mensagem atual e, quando a última pergunta foi a de cidade deste caminho,
+    a intenção registrada nas mensagens anteriores do cliente.
+    """
+    latest = str(context.get("latest_customer_message") or "")
+    plan = None
+    if _explicit_purchase_commitment(context) or _ad_style_plan_interest(latest):
+        plan = _ftth_plan_by_speed(_requested_plan_speed(latest))
+
+    if not plan:
+        last_outbound = _fold_sales_text(_last_outbound_text(context))
+        if _FAST_PURCHASE_CITY_MARK not in last_outbound:
+            return None
+        for row in reversed(context.get("history") or []):
+            if str(row.get("direction") or "").upper() != "INBOUND":
+                continue
+            body = str(row.get("body") or "")
+            if not (
+                _explicit_purchase_commitment({"latest_customer_message": body, "history": []})
+                or _ad_style_plan_interest(body)
+            ):
+                continue
+            plan = _ftth_plan_by_speed(_requested_plan_speed(body))
+            if plan:
+                break
+    if not plan:
+        return None
+    return {"plan": plan, "city": _known_city_for_fast_path(context)}
+
+
+def _fast_purchase_decision(plan: dict, city: str, *, handoff: bool) -> AIDecision:
+    speed = int(plan["download_mbps"])
+    price = float(plan["price_fidelity"])
+    plan_label = f"Fibra {speed} Mega"
+    if handoff:
+        reply = f"Perfeito! Vamos seguir com a contratação do {plan_label} por R$ {_format_brl(price)}."
+        summary = (
+            f"Intenção explícita de contratar {plan_label} por R$ {_format_brl(price)}"
+            + (f" em {city}." if city else ".")
+        )
+    else:
+        reply = (
+            f"Ótimo! Para confirmar a disponibilidade do plano de {speed} Mega por "
+            f"R$ {_format_brl(price)}, em qual cidade será a instalação?"
+        )
+        summary = f"Intenção explícita de contratar {plan_label}; aguardando a cidade."
+    return AIDecision(
+        reply_text=reply,
+        intent="HIGH_INTENT",
+        qualification_score=95 if handoff else 85,
+        temperature="QUENTE",
+        recommended_stage="NEGOCIACAO" if handoff else "QUALIFICADO",
+        handoff_recommended=handoff,
+        handoff_reason="Intenção explícita de compra." if handoff else "",
+        confidence=0.95,
+        summary=summary,
+        next_action=(
+            "Vendedor IA conduz o fechamento." if handoff else "Confirmar a cidade da instalação."
+        ),
+        qualification=QualificationData(
+            desired_product=plan_label,
+            city=city or None,
+        ),
+        sales_state="PURCHASE_INTENT" if handoff else "QUALIFIED",
+        offer_plan_code=plan_label,
+        offer_price=price,
+        customer_commitment=handoff,
+        followup_needed=not handoff,
+        journey_state="CLOSING" if handoff else "CONFIRM_CITY",
+        journey_pending_action=(
+            "" if handoff else "Confirmar a cidade para validar a disponibilidade do plano."
+        ),
+        handoff_target="CLOSER_AI" if handoff else "NONE",
+    )
+
+
+def _try_fast_purchase_path(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    run: AIRun,
+    context: dict,
+) -> str | None:
+    request = _fast_purchase_request(context)
+    if not request:
+        return None
+    plan, city = request["plan"], request["city"]
+    if city and not _plan_available_in_city(plan, city):
+        # Cidade fora da cobertura deste plano: o fluxo normal apresenta as opções.
+        return None
+
+    from app.services.ai_seller import start_closing_from_sdr
+
+    handoff = bool(city)
+    decision = _fast_purchase_decision(plan, city, handoff=handoff)
+    try:
+        with db.begin_nested():
+            if handoff:
+                if not start_closing_from_sdr(db, sdr_agent=agent, job=job, decision=decision):
+                    raise AIConfigurationError("Vendedor IA indisponível para o caminho rápido.")
+            else:
+                _apply_crm_decision(db, agent=agent, job=job, decision=decision)
+                _send_autonomous_reply(db, agent=agent, job=job, decision=decision)
+                from app.services.ai_followups import schedule_followup
+
+                schedule_followup(
+                    db,
+                    agent_id=agent.id,
+                    queue_id=job.queue_id,
+                    conversation_id=job.conversation_id,
+                    source_message_id=job.message_id,
+                    step=1,
+                    pending_action=decision.journey_pending_action,
+                )
+    except Exception as exc:
+        # Qualquer falha devolve a mensagem ao fluxo normal, sem estado parcial.
+        LOG.warning(
+            "ai_sdr_fast_purchase_fallback job=%s conversation=%s error=%s",
+            job.id,
+            job.conversation_id,
+            exc,
+        )
+        return None
+
+    run.status = "CONCLUIDO"
+    run.intent = decision.intent
+    run.qualification_score = decision.qualification_score
+    run.temperature = decision.temperature
+    run.confidence = decision.confidence
+    run.handoff_recommended = decision.handoff_recommended
+    run.handoff_reason = decision.handoff_reason
+    run.reply_text = "" if handoff else decision.reply_text
+    run.summary = decision.summary
+    run.output_json = json.dumps(
+        {**decision.model_dump(), "fast_path": "HANDOFF" if handoff else "ASK_CITY"},
+        ensure_ascii=False,
+        default=str,
+    )
+    run.finished_at = utcnow()
+    job.status = "CONCLUIDO"
+    job.error = None
+    LOG.info(
+        "ai_sdr_fast_purchase job=%s conversation=%s plan=%s city=%s handoff=%s",
+        job.id,
+        job.conversation_id,
+        plan.get("code"),
+        city or "-",
+        handoff,
+    )
+    return "fast_handoff" if handoff else "fast_ask_city"
+
+
 def _journey_product_kind(decision: AIDecision, context: dict) -> str:
     facts = context.get("confirmed_facts") or {}
     fact_kind = str(facts.get("product_kind") or "").upper()
@@ -3406,6 +3609,17 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     )
     db.add(run)
     db.flush()
+
+    if effective_mode == "AUTO":
+        fast_outcome = _try_fast_purchase_path(
+            db,
+            agent=agent,
+            job=job,
+            run=run,
+            context=context,
+        )
+        if fast_outcome:
+            return fast_outcome
 
     try:
         decision = run_ai_decision(agent, context)
