@@ -167,6 +167,27 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/quality")
+def ai_quality_dashboard(request: Request, days: int = 7, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    from app.services.ai_quality import conversation_quality_report
+
+    window = days if days in {1, 7, 14, 30} else 7
+    report = conversation_quality_report(db, days=window)
+    return render(
+        request,
+        "ai/quality.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="quality",
+        page_title="Qualidade das conversas",
+        report=report,
+        days=window,
+    )
+
+
 @router.get("/seller")
 def seller_dashboard(request: Request, db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
