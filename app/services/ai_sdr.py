@@ -2726,7 +2726,14 @@ def _journey_integrity_issues(
     if _sdr_reply_repeats_recent_outbound(decision, context):
         issues.append("REPEATED_QUESTION")
 
-    if _sdr_exposes_internal_handoff(decision.reply_text):
+    if (
+        _sdr_exposes_internal_handoff(decision.reply_text)
+        and not (
+            decision.handoff_target == "CLOSER_AI"
+            and decision.customer_commitment
+            and decision.journey_state == "CLOSING"
+        )
+    ):
         issues.append("SDR_EXPOSED_INTERNAL_HANDOFF")
 
     return list(dict.fromkeys(issues))
