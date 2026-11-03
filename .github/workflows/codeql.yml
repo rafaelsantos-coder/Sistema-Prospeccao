@@ -46,6 +46,19 @@ jobs:
                       rule_id = result.get("ruleId") or ""
                       level = result.get("level") or "warning"
                       message = (result.get("message") or {}).get("text") or ""
+                      places = []
+                      for location in result.get("locations") or []:
+                          physical = location.get("physicalLocation") or {}
+                          uri = (physical.get("artifactLocation") or {}).get("uri") or "?"
+                          line = (physical.get("region") or {}).get("startLine") or "?"
+                          places.append(f"{uri}:{line}")
+                      for related in result.get("relatedLocations") or []:
+                          physical = related.get("physicalLocation") or {}
+                          uri = (physical.get("artifactLocation") or {}).get("uri") or "?"
+                          line = (physical.get("region") or {}).get("startLine") or "?"
+                          places.append(f"origem {related.get('id')}: {uri}:{line}")
+                      if places:
+                          message = f"{message} [{'; '.join(places)}]"
                       findings.append((level, rule_id, message, rules.get(rule_id, {})))
 
           blocking = [

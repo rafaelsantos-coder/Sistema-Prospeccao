@@ -823,11 +823,10 @@ class SulnetCRMClient:
             if selected_product:
                 generic["planIds"] = [int(selected_product.get("id") or 0)]
             elif "planIds" not in generic:
+                # Só a contagem: o payload pode carregar dados do cliente.
                 LOG.warning(
-                    "crm_plan_ambiguous label=%s candidates=%s expected_value=%s",
-                    plan_label[:120],
+                    "crm_plan_ambiguous candidates=%s",
                     len(products),
-                    payload.get("monthlyValue"),
                 )
                 raise CRMIntegrationError(
                     "Plano não localizado de forma inequívoca no catálogo do CRM.",

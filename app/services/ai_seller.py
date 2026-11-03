@@ -570,6 +570,28 @@ def _yes_no(text: str) -> str:
     return "NAO_INFORMADO"
 
 
+def _billing_merge(collected: dict[str, Any], text: str) -> dict[str, Any]:
+    """Faturamento a partir do que o cliente já respondeu + a mensagem atual.
+
+    A etapa BILLING é respondida em mais de uma mensagem ("10", depois
+    "Boleto"). Ler só a mensagem atual fazia o Vendedor esquecer a resposta
+    anterior e repetir a pergunta em ciclo (conversa 62).
+    """
+    billing: dict[str, Any] = {
+        key: collected[key]
+        for key in ("paymentMethod", "dueDay", "invoiceDelivery")
+        if collected.get(key) not in (None, "")
+    }
+    current = _billing_local(text)
+    if billing.get("paymentMethod") and not current.get("dueDay"):
+        # Forma de pagamento já respondida: um número sozinho é o dia.
+        bare_day = re.fullmatch(r"\s*(\d{1,2})\s*[.!]?\s*", text or "")
+        if bare_day and 1 <= int(bare_day.group(1)) <= 31:
+            current["dueDay"] = int(bare_day.group(1))
+    billing.update(current)
+    return billing
+
+
 def _billing_local(text: str) -> dict[str, Any]:
     n = _norm(text)
     result: dict[str, Any] = {}
@@ -2617,6 +2639,12 @@ def _seller_step_buttons(
 
     if step == "MOBILE_CONTRACT_TYPE" and _sdr_ia_mode(collected or {}):
         return [dict(item) for item in MOBILE_CONTRACT_BUTTONS_SDR_IA]
+    if step == "BILLING":
+        # Dias de vencimento aceitos dependem do CRM; por isso só a forma de
+        # pagamento ganha botões.
+        if not current_collected.get("paymentMethod"):
+            return [dict(item) for item in SELLER_STEP_BUTTONS["BILLING_PAYMENT_METHOD"]]
+        return []
     buttons = SELLER_STEP_BUTTONS.get(step)
     if buttons:
         return [dict(item) for item in buttons]
@@ -2907,7 +2935,11 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == "BILLING_UNIFY_REASON":
         return "Qual é o motivo para não unificar as faturas?"
     if state.step == "BILLING":
-        return "Agora falta o faturamento: como prefere pagar/receber a fatura e qual dia de vencimento você prefere?"
+        if not collected.get("paymentMethod"):
+            return "Qual forma de pagamento você prefere: boleto ou débito em conta?"
+        if not collected.get("dueDay"):
+            return "Certo. Qual dia de vencimento você prefere?"
+        return "Vou confirmar os dados de faturamento para seguir."
     if state.step == "CREDIT_REJECTED":
         return "A consulta cadastral não foi aprovada. Quer tentar a contratação com outro CPF?"
     if state.step == "WAITING_CRM_READY":
@@ -4227,7 +4259,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 _save_collected(state, collected)
 
         elif state.step == "BILLING":
-            billing = _billing_local(text)
+            billing = _billing_merge(collected, text)
             if not billing.get("paymentMethod") or not billing.get("dueDay"):
                 interpreted = _interpret_ambiguous(db, agent=agent, step=state.step, message=text, plan_label=state.plan_label)
                 if not billing.get("paymentMethod") and interpreted.payment_method:
@@ -4237,11 +4269,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 if not billing.get("invoiceDelivery") and interpreted.invoice_delivery:
                     billing["invoiceDelivery"] = interpreted.invoice_delivery
             if not billing.get("paymentMethod") and not billing.get("dueDay"):
-                reply = "Me informe a forma de pagamento/faturamento e o dia de vencimento. Ex.: boleto, dia 10."
+                reply = "Qual forma de pagamento você prefere: boleto ou débito em conta?"
             elif not billing.get("paymentMethod"):
                 collected["dueDay"] = billing["dueDay"]
                 _save_collected(state, collected)
-                reply = "Perfeito. E qual forma de pagamento/faturamento você prefere?"
+                reply = "Perfeito. E qual forma de pagamento você prefere: boleto ou débito em conta?"
             elif not billing.get("dueDay"):
                 collected["paymentMethod"] = billing["paymentMethod"]
                 if billing.get("invoiceDelivery"):
