@@ -24,7 +24,7 @@ from app.models import (
     ZApiInstance,
 )
 from app.security import hash_password
-from app.services.ai_followups import _followup_is_repetitive, _pending_action_from_theme, _unique_followup_fallback
+from app.services.ai_followups import _followup_exposes_internal_handoff, _followup_is_repetitive, _pending_action_from_theme, _unique_followup_fallback
 from app.services.ai_sdr_policy import followup_spec
 from app.services.ai_sdr import (
     AIDecision,
@@ -41,6 +41,7 @@ from app.services.ai_sdr import (
     _confirmed_customer_type_from_lead,
     _confirmed_existing_customer_from_lead,
     _confirmed_facts_from_history,
+    _explicit_purchase_commitment,
     _is_company_context,
     _journey_integrity_issues,
     _journey_memory_from_lead,
@@ -49,6 +50,7 @@ from app.services.ai_sdr import (
     _persist_journey_memory,
     _show_corporate_differentials,
     _sanitize_unconfirmed_customer_facts,
+    _sdr_exposes_internal_handoff,
     _sdr_reply_repeats_recent_outbound,
     build_ai_context,
     claim_ai_job,
@@ -2925,3 +2927,68 @@ def test_existing_customer_plan_change_redirects_to_service_channel():
     assert result.offer_plan_code is None
     assert "(55) 3520-8000" in result.reply_text
     assert "aumentar ou trocar" in result.reply_text
+
+
+def test_purchase_intent_tenho_interesse_em_assinar_enters_closing():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": (
+            "Olá! Tenho interesse em assinar 650mb por R$99,90 da Sulnet!"
+        ),
+        "history": [
+            {
+                "direction": "INBOUND",
+                "body": "Olá! Tenho interesse em assinar 650mb por R$99,90 da Sulnet!",
+            }
+        ],
+        "lead": {},
+    }
+
+    assert _explicit_purchase_commitment(context) is True
+
+    result = _apply_journey_orchestration_policy(decision, context)
+
+    assert result.journey_state == "CLOSING"
+    assert result.handoff_target == "CLOSER_AI"
+    assert result.customer_commitment is True
+    assert result.sales_state == "PURCHASE_INTENT"
+    assert result.followup_needed is False
+
+
+def test_purchase_intent_quero_assinar_enters_closing():
+    assert _explicit_purchase_commitment(
+        {"latest_customer_message": "quero assinar esse plano"}
+    ) is True
+    assert _explicit_purchase_commitment(
+        {"latest_customer_message": "gostaria de assinar 650 mega"}
+    ) is True
+    assert _explicit_purchase_commitment(
+        {"latest_customer_message": "vou assinar o plano"}
+    ) is True
+
+
+def test_purchase_intent_negative_phrase_does_not_close():
+    assert _explicit_purchase_commitment(
+        {"latest_customer_message": "não tenho interesse em assinar"}
+    ) is False
+    assert _explicit_purchase_commitment(
+        {"latest_customer_message": "não quero contratar agora"}
+    ) is False
+
+
+def test_sdr_cannot_expose_internal_closer_handoff():
+    assert _sdr_exposes_internal_handoff(
+        "O Vendedor IA dará continuidade à sua contratação."
+    ) is True
+    assert _sdr_exposes_internal_handoff(
+        "Perfeito! Temos 650 Mega por R$ 99,90."
+    ) is False
+
+
+def test_followup_cannot_announce_internal_closer_handoff():
+    assert _followup_exposes_internal_handoff(
+        "Seu interesse está registrado. O Vendedor IA seguirá com as próximas etapas."
+    ) is True
+    assert _followup_exposes_internal_handoff(
+        "Ficou alguma dúvida sobre o plano?"
+    ) is False
