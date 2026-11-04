@@ -393,6 +393,31 @@ def _apply_guardrails(
             if code not in signature_false_positives
         ]
 
+    # Regras do SDR (não pedir CPF, não fazer fechamento...) não valem para o
+    # Vendedor IA: coletar dados é exatamente a etapa dele. Em 04/11 o Guardião
+    # barrou a primeira pergunta do Vendedor com SDR_PROHIBITED_PII_COLLECTION
+    # e o cliente ficou sem resposta depois do "Quero contratar".
+    if str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER":
+        model_codes = set(review.issue_codes) - deterministic_codes
+        sdr_only = {code for code in model_codes if code.upper().startswith("SDR_")}
+        if sdr_only:
+            review.issue_codes = [code for code in review.issue_codes if code not in sdr_only]
+            if (
+                not (model_codes - sdr_only)
+                and not high
+                and not critical
+                and review.verdict in {"BLOCK", "REWRITE", "CORRECT_STATE"}
+            ):
+                review.verdict = "APPROVE"
+                review.risk = "LOW"
+                review.quality_score = max(review.quality_score, 90)
+                review.reply_text = ""
+                review.corrected_state = ""
+                review.rationale = (
+                    "Regras exclusivas do SDR não se aplicam ao Vendedor IA; "
+                    "coleta de dados é a etapa do fechamento."
+                )
+
     metadata = proposed.get("metadata") or {}
     sdr_closer_handoff = bool(
         str((context.get("agent") or {}).get("role") or "").upper() == "SDR"

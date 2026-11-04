@@ -2800,6 +2800,36 @@ def _send_text(
     return message
 
 
+def _send_fixed_step_prompt(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    conversation: Conversation,
+    text: str,
+) -> Message:
+    """Envia o texto fixo de uma etapa do fechamento sem a revisão do Guardião."""
+    from app.services.conversation_engine import register_message
+    from app.services.zapi_instances import service_for_conversation
+
+    phone = (conversation.contact.phone if conversation.contact else "").strip()
+    if not phone or not text.strip():
+        raise CRMIntegrationError("Contato sem telefone ou mensagem vazia.")
+    result = service_for_conversation(db, conversation.id).send_text(phone=phone, message=text)
+    message = register_message(
+        db,
+        conversation,
+        direction="OUTBOUND",
+        message_type="TEXT",
+        body=text,
+        sender_user_id=agent.user_id,
+        provider_message_id=str(result.get("messageId") or result.get("id") or "").strip() or None,
+        provider_zaap_id=str(result.get("zaapId") or "").strip() or None,
+        status="SENT",
+    )
+    db.flush()
+    return message
+
+
 def _seller_step_buttons(
     step: str,
     text: str = "",
@@ -3748,13 +3778,34 @@ def start_closing_from_sdr(
 
     if not prompt:
         prompt = _prompt_for_step(state, collected)
-    _send_step_message(
-        db,
-        agent=closer,
-        conversation=conversation,
-        state=state,
-        text=prompt,
-    )
+    try:
+        _send_step_message(
+            db,
+            agent=closer,
+            conversation=conversation,
+            state=state,
+            text=prompt,
+        )
+    except GuardianBlockedError as exc:
+        # A conversa já é do Vendedor IA e o job do SDR não volta mais: se a
+        # primeira pergunta não sair, o cliente fica parado depois do "Quero
+        # contratar". A pergunta é um texto fixo da etapa (não gerado pelo
+        # modelo), então segue sem a revisão e o bloqueio fica registrado.
+        LOG.warning(
+            "closer_first_prompt_guardian_override conversation=%s step=%s issues=%s",
+            conversation.id,
+            state.step,
+            ",".join(exc.result.issue_codes) or "-",
+        )
+        _send_fixed_step_prompt(db, agent=closer, conversation=conversation, text=prompt)
+        write_audit(
+            db,
+            user=closer.user,
+            action="AI_CLOSER_FIRST_PROMPT_OVERRIDE",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={"step": state.step, "issues": list(exc.result.issue_codes)},
+        )
     _schedule_seller_followup(
         db,
         state=state,
