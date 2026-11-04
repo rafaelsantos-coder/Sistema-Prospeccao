@@ -1353,7 +1353,9 @@ class SulnetCRMClient:
                     "GET",
                     f"/api/capture/leads/{opportunity_id}/status",
                 )
-                if isinstance(result, dict) and result:
+                # Só serve se trouxer contrato ou situação da oportunidade; a
+                # versão atual do CRM devolve apenas lead + análise de crédito.
+                if isinstance(result, dict) and ("contract" in result or "opportunity" in result):
                     return result
             except CRMIntegrationError as exc:
                 if exc.status_code not in {404, 405, 501}:

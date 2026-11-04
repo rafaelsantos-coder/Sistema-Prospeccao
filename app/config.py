@@ -98,6 +98,8 @@ class Settings:
         for item in os.getenv("AI_TEST_PHONES", "").split(",")
         if any(ch.isdigit() for ch in item)
     )
+    # Segredo do caminho do webhook da ZapSign (/webhooks/zapsign/<segredo>).
+    zapsign_webhook_secret: str = os.getenv("ZAPSIGN_WEBHOOK_SECRET", "").strip()
     ai_supervisor_guardian_timeout_seconds: int = int(
         os.getenv("AI_SUPERVISOR_GUARDIAN_TIMEOUT_SECONDS", "30")
     )
