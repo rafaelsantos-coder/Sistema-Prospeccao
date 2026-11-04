@@ -2725,6 +2725,24 @@ def _assert_closer_owns_conversation(
         )
 
 
+def _is_fixed_closing_text(closing: AIClosingState | None, text: str) -> bool:
+    """Textos montados pelo código a partir do estado, sem geração do modelo.
+
+    O resumo para aceite e o link de assinatura não passam pelo Guardião: em
+    04/11 (conversa 472) o Guardião barrou o resumo a cada minuto por "campo
+    pendente no playbook" (forma de pagamento, que o CRM preenche no
+    contract/generate) e o cliente nunca recebeu o contrato.
+    """
+    if not closing or not text.strip():
+        return False
+    if closing.step == SALE_ACCEPTANCE_STEP and text.startswith(
+        ("Antes de gerar o contrato, confira o resumo", "Só preciso da sua confirmação para gerar o contrato")
+    ):
+        return True
+    sign_url = str(closing.sign_url or "").strip()
+    return bool(sign_url) and sign_url in text and closing.step == "WAITING_SIGNATURE"
+
+
 def _send_text(
     db: Session,
     *,
@@ -2754,30 +2772,36 @@ def _send_text(
             AIClosingState.conversation_id == conversation.id
         )
     )
-    guardian = guard_outbound_message(
-        db,
-        agent=agent,
-        conversation=conversation,
-        reply_text=text,
-        buttons=[],
-        source=source,
-        proposed_state=str(closing.step if closing else ""),
-        metadata=(
-            guardian_metadata
-            or {"closing_step": str(closing.step if closing else "")}
-        ),
-    )
-    if not guardian.should_send:
-        raise GuardianBlockedError(guardian)
-    if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
-        text = guardian.reply_text
+    fixed_buttons: list[dict[str, str]] = []
+    if _is_fixed_closing_text(closing, text):
+        if closing.step == SALE_ACCEPTANCE_STEP:
+            fixed_buttons = _seller_step_buttons(closing.step, text, _load_collected(closing))
+    else:
+        guardian = guard_outbound_message(
+            db,
+            agent=agent,
+            conversation=conversation,
+            reply_text=text,
+            buttons=[],
+            source=source,
+            proposed_state=str(closing.step if closing else ""),
+            metadata=(
+                guardian_metadata
+                or {"closing_step": str(closing.step if closing else "")}
+            ),
+        )
+        if not guardian.should_send:
+            raise GuardianBlockedError(guardian)
+        if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+            text = guardian.reply_text
+        fixed_buttons = list(guardian.buttons)
 
     zapi = service_for_conversation(db, conversation.id)
-    if len(guardian.buttons) >= 2:
+    if len(fixed_buttons) >= 2:
         result = zapi.send_button_list(
             phone=phone,
             message=text,
-            buttons=guardian.buttons,
+            buttons=fixed_buttons,
         )
         message_type = "BUTTONS"
     else:
@@ -2961,21 +2985,22 @@ def _send_step_message(
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone:
         raise CRMIntegrationError("Contato sem telefone para WhatsApp.")
-    guardian = guard_outbound_message(
-        db,
-        agent=agent,
-        conversation=conversation,
-        reply_text=text,
-        buttons=buttons,
-        source="CLOSER_STEP",
-        proposed_state=state.step,
-        metadata=guardian_metadata,
-    )
-    if not guardian.should_send:
-        raise GuardianBlockedError(guardian)
-    if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
-        text = guardian.reply_text
-        buttons = guardian.buttons
+    if not _is_fixed_closing_text(state, text):
+        guardian = guard_outbound_message(
+            db,
+            agent=agent,
+            conversation=conversation,
+            reply_text=text,
+            buttons=buttons,
+            source="CLOSER_STEP",
+            proposed_state=state.step,
+            metadata=guardian_metadata,
+        )
+        if not guardian.should_send:
+            raise GuardianBlockedError(guardian)
+        if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+            text = guardian.reply_text
+            buttons = guardian.buttons
 
     zapi = service_for_conversation(db, conversation.id)
     result = zapi.send_button_list(
