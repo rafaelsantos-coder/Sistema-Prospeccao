@@ -674,6 +674,11 @@ MOBILE_CONTRACT_BUTTONS_SDR_IA = [
 ]
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
+    "COMBO_MOBILE_PLAN": [
+        {"id": "movel_5", "label": "5GB"},
+        {"id": "movel_10", "label": "10GB"},
+        {"id": "movel_15", "label": "15GB"},
+    ],
     "CONFIRM_SALE": [
         {"id": "confirmo", "label": "Confirmo"},
         {"id": "ajustar", "label": "Quero ajustar"},
@@ -2568,6 +2573,8 @@ def _sale_acceptance_prompt(
     form = _category_values(collected)
     payment = collected.get("paymentMethod") or form.get("forma_pagamento")
     due_day = collected.get("dueDay") or form.get("vencimento")
+    if black_campaign.has_marker(getattr(state, "handoff_summary", "")):
+        lines.append(f"• Promoção Black: 1ª mensalidade em {black_campaign.FIRST_DUE_DATE}")
     if payment:
         lines.append(f"• Pagamento: {payment}")
     if due_day:
@@ -2822,6 +2829,8 @@ def _is_fixed_closing_text(closing: AIClosingState | None, text: str) -> bool:
     """
     if not closing or not text.strip():
         return False
+    if text.startswith(black_campaign.FIXED_PREFIXES):
+        return True
     if closing.step == SALE_ACCEPTANCE_STEP and text.startswith(
         ("Antes de gerar o contrato, confira o resumo", "Só preciso da sua confirmação para gerar o contrato")
     ):
@@ -3169,18 +3178,100 @@ def _create_crm_if_ready(
         "handoffReason": collected.get("handoffReason") or "",
         "runConsult": False,
     }
-    if black_campaign.has_marker(state.handoff_summary):
-        payload["tags"] = [black_campaign.CAMPAIGN_TAG]
-        payload["campaign"] = black_campaign.CAMPAIGN_TAG
     payload = {key: value for key, value in payload.items() if value not in (None, "")}
-    result = client.create_opportunity(payload)
+    if black_campaign.has_marker(state.handoff_summary):
+        extras = {
+            "tags": [black_campaign.CAMPAIGN_TAG],
+            "campaign": black_campaign.CAMPAIGN_TAG,
+            "firstDueDate": black_campaign.FIRST_DUE_ISO,
+        }
+        try:
+            result = client.create_opportunity({**payload, **extras})
+        except CRMIntegrationError as exc:
+            # Campos extras que o CRM não conhece nunca podem travar a venda.
+            if exc.status_code not in (400, 422):
+                raise
+            LOG.warning("crm_black_extras_rejected status=%s", exc.status_code)
+            result = client.create_opportunity(payload)
+    else:
+        result = client.create_opportunity(payload)
     state.opportunity_id = int(result.get("opportunityId") or 0) or None
     state.protocol = str(result.get("protocol") or "")
     if not state.opportunity_id:
         raise CRMIntegrationError("CRM não retornou o identificador da oportunidade.")
 
 
+COMBO_MOBILE_STEP = "COMBO_MOBILE_PLAN"
+_COMBO_KEEP_KEYS = {"_black_combo", "_sdr_ia_funnel", "_sdr_ia_defaults", "handoffReason", "freeMonths", "concessionLevel"}
+_COMBO_DROP_KEYS = {
+    "crmPlaybook", "categoryFormValues", "mobileCategoryValues", "categoryName",
+    "catalogPlanName", "catalogMonthlyValue", "catalogPlanId", "creditStatus",
+    "paymentMethod", "dueDay", "invoiceDelivery",
+}
+
+
+def _black_combo_pending(collected: dict[str, Any]) -> bool:
+    combo = collected.get("_black_combo")
+    return isinstance(combo, dict) and combo.get("stage") == black_campaign.COMBO_STAGE_FIBER
+
+
+def _combo_after_first_signature(state: AIClosingState, collected: dict[str, Any]) -> str | None:
+    """Combo Black: a fibra foi assinada, abre a 2ª venda (móvel) na mesma conversa."""
+    if not _black_combo_pending(collected):
+        return None
+    combo = collected["_black_combo"]
+    combo["stage"] = black_campaign.COMBO_STAGE_MOBILE
+    combo["fiber"] = {
+        "opportunity_id": state.opportunity_id,
+        "protocol": state.protocol,
+        "plan": state.plan_label,
+    }
+    for key in list(collected):
+        if key in _COMBO_KEEP_KEYS:
+            continue
+        if key in _COMBO_DROP_KEYS or key.startswith("_") or "playbook" in key.lower() or key.startswith("catalog"):
+            collected.pop(key, None)
+    state.external_id = f"{state.external_id}-movel"[:120]
+    state.opportunity_id = None
+    state.protocol = ""
+    state.sign_url = ""
+    state.contract_status = ""
+    state.credit_status = ""
+    state.credit_analysis_id = None
+    state.completed_at = None
+    state.plan_label = ""
+    state.offer_price = None
+    state.step = COMBO_MOBILE_STEP
+    return black_campaign.combo_mobile_prompt()
+
+
+def _combo_choose_mobile(state: AIClosingState, collected: dict[str, Any], text: str) -> str:
+    choice = black_campaign.mobile_choice_from_text(text)
+    if choice:
+        state.plan_label = choice["name"]
+        state.offer_price = _money(choice["price"])
+        state.step = "CPF"
+        return black_campaign.combo_cpf_prompt(choice["name"], choice["price"])
+    if _yes_no(text) == "NAO" or re.search(r"\b(desist\w*|cancel\w*|nao quero|sem movel)\b", _norm(text)):
+        collected["_black_combo"]["stage"] = black_campaign.COMBO_STAGE_DECLINED
+        state.step = "COMPLETED"
+        state.completed_at = utcnow()
+        return black_campaign.COMBO_DECLINED_MESSAGE
+    return black_campaign.combo_mobile_prompt()
+
+
+def _after_signed_text(state: AIClosingState, collected: dict[str, Any]) -> str:
+    """Mensagem depois de uma assinatura: próxima venda do combo ou o encerramento."""
+    if state.step == "COMPLETED":
+        combo = _combo_after_first_signature(state, collected)
+        if combo:
+            return combo
+    return SIGNED_FINAL_MESSAGE
+
+
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
+    if state.step == COMBO_MOBILE_STEP:
+        return black_campaign.combo_mobile_prompt()
     if _sdr_ia_mode(collected) and state.step in SDR_IA_FORBIDDEN_STEPS:
         return (
             "Vou seguir apenas com os dados necessários para concluir sua contratação "
@@ -3305,6 +3396,7 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
 
 
 SELLER_CUSTOMER_INPUT_STEPS = {
+    "COMBO_MOBILE_PLAN",
     "CONFIRM_SALE",
     "NAME",
     "CPF",
@@ -3730,14 +3822,21 @@ def _handoff_to_human(
     )
 
 
-def _black_campaign_accepted(db: Session, conversation_id: int) -> bool:
+def _conversation_history_rows(db: Session, conversation_id: int) -> list[dict[str, Any]]:
     rows = db.execute(
         select(Message.direction, Message.body)
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.id)
     ).all()
-    history = [{"direction": direction, "body": body} for direction, body in rows]
-    return black_campaign.black_accepted(history)
+    return [{"direction": direction, "body": body} for direction, body in rows]
+
+
+def _black_campaign_accepted(db: Session, conversation_id: int) -> bool:
+    return black_campaign.black_accepted(_conversation_history_rows(db, conversation_id))
+
+
+def _black_campaign_choice(db: Session, conversation_id: int) -> str:
+    return black_campaign.black_choice(_conversation_history_rows(db, conversation_id))
 
 
 def start_closing_from_sdr(
@@ -3797,10 +3896,14 @@ def start_closing_from_sdr(
                 f"{state.handoff_summary}\n{latest_summary}".strip()
             )[-5000:]
 
+    black_combo = False
     if _black_campaign_accepted(db, conversation.id):
         state.handoff_summary = black_campaign.with_marker(state.handoff_summary)[-5000:]
+        black_combo = _black_campaign_choice(db, conversation.id) == "COMBO"
 
     collected = _load_collected(state)
+    if black_combo and "_black_combo" not in collected:
+        collected["_black_combo"] = {"stage": black_campaign.COMBO_STAGE_FIBER}
     if state.step == "ESCALATED":
         resume_step = str(collected.pop("_resume_step", "") or "").strip()
         if not resume_step:
@@ -4112,6 +4215,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             else:
                 state.step = playbook_step
                 reply = playbook_question or _prompt_for_step(state, collected)
+
+        elif state.step == COMBO_MOBILE_STEP:
+            reply = _combo_choose_mobile(state, collected, text)
+            if state.step == "COMPLETED" and conversation.lead:
+                conversation.lead.stage = "GANHO"
+                conversation.lead.next_action_at = None
 
         elif state.step == "NAME":
             name = _extract_name(text)
@@ -4822,8 +4931,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 status_payload=status,
             )
             if already_won is not None:
-                reply = SIGNED_FINAL_MESSAGE
-                if conversation.lead:
+                reply = _after_signed_text(state, collected)
+                if reply == SIGNED_FINAL_MESSAGE and conversation.lead:
                     conversation.lead.stage = "GANHO"
                     conversation.lead.next_action_at = None
             else:
@@ -4841,8 +4950,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 if _contract_is_signed(state.contract_status):
                     _finalize_signed_sale(client, state, collected)
                     if state.step == "COMPLETED":
-                        reply = SIGNED_FINAL_MESSAGE
-                        if conversation.lead:
+                        reply = _after_signed_text(state, collected)
+                        if reply == SIGNED_FINAL_MESSAGE and conversation.lead:
                             conversation.lead.stage = "GANHO"
                             conversation.lead.next_action_at = None
                     else:
@@ -5013,6 +5122,25 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             reason="Falha inesperada no Vendedor IA.",
         )
         return "failed"
+
+
+def _deliver_signed_text(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    conversation: Conversation,
+    state: AIClosingState,
+    text: str,
+) -> None:
+    if text == SIGNED_FINAL_MESSAGE:
+        _send_text(db, agent=agent, conversation=conversation, text=text)
+        if conversation.lead:
+            conversation.lead.stage = "GANHO"
+            conversation.lead.next_action_at = None
+        return
+    # Combo Black: a fibra foi assinada, segue a 2ª venda (móvel).
+    _send_step_message(db, agent=agent, conversation=conversation, state=state, text=text)
+    _schedule_seller_followup(db, state=state, conversation=conversation, source_message_id=None, step=1)
 
 
 def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
@@ -5192,16 +5320,15 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 status_payload=status,
             )
             if already_won is not None:
+                signed_text = _after_signed_text(state, collected)
                 _save_collected(state, collected)
-                _send_text(
+                _deliver_signed_text(
                     db,
                     agent=agent,
                     conversation=conversation,
-                    text=SIGNED_FINAL_MESSAGE,
+                    state=state,
+                    text=signed_text,
                 )
-                if conversation.lead:
-                    conversation.lead.stage = "GANHO"
-                    conversation.lead.next_action_at = None
                 processed += 1
                 continue
 
@@ -5240,19 +5367,19 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     collected["_completed_on_signature"] = True
                     state.step = "COMPLETED"
                     state.completed_at = utcnow()
-                _save_collected(state, collected)
                 if state.step == "COMPLETED":
-                    _send_text(
+                    signed_text = _after_signed_text(state, collected)
+                    _save_collected(state, collected)
+                    _deliver_signed_text(
                         db,
                         agent=agent,
                         conversation=conversation,
-                        text=SIGNED_FINAL_MESSAGE,
+                        state=state,
+                        text=signed_text,
                     )
-                    if conversation.lead:
-                        conversation.lead.stage = "GANHO"
-                        conversation.lead.next_action_at = None
                     processed += 1
                 else:
+                    _save_collected(state, collected)
                     state.updated_at = utcnow()
                 continue
 

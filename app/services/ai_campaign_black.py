@@ -118,3 +118,68 @@ def with_marker(summary: str | None) -> str:
 
 def has_marker(summary: str | None) -> bool:
     return SUMMARY_MARKER in (summary or "")
+
+
+FIRST_DUE_ISO = "2027-01-10"
+COMBO_STAGE_FIBER = "FIBER"
+COMBO_STAGE_MOBILE = "MOBILE"
+COMBO_STAGE_DECLINED = "DECLINED"
+
+
+def black_choice(history: list[dict] | None) -> str:
+    """COMBO ou MOBILE, conforme a resposta do cliente às opções da Black."""
+    rows = list(history or [])
+    for index, row in enumerate(rows):
+        if str(row.get("direction") or "").upper() == "OUTBOUND" and is_options_question(row.get("body")):
+            for reply in rows[index + 1:]:
+                if str(reply.get("direction") or "").upper() == "INBOUND":
+                    return choice_from_options(reply.get("body"))
+    return ""
+
+
+MOBILE_CHOICES = (
+    {"gb": 5, "name": "Sulmóvel 5GB", "price": 44.90},
+    {"gb": 7, "name": "Sulmóvel 7GB", "price": 47.90},
+    {"gb": 10, "name": "Sulmóvel 10GB", "price": 53.90},
+    {"gb": 15, "name": "Sulmóvel 15GB", "price": 69.80},
+)
+
+
+def mobile_choice_from_text(text: str | None) -> dict | None:
+    match = re.search(r"\b(5|7|10|15)\s*(?:gb|giga|gigas|g)?\b", _fold(text))
+    if not match:
+        return None
+    gb = int(match.group(1))
+    return next((item for item in MOBILE_CHOICES if item["gb"] == gb), None)
+
+
+def _brl(value: float) -> str:
+    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def combo_mobile_prompt() -> str:
+    lines = [
+        "Contrato da internet assinado! ✅",
+        f"Agora falta o seu plano móvel para garantir a Black (1ª mensalidade dos dois só em {FIRST_DUE_DATE}):",
+    ]
+    lines += [f"• {item['gb']}GB: R$ {_brl(item['price'])}/mês" for item in MOBILE_CHOICES]
+    lines.append("Qual plano móvel você quer?")
+    return "\n".join(lines)
+
+
+def combo_cpf_prompt(plan_name: str, price: float) -> str:
+    return (
+        f"Anotado: {plan_name} por R$ {_brl(price)}/mês. Como o móvel é uma contratação separada, "
+        "preciso consultar o seu CPF de novo. Pode me enviar?"
+    )
+
+
+COMBO_DECLINED_MESSAGE = (
+    "Tudo bem! Sua internet está contratada. A promoção Black só vale com internet e móvel juntos, "
+    "então ela não será aplicada. Nossa equipe vai entrar em contato para agendar a ativação do seu serviço."
+)
+FIXED_PREFIXES = (
+    "Contrato da internet assinado! ✅",
+    "Anotado: Sulmóvel",
+    "Tudo bem! Sua internet está contratada.",
+)
