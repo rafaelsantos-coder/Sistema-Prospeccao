@@ -76,3 +76,17 @@ def test_status_do_crm_sem_contrato_cai_no_legado(monkeypatch):
     monkeypatch.setattr(crm_sulnet, "_STATUS_ROUTE_RETRY_AT", [0.0])
     status = object.__new__(_Fake).get_status(14153)
     assert status["opportunity"]["status"] == "won"
+
+
+def test_lead_404_depois_da_assinatura_nao_trava():
+    from types import SimpleNamespace
+
+    from app.services.ai_seller import _complete_if_crm_already_won
+    from app.services.crm_sulnet import CRMIntegrationError
+
+    class _Client:
+        def get_status(self, opportunity_id):
+            raise CRMIntegrationError("Lead não encontrada.", status_code=404)
+
+    state = SimpleNamespace(opportunity_id=14153, step="WAITING_SIGNATURE")
+    assert _complete_if_crm_already_won(_Client(), state, {}) is None

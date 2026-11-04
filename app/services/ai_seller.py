@@ -2427,11 +2427,15 @@ def _complete_if_crm_already_won(
 ) -> dict[str, Any] | None:
     if not state.opportunity_id:
         return None
-    status = (
-        status_payload
-        if isinstance(status_payload, dict)
-        else client.get_status(state.opportunity_id)
-    )
+    if isinstance(status_payload, dict):
+        status = status_payload
+    else:
+        try:
+            status = client.get_status(state.opportunity_id)
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+            status = {}
     if _opportunity_status(status) != "won":
         return None
 
@@ -5156,7 +5160,14 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     state.updated_at = utcnow()
                 continue
 
-            status = client.get_status(state.opportunity_id)
+            try:
+                status = client.get_status(state.opportunity_id)
+            except CRMIntegrationError as exc:
+                # Depois da assinatura o CRM tira o lead da captação (404).
+                # Com a assinatura confirmada pela ZapSign, segue sem o status.
+                if exc.status_code != 404 or not _contract_is_signed(state.contract_status):
+                    raise
+                status = {}
             already_won = _complete_if_crm_already_won(
                 client,
                 state,
