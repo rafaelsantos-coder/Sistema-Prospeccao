@@ -437,3 +437,44 @@ def test_guardian_approves_operational_sdr_to_closer_handoff():
     assert result.should_send is True
     assert result.risk == "LOW"
     assert result.issue_codes == []
+
+
+def test_guardian_nao_aplica_regras_do_sdr_ao_vendedor_ia():
+    # 04/11, conversa 459: a primeira pergunta do Vendedor IA foi barrada
+    # como se fosse o SDR pedindo dado pessoal; o cliente ficou sem resposta.
+    review = GuardianReview(
+        verdict="BLOCK",
+        risk="HIGH",
+        confidence=0.9,
+        quality_score=30,
+        issue_codes=["SDR_PROHIBITED_PII_COLLECTION", "SDR_FUNNEL_CLOSING_STEP"],
+    )
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=_context([], role="CLOSER"),
+        original_text="Perfeito! Para começar, me confirma seu nome completo?",
+        original_buttons=[],
+    )
+    assert result.should_send is True
+    assert result.verdict == "APPROVE"
+    assert not [code for code in result.issue_codes if code.startswith("SDR_")]
+
+
+def test_guardian_mantem_bloqueio_do_vendedor_com_outro_motivo():
+    review = GuardianReview(
+        verdict="BLOCK",
+        risk="HIGH",
+        confidence=0.9,
+        quality_score=30,
+        issue_codes=["SDR_FUNNEL_CLOSING_STEP", "CUSTOMER_DECLINED"],
+    )
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=_context([], role="CLOSER"),
+        original_text="Qual é o seu CPF?",
+        original_buttons=[],
+    )
+    assert result.should_send is False
+    assert "CUSTOMER_DECLINED" in result.issue_codes
