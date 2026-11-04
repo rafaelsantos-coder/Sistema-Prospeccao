@@ -146,8 +146,9 @@ def test_titular_igual_ao_cliente_preenche_nome_e_cpf_sem_perguntar():
     assert ai_seller._playbook_known_value(name_item, state, collected) is None
 
 
-def test_tipo_de_contratacao_vai_ao_crm_como_portabilidade():
-    assert ai_seller._crm_form_value("tipo_contratacao", "Número Portabilidade") == "Portabilidade"
+def test_tipo_de_contratacao_vai_ao_crm_como_numero_portabilidade():
+    assert ai_seller._crm_form_value("tipo_contratacao", "Portabilidade") == "Número Portabilidade"
+    assert ai_seller._crm_form_value("tipo_contratacao", "Número Portabilidade") == "Número Portabilidade"
     assert ai_seller._crm_form_value("tipo_contratacao", "Número novo") == "Número novo"
 
 
