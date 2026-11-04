@@ -2573,7 +2573,7 @@ def _sale_acceptance_prompt(
     form = _category_values(collected)
     payment = collected.get("paymentMethod") or form.get("forma_pagamento")
     due_day = collected.get("dueDay") or form.get("vencimento")
-    if black_campaign.has_marker(state.handoff_summary):
+    if black_campaign.has_marker(getattr(state, "handoff_summary", "")):
         lines.append(f"• Promoção Black: 1ª mensalidade em {black_campaign.FIRST_DUE_DATE}")
     if payment:
         lines.append(f"• Pagamento: {payment}")
