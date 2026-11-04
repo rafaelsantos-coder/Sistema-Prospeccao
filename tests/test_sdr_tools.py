@@ -154,3 +154,13 @@ def test_penalty_tool_matches_seller_rule():
     assert "R$ 479,95" in result["answer"]
     assert ftth_cancellation_penalty(800, 0, 12)["penalty"] == 0
     assert ftth_cancellation_penalty(999, 0, 1)["ok"] is False
+
+
+def test_official_catalog_goes_into_context_when_city_is_known():
+    with_city = ai_sdr._official_catalog_for_context(
+        {"confirmed_facts": {"city": "Santo Ângelo", "customer_type": "RESIDENCIAL"}, "lead": {}}
+    )
+    assert [plan["speed"] for plan in with_city["plans"]] == [800, 650]
+    company = ai_sdr._official_catalog_for_context({"confirmed_facts": {"customer_type": "EMPRESA"}})
+    assert company["segment"] == "EMPRESA"
+    assert ai_sdr._official_catalog_for_context({"confirmed_facts": {}, "lead": {}}) is None

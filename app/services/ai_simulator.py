@@ -192,7 +192,7 @@ def simulate_sdr_turn(
         return _result(decision, trace, started, guardian=None, integrity=[])
 
     decision = ai_sdr.run_ai_decision(agent, context)
-    trace.append("Decisão do modelo com ferramentas e regras fixas.")
+    trace.append(_model_trace(decision))
     integrity = ai_sdr._journey_integrity_issues(decision, context)
     if integrity:
         trace.append("Integridade da jornada barrou: " + ", ".join(integrity) + ". Regenerando.")
@@ -209,9 +209,12 @@ def simulate_sdr_turn(
             "reason": "A primeira decisão repetiu ou regrediu uma etapa já concluída.",
         }
         decision = ai_sdr.run_ai_decision(agent, retry_context)
+        trace.append(_model_trace(decision, retry=True))
         integrity = ai_sdr._journey_integrity_issues(decision, context)
 
+    guardian_started = time.monotonic()
     guardian = _guard(db, agent, context, decision)
+    trace.append(f"Guardião: {(time.monotonic() - guardian_started):.1f} s.")
     if not guardian["should_send"]:
         trace.append(
             "Guardião bloqueou (" + (", ".join(guardian["issue_codes"]) or guardian["rationale"]) + "). Regenerando com o motivo."
@@ -227,6 +230,7 @@ def simulate_sdr_turn(
             ),
         }
         decision = ai_sdr.run_ai_decision(agent, retry_context)
+        trace.append(_model_trace(decision, retry=True))
         guardian = _guard(db, agent, context, decision)
         if not guardian["should_send"]:
             trace.append("Guardião bloqueou de novo: em produção o cliente iria para um consultor.")
@@ -246,6 +250,14 @@ def simulate_sdr_turn(
     return _result(decision, trace, started, guardian=guardian, integrity=integrity)
 
 
+def _model_trace(decision, *, retry: bool = False) -> str:
+    timing = getattr(decision, "_timing", {}) or {}
+    tools = ", ".join(timing.get("tool_calls") or []) or "nenhuma"
+    seconds = (timing.get("model_ms") or 0) / 1000
+    label = "Nova geração do modelo" if retry else "Modelo"
+    return f"{label}: {seconds:.1f} s (ferramentas: {tools})."
+
+
 def _result(decision, trace, started, *, guardian, integrity) -> dict[str, Any]:
     buttons = quick_replies_for_message(decision.reply_text, decision.quick_replies)
     return {
@@ -263,5 +275,6 @@ def _result(decision, trace, started, *, guardian, integrity) -> dict[str, Any]:
         "integrity_issues": integrity,
         "guardian": guardian,
         "trace": trace,
+        "timing": dict(getattr(decision, "_timing", {}) or {}),
         "elapsed_ms": int((time.monotonic() - started) * 1000),
     }
