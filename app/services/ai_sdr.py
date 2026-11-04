@@ -52,6 +52,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _eligible_plans_for_city,
     _existing_customer_from_context,
     _existing_customer_from_text,
+    _existing_customer_plan_change_requested,
     _explicit_human_request,
     _explicit_purchase_commitment,
     _fast_purchase_decision,
