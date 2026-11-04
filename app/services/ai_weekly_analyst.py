@@ -110,7 +110,7 @@ def manual_versions(db: Session) -> list[dict]:
         versions.append(
             {
                 "agent": agent.name,
-                "version": "v" + hashlib.sha1(fingerprint.encode()).hexdigest()[:8],
+                "version": "v" + hashlib.sha256(fingerprint.encode()).hexdigest()[:8],
                 "items": len(approved),
                 "review": len(items) - len(approved),
                 "updated_at": utc_to_local(latest) if latest else None,
