@@ -206,6 +206,48 @@ def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBindin
     return queue_ai_binding(db, queue.id) or _test_phone_binding(db, conversation_id, queue)
 
 
+def human_is_attending(db: Session, conversation: Conversation) -> bool:
+    """Um vendedor de verdade está atendendo esta conversa: a IA não entra.
+
+    Exige as duas coisas, para não travar a Fila IA: a conversa está atribuída
+    a uma pessoa (não a um agente de IA) e essa pessoa escreveu manualmente nas
+    últimas 24 horas. Disparos de campanha não contam como atendimento.
+    Em 04/11, ao ligar a IA na fila Comercial, a SulIA respondeu dois clientes
+    que estavam com o Fabiano e a Claudia (conversas 449 e 422).
+    """
+    from app.models import CampaignDispatchRecipient, CampaignRecipient  # noqa: PLC0415
+
+    assigned = conversation.assigned_user_id
+    if not assigned:
+        return False
+    ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
+    if assigned in ai_users:
+        return False
+    bodies = [
+        (body or "").strip()
+        for body in db.scalars(
+            select(Message.body).where(
+                Message.conversation_id == conversation.id,
+                Message.direction == "OUTBOUND",
+                Message.sender_user_id == assigned,
+                Message.message_type.in_(("TEXT", "BUTTONS")),
+                Message.created_at >= utcnow() - timedelta(hours=24),
+            )
+        )
+    ]
+    bodies = [body for body in bodies if body]
+    if not bodies:
+        return False
+    automated = {
+        (body or "").strip()
+        for model in (CampaignRecipient, CampaignDispatchRecipient)
+        for body in db.scalars(
+            select(model.message_body).where(model.conversation_id == conversation.id)
+        )
+    }
+    return any(body not in automated for body in bodies)
+
+
 def enqueue_ai_job(
     db: Session,
     *,
@@ -291,6 +333,15 @@ def enqueue_ai_job(
     if binding.handling_mode == "HUMAN":
         LOG.info(
             "ai_job_skipped conversation=%s reason=human_mode queue=%s",
+            conversation.id,
+            binding.queue_id,
+        )
+        return None
+    if not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_is_attending(
+        db, conversation
+    ):
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=human_attending queue=%s",
             conversation.id,
             binding.queue_id,
         )
@@ -3486,8 +3537,38 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = _apply_existing_customer_plan_change_policy(decision, context)
     decision = _promote_clear_purchase_to_closing(decision, context)
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
+    decision = _one_question_per_message(decision)
     decision._policy_observations = observations
     LOG.info("sdr_decision_timing %s", json.dumps(decision._timing, ensure_ascii=False))
+    return decision
+
+
+_SENTENCE = re.compile(r"[^?.!\n]*[?.!]+|[^?.!\n]+$")
+
+
+def _one_question_per_message(decision: AIDecision) -> AIDecision:
+    """Uma pergunta por mensagem.
+
+    Em 04/11 a SulIA perguntou "Em qual cidade...? E seria para sua casa ou
+    para uma empresa?" com botões Casa/Empresa: quem toca no botão deixa a
+    cidade sem resposta. Mantém o texto até a primeira pergunta; os botões
+    são refeitos para a pergunta que ficou.
+    """
+    if _is_closer_handoff(decision):
+        return decision
+    text = decision.reply_text or ""
+    sentences = [item for item in _SENTENCE.findall(text) if item.strip()]
+    questions = [index for index, item in enumerate(sentences) if item.rstrip().endswith("?")]
+    if len(questions) < 2:
+        return decision
+    kept = "".join(sentences[: questions[0] + 1]).strip()
+    if not kept:
+        return decision
+    decision.reply_text = kept
+    labels = " ".join(item.label for item in decision.quick_replies).lower()
+    kept_folded = kept.lower()
+    if not any(word in kept_folded for word in labels.split() if len(word) > 3):
+        decision.quick_replies = []
     return decision
 
 
