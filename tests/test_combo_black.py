@@ -114,3 +114,38 @@ def test_crm_que_recusa_campos_extras_nao_trava_a_venda(monkeypatch):
     fake, state = _create(monkeypatch, reject=True)
     assert len(fake.calls) == 2 and "tags" not in fake.calls[1]
     assert state.opportunity_id == 99
+
+
+def test_resumo_traz_dados_do_cliente_endereco_e_portabilidade():
+    state = _state(step="CONFIRM_SALE", plan_label="Sulmóvel 10GB", offer_price=Decimal("53.90"), opportunity_id=1)
+    collected = {
+        "name": "Rafael Santos", "cpf": "00380171058", "phone": "5555936188241",
+        "street": "Rua A", "number": "10", "neighborhood": "Centro", "city": "Santa Rosa", "uf": "RS", "cep": "98900000",
+        "categoryFormValues": {
+            "tipo_contratacao": "Número Portabilidade", "numero_portado": "55999002508",
+            "port_titular": "Sim", "forma_pagamento": "Boleto", "vencimento": "10",
+        },
+    }
+    text = ai_seller._sale_acceptance_prompt(state, collected)
+    for part in ("Nome: Rafael Santos", "CPF: 003.***.***-58", "Rua A 10", "Santa Rosa/RS", "Tipo: Portabilidade",
+                 "Número a portar: 55999002508", "Titular da linha: você mesmo", "Promoção Black"):
+        assert part in text
+    assert text.endswith("assinatura digital.")
+
+
+def test_titular_igual_ao_cliente_preenche_nome_e_cpf_sem_perguntar():
+    from app.services.crm_sulnet import CRMPlaybookMissingItem
+
+    state = _state(step="MOBILE_PORT_NAME")
+    collected = {"name": "Rafael Santos", "cpf": "00380171058", "categoryFormValues": {"port_titular": "Sim"}}
+    name_item = CRMPlaybookMissingItem(code="cf_port_nome_titular", label="Nome titular")
+    doc_item = CRMPlaybookMissingItem(code="cf_port_cpf_cnpj", label="CPF titular")
+    assert ai_seller._playbook_known_value(name_item, state, collected) == ("category:port_nome_titular", "Rafael Santos")
+    assert ai_seller._playbook_known_value(doc_item, state, collected) == ("category:port_cpf_cnpj", "00380171058")
+    collected["categoryFormValues"]["port_titular"] = "Não"
+    assert ai_seller._playbook_known_value(name_item, state, collected) is None
+
+
+def test_tipo_de_contratacao_vai_ao_crm_como_portabilidade():
+    assert ai_seller._crm_form_value("tipo_contratacao", "Número Portabilidade") == "Portabilidade"
+    assert ai_seller._crm_form_value("tipo_contratacao", "Número novo") == "Número novo"
