@@ -17,6 +17,7 @@ from app.models import (
     Conversation,
     Message,
 )
+from app.services import ai_campaign_black as black_campaign
 from app.services.ai_quick_replies import asks_for_free_text, quick_replies_for_message
 from app.services.ai_supervisor import (
     _catalog_snapshot,
@@ -345,6 +346,22 @@ def _apply_guardrails(
     original_text: str,
     original_buttons: list[dict[str, str]],
 ) -> GuardianResult:
+    # Textos fixos da campanha Black são montados em código a partir das regras
+    # do comercial: o modelo não pode reescrevê-los como "promoção não comprovada".
+    if black_campaign.black_active() and original_text.strip() in {
+        black_campaign.OFFER_QUESTION,
+        black_campaign.OPTIONS_TEXT,
+    }:
+        return GuardianResult(
+            verdict="APPROVE",
+            risk="LOW",
+            quality_score=100,
+            rationale="Texto fixo da campanha Black aprovada pelo comercial.",
+            reply_text=original_text,
+            buttons=original_buttons,
+            should_send=True,
+        )
+
     critical, high, deterministic_codes = _severity_sets(context)
     review.issue_codes = list(
         dict.fromkeys(

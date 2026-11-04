@@ -45,3 +45,18 @@ def test_marcador_do_resumo_e_idempotente():
     once = black.with_marker("resumo")
     assert black.has_marker(once)
     assert black.with_marker(once) == once
+
+
+def test_guardiao_aprova_textos_fixos_da_black():
+    from app.services.ai_guardian import GuardianReview, _apply_guardrails
+
+    for text in (black.OFFER_QUESTION, black.OPTIONS_TEXT):
+        result = _apply_guardrails(
+            None,
+            review=GuardianReview(verdict="REWRITE", risk="HIGH", issue_codes=["UNSUPPORTED_PROMOTION"],
+                                  reply_text="Qual é a sua cidade?"),
+            context={},
+            original_text=text,
+            original_buttons=[{"id": "a", "label": "Sim"}],
+        )
+        assert result.verdict == "APPROVE" and result.reply_text == text and result.should_send
