@@ -3242,6 +3242,27 @@ def _official_catalog_for_context(context: dict) -> dict | None:
     return catalog_for(city, "RESIDENCIAL")
 
 
+_PENALTY_CUES = ("multa", "cancel", "fidelidade", "quebrar", "rescis", "sair antes")
+
+
+def _tools_needed_for_turn(tools: list[Any], context: dict) -> list[Any]:
+    """Só oferece ao modelo as ferramentas que o turno pode precisar.
+
+    Cada chamada de ferramenta é uma ida e volta inteira ao modelo. No
+    simulador, o modelo chamava calcular_multa e buscar_manual até em
+    "Quero avançar", somando ~10 s por chamada.
+    """
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    needed: set[str] = set()
+    if not context.get("catalogo_oficial_da_cidade"):
+        needed.add("consultar_catalogo")
+    if any(cue in latest for cue in _PENALTY_CUES):
+        needed.add("calcular_multa")
+    if _customer_asked_direct_question(context):
+        needed.add("buscar_manual")
+    return [tool for tool in tools if getattr(tool, "name", "") in needed]
+
+
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
@@ -3309,7 +3330,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if settings.ai_sdr_tools_enabled:
         from app.services.ai_sdr_tools import build_sdr_tools
 
-        tools = build_sdr_tools(agent)
+        tools = _tools_needed_for_turn(build_sdr_tools(agent), context)
         prompt = (
             "MULTA: para qualquer pergunta de multa ou cancelamento antecipado, chame "
             "calcular_multa e responda com o valor em reais; nunca mostre fórmula, siglas "

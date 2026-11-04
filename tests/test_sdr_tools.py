@@ -101,9 +101,21 @@ def test_sdr_agent_receives_catalog_and_manual_tools(monkeypatch):
     monkeypatch.setattr("app.services.ai_sdr_tools.object_session", lambda obj: None)
     monkeypatch.setattr(ai_sdr, "_effective_execution_mode", lambda agent: "SHADOW")
 
-    decision = ai_sdr.run_ai_decision(agent, {"history": [], "latest_customer_message": "oi"})
+    decision = ai_sdr.run_ai_decision(
+        agent, {"history": [], "latest_customer_message": "Qual a multa se eu cancelar?"}
+    )
 
     assert captured["tools"] == ["consultar_catalogo", "buscar_manual", "calcular_multa"]
+
+    decision = ai_sdr.run_ai_decision(
+        agent,
+        {
+            "history": [],
+            "latest_customer_message": "Quero avançar",
+            "confirmed_facts": {"city": "Santa Rosa", "customer_type": "RESIDENCIAL"},
+        },
+    )
+    assert captured["tools"] == []
     assert "consultar_catalogo" in captured["prompt"]
     assert isinstance(decision, AIDecision)
 
