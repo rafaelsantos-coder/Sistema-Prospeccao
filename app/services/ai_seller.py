@@ -3792,10 +3792,8 @@ def start_closing_from_sdr(
         # contratar". A pergunta é um texto fixo da etapa (não gerado pelo
         # modelo), então segue sem a revisão e o bloqueio fica registrado.
         LOG.warning(
-            "closer_first_prompt_guardian_override conversation=%s step=%s issues=%s",
+            "closer_first_prompt_guardian_override conversation=%s",
             conversation.id,
-            state.step,
-            ",".join(exc.result.issue_codes) or "-",
         )
         _send_fixed_step_prompt(db, agent=closer, conversation=conversation, text=prompt)
         write_audit(
