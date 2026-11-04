@@ -3184,6 +3184,9 @@ def _apply_stagnation_strategy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
+    if black.is_offer_question(decision.reply_text) or black.is_options_question(decision.reply_text):
+        return decision  # etapa da campanha Black: não troca pela pergunta padrão
+
     state = decision.journey_state
     existing = _existing_customer_from_context(context)
     customer_type = _customer_type_from_context(context)

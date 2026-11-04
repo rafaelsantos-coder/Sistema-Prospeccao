@@ -3199,3 +3199,14 @@ def test_black_combo_vai_para_internet(monkeypatch):
     }
     result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
     assert "casa ou empresa" in result.reply_text
+
+
+def test_estagnacao_nao_troca_pergunta_da_black():
+    from app.services.ai_sdr import _apply_stagnation_strategy
+
+    decision = _base_prospecting_entry_decision()
+    decision.reply_text = "Quer conhecer nossa promoção Black da Sulnet?"
+    decision.journey_state = "CHOOSE_PRODUCT"
+    context = {"lead": {"confirmed_existing_customer": "NAO_CLIENTE"}, "history": []}
+    result = _apply_stagnation_strategy(decision, context)
+    assert result.reply_text == "Quer conhecer nossa promoção Black da Sulnet?"
