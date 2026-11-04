@@ -1,0 +1,15 @@
+{
+  "id": "simulacao-multa-6-meses",
+  "conversation": null,
+  "problem": 7,
+  "description": "Simulação 03/11: o SDR mostrou a fórmula da multa e não deu o valor. A ferramenta calcula 650 Mega, 1 mês grátis, 6 meses de uso = R$ 479,95.",
+  "kind": "sdr_penalty",
+  "input": {
+    "speed": 650,
+    "free_months": 1,
+    "months_used": 6
+  },
+  "expect": {
+    "penalty": 479.95
+  }
+}

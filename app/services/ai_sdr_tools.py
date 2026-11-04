@@ -124,4 +124,63 @@ def build_sdr_tools(agent: AIAgentProfile) -> list[Any]:
             )
         return json.dumps({"found": True, "items": found}, ensure_ascii=False)
 
-    return [consultar_catalogo, buscar_manual]
+    @function_tool
+    def calcular_multa(velocidade_mega: int, meses_gratis: int, meses_usados: int) -> str:
+        """Multa de cancelamento antecipado de um plano de fibra residencial.
+
+        Args:
+            velocidade_mega: velocidade do plano (800, 650, 500 ou 250).
+            meses_gratis: mensalidades grátis concedidas na contratação (0 a 3).
+            meses_usados: quantos meses de fidelidade o cliente terá usado ao cancelar.
+        """
+        return json.dumps(
+            ftth_cancellation_penalty(velocidade_mega, meses_gratis, meses_usados),
+            ensure_ascii=False,
+        )
+
+    return [consultar_catalogo, buscar_manual, calcular_multa]
+
+
+def ftth_cancellation_penalty(speed: int, free_months: int, months_used: int) -> dict[str, Any]:
+    """Multa proporcional da fidelidade FTTH: (benefícios / 12) × meses restantes.
+
+    Benefícios = habilitação isenta (R$ 860) + mensalidades grátis concedidas,
+    a mesma regra que o Vendedor IA usa no fechamento.
+    """
+    from app.services.ai_sdr_policy import (
+        FTTH_ACTIVATION_FEE,
+        FTTH_FIDELITY_MONTHS,
+        FTTH_MAX_FREE_MONTHS,
+        FTTH_PLANS,
+    )
+
+    plan = next((item for item in FTTH_PLANS if int(item["download_mbps"]) == int(speed)), None)
+    if not plan:
+        return {"ok": False, "note": "Plano não encontrado no catálogo de fibra residencial."}
+    free = max(0, min(FTTH_MAX_FREE_MONTHS, int(free_months)))
+    used = max(0, int(months_used))
+    remaining = max(0, FTTH_FIDELITY_MONTHS - used)
+    benefits = round(FTTH_ACTIVATION_FEE + free * float(plan["price_fidelity"]), 2)
+    penalty = round(benefits / FTTH_FIDELITY_MONTHS * remaining, 2)
+
+    def brl(value: float) -> str:
+        return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    return {
+        "ok": True,
+        "plan": plan["name"],
+        "months_remaining": remaining,
+        "benefits_total": benefits,
+        "penalty": penalty,
+        "answer": (
+            "Depois dos 12 meses de fidelidade não há multa."
+            if remaining == 0
+            else (
+                f"Cancelando com {used} meses de uso, faltam {remaining} meses da fidelidade; "
+                f"a multa fica em {brl(penalty)} (proporcional aos benefícios de "
+                f"{brl(benefits)}: habilitação isenta"
+                + (f" e {free} mensalidade(s) grátis" if free else "")
+                + ")."
+            )
+        ),
+    }

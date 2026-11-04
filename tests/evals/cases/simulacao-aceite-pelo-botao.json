@@ -1,0 +1,37 @@
+{
+  "id": "simulacao-aceite-pelo-botao",
+  "conversation": null,
+  "problem": 1,
+  "description": "Simulação 03/11: cliente clicou no botão 'Avançar assim' criado pela IA depois da pergunta de fechamento; deve ir para o fechamento (antes a IA anunciava o encaminhamento e não transferia).",
+  "kind": "sdr_commitment",
+  "input": {
+    "cases": [
+      {
+        "previous": "Quer avançar com R$ 99,90/mês e 1 mensalidade grátis, com fidelidade de 12 meses?",
+        "latest": "Avançar assim",
+        "expected": true
+      },
+      {
+        "previous": "Legal! Em Santo Ângelo temos fibra óptica de 800 Mega por R$ 119,90 mensais. Quer contratar esse plano agora?",
+        "latest": "Quero contratar",
+        "expected": true
+      },
+      {
+        "previous": "Podemos fechar com essa condição?",
+        "latest": "Eu topo",
+        "expected": true
+      },
+      {
+        "previous": "Quer avançar com o plano de 650 Mega?",
+        "latest": "Prefiro avaliar",
+        "expected": false
+      },
+      {
+        "previous": "A internet é para sua casa ou empresa?",
+        "latest": "Avançar",
+        "expected": false
+      }
+    ]
+  },
+  "expect": {}
+}
