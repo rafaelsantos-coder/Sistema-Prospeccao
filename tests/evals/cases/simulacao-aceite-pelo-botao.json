@@ -2,13 +2,18 @@
   "id": "simulacao-aceite-pelo-botao",
   "conversation": null,
   "problem": 1,
-  "description": "Simulação 03/11: cliente clicou no botão 'Avançar assim' criado pela IA depois da pergunta de fechamento; deve ir para o fechamento (antes a IA anunciava o encaminhamento e não transferia).",
+  "description": "Simulação 03/11: cliente clicou no botão 'Avançar assim' criado pela IA depois da pergunta de fechamento; deve ir para o fechamento (antes a IA anunciava o encaminhamento e não transferia). Na segunda simulação o botão foi 'Quero avançar'.",
   "kind": "sdr_commitment",
   "input": {
     "cases": [
       {
         "previous": "Quer avançar com R$ 99,90/mês e 1 mensalidade grátis, com fidelidade de 12 meses?",
         "latest": "Avançar assim",
+        "expected": true
+      },
+      {
+        "previous": "O plano de 650 Mega por R$ 99,90/mês, com 1 mensalidade grátis mediante fidelidade de 12 meses, continua como opção. Quer avançar?",
+        "latest": "Quero avançar",
         "expected": true
       },
       {

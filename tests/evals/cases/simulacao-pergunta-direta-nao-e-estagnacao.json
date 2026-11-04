@@ -1,0 +1,30 @@
+{
+  "id": "simulacao-pergunta-direta-nao-e-estagnacao",
+  "conversation": null,
+  "problem": 3,
+  "description": "Simulação 03/11: o cliente perguntou a multa no 6º mês e a regra de estagnação trocou a resposta por 'por outro ângulo'. Resposta a pergunta direta que reaproveita termos não é repetição; texto praticamente igual continua sendo.",
+  "kind": "sdr_stale_repetition",
+  "input": {
+    "cases": [
+      {
+        "previous": "Sim, pode haver multa proporcional se cancelar antes de completar os 12 meses. Na condição apresentada para o 650 Mega, com 1 mensalidade grátis, se cancelasse no início, sem meses cumpridos, a multa seria de R$ 959,90; ela diminui conforme o tempo de fidelidade cumprido.",
+        "latest": "Quanto seria a multa se eu cancelar no 6º mês?",
+        "reply": "Na condição do 650 Mega com 1 mensalidade grátis, se cancelar após 6 meses de uso, faltam 6 meses de fidelidade e a multa fica em R$ 479,95.",
+        "expected": false
+      },
+      {
+        "previous": "Sim, pode haver multa proporcional se cancelar antes de completar os 12 meses. Na condição apresentada para o 650 Mega, com 1 mensalidade grátis, se cancelasse no início, sem meses cumpridos, a multa seria de R$ 959,90; ela diminui conforme o tempo de fidelidade cumprido.",
+        "latest": "Quanto seria a multa se eu cancelar no 6º mês?",
+        "reply": "Sim, pode haver multa proporcional se cancelar antes de completar os 12 meses. Na condição apresentada para o 650 Mega, com 1 mensalidade grátis, se cancelasse no início, sem meses cumpridos, a multa seria de R$ 959,90; ela diminui conforme o tempo de fidelidade cumprido.",
+        "expected": true
+      },
+      {
+        "previous": "Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?",
+        "latest": "ok",
+        "reply": "Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?",
+        "expected": true
+      }
+    ]
+  },
+  "expect": {}
+}
