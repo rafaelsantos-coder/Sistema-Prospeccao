@@ -1,0 +1,20 @@
+{
+  "id": "pedido-de-atendente",
+  "conversation": null,
+  "description": "Pedido explícito de pessoa vai para atendimento humano.",
+  "lead": {
+    "city": "Santa Rosa"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "A internet é para sua casa ou empresa?"
+    }
+  ],
+  "latest": "Quero falar com um atendente, por favor",
+  "expect": {
+    "handoff_target_in": [
+      "HUMAN"
+    ]
+  }
+}
