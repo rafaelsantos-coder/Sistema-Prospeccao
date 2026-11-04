@@ -26,9 +26,11 @@ from app.services.ai_seller import (
     _prepare_contract_before_win,
     _persist_category_form,
     _win_idempotency_key,
+    _advance_with_playbook,
     _mobile_missing_fields,
     _mobile_next_step,
     _mobile_values,
+    _recover_mobile_step_for_text,
     _category_values,
     _canonical_playbook_value,
     _playbook_code_key,
@@ -251,6 +253,129 @@ def test_mobile_next_step_for_portability_goes_directly_to_number():
     assert _mobile_next_step(values) == "MOBILE_PORT_NUMBER"
 
 
+def test_recover_mobile_step_accepts_phone_when_crm_rewound_to_contract_type():
+    values = {
+        "tipo_contratacao": "Número Portabilidade",
+    }
+    assert (
+        _recover_mobile_step_for_text(
+            "MOBILE_CONTRACT_TYPE",
+            "55999002508",
+            values,
+        )
+        == "MOBILE_PORT_NUMBER"
+    )
+    accepted, error = _apply_mobile_answer(
+        "MOBILE_PORT_NUMBER",
+        "55999002508",
+        values,
+    )
+    assert accepted is True
+    assert error == ""
+    assert values["numero_portado"] == "55999002508"
+    assert _mobile_next_step(values) == "MOBILE_PORT_TITULAR"
+
+
+def test_playbook_does_not_reask_portability_after_successful_sync():
+    """CRM insiste em tipocontratacao após PATCH → não volta a perguntar."""
+    tipo = CRMPlaybookMissingItem(
+        code="tipo_contratacao",
+        question="Informe: Tipo de contratação móvel.",
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+        options=[
+            {"id": "portabilidade", "label": "Portabilidade", "value": "Número Portabilidade"},
+            {"id": "novo", "label": "Número novo", "value": "Número novo"},
+        ],
+    )
+    numero = CRMPlaybookMissingItem(
+        code="numero_portado",
+        question="Qual número você deseja portar?",
+        patch_key="productInfo.categoryForm.values.numero_portado",
+    )
+    # 1ª chamada: sync tipo. 2ª: CRM ainda devolve tipo+numero → pula tipo.
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[tipo, numero],
+            next_question="Informe: Tipo de contratação móvel.",
+            category="telefonia-movel",
+        ),
+        _playbook_result(
+            missing=[tipo, numero],
+            next_question="Informe: Tipo de contratação móvel.",
+            category="telefonia-movel",
+        ),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="MOBILE_PORT_NUMBER",
+    )
+    collected = {
+        "categoryName": "Telefonia Móvel",
+        "mobileCategoryValues": {
+            "tipo_contratacao": "Número Portabilidade",
+        },
+    }
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="MOBILE_PORT_NUMBER",
+    )
+
+    assert step == "MOBILE_PORT_NUMBER"
+    assert "portar" in (question or "").lower() or question is None
+    assert client.playbook_patches
+    assert client.playbook_patches[0][2] == "Número Portabilidade"
+
+
+def test_advance_blocks_playbook_rewind_to_contract_type():
+    tipo = CRMPlaybookMissingItem(
+        code="tipo_contratacao",
+        question="Como você quer contratar?",
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+        options=[
+            {"id": "portabilidade", "label": "Portabilidade", "value": "Número Portabilidade"},
+            {"id": "novo", "label": "Número novo", "value": "Número novo"},
+        ],
+    )
+    # Após sync, CRM ainda só devolve tipo (sem numero) → fallback local.
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[tipo],
+            next_question="Como você quer contratar?",
+            category="telefonia-movel",
+        ),
+        _playbook_result(
+            missing=[tipo],
+            next_question="Como você quer contratar?",
+            category="telefonia-movel",
+        ),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="MOBILE_PORT_NUMBER",
+    )
+    collected = {
+        "categoryName": "Telefonia Móvel",
+        "mobileCategoryValues": {
+            "tipo_contratacao": "Número Portabilidade",
+            "numero_portado": "55999002508",
+        },
+    }
+
+    reply = _advance_with_playbook(
+        client,
+        state,
+        collected,
+        fallback_step="MOBILE_PORT_TITULAR",
+    )
+    assert state.step == "MOBILE_PORT_TITULAR"
+    assert "titular" in reply.lower() or "sim ou não" in reply.lower()
 
 
 class _MobilePlanContextClient:

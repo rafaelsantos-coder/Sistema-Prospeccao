@@ -802,7 +802,55 @@ def _extract_iccids(text: str) -> list[str]:
 
 def _extract_mobile_number(text: str) -> str | None:
     digits = _digits(text)
+    # Telefone BR: 10–11 (com DDD) ou 12–13 com 55. ICCID (18+) não entra aqui.
     return digits if 10 <= len(digits) <= 13 else None
+
+
+def _looks_like_phone_answer(text: str) -> bool:
+    """Resposta que é só (ou quase só) um telefone — não confunde com ICCID."""
+    digits = _digits(text)
+    if not (10 <= len(digits) <= 13):
+        return False
+    leftover = re.sub(r"[\d\s\-\(\)\.+]+", "", text or "").strip()
+    return len(leftover) <= 3
+
+
+def _recover_mobile_step_for_text(
+    step: str,
+    text: str,
+    values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
+) -> str:
+    """Se o CRM rebobinou a etapa, interpreta a mensagem na etapa correta.
+
+    Ex.: step=MOBILE_CONTRACT_TYPE com tipo já = Portabilidade e o cliente
+    manda o número → trata como MOBILE_PORT_NUMBER.
+    """
+    contract_type = str(values.get("tipo_contratacao") or "")
+    if (
+        contract_type == "Número Portabilidade"
+        and not values.get("numero_portado")
+        and _looks_like_phone_answer(text)
+        and step
+        in {
+            "MOBILE_CONTRACT_TYPE",
+            "MOBILE_PORT_TITULAR",
+            "MOBILE_PORT_ICCID",
+            "MOBILE_PORT_NUMBER",
+        }
+    ):
+        return "MOBILE_PORT_NUMBER"
+
+    if (
+        step == "MOBILE_CONTRACT_TYPE"
+        and contract_type in {"Número novo", "Número Portabilidade", "M2M"}
+        and not _extract_mobile_contract_type(text)
+    ):
+        nxt = _mobile_next_step(values, sdr_ia_funnel=sdr_ia_funnel)
+        if nxt and nxt != "MOBILE_CONTRACT_TYPE":
+            return nxt
+    return step
 
 
 def _extract_positive_int(text: str) -> int | None:
@@ -1484,23 +1532,58 @@ def _query_playbook_guidance(
                 return fallback_step, None
             return "WAITING_CRM_READY", None
 
-        first = actionable[0]
-        first_key = _playbook_code_key(first.code)
-        if (
-            first_key not in synced_codes
-            and _sync_known_playbook_missing(
-                client,
-                state,
-                collected,
-                first,
-            )
-        ):
-            # Sincroniza no máximo uma vez por campo nesta consulta. Se o CRM
-            # continuar dizendo que falta, perguntamos/seguimos pelo playbook em
-            # vez de entrar em loop de PATCH.
-            synced_codes.add(first_key)
+        # Pode pular vários missing já coletados sem novo GET /playbook.
+        selected = None
+        while actionable:
+            first = actionable[0]
+            first_key = _playbook_code_key(first.code)
+            known_locally = _playbook_known_value(first, state, collected)
+            if known_locally and first_key not in synced_codes:
+                synced = _sync_known_playbook_missing(
+                    client,
+                    state,
+                    collected,
+                    first,
+                )
+                synced_codes.add(first_key)
+                if synced:
+                    # Sincroniza no máximo uma vez por campo; reconsulta o CRM.
+                    selected = None
+                    break
+                # Sync falhou (ex.: opções do CRM não batem) → pergunta ao cliente.
+                selected = first
+                break
+            if known_locally and first_key in synced_codes:
+                # CRM ainda lista o campo depois do PATCH. Não repergunta
+                # Portabilidade/número: segue para o próximo missing sem valor local.
+                # Bug ao vivo 04/11: após informar o número a portar, o playbook
+                # voltava para tipo_contratacao e gerava looping Sim/Não.
+                actionable = [
+                    item
+                    for item in actionable
+                    if not (
+                        _playbook_code_key(item.code) in synced_codes
+                        and _playbook_known_value(item, state, collected)
+                    )
+                ]
+                continue
+            selected = first
+            break
+
+        if selected is None:
+            if not actionable:
+                LOG.warning(
+                    "seller_playbook_skip_known_exhausted opportunity=%s "
+                    "fallback=%s",
+                    state.opportunity_id,
+                    fallback_step,
+                )
+                _playbook_clear_question(collected)
+                return fallback_step, None
+            # Sync bem-sucedido: novo GET /playbook.
             continue
 
+        first = selected
         next_step = _playbook_step_for_item(first, state, collected)
         if not next_step:
             question = (
@@ -1561,6 +1644,59 @@ def _query_playbook_guidance(
     return fallback_step, None
 
 
+_MOBILE_STEP_ORDER = (
+    "MOBILE_CONTRACT_TYPE",
+    "MOBILE_NEW_ICCID",
+    "MOBILE_NEW_NUMBER",
+    "MOBILE_PORT_ICCID",
+    "MOBILE_PORT_NUMBER",
+    "MOBILE_PORT_TITULAR",
+    "MOBILE_PORT_NAME",
+    "MOBILE_PORT_DOC",
+    "MOBILE_PORT_DATE",
+    "MOBILE_M2M_QTY",
+    "MOBILE_M2M_ICCIDS",
+    "MOBILE_PAYMENT_METHOD",
+    "MOBILE_INVOICE_DELIVERY",
+    "MOBILE_DEBIT_BANK",
+    "MOBILE_DEBIT_AGENCY",
+    "MOBILE_DEBIT_ACCOUNT",
+    "MOBILE_DEBIT_HOLDER",
+    "MOBILE_DUE_DAY",
+    "MOBILE_ACTIVATION_FEE",
+    "MOBILE_ACTIVATION_VALUE",
+    "MOBILE_UNIFY",
+    "MOBILE_UNIFY_REASON",
+)
+
+
+def _mobile_step_rank(step: str) -> int:
+    try:
+        return _MOBILE_STEP_ORDER.index(step)
+    except ValueError:
+        return -1
+
+
+def _playbook_should_keep_local_mobile_progress(
+    *,
+    playbook_step: str,
+    fallback_step: str,
+    collected: dict[str, Any],
+) -> bool:
+    """Evita o CRM rebobinar a conversa para uma etapa móvel já respondida."""
+    if not fallback_step.startswith("MOBILE_") or not playbook_step.startswith("MOBILE_"):
+        return False
+    if playbook_step == fallback_step:
+        return False
+    values = _mobile_values(collected)
+    local_next = _mobile_next_step(values, sdr_ia_funnel=_sdr_ia_mode(collected))
+    if local_next == fallback_step:
+        return _mobile_step_rank(playbook_step) < _mobile_step_rank(fallback_step)
+    if local_next and _mobile_step_rank(playbook_step) < _mobile_step_rank(local_next):
+        return True
+    return False
+
+
 def _advance_with_playbook(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -1574,6 +1710,23 @@ def _advance_with_playbook(
         collected,
         fallback_step=fallback_step,
     )
+    if _playbook_should_keep_local_mobile_progress(
+        playbook_step=next_step,
+        fallback_step=fallback_step,
+        collected=collected,
+    ):
+        LOG.warning(
+            "seller_playbook_rewind_blocked opportunity=%s playbook=%s "
+            "fallback=%s",
+            state.opportunity_id,
+            next_step,
+            fallback_step,
+        )
+        next_step = fallback_step
+        question = None
+        collected["_playbook_step"] = fallback_step
+        collected.pop("_playbook_question", None)
+        collected.pop("_playbook_options", None)
     state.step = next_step
     if question:
         return question
@@ -4847,14 +5000,49 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
         elif state.step.startswith("MOBILE_"):
             values = _mobile_values(collected)
-            accepted, error_reply = _apply_mobile_answer(
+            apply_step = _recover_mobile_step_for_text(
                 state.step,
                 text,
                 values,
                 sdr_ia_funnel=_sdr_ia_mode(collected),
             )
+            if apply_step != state.step:
+                LOG.info(
+                    "seller_mobile_step_recovered conversation=%s from=%s to=%s",
+                    conversation.id,
+                    state.step,
+                    apply_step,
+                )
+                state.step = apply_step
+            accepted, error_reply = _apply_mobile_answer(
+                apply_step,
+                text,
+                values,
+                sdr_ia_funnel=_sdr_ia_mode(collected),
+            )
             if not accepted:
-                reply = error_reply
+                # CRM rebobinou para tipo de contratação já respondido: avance
+                # em vez de pedir Portabilidade/Sim de novo.
+                if (
+                    apply_step == "MOBILE_CONTRACT_TYPE"
+                    and values.get("tipo_contratacao")
+                ):
+                    next_step = _mobile_next_step(
+                        values,
+                        sdr_ia_funnel=_sdr_ia_mode(collected),
+                    )
+                    if next_step and next_step != "MOBILE_CONTRACT_TYPE":
+                        reply = _advance_with_playbook(
+                            client,
+                            state,
+                            collected,
+                            fallback_step=next_step,
+                        )
+                        _save_collected(state, collected)
+                    else:
+                        reply = error_reply
+                else:
+                    reply = error_reply
             else:
                 collected["mobileCategoryValues"] = values
                 current_code = str(collected.get("_playbook_code") or "")
