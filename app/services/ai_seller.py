@@ -1573,10 +1573,8 @@ def _query_playbook_guidance(
         if selected is None:
             if not actionable:
                 LOG.warning(
-                    "seller_playbook_skip_known_exhausted opportunity=%s "
-                    "fallback=%s",
+                    "seller_playbook_skip_known_exhausted opportunity=%s",
                     state.opportunity_id,
-                    fallback_step,
                 )
                 _playbook_clear_question(collected)
                 return fallback_step, None
@@ -1716,11 +1714,8 @@ def _advance_with_playbook(
         collected=collected,
     ):
         LOG.warning(
-            "seller_playbook_rewind_blocked opportunity=%s playbook=%s "
-            "fallback=%s",
+            "seller_playbook_rewind_blocked opportunity=%s",
             state.opportunity_id,
-            next_step,
-            fallback_step,
         )
         next_step = fallback_step
         question = None
@@ -5025,10 +5020,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 and _mobile_step_rank(local_next) > _mobile_step_rank(state.step)
             ):
                 LOG.warning(
-                    "seller_mobile_step_reconcile conversation=%s from=%s to=%s",
+                    "seller_mobile_step_reconcile conversation=%s",
                     conversation.id,
-                    state.step,
-                    local_next,
                 )
                 state.step = local_next
             apply_step = _recover_mobile_step_for_text(
@@ -5039,10 +5032,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             )
             if apply_step != state.step:
                 LOG.info(
-                    "seller_mobile_step_recovered conversation=%s from=%s to=%s",
+                    "seller_mobile_step_recovered conversation=%s",
                     conversation.id,
-                    state.step,
-                    apply_step,
                 )
                 state.step = apply_step
             accepted, error_reply = _apply_mobile_answer(
