@@ -65,6 +65,47 @@ def test_won_conversation_without_problems_scores_high():
     assert quality.flags == []
 
 
+def test_guardian_observation_summary_counts_shadow_would_intervene():
+    import json
+
+    from app.database import SessionLocal
+    from app.models import AuditLog
+    from app.services.ai_quality import guardian_observation_summary
+
+    db = SessionLocal()
+    try:
+        conversation_id = 91001
+        db.add(
+            AuditLog(
+                action="AI_SUPERVISOR_GUARDIAN_REVIEW",
+                entity_type="conversation",
+                entity_id=str(conversation_id),
+                payload_json=json.dumps(
+                    {
+                        "conversation_id": conversation_id,
+                        "verdict": "APPROVE",
+                        "observed_verdict": "REWRITE",
+                        "shadow_only": True,
+                        "would_intervene": True,
+                        "issue_codes": ["MISSING_QUICK_REPLIES"],
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        db.commit()
+        summary = guardian_observation_summary(
+            db, days=7, conversation_ids=[conversation_id]
+        )
+        assert summary["shadow_reviews"] == 1
+        assert summary["enforce_reviews"] == 0
+        assert summary["would_intervene"] == 1
+        assert summary["would_intervene_rate"] == 100
+        assert summary["top_issues"][0]["code"] == "MISSING_QUICK_REPLIES"
+    finally:
+        db.close()
+
+
 def test_quality_page_renders_for_admin():
     with TestClient(app) as client:
         page = client.get("/login")

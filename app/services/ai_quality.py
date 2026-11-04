@@ -8,6 +8,7 @@ falhas, frustração do cliente, follow-ups sem resposta e até onde a venda foi
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from collections import Counter
@@ -22,11 +23,11 @@ from app.models import (
     AIConversationState,
     AIFollowupJob,
     AIRun,
+    AuditLog,
     Conversation,
     Message,
 )
 from app.timeutils import utc_naive, utcnow
-
 
 FRUSTRATION_CUES = (
     "perguntas demais",
@@ -282,4 +283,77 @@ def conversation_quality_report(db: Session, *, days: int = 7) -> dict:
             round(100 * sum(row.guardian_blocks for row in rows) / total_runs) if total_runs else 0
         ),
     }
-    return {"days": days, "summary": summary, "rows": rows}
+    return {
+        "days": days,
+        "summary": summary,
+        "rows": rows,
+        "guardian": guardian_observation_summary(db, days=days, conversation_ids=conversation_ids[:300]),
+    }
+
+
+def guardian_observation_summary(
+    db: Session,
+    *,
+    days: int = 7,
+    conversation_ids: list[int] | None = None,
+) -> dict:
+    """Resumo das revisões do Guardião (sombra e enforce) no período."""
+    since = utcnow() - timedelta(days=max(1, days))
+    logs = list(
+        db.scalars(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "AI_SUPERVISOR_GUARDIAN_REVIEW",
+                AuditLog.created_at >= since,
+            )
+            .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+            .limit(3000)
+        )
+    )
+    selected = set(conversation_ids or [])
+    shadow = 0
+    enforce = 0
+    would_intervene = 0
+    observed_blocks = 0
+    issue_counts: Counter[str] = Counter()
+    for row in logs:
+        try:
+            payload = json.loads(row.payload_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        try:
+            conversation_id = int(payload.get("conversation_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if selected and conversation_id not in selected:
+            continue
+        shadow_only = bool(payload.get("shadow_only"))
+        observed = str(
+            payload.get("observed_verdict") or payload.get("verdict") or "APPROVE"
+        ).upper()
+        if shadow_only:
+            shadow += 1
+        else:
+            enforce += 1
+        if observed != "APPROVE":
+            would_intervene += 1
+        if observed == "BLOCK":
+            observed_blocks += 1
+        issue_counts.update(
+            str(item) for item in (payload.get("issue_codes") or []) if str(item)
+        )
+    total = shadow + enforce
+    return {
+        "reviews": total,
+        "shadow_reviews": shadow,
+        "enforce_reviews": enforce,
+        "would_intervene": would_intervene,
+        "would_intervene_rate": round(100 * would_intervene / total) if total else 0,
+        "observed_blocks": observed_blocks,
+        "top_issues": [
+            {"code": code, "count": count}
+            for code, count in issue_counts.most_common(8)
+        ],
+    }
