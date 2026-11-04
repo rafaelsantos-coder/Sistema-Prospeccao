@@ -128,6 +128,20 @@ def run_case(case: dict) -> None:
         for local, expected in data["local_times"].items():
             assert _local(ai_followups.business_window_start(_utc(local))) == expected, local
 
+    elif kind == "sdr_commitment":
+        for item in data["cases"]:
+            context = {
+                "latest_customer_message": item["latest"],
+                "history": [{"direction": "OUTBOUND", "body": item["previous"]}],
+            }
+            assert ai_sdr._explicit_purchase_commitment(context) is item["expected"], item
+
+    elif kind == "sdr_penalty":
+        from app.services.ai_sdr_tools import ftth_cancellation_penalty
+
+        result = ftth_cancellation_penalty(data["speed"], data["free_months"], data["months_used"])
+        assert result["penalty"] == expect["penalty"]
+
     elif kind == "conversation_replay":
         pytest.skip("Caso documentado; requer avaliação com o modelo de IA.")
 

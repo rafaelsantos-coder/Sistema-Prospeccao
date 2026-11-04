@@ -2608,8 +2608,26 @@ def _explicit_purchase_commitment(context: dict) -> bool:
             "quer seguir com o plano",
             "quer aproveitar e contratar",
             "contratar agora",
+            "contratar com essa condicao",
+            "quer avancar",
+            "podemos avancar",
+            "vamos avancar",
+            "quer fechar",
+            "podemos fechar",
+            "vamos fechar",
+            "dar andamento",
+            "seguir com a contratacao",
         )
     )
+    # Botões de avanço criados pela própria IA ("Avançar assim", "Quero
+    # contratar") também são aceite. Antes, só frases fixas contavam e o
+    # cliente que clicava no botão não era transferido (simulação 03/11).
+    if purchase_question and re.fullmatch(
+        r"(?:sim\s*)?(?:pode\s+)?(?:avancar|seguir|fechar|contratar|bora|topo|eu topo)"
+        r"(?:\s+(?:assim|agora|sim|com essa condicao|com ela|com esse plano))?",
+        latest,
+    ):
+        return True
     return purchase_question and latest in {
         "sim",
         "sim quero",
@@ -3234,6 +3252,15 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
 
         tools = build_sdr_tools(agent)
         prompt = (
+            "MULTA: para qualquer pergunta de multa ou cancelamento antecipado, chame "
+            "calcular_multa e responda com o valor em reais; nunca mostre fórmula, siglas "
+            "como VTB ou MR, nem diga que não consegue calcular. "
+            "OBJEÇÃO DE QUALIDADE OU ESTABILIDADE: não prometa ausência de quedas, mas "
+            "também não desvenda. Use os diferenciais aprovados do manual (fibra óptica até "
+            "a casa, roteador Wi-Fi 6 em comodato, suporte e lojas regionais da Sulnet) e "
+            "conduza ao fechamento. Nunca pergunte se o cliente quer contratar 'mesmo sem "
+            "garantia'. Quando o cliente disser que topa ou aceita a condição, trate como "
+            "intenção de compra.\n"
             "FERRAMENTAS: antes de citar plano, velocidade ou preço, chame "
             "consultar_catalogo(cidade, segmento); ela é a fonte oficial e vence qualquer valor "
             "escrito neste texto. Para dúvidas sobre regras, contrato, roteador, instalação ou "

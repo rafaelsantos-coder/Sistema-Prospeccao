@@ -103,7 +103,7 @@ def test_sdr_agent_receives_catalog_and_manual_tools(monkeypatch):
 
     decision = ai_sdr.run_ai_decision(agent, {"history": [], "latest_customer_message": "oi"})
 
-    assert captured["tools"] == ["consultar_catalogo", "buscar_manual"]
+    assert captured["tools"] == ["consultar_catalogo", "buscar_manual", "calcular_multa"]
     assert "consultar_catalogo" in captured["prompt"]
     assert isinstance(decision, AIDecision)
 
@@ -144,3 +144,13 @@ def test_human_fallback_sends_notice_and_hands_off(monkeypatch):
     assert job.status == "CONCLUIDO"
     assert db.added[0].state == "HANDOFF"
     assert not ai_sdr._sdr_exposes_internal_handoff(ai_sdr.HUMAN_FALLBACK_NOTICE)
+
+
+def test_penalty_tool_matches_seller_rule():
+    from app.services.ai_sdr_tools import ftth_cancellation_penalty
+
+    result = ftth_cancellation_penalty(650, 1, 6)
+    assert result["penalty"] == 479.95
+    assert "R$ 479,95" in result["answer"]
+    assert ftth_cancellation_penalty(800, 0, 12)["penalty"] == 0
+    assert ftth_cancellation_penalty(999, 0, 1)["ok"] is False
