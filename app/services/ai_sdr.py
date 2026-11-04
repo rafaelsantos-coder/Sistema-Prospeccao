@@ -1450,31 +1450,29 @@ def _show_mobile_catalog_page(
     page: int,
 ) -> AIDecision:
     decision.qualification.desired_product = "Sulmóvel"
-    if page <= 1:
-        plans = MOBILE_PLANS[:2]
+    pages = [MOBILE_PLANS[index:index + 2] for index in range(0, len(MOBILE_PLANS), 2)]
+    page = max(1, min(page, len(pages)))
+    plans = pages[page - 1]
+    if page == 1:
         decision.reply_text = (
             "No Sulmóvel temos planos nacionais com valores confirmados. "
             "Escolha uma opção para continuar:"
         )
-        decision.quick_replies = [
-            QuickReply(
-                id=f"mobile_{int(plan['data_gb'])}gb",
-                label=f"{int(plan['data_gb'])}GB - R$ {_format_brl(float(plan['price']))}",
-            )
-            for plan in plans
-        ] + [QuickReply(id="mobile_mais", label="Mais planos")]
-        decision.next_action = "Cliente escolher 5GB, 7GB ou abrir mais planos móveis."
-    else:
-        plans = MOBILE_PLANS[2:4]
+    elif page == 2:
         decision.reply_text = "Mais opções do Sulmóvel:"
-        decision.quick_replies = [
-            QuickReply(
-                id=f"mobile_{int(plan['data_gb'])}gb",
-                label=f"{int(plan['data_gb'])}GB - R$ {_format_brl(float(plan['price']))}",
-            )
-            for plan in plans
-        ] + [QuickReply(id="mobile_voltar", label="Voltar")]
-        decision.next_action = "Cliente escolher 10GB, 15GB ou voltar aos primeiros planos."
+    else:
+        decision.reply_text = "Últimas opções do Sulmóvel:"
+    last = page == len(pages)
+    decision.quick_replies = [
+        QuickReply(
+            id=f"mobile_{int(plan['data_gb'])}gb",
+            label=f"{int(plan['data_gb'])}GB - R$ {_format_brl(float(plan['price']))}",
+        )
+        for plan in plans
+    ] + [QuickReply(id="mobile_voltar", label="Voltar") if last else QuickReply(id="mobile_mais", label="Mais planos")]
+    decision.next_action = "Cliente escolher " + " ou ".join(
+        f"{int(plan['data_gb'])}GB" for plan in plans
+    ) + (", ou voltar aos primeiros planos." if last else ", ou abrir mais planos móveis.")
 
     decision.intent = "INTEREST"
     decision.sales_state = "OFFERING"
@@ -1611,9 +1609,12 @@ def _show_selected_mobile_plan(
     price = float(plan["price"])
     apps = ", ".join(plan.get("unlimited_apps") or [])
     details = f" com {apps} ilimitado" if apps else ""
+    if plan.get("minutes") and plan.get("sms"):
+        extras = f", com {int(plan['minutes'])} minutos e {int(plan['sms'])} SMS{details}"
+    else:
+        extras = details
     decision.reply_text = (
-        f"Legal! O Sulmóvel {data_gb}GB custa R$ {_format_brl(price)} mensais, "
-        f"com {int(plan['minutes'])} minutos e {int(plan['sms'])} SMS{details}. "
+        f"Legal! O Sulmóvel {data_gb}GB custa R$ {_format_brl(price)} mensais{extras}. "
         "Quer contratar esse plano?"
     )
     decision.quick_replies = [
@@ -2247,7 +2248,10 @@ def _apply_catalog_navigation_policy(
         return _show_mobile_catalog_page(decision, page=1)
 
     if latest in {"mais planos", "ver mais", "mais opcoes"}:
-        return _show_mobile_catalog_page(decision, page=2)
+        return _show_mobile_catalog_page(
+            decision,
+            page=3 if "mais opcoes do sulmovel" in previous else 2,
+        )
 
     if latest == "voltar" and "sulmovel" in previous:
         return _show_mobile_catalog_page(decision, page=1)

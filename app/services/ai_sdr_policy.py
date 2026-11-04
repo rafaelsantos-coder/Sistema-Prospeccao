@@ -230,6 +230,16 @@ CORPORATE_PLANS = [
 
 MOBILE_PLANS = [
     {
+        "code": "SULMOVEL_2GB",
+        "name": "Sulmóvel 2GB",
+        "data_gb": 2,
+        "price": 33.90,
+        # Minutos, SMS e apps ilimitados do 2GB ainda não confirmados pelo comercial.
+        "minutes": None,
+        "sms": None,
+        "unlimited_apps": [],
+    },
+    {
         "code": "SULMOVEL_5GB",
         "name": "Sulmóvel 5GB",
         "data_gb": 5,
@@ -708,11 +718,11 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     {
         "title": "Sulmóvel - planos confirmados por contrato",
         "category": "PRODUTOS",
-        "tags": "sulmovel,portabilidade,5gb,7gb,10gb,15gb,nacional",
+        "tags": "sulmovel,portabilidade,2gb,5gb,7gb,10gb,15gb,nacional",
         "content": (
             "Sulmóvel possui portabilidade do número atual e área de prestação nacional. Habilitação contratual em até 5 dias úteis. "
-            "Planos confirmados: 5GB R$44,90; 7GB R$47,90; 10GB R$53,90; 15GB R$69,80, valores com fidelidade conforme modelos. "
-            "Todos os modelos analisados têm 1000 minutos de voz e 20 SMS/mês. 5GB: WhatsApp ilimitado; não prometer Waze/Maps. "
+            "Planos confirmados: 2GB R$33,90; 5GB R$44,90; 7GB R$47,90; 10GB R$53,90; 15GB R$69,80, valores com fidelidade conforme modelos. "
+            "Os modelos de 5GB a 15GB têm 1000 minutos de voz e 20 SMS/mês; minutos, SMS e apps do 2GB não estão confirmados, não prometa. 5GB: WhatsApp ilimitado; não prometer Waze/Maps. "
             "7GB, 10GB e 15GB: WhatsApp e Waze/Maps ilimitados. A IA não possui alçada para desconto de mensalidade no Sulmóvel."
         ),
     },

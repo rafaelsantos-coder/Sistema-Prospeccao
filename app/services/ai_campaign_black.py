@@ -138,6 +138,7 @@ def black_choice(history: list[dict] | None) -> str:
 
 
 MOBILE_CHOICES = (
+    {"gb": 2, "name": "Sulmóvel 2GB", "price": 33.90},
     {"gb": 5, "name": "Sulmóvel 5GB", "price": 44.90},
     {"gb": 7, "name": "Sulmóvel 7GB", "price": 47.90},
     {"gb": 10, "name": "Sulmóvel 10GB", "price": 53.90},
@@ -146,7 +147,7 @@ MOBILE_CHOICES = (
 
 
 def mobile_choice_from_text(text: str | None) -> dict | None:
-    match = re.search(r"\b(5|7|10|15)\s*(?:gb|giga|gigas|g)?\b", _fold(text))
+    match = re.search(r"\b(2|5|7|10|15)\s*(?:gb|giga|gigas|g)?\b", _fold(text))
     if not match:
         return None
     gb = int(match.group(1))

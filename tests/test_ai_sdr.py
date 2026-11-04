@@ -1448,8 +1448,8 @@ def test_mobile_catalog_first_page_uses_three_buttons_with_prices():
     assert result.handoff_recommended is False
     assert result.sales_state == "OFFERING"
     assert [item.label for item in result.quick_replies] == [
+        "2GB - R$ 33,90",
         "5GB - R$ 44,90",
-        "7GB - R$ 47,90",
         "Mais planos",
     ]
 
@@ -1474,9 +1474,9 @@ def test_mobile_catalog_more_plans_paginates_remaining_options():
 
     assert result.handoff_recommended is False
     assert [item.label for item in result.quick_replies] == [
+        "7GB - R$ 47,90",
         "10GB - R$ 53,90",
-        "15GB - R$ 69,80",
-        "Voltar",
+        "Mais planos",
     ]
 
 
@@ -1496,8 +1496,8 @@ def test_mobile_catalog_back_returns_to_first_mobile_page():
     result = _apply_catalog_navigation_policy(decision, context)
 
     assert [item.label for item in result.quick_replies] == [
+        "2GB - R$ 33,90",
         "5GB - R$ 44,90",
-        "7GB - R$ 47,90",
         "Mais planos",
     ]
 
@@ -1609,8 +1609,8 @@ def test_ver_outros_planos_after_mobile_selection_returns_mobile_catalog():
     result = _apply_catalog_navigation_policy(decision, context)
 
     assert [item.label for item in result.quick_replies] == [
+        "2GB - R$ 33,90",
         "5GB - R$ 44,90",
-        "7GB - R$ 47,90",
         "Mais planos",
     ]
 
@@ -2441,8 +2441,8 @@ def test_existing_customer_mobile_choice_opens_mobile_catalog():
     assert result.qualification.desired_product == "Sulmóvel"
     assert result.sales_state == "OFFERING"
     assert [item.label for item in result.quick_replies] == [
+        "2GB - R$ 33,90",
         "5GB - R$ 44,90",
-        "7GB - R$ 47,90",
         "Mais planos",
     ]
 
@@ -3210,3 +3210,14 @@ def test_estagnacao_nao_troca_pergunta_da_black():
     context = {"lead": {"confirmed_existing_customer": "NAO_CLIENTE"}, "history": []}
     result = _apply_stagnation_strategy(decision, context)
     assert result.reply_text == "Quer conhecer nossa promoção Black da Sulnet?"
+
+
+def test_mobile_catalog_third_page_shows_15gb_and_back():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Mais planos",
+        "lead": {"city": "Santa Rosa"},
+        "history": [{"direction": "OUTBOUND", "body": "Mais opções do Sulmóvel:"}],
+    }
+    result = _apply_catalog_navigation_policy(decision, context)
+    assert [item.label for item in result.quick_replies] == ["15GB - R$ 69,80", "Voltar"]
