@@ -3410,7 +3410,20 @@ def _send_step_message(
             )
         elif guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
             text = guardian.reply_text
-            buttons = guardian.buttons
+            buttons = list(guardian.buttons or [])
+
+    # Guardião pode reescrever e zerar os botões. Sem ≥2 labels a Z-API
+    # estoura "Informe ao menos um botao" (conv 485 em produção).
+    if len(buttons) < 2:
+        return _send_text(
+            db,
+            agent=agent,
+            conversation=conversation,
+            text=text,
+            source="CLOSER_STEP",
+            guardian_metadata=guardian_metadata,
+            handoff_notice=state.step == "ESCALATED",
+        )
 
     zapi = service_for_conversation(db, conversation.id)
     result = zapi.send_button_list(
@@ -5000,6 +5013,24 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
         elif state.step.startswith("MOBILE_"):
             values = _mobile_values(collected)
+            # Se o estado ficou atrás do que já está coletado (CRM rebobinou o
+            # step), avança o cursor local antes de interpretar a mensagem.
+            local_next = _mobile_next_step(
+                values,
+                sdr_ia_funnel=_sdr_ia_mode(collected),
+            )
+            if (
+                local_next
+                and local_next != state.step
+                and _mobile_step_rank(local_next) > _mobile_step_rank(state.step)
+            ):
+                LOG.warning(
+                    "seller_mobile_step_reconcile conversation=%s from=%s to=%s",
+                    conversation.id,
+                    state.step,
+                    local_next,
+                )
+                state.step = local_next
             apply_step = _recover_mobile_step_for_text(
                 state.step,
                 text,
