@@ -10,17 +10,19 @@ from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient, _signa
 
 
 def _client(opportunity: dict, *, status_route: dict | None = None):
-    client = SulnetCRMClient.__new__(SulnetCRMClient)
-    client.supports = lambda capability: False
-    client.get_opportunity = lambda opportunity_id: opportunity
+    class _Fake(SulnetCRMClient):
+        def supports(self, capability):
+            return False
 
-    def _request(method, path, **kwargs):
-        if status_route is None:
-            raise CRMIntegrationError("não existe", status_code=404, method=method, path=path)
-        return status_route
+        def get_opportunity(self, opportunity_id):
+            return opportunity
 
-    client._request = _request
-    return client
+        def _request(self, method, path, **kwargs):
+            if status_route is None:
+                raise CRMIntegrationError("não existe", status_code=404, method=method, path=path)
+            return status_route
+
+    return object.__new__(_Fake)
 
 
 def test_sinais_de_assinatura_no_payload_legado():
