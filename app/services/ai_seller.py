@@ -1038,6 +1038,26 @@ def _playbook_disable_for_closing(
     _playbook_clear_question(collected)
 
 
+def _crm_form_value(field: str, value: Any) -> Any:
+    """Valor como o CRM espera no formulário (o estado local guarda "Número Portabilidade")."""
+    if field == "tipo_contratacao" and value == "Número Portabilidade":
+        return "Portabilidade"
+    return value
+
+
+def _find_nested(payload: Any, key: str, depth: int = 0) -> Any:
+    if depth > 6:
+        return None
+    if isinstance(payload, dict):
+        if payload.get(key) not in (None, ""):
+            return payload[key]
+        for item in payload.values():
+            found = _find_nested(item, key, depth + 1)
+            if found not in (None, ""):
+                return found
+    return None
+
+
 def _playbook_known_value(
     item: CRMPlaybookMissingItem,
     state: AIClosingState,
@@ -1075,9 +1095,15 @@ def _playbook_known_value(
     category_field = PLAYBOOK_CATEGORY_FIELD_BY_CODE.get(key)
     if category_field:
         values = _category_values(collected)
+        # Portabilidade no nome do próprio cliente: titular e documento são os
+        # dados dele (já consultados), não se pergunta de novo.
+        if key in {"portnometitular", "portcpfcnpj"} and _norm(str(values.get("port_titular") or "")) == "sim":
+            own = collected.get("name") if key == "portnometitular" else collected.get("cpf")
+            if own not in (None, "", []):
+                return f"category:{category_field}", own
         value = values.get(category_field)
         if value not in (None, "", []):
-            return f"category:{category_field}", value
+            return f"category:{category_field}", _crm_form_value(category_field, value)
 
     return None
 
@@ -1225,6 +1251,13 @@ def _sync_known_playbook_missing(
 ) -> bool:
     if not state.opportunity_id:
         return False
+    if _playbook_code_key(item.code) == "portcpfcnpj" and not collected.get("cpf"):
+        try:
+            cpf_from_crm = _digits(str(_find_nested(client.get_opportunity(state.opportunity_id), "clientCpf") or ""))
+        except CRMIntegrationError:
+            cpf_from_crm = ""
+        if len(cpf_from_crm) == 11:
+            collected["cpf"] = cpf_from_crm
     known = _playbook_known_value(item, state, collected)
     if not known:
         return False
@@ -2545,6 +2578,58 @@ def _friendly_plan_name(raw: str) -> str:
     return text
 
 
+def _mask_cpf(value: str) -> str:
+    digits = _digits(value)
+    if len(digits) != 11:
+        return value
+    return f"{digits[:3]}.***.***-{digits[-2:]}"
+
+
+def _acceptance_customer_lines(collected: dict[str, Any], form: dict[str, Any]) -> list[str]:
+    """Dados do cliente, endereço e linha móvel no resumo para o aceite."""
+    lines: list[str] = []
+    data: list[str] = []
+    if collected.get("name"):
+        data.append(f"• Nome: {collected['name']}")
+    if collected.get("cpf"):
+        data.append(f"• CPF: {_mask_cpf(str(collected['cpf']))}")
+    if collected.get("phone"):
+        data.append(f"• Telefone: {collected['phone']}")
+    if collected.get("email"):
+        data.append(f"• E-mail: {collected['email']}")
+    street = " ".join(
+        part for part in (str(collected.get("street") or "").strip(), str(collected.get("number") or "").strip()) if part
+    )
+    if collected.get("complement"):
+        street = f"{street}, {collected['complement']}".strip(", ")
+    place = "/".join(part for part in (str(collected.get("city") or "").strip(), str(collected.get("uf") or "").strip()) if part)
+    address = " - ".join(
+        part for part in (street, str(collected.get("neighborhood") or "").strip(), place, str(collected.get("cep") or "").strip()) if part
+    )
+    if address:
+        data.append(f"• Endereço: {address}")
+    if data:
+        lines += ["", "Seus dados:"] + data
+
+    kind = str(form.get("tipo_contratacao") or "").strip()
+    if kind:
+        mobile = [f"• Tipo: {'Portabilidade' if 'port' in _norm(kind) else kind}"]
+        if form.get("numero_portado"):
+            mobile.append(f"• Número a portar: {form['numero_portado']}")
+        if form.get("numero_novo"):
+            mobile.append(f"• Número novo: {form['numero_novo']}")
+        if "port" in _norm(kind):
+            if _norm(str(form.get("port_titular") or "")) == "sim":
+                mobile.append("• Titular da linha: você mesmo")
+            elif form.get("port_nome_titular"):
+                holder = str(form["port_nome_titular"])
+                if form.get("port_cpf_cnpj"):
+                    holder += f" ({_mask_cpf(str(form['port_cpf_cnpj']))})"
+                mobile.append(f"• Titular da linha: {holder}")
+        lines += ["", "Linha móvel:"] + mobile
+    return lines
+
+
 def _sale_acceptance_prompt(
     state: AIClosingState,
     collected: dict[str, Any],
@@ -2579,6 +2664,7 @@ def _sale_acceptance_prompt(
         lines.append(f"• Pagamento: {payment}")
     if due_day:
         lines.append(f"• Vencimento: dia {due_day}")
+    lines.extend(_acceptance_customer_lines(collected, form))
     lines.append("")
     lines.append(
         "Você confirma a contratação? Com o seu Sim, eu gero o contrato para "
@@ -4250,6 +4336,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     _create_crm_if_ready(db, state=state, conversation=conversation)
                 if not state.opportunity_id:
                     raise CRMIntegrationError("A oportunidade ainda não pôde ser criada no CRM.")
+                collected["cpf"] = cpf
                 try:
                     credit = client.consult_credit(state.opportunity_id, cpf)
                 except CRMIntegrationError as exc:
@@ -4330,6 +4417,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
             if new_cpf:
                 _clear_rejected_credit(state, collected)
+                collected["cpf"] = new_cpf
                 credit = client.consult_credit(state.opportunity_id or 0, new_cpf)
                 state.credit_status = str(credit.get("status") or "")
                 state.credit_analysis_id = int(credit.get("analysisId") or 0) or None

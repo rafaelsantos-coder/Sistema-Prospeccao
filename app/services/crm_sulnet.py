@@ -990,6 +990,9 @@ class SulnetCRMClient:
             current_values = {}
         merged_values = dict(current_values)
         merged_values.update(values)
+        # O formulário do CRM usa "Portabilidade"; o estado local guarda "Número Portabilidade".
+        if merged_values.get("tipo_contratacao") == "Número Portabilidade":
+            merged_values["tipo_contratacao"] = "Portabilidade"
 
         current_files = category_form.get("files")
         if not isinstance(current_files, dict):
