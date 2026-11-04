@@ -22,6 +22,7 @@ from app.models import (
     AIFollowupJob,
     AIJob,
     AIKnowledgeItem,
+    AIKnowledgeMetadata,
     AIRun,
     Conversation,
     ConversationAssignment,
@@ -2525,6 +2526,16 @@ def _seller_knowledge(db: Session, agent: AIAgentProfile, query: str = "") -> st
             ).order_by(AIKnowledgeItem.updated_at.desc()).limit(80)
         )
     )
+    # Rascunhos (REVIEW/DRAFT) só valem depois de aprovados pelo gestor.
+    pending_ids = set(
+        db.scalars(
+            select(AIKnowledgeMetadata.knowledge_item_id).where(
+                AIKnowledgeMetadata.knowledge_item_id.in_([item.id for item in items] or [0]),
+                AIKnowledgeMetadata.approval_status != "APPROVED",
+            )
+        )
+    )
+    items = [item for item in items if item.id not in pending_ids]
     terms = {
         token for token in re.findall(r"[a-z0-9]{3,}", _norm(query))
         if token not in _SELLER_KB_STOPWORDS
@@ -2634,6 +2645,11 @@ def _seller_question_reply(
         return None
     body = answer.answer.strip()
     if not answer.answered or not body:
+        # Vai para o analista semanal, que transforma em rascunho do manual.
+        pending = list(collected.get("_unanswered_questions") or [])
+        if text.strip() not in pending:
+            pending.append(text.strip()[:300])
+        collected["_unanswered_questions"] = pending[-10:]
         body = (
             "Essa informação eu não tenho confirmada aqui, e prefiro não te passar "
             "nada errado. Se quiser, posso chamar um consultor da Sulnet."

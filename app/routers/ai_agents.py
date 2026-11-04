@@ -237,6 +237,67 @@ def ai_quality_case(conversation_id: int, request: Request, db: Session = Depend
     )
 
 
+@router.get("/weekly")
+def ai_weekly_dashboard(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    from app.models import AIKnowledgeMetadata
+    from app.services.ai_weekly_analyst import ANALYST_SOURCE, RUN_ACTION, weekly_report
+
+    report = weekly_report(db, days=7)
+    drafts = list(
+        db.scalars(
+            select(AIKnowledgeItem)
+            .join(AIKnowledgeMetadata, AIKnowledgeMetadata.knowledge_item_id == AIKnowledgeItem.id)
+            .where(
+                AIKnowledgeMetadata.approval_status != "APPROVED",
+                AIKnowledgeMetadata.source_reference.like(f"{ANALYST_SOURCE}%"),
+            )
+            .order_by(AIKnowledgeItem.created_at.desc())
+            .limit(50)
+        )
+    )
+    from app.models import AuditLog
+
+    last_run = db.scalar(
+        select(AuditLog).where(AuditLog.action == RUN_ACTION).order_by(AuditLog.created_at.desc()).limit(1)
+    )
+    return render(
+        request,
+        "ai/weekly.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="weekly",
+        page_title="Analista semanal",
+        report=report,
+        drafts=drafts,
+        last_run=last_run,
+    )
+
+
+@router.post("/weekly/run")
+def ai_weekly_run(
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    from app.services.ai_weekly_analyst import run_weekly_analyst
+
+    result = run_weekly_analyst(db, user=actor)
+    db.commit()
+    flash(
+        request,
+        f"Analista executado: {result['drafts_created']} dúvida(s) nova(s) enviada(s) para revisão do manual.",
+        "success",
+    )
+    return RedirectResponse("/ai/weekly", status_code=303)
+
+
 @router.get("/seller")
 def seller_dashboard(request: Request, db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)

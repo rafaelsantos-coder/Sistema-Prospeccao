@@ -23,6 +23,7 @@ from app.services.ai_supervisor import run_shadow_supervisor_loop
 from app.services.ai_autocorrector import run_autocorrector_loop
 from app.services.ai_learning import run_learning_loop
 from app.services.ai_engineer import run_engineer_loop
+from app.services.ai_weekly_analyst import run_weekly_analyst_loop
 from app.services.ai_sdr_policy import followup_spec, next_business_time
 from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
@@ -755,6 +756,12 @@ def run() -> None:
         threading.Thread(
             target=run_engineer_loop,
             name="sulia-engineer",
+            daemon=True,
+        ).start()
+    if settings.ai_maintenance_enabled and settings.ai_weekly_analyst_enabled:
+        threading.Thread(
+            target=run_weekly_analyst_loop,
+            name="sulia-weekly-analyst",
             daemon=True,
         ).start()
     activated_agents = _ensure_bound_ai_agents_active()
