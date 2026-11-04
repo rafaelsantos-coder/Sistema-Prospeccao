@@ -130,9 +130,22 @@ class GuardianResult(BaseModel):
     should_send: bool = True
 
 
+def guardian_enforcing() -> bool:
+    """Modo ativo: pode reescrever ou bloquear antes do WhatsApp."""
+    return bool(settings.ai_supervisor_guardian_enabled)
+
+
+def guardian_shadowing() -> bool:
+    """Modo sombra: revisa e audita sem alterar o envio."""
+    return bool(
+        settings.ai_supervisor_guardian_shadow_enabled
+        and not guardian_enforcing()
+    )
+
+
 def guardian_operational() -> bool:
     return bool(
-        settings.ai_supervisor_guardian_enabled
+        (guardian_enforcing() or guardian_shadowing())
         and settings.openai_api_key
     )
 
@@ -690,7 +703,10 @@ def _record_guardian_review(
     result: GuardianResult,
     original_text: str,
     original_buttons: list[dict[str, str]],
+    shadow_only: bool = False,
+    observed_verdict: str | None = None,
 ) -> None:
+    observed = observed_verdict or result.verdict
     write_audit(
         db,
         user=agent.user,
@@ -702,22 +718,28 @@ def _record_guardian_review(
             "agent_id": agent.id,
             "agent_role": _role(agent),
             "source": source,
-            "verdict": result.verdict,
+            "verdict": "APPROVE" if shadow_only else result.verdict,
+            "observed_verdict": observed,
             "risk": result.risk,
             "confidence": result.confidence,
             "quality_score": result.quality_score,
             "issue_codes": result.issue_codes,
             "rationale": result.rationale,
-            "suggested_reply": result.reply_text if result.verdict != "APPROVE" else "",
+            "suggested_reply": (
+                _redact_text(result.reply_text)
+                if observed != "APPROVE"
+                else ""
+            ),
             "suggested_state": result.corrected_state,
             "suggested_buttons": [item.get("label") for item in result.buttons],
             "original_reply": _redact_text(original_text),
             "original_buttons": _redact_object(original_buttons),
             "deterministic_findings": context.get("deterministic_findings") or [],
             "guardian": True,
-            "shadow_only": False,
-            "intervened": result.verdict != "APPROVE",
-            "state_corrected": result.state_corrected,
+            "shadow_only": shadow_only,
+            "intervened": (not shadow_only) and result.verdict != "APPROVE",
+            "would_intervene": observed != "APPROVE",
+            "state_corrected": (not shadow_only) and result.state_corrected,
         },
     )
 
@@ -746,7 +768,9 @@ def guard_outbound_message(
             should_send=False,
         )
 
-    if not settings.ai_supervisor_guardian_enabled:
+    enforcing = guardian_enforcing()
+    shadowing = guardian_shadowing()
+    if not enforcing and not shadowing:
         return GuardianResult(
             verdict="APPROVE",
             risk="LOW",
@@ -768,6 +792,8 @@ def guard_outbound_message(
         proposed_state=proposed_state,
         metadata=metadata,
     )
+    if shadowing:
+        context = {**context, "mode": "GUARDIAN_SHADOW"}
 
     try:
         if guardian_operational():
@@ -788,6 +814,48 @@ def guard_outbound_message(
             original_text=original_text,
             original_buttons=original_buttons,
         )
+        observed_verdict = result.verdict
+        if shadowing:
+            # Sombra nunca altera a saída: registra o que faria e libera o original.
+            _record_guardian_review(
+                db,
+                agent=agent,
+                conversation=conversation,
+                source=source,
+                context=context,
+                result=result,
+                original_text=original_text,
+                original_buttons=original_buttons,
+                shadow_only=True,
+                observed_verdict=observed_verdict,
+            )
+            LOG.info(
+                "ai_guardian_shadow conversation=%s source=%s role=%s observed=%s risk=%s issues=%s",
+                conversation.id,
+                source,
+                _role(agent),
+                observed_verdict,
+                result.risk,
+                ",".join(result.issue_codes) or "-",
+            )
+            return GuardianResult(
+                verdict="APPROVE",
+                risk=result.risk,
+                confidence=result.confidence,
+                quality_score=result.quality_score,
+                issue_codes=list(result.issue_codes),
+                rationale=(
+                    f"[sombra] observou {observed_verdict}: {result.rationale}"
+                    if result.rationale
+                    else f"[sombra] observou {observed_verdict}"
+                ),
+                reply_text=original_text,
+                buttons=original_buttons,
+                corrected_state="",
+                state_corrected=False,
+                should_send=True,
+            )
+
         _record_guardian_review(
             db,
             agent=agent,
@@ -797,6 +865,7 @@ def guard_outbound_message(
             result=result,
             original_text=original_text,
             original_buttons=original_buttons,
+            shadow_only=False,
         )
         LOG.info(
             "ai_guardian conversation=%s source=%s role=%s verdict=%s risk=%s issues=%s",
@@ -810,9 +879,10 @@ def guard_outbound_message(
         return result
     except Exception as exc:
         # Disponibilidade: falha do modelo não derruba uma ação limpa. Achado
-        # determinístico HIGH/CRITICAL, porém, continua fail-closed.
+        # determinístico HIGH/CRITICAL, porém, continua fail-closed — exceto
+        # em sombra, onde nunca bloqueamos o envio.
         _critical, high, codes = _severity_sets(context)
-        fail_closed = bool(high)
+        fail_closed = bool(high) and enforcing
         write_audit(
             db,
             user=agent.user,
@@ -827,13 +897,15 @@ def guard_outbound_message(
                 "error": _redact_text(str(exc))[:1200],
                 "issue_codes": sorted(codes),
                 "fail_closed": fail_closed,
+                "shadow_only": shadowing,
             },
         )
         LOG.exception(
-            "ai_guardian_failed conversation=%s source=%s fail_closed=%s",
+            "ai_guardian_failed conversation=%s source=%s fail_closed=%s shadow=%s",
             conversation.id,
             source,
             fail_closed,
+            shadowing,
         )
         if fail_closed:
             return GuardianResult(
@@ -852,7 +924,11 @@ def guard_outbound_message(
             risk="MEDIUM",
             confidence=0.0,
             quality_score=70,
-            rationale="Guardião indisponível; ação sem achado objetivo liberada em fail-open.",
+            rationale=(
+                "Guardião em sombra indisponível; envio liberado."
+                if shadowing
+                else "Guardião indisponível; ação sem achado objetivo liberada em fail-open."
+            ),
             reply_text=original_text,
             buttons=original_buttons,
             should_send=True,

@@ -91,6 +91,12 @@ class Settings:
         "AI_SUPERVISOR_GUARDIAN_ENABLED",
         "false",
     ).strip().lower() in {"1", "true", "yes", "on"}
+    # Sombra: revisa e audita a saída sem bloquear/reescrever. Se o modo enforce
+    # (AI_SUPERVISOR_GUARDIAN_ENABLED) estiver ligado, a sombra é ignorada.
+    ai_supervisor_guardian_shadow_enabled: bool = os.getenv(
+        "AI_SUPERVISOR_GUARDIAN_SHADOW_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
     # Telefones de teste (só dígitos, separados por vírgula): a IA atende essas
     # conversas mesmo numa fila com a IA pausada, sem tocar nos outros clientes.
     ai_test_phones: tuple[str, ...] = tuple(
@@ -221,6 +227,11 @@ class Settings:
                 self.ai_supervisor_guardian_enabled
                 and self.openai_api_key
             ),
+            "ai_supervisor_guardian_shadow": bool(
+                self.ai_supervisor_guardian_shadow_enabled
+                and not self.ai_supervisor_guardian_enabled
+                and self.openai_api_key
+            ),
             "ai_autocorrect": bool(self.ai_autocorrect_enabled),
             "ai_learning": bool(self.ai_learning_enabled and self.openai_api_key),
             "ai_engineer": bool(self.ai_engineer_enabled and self.openai_api_key),
@@ -265,6 +276,12 @@ def validate_production_settings() -> None:
         if len(settings.zapi_webhook_secret) < 24:
             errors.append("ZAPI_WEBHOOK_SECRET deve ter ao menos 24 caracteres")
     if settings.ai_seller_enabled:
+        if not settings.ai_autonomous_enabled:
+            errors.append(
+                "AI_SELLER_ENABLED em produção também exige AI_AUTONOMOUS_ENABLED=true"
+            )
+        if not settings.openai_api_key:
+            errors.append("AI_SELLER_ENABLED requer OPENAI_API_KEY")
         if not settings.sulnet_crm_base_url.startswith(("https://", "http://")):
             errors.append("AI_SELLER_ENABLED requer SULNET_CRM_BASE_URL válida")
         if (
@@ -274,6 +291,28 @@ def validate_production_settings() -> None:
             errors.append(
                 "AI_SELLER_ENABLED requer SULNET_AI_INTEGRATION_KEY ou "
                 "SULNET_CRM_BEARER_TOKEN com ao menos 24 caracteres"
+            )
+        if len(settings.zapsign_webhook_secret) < 24:
+            errors.append(
+                "AI_SELLER_ENABLED requer ZAPSIGN_WEBHOOK_SECRET com ao menos 24 caracteres"
+            )
+    if settings.ai_engineer_autonomous_pr_enabled:
+        if not settings.ai_engineer_enabled:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED exige AI_ENGINEER_ENABLED=true"
+            )
+        if not settings.ai_engineer_github_repository or not settings.ai_engineer_github_token:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED exige repositório e token GitHub"
+            )
+        allow_production_pr = os.getenv(
+            "AI_ENGINEER_ALLOW_PRODUCTION_PR",
+            "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not allow_production_pr:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED em produção exige "
+                "AI_ENGINEER_ALLOW_PRODUCTION_PR=true (revisão humana obrigatória)"
             )
     if errors:
         raise RuntimeError("Configuração de produção inválida: " + "; ".join(errors))

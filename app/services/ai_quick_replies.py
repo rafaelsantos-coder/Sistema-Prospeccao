@@ -49,6 +49,9 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
     raw_text = (reply_text or "").strip().lower()
     if "?" not in raw_text:
         return []
+    # Dado digitável (número a portar, e-mail, CEP...) nunca vira Sim/Não.
+    if asks_for_free_text(reply_text):
+        return []
     text = unicodedata.normalize("NFKD", raw_text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
 
@@ -145,7 +148,8 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
         "sim ou nao",
         "responda sim",
         "confirma que",
-        "deseja",
+        # "deseja" sozinho é amplo demais ("Qual número você deseja portar?").
+        "deseja unificar",
     )
     if any(cue in text for cue in yes_no_cues):
         return [
@@ -159,6 +163,7 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
 _FREE_TEXT_FIELDS = (
     "cidade", "cep", "nome", "cpf", "cnpj", "e-mail", "email", "endereco", "rua",
     "bairro", "numero", "data de nascimento", "nascimento", "telefone", "complemento",
+    "iccid", "ddd",
 )
 _FREE_TEXT_ASK = re.compile(
     r"\b(qual|quais|em qual|em que|me (?:passa|passe|informa|informe|diz|diga|envia|envie)"

@@ -26,6 +26,26 @@
     <div><span>Vendas ganhas</span><strong>{{ s.won }}</strong></div>
   </div>
 </section>
+{% set g = report.guardian %}
+{% if g and g.reviews %}
+<section class="panel top-space">
+  <div class="panel-header"><div><span class="eyebrow">GUARDIÃO</span><h3>Observação de saída</h3>
+    <p>Revisões do Guardião no período. Em sombra, o WhatsApp não muda — só o que interviria.</p>
+  </div></div>
+  <div class="ai-agent-kpis">
+    <div><span>Revisões</span><strong>{{ g.reviews }}</strong></div>
+    <div><span>Sombra</span><strong>{{ g.shadow_reviews }}</strong></div>
+    <div><span>Enforce</span><strong>{{ g.enforce_reviews }}</strong></div>
+    <div><span>Interviria</span><strong>{{ g.would_intervene_rate }}%</strong></div>
+    <div><span>Bloquearia</span><strong>{{ g.observed_blocks }}</strong></div>
+  </div>
+  {% if g.top_issues %}
+  <p class="top-space">Códigos mais frequentes:
+    {% for item in g.top_issues %}{{ item.code }} ({{ item.count }}){% if not loop.last %} · {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+</section>
+{% endif %}
 <section class="panel top-space">
   <div class="panel-header"><div><span class="eyebrow">DA PIOR PARA A MELHOR</span><h3>Conversas avaliadas</h3></div></div>
   <div class="data-table-wrap">
