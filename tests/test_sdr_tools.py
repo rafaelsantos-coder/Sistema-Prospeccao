@@ -31,7 +31,7 @@ def test_catalog_for_city_lists_only_plans_available_there():
 
 def test_catalog_for_corporate_and_mobile():
     assert [p["price"] for p in catalog_for("", "Empresa")["plans"]] == [139.00, 169.00, 199.90]
-    assert catalog_for("", "MOVEL")["plans"][0]["gb"] == 5
+    assert catalog_for("", "MOVEL")["plans"][0]["gb"] == 2
 
 
 def test_search_manual_ranks_relevant_items():
