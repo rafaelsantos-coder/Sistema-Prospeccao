@@ -2453,6 +2453,11 @@ def _finalize_signed_sale(
 
 
 SALE_ACCEPTANCE_STEP = "CONFIRM_SALE"
+SIGNED_FINAL_MESSAGE = (
+    "Contrato assinado com sucesso! ✅ Sua contratação está concluída. "
+    "Agora é só aguardar: nossa equipe vai entrar em contato para agendar a "
+    "ativação do seu serviço. Obrigado por escolher a Sulnet!"
+)
 
 
 def _friendly_plan_name(raw: str) -> str:
@@ -2757,6 +2762,12 @@ def _is_fixed_closing_text(closing: AIClosingState | None, text: str) -> bool:
         return False
     if closing.step == SALE_ACCEPTANCE_STEP and text.startswith(
         ("Antes de gerar o contrato, confira o resumo", "Só preciso da sua confirmação para gerar o contrato")
+    ):
+        return True
+    if (
+        text == SIGNED_FINAL_MESSAGE
+        and closing.step == "COMPLETED"
+        and _contract_is_signed(str(closing.contract_status or ""))
     ):
         return True
     sign_url = str(closing.sign_url or "").strip()
@@ -4733,10 +4744,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 status_payload=status,
             )
             if already_won is not None:
-                reply = (
-                    "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                    "Agora o pedido segue para o time responsável pela ativação."
-                )
+                reply = SIGNED_FINAL_MESSAGE
                 if conversation.lead:
                     conversation.lead.stage = "GANHO"
                     conversation.lead.next_action_at = None
@@ -4755,10 +4763,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 if _contract_is_signed(state.contract_status):
                     _finalize_signed_sale(client, state, collected)
                     if state.step == "COMPLETED":
-                        reply = (
-                            "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                            "Agora o pedido segue para o time responsável pela ativação."
-                        )
+                        reply = SIGNED_FINAL_MESSAGE
                         if conversation.lead:
                             conversation.lead.stage = "GANHO"
                             conversation.lead.next_action_at = None
@@ -5107,10 +5112,7 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     db,
                     agent=agent,
                     conversation=conversation,
-                    text=(
-                        "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                        "Agora o pedido segue para o time responsável pela ativação."
-                    ),
+                    text=SIGNED_FINAL_MESSAGE,
                 )
                 if conversation.lead:
                     conversation.lead.stage = "GANHO"
@@ -5135,16 +5137,19 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     state,
                     collected,
                 )
+                if state.step != "COMPLETED":
+                    # Assinatura confirmada: o cliente recebe a mensagem final
+                    # já; o ganho no CRM segue pelo fluxo do próprio CRM/BKO.
+                    collected["_completed_on_signature"] = True
+                    state.step = "COMPLETED"
+                    state.completed_at = utcnow()
                 _save_collected(state, collected)
                 if state.step == "COMPLETED":
                     _send_text(
                         db,
                         agent=agent,
                         conversation=conversation,
-                        text=(
-                            "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                            "Agora o pedido segue para o time responsável pela ativação."
-                        ),
+                        text=SIGNED_FINAL_MESSAGE,
                     )
                     if conversation.lead:
                         conversation.lead.stage = "GANHO"
