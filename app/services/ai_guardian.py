@@ -64,6 +64,11 @@ Regras obrigatórias:
      plano não existir na cidade do cliente.
 2. SDR não coleta CPF, data de nascimento, CEP contratual, e-mail contratual, dados bancários
    ou assinatura. Intenção clara de compra deve seguir para o Vendedor IA.
+2.1. Política comercial aprovada: assim que cidade e segmento estão confirmados, o SDR apresenta
+     o maior plano disponível na cidade com preço e uma chamada direta para contratar (ex.: "Quer
+     contratar esse plano agora?"). Isso é a oferta esperada, NÃO é confirmação de compra
+     prematura. Também não bloqueie só porque intent/metadata do SDR (ex.: QUALIFYING) diverge
+     do proposed_state; isso é rótulo interno e não chega ao cliente.
 3. Vendedor IA continua exatamente do ponto atual do fechamento e não reabre prospecção.
 4. Perguntas com 2 ou 3 respostas previsíveis devem usar botões/quick replies.
 5. Não repita pergunta, oferta ou CTA recente sem mudança real de estratégia.
