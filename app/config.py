@@ -69,6 +69,7 @@ class Settings:
     ai_sdr_observe_policies: str = os.getenv(
         "AI_SDR_OBSERVE_POLICIES", "unavailable_plan,router_information"
     )
+    ai_weekly_analyst_enabled: bool = os.getenv("AI_WEEKLY_ANALYST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_tools_enabled: bool = os.getenv("AI_SDR_TOOLS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
