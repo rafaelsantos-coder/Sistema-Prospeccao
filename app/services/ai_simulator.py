@@ -168,19 +168,53 @@ def _guard(db: Session, agent: AIAgentProfile, context: dict, decision) -> dict[
     }
 
 
+SIMULATOR_EFFORTS = {"none", "minimal", "low", "medium"}
+
+
+def _variant_agent(agent: AIAgentProfile, variant: dict[str, Any] | None):
+    """Cópia do agente com o nível de raciocínio e/ou o prompt enxuto do teste.
+
+    Nada é gravado: a produção continua com a configuração do banco.
+    """
+    variant = variant or {}
+    effort = str(variant.get("reasoning_effort") or "").strip().lower()
+    compact = bool(variant.get("compact_prompt"))
+    if effort not in SIMULATOR_EFFORTS and not compact:
+        return agent, "produção"
+    from app.services.ai_sdr_policy import SULIA_COMPACT_SYSTEM_PROMPT
+
+    copy = SimpleNamespace(
+        id=agent.id,
+        name=agent.name,
+        role_type=agent.role_type,
+        model=agent.model,
+        execution_mode=agent.execution_mode,
+        business_goal=agent.business_goal,
+        qualification_handoff_score=agent.qualification_handoff_score,
+        user=getattr(agent, "user", None),
+        user_id=getattr(agent, "user_id", None),
+        reasoning_effort=effort if effort in SIMULATOR_EFFORTS else agent.reasoning_effort,
+        system_prompt=SULIA_COMPACT_SYSTEM_PROMPT if compact else agent.system_prompt,
+    )
+    label = f"raciocínio {copy.reasoning_effort}" + (" · prompt enxuto" if compact else "")
+    return copy, label
+
+
 def simulate_sdr_turn(
     db: Session,
     *,
     history: list[dict[str, str]],
     message: str,
     city: str = "",
+    variant: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from app.services import ai_sdr
 
     started = time.monotonic()
-    agent = _sdr_agent(db)
-    context = build_simulated_context(db, agent, history, message, city=city)
-    trace: list[str] = []
+    production_agent = _sdr_agent(db)
+    agent, variant_label = _variant_agent(production_agent, variant)
+    context = build_simulated_context(db, production_agent, history, message, city=city)
+    trace: list[str] = [f"Configuração: {variant_label}."]
 
     fast = ai_sdr._fast_purchase_request(context)
     if fast:

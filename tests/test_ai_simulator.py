@@ -76,3 +76,23 @@ def test_simulator_requires_csrf_and_admin():
         assert client.post(
             "/ai/simulator/turn", json={"csrf_token": "x", "message": "oi"}
         ).status_code == 403
+
+
+def test_simulator_variant_changes_only_the_copy():
+    from types import SimpleNamespace
+
+    from app.services.ai_sdr_policy import SULIA_COMPACT_SYSTEM_PROMPT
+    from app.services.ai_simulator import _variant_agent
+
+    agent = SimpleNamespace(
+        id=1, name="SDR", role_type="SDR", model="m", execution_mode="AUTO", business_goal="",
+        qualification_handoff_score=80, user=None, user_id=1, reasoning_effort="low", system_prompt="longo",
+    )
+    same, label = _variant_agent(agent, {})
+    assert same is agent and label == "produção"
+    copy, label = _variant_agent(agent, {"reasoning_effort": "none", "compact_prompt": True})
+    assert copy.reasoning_effort == "none"
+    assert copy.system_prompt == SULIA_COMPACT_SYSTEM_PROMPT
+    assert agent.reasoning_effort == "low" and agent.system_prompt == "longo"
+    assert "prompt enxuto" in label
+    assert len(SULIA_COMPACT_SYSTEM_PROMPT) < 5000
