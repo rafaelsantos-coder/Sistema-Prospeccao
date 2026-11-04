@@ -56,3 +56,19 @@ def test_mensagem_final_e_texto_fixo():
     assert _is_fixed_closing_text(closing, SIGNED_FINAL_MESSAGE)
     assert "agendar" in SIGNED_FINAL_MESSAGE
     assert not _is_fixed_closing_text(SimpleNamespace(step="WAITING_SIGNATURE", contract_status="", sign_url=""), SIGNED_FINAL_MESSAGE)
+
+
+def test_assinatura_em_qualquer_ponto_do_status_do_crm():
+    from app.services.ai_seller import _payload_shape, _signed_paths
+
+    payload = {
+        "opportunity": {"id": 14153, "status": "open"},
+        "contract": {"status": "aguardando_backoffice", "signature": {"status": "signed"}},
+    }
+    assert _signed_paths(payload) == ["contract.signature.status"]
+    assert _signed_paths({"zapsign": {"signedAt": "2026-11-04T17:10:00Z"}}) == ["zapsign.signedat"]
+    assert _signed_paths({"contract": {"status": "unsigned"}}) == []
+    assert _signed_paths({"contract": {"status": "pending_signature"}}) == []
+    assert _signed_paths({"opportunity": {"status": "signed"}}) == []  # fora do escopo de contrato
+    assert "status=open" in _payload_shape(payload)
+    assert "14153" not in _payload_shape(payload)
