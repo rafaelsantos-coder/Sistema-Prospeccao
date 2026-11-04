@@ -136,6 +136,27 @@ def run_case(case: dict) -> None:
             }
             assert ai_sdr._explicit_purchase_commitment(context) is item["expected"], item
 
+    elif kind == "sdr_stale_repetition":
+        for item in data["cases"]:
+            decision = ai_sdr.AIDecision(
+                reply_text=item["reply"],
+                qualification_score=50,
+                temperature="MORNO",
+                recommended_stage="NEGOCIACAO",
+                handoff_recommended=False,
+                confidence=0.9,
+                summary="",
+                next_action="",
+            )
+            context = {
+                "latest_customer_message": item["latest"],
+                "history": [
+                    {"direction": "OUTBOUND", "body": item["previous"]},
+                    {"direction": "INBOUND", "body": item["latest"]},
+                ],
+            }
+            assert ai_sdr._sdr_reply_is_stale_repetition(decision, context) is item["expected"], item
+
     elif kind == "sdr_penalty":
         from app.services.ai_sdr_tools import ftth_cancellation_penalty
 

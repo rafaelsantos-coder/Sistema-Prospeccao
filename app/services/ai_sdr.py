@@ -2484,6 +2484,43 @@ def _recent_outbound_messages_for_repetition(
     return rows[-limit:]
 
 
+_DIRECT_QUESTION_START = re.compile(
+    r"^(?:e\s+)?(?:qual|quais|quanto|quantos|quantas|quando|como|onde|por que|porque|pq|"
+    r"tem|posso|preciso|e se|o que|oque|existe|da pra|aceita|inclui|funciona|vem|vou pagar)\b"
+)
+
+
+def _customer_asked_direct_question(context: dict) -> bool:
+    raw = str(context.get("latest_customer_message") or "")
+    return "?" in raw or bool(_DIRECT_QUESTION_START.match(_fold_sales_text(raw)))
+
+
+def _sdr_reply_nearly_identical(decision: AIDecision, context: dict) -> bool:
+    candidate = _fold_sales_text(decision.reply_text)
+    if not candidate:
+        return False
+    return any(
+        candidate == _fold_sales_text(previous)
+        or SequenceMatcher(None, candidate, _fold_sales_text(previous)).ratio() >= 0.92
+        for previous in _recent_outbound_messages_for_repetition(context)
+    )
+
+
+def _sdr_reply_is_stale_repetition(decision: AIDecision, context: dict) -> bool:
+    """Repetição que justifica trocar a resposta.
+
+    Se o cliente fez uma pergunta direta, uma resposta que reaproveita termos da
+    mensagem anterior (ex.: multa) é resposta, não estagnação: só conta se for
+    praticamente igual. Antes, a regra trocava a resposta por "por outro ângulo"
+    e o cliente ficava sem o valor da multa (simulação 03/11).
+    """
+    if not _sdr_reply_repeats_recent_outbound(decision, context):
+        return False
+    if _customer_asked_direct_question(context):
+        return _sdr_reply_nearly_identical(decision, context)
+    return True
+
+
 def _sdr_reply_repeats_recent_outbound(decision: AIDecision, context: dict) -> bool:
     candidate = _fold_sales_text(decision.reply_text)
     if not candidate:
@@ -2623,7 +2660,8 @@ def _explicit_purchase_commitment(context: dict) -> bool:
     # contratar") também são aceite. Antes, só frases fixas contavam e o
     # cliente que clicava no botão não era transferido (simulação 03/11).
     if purchase_question and re.fullmatch(
-        r"(?:sim\s*)?(?:pode\s+)?(?:avancar|seguir|fechar|contratar|bora|topo|eu topo)"
+        r"(?:sim\s*)?(?:(?:pode|quero|vamos|bora|podemos)\s+)?"
+        r"(?:avancar|seguir|fechar|contratar|prosseguir|continuar|bora|topo|eu topo)"
         r"(?:\s+(?:assim|agora|sim|com essa condicao|com ela|com esse plano))?",
         latest,
     ):
@@ -2959,7 +2997,7 @@ def _journey_integrity_issues(
     ):
         issues.append("STATE_REGRESSION_CITY")
 
-    if _sdr_reply_repeats_recent_outbound(decision, context):
+    if _sdr_reply_is_stale_repetition(decision, context):
         issues.append("REPEATED_QUESTION")
 
     if (
@@ -3155,7 +3193,7 @@ def _apply_journey_orchestration_policy(
     )
     decision.stagnation_count = min(20, previous_count + 1) if same_position else 0
 
-    repetitive = _sdr_reply_repeats_recent_outbound(decision, context)
+    repetitive = _sdr_reply_is_stale_repetition(decision, context)
     if repetitive or decision.stagnation_count >= 3:
         decision = _apply_stagnation_strategy(decision, context)
         decision.journey_state = state
