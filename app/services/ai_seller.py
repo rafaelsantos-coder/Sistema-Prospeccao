@@ -3113,12 +3113,49 @@ def _seller_step_buttons(
     if buttons:
         return [dict(item) for item in buttons]
 
-    # Segurança adicional: se uma pergunta estruturada sair do mapa acima,
-    # ainda tentamos transformar perguntas previsíveis (ex.: sim/não) em botões.
-    from app.services.ai_quick_replies import infer_quick_replies
+    # Etapas que pedem dado digitável: nunca inferir Sim/Não.
+    # Em 04/11 o playbook "Qual número você deseja portar?" gerou botões
+    # Sim/Não por causa do cue "deseja" em infer_quick_replies.
+    free_text_steps = {
+        "NAME",
+        "CPF",
+        "BIRTH_DATE",
+        "CEP",
+        "ADDRESS_DETAILS",
+        "ADDRESS_NUMBER",
+        "EMAIL",
+        "MOBILE_NEW_ICCID",
+        "MOBILE_NEW_NUMBER",
+        "MOBILE_PORT_ICCID",
+        "MOBILE_PORT_NUMBER",
+        "MOBILE_PORT_NAME",
+        "MOBILE_PORT_DOC",
+        "MOBILE_PORT_DATE",
+        "MOBILE_M2M_QTY",
+        "MOBILE_M2M_ICCIDS",
+        "MOBILE_DUE_DAY",
+        "MOBILE_ACTIVATION_VALUE",
+        "MOBILE_DEBIT_BANK",
+        "MOBILE_DEBIT_AGENCY",
+        "MOBILE_DEBIT_ACCOUNT",
+        "MOBILE_DEBIT_HOLDER",
+        "MOBILE_UNIFY_REASON",
+        "BILLING_DUE_DAY",
+        "BILLING_ACTIVATION_VALUE",
+        "BILLING_DEBIT_BANK",
+        "BILLING_DEBIT_AGENCY",
+        "BILLING_DEBIT_ACCOUNT",
+        "BILLING_DEBIT_HOLDER",
+        "BILLING_UNIFY_REASON",
+    }
+    if step in free_text_steps:
+        return []
 
-    inferred = infer_quick_replies(text)
-    return inferred if len(inferred) >= 2 else []
+    # Segurança adicional: perguntas previsíveis (ex.: sim/não) viram botões,
+    # mas perguntas de dado livre ficam sem botão.
+    from app.services.ai_quick_replies import quick_replies_for_message
+
+    return quick_replies_for_message(text, None)
 
 
 def _send_step_message(

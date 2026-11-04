@@ -367,6 +367,9 @@ def test_seller_step_buttons_cover_predefined_mobile_questions():
 
 def test_seller_step_buttons_keep_free_text_steps_without_buttons():
     assert _seller_step_buttons("MOBILE_PORT_NUMBER", "Qual é o número que será portado?") == []
+    assert _seller_step_buttons(
+        "MOBILE_PORT_NUMBER", "Qual número você deseja portar?"
+    ) == []
     assert _seller_step_buttons("EMAIL", "Qual é o seu e-mail?") == []
 
 
