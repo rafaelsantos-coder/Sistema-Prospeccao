@@ -1516,9 +1516,8 @@ def _query_playbook_guidance(
         return next_step, question
 
     LOG.warning(
-        "seller_playbook_sync_limit opportunity=%s fallback=%s",
+        "seller_playbook_sync_limit opportunity=%s",
         state.opportunity_id,
-        fallback_step,
     )
     return fallback_step, None
 
@@ -2893,9 +2892,8 @@ def _send_step_message(
         and latest_message.direction == "OUTBOUND"
     ):
         LOG.info(
-            "seller_duplicate_suppressed conversation=%s step=%s message=%s",
+            "seller_duplicate_suppressed conversation=%s message=%s",
             conversation.id,
-            state.step,
             recent_duplicate.id,
         )
         return recent_duplicate
@@ -5137,10 +5135,9 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
             state.last_error = str(exc)[:1200]
             state.updated_at = utcnow()
             LOG.warning(
-                "seller_contract_poll_failed state=%s step=%s error=%s",
+                "seller_contract_poll_failed state=%s error_code=%s",
                 state.id,
-                state.step,
-                exc,
+                getattr(exc, "error_code", None) or type(exc).__name__,
             )
 
     return processed
