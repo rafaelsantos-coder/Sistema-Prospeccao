@@ -212,6 +212,9 @@ def simulate_sdr_turn(
         trace.append(_model_trace(decision, retry=True))
         integrity = ai_sdr._journey_integrity_issues(decision, context)
 
+    if ai_sdr._is_closer_handoff(decision):
+        trace.append("Transferido ao Vendedor IA (sem revisão: a mensagem do SDR não é enviada).")
+        return _result(decision, trace, started, guardian=None, integrity=integrity)
     guardian_started = time.monotonic()
     guardian = _guard(db, agent, context, decision)
     trace.append(f"Guardião: {(time.monotonic() - guardian_started):.1f} s.")

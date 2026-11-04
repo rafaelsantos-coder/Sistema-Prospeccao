@@ -176,3 +176,38 @@ def test_official_catalog_goes_into_context_when_city_is_known():
     company = ai_sdr._official_catalog_for_context({"confirmed_facts": {"customer_type": "EMPRESA"}})
     assert company["segment"] == "EMPRESA"
     assert ai_sdr._official_catalog_for_context({"confirmed_facts": {}, "lead": {}}) is None
+
+
+def _high_intent(reply="Perfeito! Vamos seguir."):
+    decision = _decision(reply)
+    decision.intent = "HIGH_INTENT"
+    decision.journey_state = "CONFIRM_PURCHASE"
+    return decision
+
+
+def test_clear_purchase_after_offer_goes_to_closing():
+    context = {
+        "latest_customer_message": "Quero avançar",
+        "history": [
+            {"direction": "OUTBOUND", "body": "Temos 650 Mega por R$ 99,90 mensais. O que acha?"},
+            {"direction": "INBOUND", "body": "Quero avançar"},
+        ],
+    }
+    decision = ai_sdr._promote_clear_purchase_to_closing(_high_intent(), context)
+    assert decision.handoff_target == "CLOSER_AI"
+    assert ai_sdr._is_closer_handoff(decision)
+
+
+def test_purchase_promotion_needs_offer_and_no_hesitation():
+    no_offer = {"latest_customer_message": "Quero avançar", "history": []}
+    assert ai_sdr._promote_clear_purchase_to_closing(_high_intent(), no_offer).handoff_target != "CLOSER_AI"
+    hesitant = {
+        "latest_customer_message": "Quero avançar, mas achei caro",
+        "history": [{"direction": "OUTBOUND", "body": "Temos 800 Mega por R$ 119,90."}],
+    }
+    assert ai_sdr._promote_clear_purchase_to_closing(_high_intent(), hesitant).handoff_target != "CLOSER_AI"
+    question = {
+        "latest_customer_message": "Quero avançar, como funciona a instalação?",
+        "history": [{"direction": "OUTBOUND", "body": "Temos 800 Mega por R$ 119,90."}],
+    }
+    assert ai_sdr._promote_clear_purchase_to_closing(_high_intent(), question).handoff_target != "CLOSER_AI"

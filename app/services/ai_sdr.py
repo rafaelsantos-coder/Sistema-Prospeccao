@@ -3263,6 +3263,54 @@ def _tools_needed_for_turn(tools: list[Any], context: dict) -> list[Any]:
     return [tool for tool in tools if getattr(tool, "name", "") in needed]
 
 
+def _is_closer_handoff(decision: AIDecision) -> bool:
+    return bool(
+        decision.handoff_target == "CLOSER_AI"
+        and decision.journey_state == "CLOSING"
+        and decision.customer_commitment
+    )
+
+
+_PURCHASE_HESITATION_CUES = (
+    "nao", "caro", "pensar", "depois", "duvida", "mas ", "porem", "sera que", "talvez",
+)
+
+
+def _offer_in_history(context: dict) -> bool:
+    for row in context.get("history") or []:
+        if str(row.get("direction") or "").upper() != "OUTBOUND":
+            continue
+        body = _fold_sales_text(str(row.get("body") or ""))
+        if re.search(r"\b\d{3}\s*mega\b", body) and re.search(r"\br\s*\d{2,3}", body):
+            return True
+    return False
+
+
+def _promote_clear_purchase_to_closing(decision: AIDecision, context: dict) -> AIDecision:
+    """O modelo marcou intenção alta de compra depois de uma oferta, mas não
+    transferiu: leva ao fechamento. Antes, o Guardião bloqueava por "intenção
+    sem handoff" e o cliente ia para um humano (simulação e conversa 239)."""
+    if decision.journey_state in {"CLOSING", "HUMAN_HANDOFF", "OPT_OUT"}:
+        return decision
+    if decision.intent != "HIGH_INTENT" and decision.sales_state != "PURCHASE_INTENT":
+        return decision
+    if not _offer_in_history(context) or _customer_asked_direct_question(context):
+        return decision
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    if not latest or any(cue in f" {latest} " for cue in _PURCHASE_HESITATION_CUES):
+        return decision
+    decision.journey_state = "CLOSING"
+    decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS["CLOSING"]
+    decision.handoff_target = "CLOSER_AI"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.customer_commitment = True
+    decision.sales_state = "PURCHASE_INTENT"
+    decision.intent = "HIGH_INTENT"
+    decision.followup_needed = False
+    return decision
+
+
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
@@ -3383,6 +3431,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision, observations = _apply_rewrite_policies(decision, context)
     decision = _apply_journey_orchestration_policy(decision, context)
     decision = _apply_existing_customer_plan_change_policy(decision, context)
+    decision = _promote_clear_purchase_to_closing(decision, context)
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
     decision._policy_observations = observations
     LOG.info("sdr_decision_timing %s", json.dumps(decision._timing, ensure_ascii=False))
@@ -4003,20 +4052,37 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
             from app.services.ai_guardian import guard_outbound_message
 
-            guardian = guard_outbound_message(
-                db,
-                agent=agent,
-                conversation=conversation,
-                reply_text=decision.reply_text,
-                buttons=[item.model_dump() for item in decision.quick_replies],
-                source="SDR_DECISION",
-                proposed_state=decision.journey_state or decision.sales_state,
-                metadata={
-                    "intent": decision.intent,
-                    "handoff_target": decision.handoff_target,
-                    "customer_commitment": decision.customer_commitment,
-                },
-            )
+            if _is_closer_handoff(decision):
+                # A mensagem do SDR não chega ao cliente quando o Vendedor IA
+                # assume: revisá-la só atrasava e bloqueava o fechamento
+                # (conversa 239 em 04/11 e simulações).
+                from app.services.ai_guardian import GuardianResult
+
+                guardian = GuardianResult(
+                    verdict="APPROVE",
+                    risk="LOW",
+                    confidence=1.0,
+                    quality_score=100,
+                    rationale="Handoff ao Vendedor IA: a mensagem do SDR não é enviada.",
+                    reply_text=decision.reply_text,
+                    buttons=[],
+                    should_send=True,
+                )
+            else:
+                guardian = guard_outbound_message(
+                    db,
+                    agent=agent,
+                    conversation=conversation,
+                    reply_text=decision.reply_text,
+                    buttons=[item.model_dump() for item in decision.quick_replies],
+                    source="SDR_DECISION",
+                    proposed_state=decision.journey_state or decision.sales_state,
+                    metadata={
+                        "intent": decision.intent,
+                        "handoff_target": decision.handoff_target,
+                        "customer_commitment": decision.customer_commitment,
+                    },
+                )
             if not guardian.should_send:
                 retry_context = dict(context)
                 retry_context["guardian_feedback"] = {
