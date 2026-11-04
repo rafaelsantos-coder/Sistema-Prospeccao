@@ -675,9 +675,9 @@ MOBILE_CONTRACT_BUTTONS_SDR_IA = [
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
     "COMBO_MOBILE_PLAN": [
+        {"id": "movel_2", "label": "2GB"},
         {"id": "movel_5", "label": "5GB"},
         {"id": "movel_10", "label": "10GB"},
-        {"id": "movel_15", "label": "15GB"},
     ],
     "CONFIRM_SALE": [
         {"id": "confirmo", "label": "Confirmo"},
