@@ -33,9 +33,17 @@ def _fold(value: str | None) -> str:
 
 
 def load_manual(db: Session | None, agent: AIAgentProfile) -> list[dict[str, str]]:
-    """Itens aprovados do manual do agente, carregados antes da execução."""
+    """Itens aprovados do manual do agente, carregados antes da execução.
+
+    Sem sessão de banco (avaliação offline), usa a base comercial aprovada V2.
+    """
     if db is None:
-        return []
+        from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS
+
+        return [
+            {"title": item["title"], "tags": item["tags"], "content": item["content"]}
+            for item in SYSTEM_KNOWLEDGE_ITEMS
+        ]
     items = list(
         db.scalars(
             select(AIKnowledgeItem).where(
@@ -85,7 +93,11 @@ def search_manual(manual: list[dict[str, str]], question: str, limit: int = 4) -
 def build_sdr_tools(agent: AIAgentProfile) -> list[Any]:
     from agents import function_tool
 
-    manual = load_manual(object_session(agent), agent)
+    try:
+        session = object_session(agent)
+    except Exception:  # objeto fora do SQLAlchemy (avaliação offline)
+        session = None
+    manual = load_manual(session, agent)
 
     @function_tool
     def consultar_catalogo(cidade: str, segmento: str) -> str:

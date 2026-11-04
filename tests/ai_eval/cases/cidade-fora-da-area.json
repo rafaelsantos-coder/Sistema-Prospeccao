@@ -1,0 +1,35 @@
+{
+  "id": "cidade-fora-da-area",
+  "conversation": null,
+  "description": "Cidade fora da área de atuação: não ofertar plano residencial nem preço.",
+  "lead": {},
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "Você já é cliente Sulnet?"
+    },
+    {
+      "direction": "INBOUND",
+      "body": "Não"
+    },
+    {
+      "direction": "OUTBOUND",
+      "body": "A internet é para sua casa ou empresa?"
+    },
+    {
+      "direction": "INBOUND",
+      "body": "Casa"
+    },
+    {
+      "direction": "OUTBOUND",
+      "body": "Em qual cidade será a instalação?"
+    }
+  ],
+  "latest": "Porto Alegre",
+  "expect": {
+    "reply_not_contains": [
+      "119,90",
+      "99,90"
+    ]
+  }
+}

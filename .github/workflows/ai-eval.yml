@@ -1,0 +1,42 @@
+name: Avaliação da IA
+
+# Roda os casos de tests/ai_eval com o modelo real. Não roda em push, então
+# não interfere na publicação; use antes de mudar prompt, manual ou modelo.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Modelo a avaliar
+        required: false
+        default: gpt-6-luna
+  schedule:
+    - cron: '23 11 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  avaliar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.10'
+      - name: Instalar dependências
+        run: pip install -r requirements.txt pytest
+      - name: Avaliar SDR com o modelo
+        env:
+          AI_EVAL: '1'
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_EVAL_MODEL: ${{ github.event.inputs.model || 'gpt-6-luna' }}
+          APP_ENV: development
+          SECRET_KEY: avaliacao-ia-chave-longa-o-suficiente
+          DATABASE_URL: sqlite:///./ai-eval.db
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::warning::Cadastre o segredo OPENAI_API_KEY no GitHub para rodar a avaliação."
+            exit 0
+          fi
+          pytest -q tests/ai_eval -rA
