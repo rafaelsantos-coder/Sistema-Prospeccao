@@ -265,6 +265,12 @@ def validate_production_settings() -> None:
         if len(settings.zapi_webhook_secret) < 24:
             errors.append("ZAPI_WEBHOOK_SECRET deve ter ao menos 24 caracteres")
     if settings.ai_seller_enabled:
+        if not settings.ai_autonomous_enabled:
+            errors.append(
+                "AI_SELLER_ENABLED em produção também exige AI_AUTONOMOUS_ENABLED=true"
+            )
+        if not settings.openai_api_key:
+            errors.append("AI_SELLER_ENABLED requer OPENAI_API_KEY")
         if not settings.sulnet_crm_base_url.startswith(("https://", "http://")):
             errors.append("AI_SELLER_ENABLED requer SULNET_CRM_BASE_URL válida")
         if (
@@ -274,6 +280,28 @@ def validate_production_settings() -> None:
             errors.append(
                 "AI_SELLER_ENABLED requer SULNET_AI_INTEGRATION_KEY ou "
                 "SULNET_CRM_BEARER_TOKEN com ao menos 24 caracteres"
+            )
+        if len(settings.zapsign_webhook_secret) < 24:
+            errors.append(
+                "AI_SELLER_ENABLED requer ZAPSIGN_WEBHOOK_SECRET com ao menos 24 caracteres"
+            )
+    if settings.ai_engineer_autonomous_pr_enabled:
+        if not settings.ai_engineer_enabled:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED exige AI_ENGINEER_ENABLED=true"
+            )
+        if not settings.ai_engineer_github_repository or not settings.ai_engineer_github_token:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED exige repositório e token GitHub"
+            )
+        allow_production_pr = os.getenv(
+            "AI_ENGINEER_ALLOW_PRODUCTION_PR",
+            "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not allow_production_pr:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED em produção exige "
+                "AI_ENGINEER_ALLOW_PRODUCTION_PR=true (revisão humana obrigatória)"
             )
     if errors:
         raise RuntimeError("Configuração de produção inválida: " + "; ".join(errors))

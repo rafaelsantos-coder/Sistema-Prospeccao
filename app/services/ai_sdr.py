@@ -3657,24 +3657,15 @@ SDR_REWRITE_POLICIES = (
 
 
 def _observed_policy_names() -> set[str]:
-    return {
-        item.strip()
-        for item in str(settings.ai_sdr_observe_policies or "").split(",")
-        if item.strip()
-    }
+    from app.services.ai_sdr_rewrite import observed_policy_names
+
+    return observed_policy_names(settings.ai_sdr_observe_policies)
 
 
 def _decision_signature(decision: AIDecision) -> dict[str, Any]:
-    return {
-        "reply_text": decision.reply_text,
-        "quick_replies": [item.label for item in decision.quick_replies],
-        "intent": decision.intent,
-        "sales_state": decision.sales_state,
-        "handoff_target": decision.handoff_target,
-        "handoff_recommended": decision.handoff_recommended,
-        "offer_plan_code": decision.offer_plan_code,
-        "journey_state": decision.journey_state,
-    }
+    from app.services.ai_sdr_rewrite import decision_signature
+
+    return decision_signature(decision)
 
 
 def _apply_rewrite_policies(
@@ -3687,22 +3678,14 @@ def _apply_rewrite_policies(
     demais continuam aplicadas. O registro vai para o AIRun e permite desligar
     cada regra com base em dados, sem novo deploy.
     """
-    observed = _observed_policy_names()
-    observations: list[dict[str, Any]] = []
-    for name, policy in SDR_REWRITE_POLICIES:
-        before = _decision_signature(decision)
-        candidate = policy(decision.model_copy(deep=True), context)
-        after = _decision_signature(candidate)
-        changed = [key for key in before if before[key] != after[key]]
-        if not changed:
-            continue
-        mode = "observe" if name in observed else "rewrite"
-        observations.append({"policy": name, "mode": mode, "changed": changed})
-        if mode == "rewrite":
-            decision = candidate
-    if observations:
-        LOG.info("sdr_policy_effects %s", json.dumps(observations, ensure_ascii=False))
-    return decision, observations
+    from app.services.ai_sdr_rewrite import apply_rewrite_policies
+
+    return apply_rewrite_policies(
+        decision,
+        context,
+        SDR_REWRITE_POLICIES,
+        observe=_observed_policy_names(),
+    )
 
 
 def _send_autonomous_reply(
