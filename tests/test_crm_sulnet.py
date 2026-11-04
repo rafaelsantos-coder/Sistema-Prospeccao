@@ -901,3 +901,26 @@ def test_playbook_patch_payload_builds_nested_payload():
             }
         }
     }
+
+
+def test_integration_profile_is_shared_between_clients(monkeypatch):
+    calls: list[str] = []
+
+    class CountingClient(FakeClient):
+        def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            calls.append(url)
+            return super().request(method, url, **kwargs)
+
+    monkeypatch.setattr(crm_module.httpx, "Client", CountingClient)
+    first = SulnetCRMClient(base_url="https://crm.shared", bearer_token="b" * 32)
+    second = SulnetCRMClient(base_url="https://crm.shared", bearer_token="b" * 32)
+
+    assert first.integration_profile()["apiVersion"] == 1
+    profile_calls = len(calls)
+    assert profile_calls == 2  # config (404) + context
+
+    assert second.integration_profile()["apiVersion"] == 1
+    assert len(calls) == profile_calls
+
+    second.integration_profile(refresh=True)
+    assert len(calls) == profile_calls + 2

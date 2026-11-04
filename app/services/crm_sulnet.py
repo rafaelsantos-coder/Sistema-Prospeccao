@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 import json
 import logging
 import re
+import threading
+import time
 import unicodedata
 from typing import Any, Literal
 import uuid
@@ -224,6 +226,35 @@ class CRMPlaybookResult:
         }
 
 
+# Perfil de integração do CRM compartilhado entre clientes do mesmo processo.
+# Cada job criava um cliente novo e repetia GET /api/capture/config (404 no
+# CRM atual) e /api/capture/context antes de qualquer chamada útil.
+_PROFILE_TTL_SECONDS = 600.0
+_SHARED_PROFILES: dict[str, tuple[float, dict[str, Any]]] = {}
+_SHARED_PROFILES_LOCK = threading.Lock()
+
+
+def _shared_profile(base_url: str) -> dict[str, Any] | None:
+    with _SHARED_PROFILES_LOCK:
+        cached = _SHARED_PROFILES.get(base_url)
+    if not cached:
+        return None
+    stored_at, profile = cached
+    if time.monotonic() - stored_at > _PROFILE_TTL_SECONDS:
+        return None
+    return dict(profile)
+
+
+def _store_shared_profile(base_url: str, profile: dict[str, Any]) -> None:
+    with _SHARED_PROFILES_LOCK:
+        _SHARED_PROFILES[base_url] = (time.monotonic(), dict(profile))
+
+
+def clear_shared_profiles() -> None:
+    with _SHARED_PROFILES_LOCK:
+        _SHARED_PROFILES.clear()
+
+
 @dataclass(slots=True)
 class SulnetCRMClient:
     base_url: str
@@ -433,6 +464,11 @@ class SulnetCRMClient:
     def integration_profile(self, *, refresh: bool = False) -> dict[str, Any]:
         if self._profile_cache is not None and not refresh:
             return dict(self._profile_cache)
+        if not refresh:
+            shared = _shared_profile(self.base_url)
+            if shared is not None:
+                self._profile_cache = shared
+                return dict(shared)
 
         profile: dict[str, Any] = {}
         try:
@@ -459,6 +495,7 @@ class SulnetCRMClient:
         profile.setdefault("capabilities", {})
         profile["legacy"] = int(profile.get("apiVersion") or 0) < 2
         self._profile_cache = dict(profile)
+        _store_shared_profile(self.base_url, profile)
         LOG.info(
             "crm_profile api_version=%s app_version=%s legacy=%s",
             profile.get("apiVersion"),
