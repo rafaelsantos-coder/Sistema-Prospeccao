@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div><span class="eyebrow">IA · APRENDIZADO</span>
+    <h2>Qualidade das conversas</h2>
+    <p>Nota automática de cada conversa atendida pela IA: repetição, bloqueios do Guardião, falhas, frustração do cliente e até onde a venda chegou. As piores notas são os próximos casos de teste.</p>
+  </div>
+  <div class="inbox-tabs">
+    {% for option in [1, 7, 14, 30] %}
+    <a href="/ai/quality?days={{ option }}" class="{% if days == option %}active{% endif %}">{{ option }} dia{{ 's' if option > 1 }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% set s = report.summary %}
+<section class="ai-agent-hero panel">
+  <div class="ai-agent-kpis">
+    <div><span>Conversas</span><strong>{{ s.conversations }}</strong></div>
+    <div><span>Nota média</span><strong>{{ s.average_score }}</strong></div>
+    <div><span>Com repetição</span><strong>{{ s.with_repetition }}</strong></div>
+    <div><span>Com frustração</span><strong>{{ s.with_frustration }}</strong></div>
+    <div><span>Paradas &gt; 24 h</span><strong>{{ s.stuck }}</strong></div>
+    <div><span>Execuções com falha</span><strong>{{ s.failure_rate }}%</strong></div>
+    <div><span>Bloqueios do Guardião</span><strong>{{ s.guardian_block_rate }}%</strong></div>
+    <div><span>No fechamento</span><strong>{{ s.in_closing }}</strong></div>
+    <div><span>Contratos enviados</span><strong>{{ s.contracts_sent }}</strong></div>
+    <div><span>Vendas ganhas</span><strong>{{ s.won }}</strong></div>
+  </div>
+</section>
+<section class="panel top-space">
+  <div class="panel-header"><div><span class="eyebrow">DA PIOR PARA A MELHOR</span><h3>Conversas avaliadas</h3></div></div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Nota</th><th>Conversa</th><th>Situação</th><th>Mensagens</th><th>Sinais</th></tr></thead>
+      <tbody>
+        {% for row in report.rows %}
+        <tr>
+          <td><strong>{{ row.score }}</strong></td>
+          <td><a href="/conversations/{{ row.conversation_id }}"><strong>{{ row.name }}</strong></a><span class="table-subline">#{{ row.conversation_id }}</span></td>
+          <td>{{ row.outcome_label }}{% if row.silent_hours is not none %}<span class="table-subline">cliente falou há {{ row.silent_hours }} h</span>{% endif %}</td>
+          <td>{{ row.inbound }} do cliente · {{ row.outbound }} enviadas<span class="table-subline">{{ row.followups_sent }} follow-up(s) · {{ row.runs }} execução(ões) da IA</span></td>
+          <td>{% if row.flags %}{{ row.flags|join(' · ') }}{% else %}Sem alertas{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">Nenhuma conversa atendida pela IA neste período.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
