@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 from app.config import settings
@@ -34,11 +35,11 @@ def test_resposta_ja_e_cliente_vale_so_na_mesma_conversa():
 
 
 def test_telefone_de_teste(monkeypatch):
-    monkeypatch.setattr(settings, "ai_test_phones", ("5555936188241",))
+    monkeypatch.setattr(ai_sdr, "settings", replace(settings, ai_test_phones=("5555936188241",)))
     assert ai_sdr.is_ai_test_phone("+55 (55) 93618-8241")
     assert ai_sdr.is_ai_test_phone("555593618824 1".replace(" ", ""))
     assert not ai_sdr.is_ai_test_phone("555599676831")
-    monkeypatch.setattr(settings, "ai_test_phones", ())
+    monkeypatch.setattr(ai_sdr, "settings", replace(settings, ai_test_phones=()))
     assert not ai_sdr.is_ai_test_phone("5555936188241")
 
 
@@ -54,7 +55,7 @@ def test_vinculo_temporario_so_para_telefone_de_teste(monkeypatch):
         def scalar(self, _stmt):
             return agent
 
-    monkeypatch.setattr(settings, "ai_test_phones", ("5555936188241",))
+    monkeypatch.setattr(ai_sdr, "settings", replace(settings, ai_test_phones=("5555936188241",)))
     binding = ai_sdr._test_phone_binding(_DB(), 10, queue)
     assert binding.agent_id == 7 and binding.queue_id == 1 and binding.handling_mode == "AI_FIRST"
     assert ai_sdr._test_phone_binding(_DB(), 11, queue) is None
