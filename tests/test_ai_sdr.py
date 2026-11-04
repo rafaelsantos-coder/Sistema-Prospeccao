@@ -2195,7 +2195,8 @@ def test_first_prospecting_question_is_existing_customer_before_any_offer():
     assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
 
 
-def test_existing_customer_confirmation_routes_to_mobile_or_new_connection():
+def test_existing_customer_confirmation_routes_to_mobile_or_new_connection(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
     decision = _base_prospecting_entry_decision()
     context = {
         "latest_customer_message": "Sim",
@@ -2224,7 +2225,8 @@ def test_existing_customer_confirmation_routes_to_mobile_or_new_connection():
     ]
 
 
-def test_new_customer_confirmation_routes_to_internet_or_mobile():
+def test_new_customer_confirmation_routes_to_internet_or_mobile(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
     decision = _base_prospecting_entry_decision()
     context = {
         "latest_customer_message": "Não",
@@ -3133,3 +3135,67 @@ def test_burst_of_customer_messages_gets_a_single_sdr_job():
             assert statuses[2] == "PENDENTE"
         finally:
             db.close()
+
+
+def _black_history(*pairs):
+    return [{"direction": d, "body": b} for d, b in pairs]
+
+
+def test_black_perguntada_logo_depois_de_ser_cliente(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    for answer, status in (("Sim", "CLIENTE"), ("Não", "NAO_CLIENTE")):
+        context = {
+            "latest_customer_message": answer,
+            "lead": {"city": "Santa Rosa", "confirmed_existing_customer": ""},
+            "history": _black_history(
+                ("OUTBOUND", "Antes de te mostrar as opções, você já é cliente Sulnet?"),
+                ("INBOUND", answer),
+            ),
+        }
+        result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+        assert result.qualification.existing_customer == status
+        assert result.reply_text == "Quer conhecer nossa promoção Black da Sulnet?"
+        assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+
+
+def test_black_sim_apresenta_movel_e_combo(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    context = {
+        "latest_customer_message": "Sim",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": _black_history(
+            ("OUTBOUND", "Quer conhecer nossa promoção Black da Sulnet?"),
+            ("INBOUND", "Sim"),
+        ),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "10/01/2027" in result.reply_text
+    assert [item.label for item in result.quick_replies] == ["Só móvel", "Combo fibra + móvel"]
+
+
+def test_black_nao_segue_fluxo_normal(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    context = {
+        "latest_customer_message": "Não",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": _black_history(
+            ("OUTBOUND", "Quer conhecer nossa promoção Black da Sulnet?"),
+            ("INBOUND", "Não"),
+        ),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "planos de internet ou Telefonia Móvel" in result.reply_text
+
+
+def test_black_combo_vai_para_internet(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    context = {
+        "latest_customer_message": "Combo fibra + móvel",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": _black_history(
+            ("OUTBOUND", "Black da Sulnet: a Black que pula o fim de ano! Qual você prefere?"),
+            ("INBOUND", "Combo fibra + móvel"),
+        ),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "casa ou empresa" in result.reply_text

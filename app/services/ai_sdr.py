@@ -31,6 +31,7 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
+from app.services import ai_campaign_black as black
 from app.services.ai_sdr_policy import CORPORATE_PLANS, FTTH_PLANS, MOBILE_PLANS, PLAN_CHANGE_SERVICE_PHONE, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
@@ -2062,6 +2063,69 @@ def _show_internet_segment_question(
     return decision
 
 
+def _show_black_offer_question(decision: AIDecision, status: str) -> AIDecision:
+    decision.reply_text = black.OFFER_QUESTION
+    decision.quick_replies = [
+        QuickReply(id="black_sim", label="Sim"),
+        QuickReply(id="black_nao", label="Não"),
+    ]
+    decision.intent = "QUALIFYING"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.existing_customer = status
+    decision.qualification.desired_product = None
+    decision.summary = "SulIA perguntou se a pessoa quer conhecer a promoção Black da Sulnet."
+    decision.next_action = "Cliente responder se quer conhecer a Black."
+    _reset_entry_offer(decision)
+    return decision
+
+
+def _show_black_options(decision: AIDecision, status: str) -> AIDecision:
+    decision.reply_text = black.OPTIONS_TEXT
+    decision.quick_replies = [
+        QuickReply(id="black_movel", label="Só móvel"),
+        QuickReply(id="black_combo", label="Combo fibra + móvel"),
+    ]
+    decision.intent = "QUALIFYING"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.existing_customer = status
+    decision.qualification.desired_product = None
+    decision.summary = "Pessoa quer conhecer a Black; SulIA apresentou móvel ou combo."
+    decision.next_action = "Cliente escolher entre móvel e combo da Black."
+    _reset_entry_offer(decision)
+    return decision
+
+
+def _apply_black_entry(decision: AIDecision, context: dict, status: str, *, just_identified: bool) -> AIDecision | None:
+    """Etapa da Black logo após "já é cliente?". None = segue o fluxo normal."""
+    if not black.black_active():
+        return None
+    previous = _last_outbound_text(context)
+    latest_raw = str(context.get("latest_customer_message") or "")
+    if just_identified and not black.was_offered(context.get("history")):
+        return _show_black_offer_question(decision, status)
+    if black.is_offer_question(previous):
+        answer = black.answer_to_offer(latest_raw)
+        if answer == "YES":
+            return _show_black_options(decision, status)
+        if answer == "NO":
+            if status == "CLIENTE":
+                return _show_existing_customer_product_question(decision)
+            return _show_new_customer_product_question(decision)
+        return _show_black_offer_question(decision, status)
+    if black.is_options_question(previous):
+        choice = black.choice_from_options(latest_raw)
+        if choice == "MOBILE":
+            result = _show_mobile_catalog_page(decision, page=1)
+            result.qualification.existing_customer = status
+            return result
+        if choice == "COMBO":
+            return _show_internet_segment_question(decision, existing_customer=status == "CLIENTE")
+        return _show_black_options(decision, status)
+    return None
+
+
 def _apply_prospecting_entry_policy(
     decision: AIDecision,
     context: dict,
@@ -2082,6 +2146,12 @@ def _apply_prospecting_entry_policy(
         return _show_existing_customer_question(decision)
 
     decision.qualification.existing_customer = status
+
+    black_result = _apply_black_entry(
+        decision, context, status, just_identified=current_confirmation in {"CLIENTE", "NAO_CLIENTE"}
+    )
+    if black_result is not None:
+        return black_result
 
     if current_confirmation == "CLIENTE":
         return _show_existing_customer_product_question(decision)
