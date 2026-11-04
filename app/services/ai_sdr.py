@@ -72,6 +72,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _plan_from_sales_context,
     _product_kind_from_text,
     _promote_clear_purchase_to_closing,
+    _recent_outbound_messages_for_repetition,
     _requested_plan_speed,
     _sanitize_unconfirmed_customer_facts,
     _sdr_exposes_internal_handoff,
@@ -80,7 +81,6 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _sdr_reply_repeats_recent_outbound,
     _service_city_in_text,
     _show_corporate_differentials,
-    _try_fast_purchase_path,
 )
 from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
@@ -1438,6 +1438,84 @@ def _send_human_fallback(
         reason[:300],
     )
     return "human_fallback"
+
+
+def _try_fast_purchase_path(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    run: AIRun,
+    context: dict,
+) -> str | None:
+    request = _fast_purchase_request(context)
+    if not request:
+        return None
+    plan, city = request["plan"], request["city"]
+    if city and not _plan_available_in_city(plan, city):
+        # Cidade fora da cobertura deste plano: o fluxo normal apresenta as opções.
+        return None
+
+    from app.services.ai_seller import start_closing_from_sdr
+
+    handoff = bool(city)
+    decision = _fast_purchase_decision(plan, city, handoff=handoff)
+    try:
+        with db.begin_nested():
+            if handoff:
+                if not start_closing_from_sdr(db, sdr_agent=agent, job=job, decision=decision):
+                    raise AIConfigurationError("Vendedor IA indisponível para o caminho rápido.")
+            else:
+                _apply_crm_decision(db, agent=agent, job=job, decision=decision)
+                _send_autonomous_reply(db, agent=agent, job=job, decision=decision)
+                from app.services.ai_followups import schedule_followup
+
+                schedule_followup(
+                    db,
+                    agent_id=agent.id,
+                    queue_id=job.queue_id,
+                    conversation_id=job.conversation_id,
+                    source_message_id=job.message_id,
+                    step=1,
+                    pending_action=decision.journey_pending_action,
+                )
+    except Exception as exc:
+        # Qualquer falha devolve a mensagem ao fluxo normal, sem estado parcial.
+        LOG.warning(
+            "ai_sdr_fast_purchase_fallback job=%s conversation=%s error=%s",
+            job.id,
+            job.conversation_id,
+            exc,
+        )
+        return None
+
+    run.status = "CONCLUIDO"
+    run.intent = decision.intent
+    run.qualification_score = decision.qualification_score
+    run.temperature = decision.temperature
+    run.confidence = decision.confidence
+    run.handoff_recommended = decision.handoff_recommended
+    run.handoff_reason = decision.handoff_reason
+    run.reply_text = "" if handoff else decision.reply_text
+    run.summary = decision.summary
+    run.output_json = json.dumps(
+        {**decision.model_dump(), "fast_path": "HANDOFF" if handoff else "ASK_CITY"},
+        ensure_ascii=False,
+        default=str,
+    )
+    run.finished_at = utcnow()
+    job.status = "CONCLUIDO"
+    job.error = None
+    LOG.info(
+        "ai_sdr_fast_purchase job=%s conversation=%s plan=%s city=%s handoff=%s",
+        job.id,
+        job.conversation_id,
+        plan.get("code"),
+        city or "-",
+        handoff,
+    )
+    return "fast_handoff" if handoff else "fast_ask_city"
+
 
 
 def process_ai_job(db: Session, job: AIJob) -> str:
