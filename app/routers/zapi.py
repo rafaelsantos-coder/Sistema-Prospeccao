@@ -721,5 +721,10 @@ def zapi_status_api(request: Request, db: Session = Depends(get_db)):
         return {"error": "unauthorized"}
     try:
         return ZApiService().status()
-    except ZApiError as exc:
-        return {"configured": settings.integrations["zapi"], "connected": False, "error": str(exc)}
+    except ZApiError:
+        LOG.exception("zapi_status_failed")
+        return {
+            "configured": settings.integrations["zapi"],
+            "connected": False,
+            "error": "Não foi possível consultar o status da Z-API.",
+        }
