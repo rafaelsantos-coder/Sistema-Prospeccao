@@ -15,6 +15,7 @@ from app.models import (
     AIJob,
     AIRun,
     AuditLog,
+    Contact,
     Conversation,
     Message,
     ServiceQueue,
