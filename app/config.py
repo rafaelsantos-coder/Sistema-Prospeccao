@@ -91,6 +91,13 @@ class Settings:
         "AI_SUPERVISOR_GUARDIAN_ENABLED",
         "false",
     ).strip().lower() in {"1", "true", "yes", "on"}
+    # Telefones de teste (só dígitos, separados por vírgula): a IA atende essas
+    # conversas mesmo numa fila com a IA pausada, sem tocar nos outros clientes.
+    ai_test_phones: tuple[str, ...] = tuple(
+        "".join(ch for ch in item if ch.isdigit())
+        for item in os.getenv("AI_TEST_PHONES", "").split(",")
+        if any(ch.isdigit() for ch in item)
+    )
     ai_supervisor_guardian_timeout_seconds: int = int(
         os.getenv("AI_SUPERVISOR_GUARDIAN_TIMEOUT_SECONDS", "30")
     )

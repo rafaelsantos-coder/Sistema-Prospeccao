@@ -7,6 +7,7 @@ import time
 import unicodedata
 from datetime import timedelta
 from difflib import SequenceMatcher
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -169,11 +170,40 @@ def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None
     )
 
 
+def is_ai_test_phone(phone: str | None) -> bool:
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return bool(digits) and any(
+        len(test) >= 8 and digits.endswith(test[-11:]) for test in settings.ai_test_phones
+    )
+
+
+def _test_phone_binding(db: Session, conversation_id: int, queue) -> Any | None:
+    """Vínculo temporário (não gravado) para o telefone de teste numa fila sem IA."""
+    conversation = db.get(Conversation, conversation_id)
+    contact = getattr(conversation, "contact", None) if conversation else None
+    if not contact or not is_ai_test_phone(contact.phone):
+        return None
+    agent = db.scalar(
+        select(AIAgentProfile).where(AIAgentProfile.slug == "sulia-sdr-digital")
+    ) or db.scalar(
+        select(AIAgentProfile)
+        .where(AIAgentProfile.role_type == "SDR", AIAgentProfile.active.is_(True))
+        .limit(1)
+    )
+    if not agent:
+        return None
+    LOG.info("ai_test_phone_binding conversation=%s queue=%s", conversation_id, queue.id)
+    return SimpleNamespace(
+        queue_id=queue.id, agent_id=agent.id, agent=agent, queue=queue,
+        handling_mode="AI_FIRST", active=True, fallback_to_human=True,
+    )
+
+
 def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBinding | None:
     queue = queue_for_conversation(db, conversation_id)
     if not queue:
         return None
-    return queue_ai_binding(db, queue.id)
+    return queue_ai_binding(db, queue.id) or _test_phone_binding(db, conversation_id, queue)
 
 
 def enqueue_ai_job(
@@ -472,7 +502,16 @@ def _persist_confirmed_customer_type(
     lead.segment = "Empresa" if value == "EMPRESA" else "Residencial"
 
 
-def _confirmed_existing_customer_from_lead(lead: Lead | None) -> str:
+def _confirmed_existing_customer_from_lead(
+    lead: Lead | None,
+    *,
+    conversation_id: int | None = None,
+) -> str:
+    """Resposta "já é cliente?" guardada no lead.
+
+    Com conversation_id, só vale a resposta dada nesta mesma conversa: numa
+    conversa nova a SulIA pergunta de novo em vez de presumir.
+    """
     if not lead:
         return ""
     try:
@@ -485,6 +524,8 @@ def _confirmed_existing_customer_from_lead(lead: Lead | None) -> str:
     if not isinstance(marker, dict):
         return ""
     if str(marker.get("source") or "").upper() != "INBOUND_CUSTOMER_CONFIRMED":
+        return ""
+    if conversation_id is not None and marker.get("conversation_id") != conversation_id:
         return ""
     value = str(marker.get("value") or "").upper()
     return value if value in {"CLIENTE", "NAO_CLIENTE"} else ""
@@ -650,7 +691,7 @@ def build_ai_context(
                     | set(previous_facts.get("answered_questions") or [])
                 )
 
-    lead_existing = _confirmed_existing_customer_from_lead(lead)
+    lead_existing = _confirmed_existing_customer_from_lead(lead, conversation_id=conversation.id)
     if (
         not confirmed_facts.get("existing_customer")
         and lead_existing in {"CLIENTE", "NAO_CLIENTE"}
@@ -712,7 +753,9 @@ def build_ai_context(
             "score": lead.score if lead else 0,
             "temperature": lead.temperature if lead else "FRIO",
             "confirmed_customer_type": _confirmed_customer_type_from_lead(lead),
-            "confirmed_existing_customer": _confirmed_existing_customer_from_lead(lead),
+            "confirmed_existing_customer": _confirmed_existing_customer_from_lead(
+                lead, conversation_id=conversation.id
+            ),
             "journey": _journey_memory_from_lead(
                 lead,
                 conversation_id=conversation.id,

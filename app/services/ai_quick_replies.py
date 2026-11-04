@@ -156,10 +156,36 @@ def infer_quick_replies(reply_text: str) -> list[dict[str, str]]:
     return []
 
 
+_FREE_TEXT_FIELDS = (
+    "cidade", "cep", "nome", "cpf", "cnpj", "e-mail", "email", "endereco", "rua",
+    "bairro", "numero", "data de nascimento", "nascimento", "telefone", "complemento",
+)
+_FREE_TEXT_ASK = re.compile(
+    r"\b(qual|quais|em qual|em que|me (?:passa|passe|informa|informe|diz|diga|envia|envie)"
+    r"|pode me (?:passar|informar|dizer|enviar)|informe|digite)\b"
+)
+
+
+def asks_for_free_text(reply_text: str) -> bool:
+    """A última pergunta pede um dado que o cliente precisa digitar (cidade, CEP...)."""
+    text = unicodedata.normalize("NFKD", (reply_text or "").lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    if "?" not in text:
+        return False
+    question = re.split(r"[.!?\n]\s*", text[: text.rindex("?")])[-1]
+    if " ou " in question:
+        return False
+    return bool(_FREE_TEXT_ASK.search(question)) and any(
+        re.search(rf"\b{re.escape(field)}\b", question) for field in _FREE_TEXT_FIELDS
+    )
+
+
 def quick_replies_for_message(
     reply_text: str,
     items: list[QuickReply] | list[dict] | None,
 ) -> list[dict[str, str]]:
+    if asks_for_free_text(reply_text):
+        return []
     explicit = normalize_quick_replies(items)
     if len(explicit) >= 2:
         return explicit

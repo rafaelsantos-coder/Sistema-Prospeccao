@@ -17,7 +17,7 @@ from app.models import (
     Conversation,
     Message,
 )
-from app.services.ai_quick_replies import quick_replies_for_message
+from app.services.ai_quick_replies import asks_for_free_text, quick_replies_for_message
 from app.services.ai_supervisor import (
     _catalog_snapshot,
     _closing_context,
@@ -584,6 +584,11 @@ def _apply_guardrails(
 
     if review.verdict == "APPROVE":
         final_buttons = _normalize_buttons(original_text, original_buttons)
+
+    # Pergunta que pede dado digitado (cidade, CEP, nome...) não leva botões,
+    # nem os sugeridos pelo Guardião.
+    if asks_for_free_text(final_text):
+        final_buttons = []
 
     # A reescrita do próprio Guardião também precisa passar pelo anti-repetição.
     # Caso contrário ele poderia detectar repetição e devolver uma paráfrase
