@@ -2124,6 +2124,63 @@ def _contract_sign_url(payload: dict[str, Any] | None) -> str:
     return ""
 
 
+_SIGNED_VALUE = re.compile(
+    r"(?<![a-z])(?:signed|assinad[oa]|contrato_assinado|assinatura_concluida|signature_completed)(?![a-z])"
+)
+_SIGNED_KEY = re.compile(r"(?:signed_?at|assinad[oa]_?em|signature_?completed_?at|data_?assinatura)$")
+
+
+def _signed_paths(payload: Any, path: str = "", depth: int = 0) -> list[str]:
+    """Caminhos do payload do CRM que indicam contrato assinado.
+
+    Só olha campos de contrato/assinatura (status ou data de assinatura), sem
+    registrar valores pessoais.
+    """
+    found: list[str] = []
+    if depth > 5:
+        return found
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_text = re.sub(r"[^a-z0-9]+", "_", _norm(str(key))).strip("_")
+            here = f"{path}.{key_text}" if path else key_text
+            contract_scope = any(word in here for word in ("contr", "sign", "assin", "zapsign", "document"))
+            if isinstance(value, (dict, list)):
+                found.extend(_signed_paths(value, here, depth + 1))
+            elif contract_scope and _SIGNED_KEY.search(key_text) and value:
+                found.append(here)
+            elif (
+                contract_scope
+                and key_text.endswith("status")
+                and isinstance(value, str)
+                and _SIGNED_VALUE.search(re.sub(r"[^a-z0-9]+", "_", _norm(value)))
+                and not re.search(r"(?:un|not_|nao_)signed|nao_assinad", _norm(value).replace(" ", "_"))
+            ):
+                found.append(here)
+    elif isinstance(payload, list):
+        for index, item in enumerate(payload[:20]):
+            found.extend(_signed_paths(item, f"{path}[{index}]", depth + 1))
+    return found
+
+
+def _payload_shape(payload: Any, depth: int = 0) -> str:
+    """Estrutura (chaves e status) do payload, sem valores pessoais, para diagnóstico."""
+    if depth > 3:
+        return "…"
+    if isinstance(payload, dict):
+        parts = []
+        for key, value in list(payload.items())[:25]:
+            if isinstance(value, (dict, list)):
+                parts.append(f"{key}{{{_payload_shape(value, depth + 1)}}}")
+            elif "status" in str(key).lower() or "signed" in str(key).lower():
+                parts.append(f"{key}={str(value)[:25]}")
+            else:
+                parts.append(str(key))
+        return ",".join(parts)
+    if isinstance(payload, list):
+        return f"[{len(payload)}]" + (_payload_shape(payload[0], depth + 1) if payload else "")
+    return ""
+
+
 def _contract_status(payload: dict[str, Any] | None) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -5130,6 +5187,18 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
             sign_url = _contract_sign_url(contract)
             if contract_status:
                 state.contract_status = contract_status
+            signed_paths = _signed_paths(status)
+            if state.step == "WAITING_SIGNATURE":
+                LOG.info(
+                    "seller_signature_check state=%s opportunity_status=%s contract_status=%s signed_paths=%s keys=%s",
+                    state.id,
+                    _opportunity_status(status)[:30] or "-",
+                    _norm(contract_status)[:40] or "-",
+                    ",".join(signed_paths)[:300] or "-",
+                    _payload_shape(status)[:400],
+                )
+            if signed_paths and not _contract_is_signed(state.contract_status):
+                state.contract_status = "assinado"
 
             if _contract_is_signed(state.contract_status):
                 _finalize_signed_sale(
