@@ -3418,12 +3418,22 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
     tool_calls: list[str] = []
+    tool_facts: list[dict[str, str]] = []
     for item in getattr(result, "new_items", None) or []:
-        if getattr(item, "type", "") == "tool_call_item":
+        item_type = getattr(item, "type", "")
+        if item_type == "tool_call_item":
             tool_calls.append(str(getattr(getattr(item, "raw_item", None), "name", "") or "?"))
+        elif item_type == "tool_call_output_item":
+            tool_facts.append(
+                {
+                    "tool": tool_calls[-1] if tool_calls else "?",
+                    "result": str(getattr(item, "output", "") or "")[:3000],
+                }
+            )
     decision._timing = {
         "model_ms": model_ms,
         "tool_calls": tool_calls,
+        "tool_facts": tool_facts,
         "prompt_chars": len(prompt),
         "catalog_in_context": bool(official_catalog),
     }
@@ -4081,6 +4091,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                         "intent": decision.intent,
                         "handoff_target": decision.handoff_target,
                         "customer_commitment": decision.customer_commitment,
+                        "tool_facts": list(decision._timing.get("tool_facts") or []),
                     },
                 )
             if not guardian.should_send:
@@ -4107,6 +4118,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                         "intent": decision.intent,
                         "handoff_target": decision.handoff_target,
                         "customer_commitment": decision.customer_commitment,
+                        "tool_facts": list(decision._timing.get("tool_facts") or []),
                     },
                 )
 
