@@ -149,3 +149,10 @@ def test_titular_igual_ao_cliente_preenche_nome_e_cpf_sem_perguntar():
 def test_tipo_de_contratacao_vai_ao_crm_como_portabilidade():
     assert ai_seller._crm_form_value("tipo_contratacao", "Número Portabilidade") == "Portabilidade"
     assert ai_seller._crm_form_value("tipo_contratacao", "Número novo") == "Número novo"
+
+
+def test_pergunta_da_etapa_nunca_e_bloqueada_pelo_guardiao():
+    state = _state(step="MOBILE_PORT_NUMBER")
+    state.collected_json = '{"_playbook_question": "Qual é o número que será portado?"}'
+    assert ai_seller._is_step_prompt(state, "Qual é o número que será portado?")
+    assert not ai_seller._is_step_prompt(state, "Texto livre gerado pelo modelo sobre outra coisa")

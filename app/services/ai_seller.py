@@ -2931,6 +2931,24 @@ def _is_fixed_closing_text(closing: AIClosingState | None, text: str) -> bool:
     return bool(sign_url) and sign_url in text and closing.step == "WAITING_SIGNATURE"
 
 
+def _is_step_prompt(closing: AIClosingState | None, text: str) -> bool:
+    """Pergunta da etapa montada pelo código ou publicada pelo playbook do CRM.
+
+    Em 04/11 (conversa 518) o Guardião barrou "qual o número a portar?" por
+    PLAYBOOK_SEQUENCE_MISMATCH e o cliente ficou parado. Para essas perguntas o
+    Guardião pode reescrever, mas nunca impedir o envio.
+    """
+    if not closing or not text.strip():
+        return False
+    collected = _load_collected(closing)
+    expected = {
+        str(_prompt_for_step(closing, collected) or "").strip(),
+        str(collected.get("_playbook_question") or "").strip(),
+    }
+    expected.discard("")
+    return text.strip() in expected
+
+
 def _send_text(
     db: Session,
     *,
@@ -2978,11 +2996,19 @@ def _send_text(
                 or {"closing_step": str(closing.step if closing else "")}
             ),
         )
-        if not guardian.should_send:
+        if not guardian.should_send and not _is_step_prompt(closing, text):
             raise GuardianBlockedError(guardian)
-        if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
-            text = guardian.reply_text
-        fixed_buttons = list(guardian.buttons)
+        if not guardian.should_send:
+            LOG.warning(
+                "seller_guardian_override conversation=%s issues=%s",
+                conversation.id,
+                ",".join(guardian.issue_codes)[:200] or "-",
+            )
+            fixed_buttons = []
+        else:
+            if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+                text = guardian.reply_text
+            fixed_buttons = list(guardian.buttons)
 
     zapi = service_for_conversation(db, conversation.id)
     if len(fixed_buttons) >= 2:
@@ -3184,9 +3210,15 @@ def _send_step_message(
             proposed_state=state.step,
             metadata=guardian_metadata,
         )
-        if not guardian.should_send:
+        if not guardian.should_send and not _is_step_prompt(state, text):
             raise GuardianBlockedError(guardian)
-        if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+        if not guardian.should_send:
+            LOG.warning(
+                "seller_guardian_override conversation=%s issues=%s",
+                conversation.id,
+                ",".join(guardian.issue_codes)[:200] or "-",
+            )
+        elif guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
             text = guardian.reply_text
             buttons = guardian.buttons
 
