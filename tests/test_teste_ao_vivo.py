@@ -59,3 +59,20 @@ def test_vinculo_temporario_so_para_telefone_de_teste(monkeypatch):
     binding = ai_sdr._test_phone_binding(_DB(), 10, queue)
     assert binding.agent_id == 7 and binding.queue_id == 1 and binding.handling_mode == "AI_FIRST"
     assert ai_sdr._test_phone_binding(_DB(), 11, queue) is None
+
+
+def test_resumo_de_aceite_e_link_sao_textos_fixos_sem_guardiao():
+    from app.services.ai_seller import SALE_ACCEPTANCE_STEP, _is_fixed_closing_text, _sale_acceptance_prompt
+
+    closing = SimpleNamespace(step=SALE_ACCEPTANCE_STEP, sign_url="", plan_label="800 Mega", offer_price=119.9)
+    resumo = _sale_acceptance_prompt(closing, {"paymentMethod": "Boleto"})
+    lembrete = _sale_acceptance_prompt(closing, {}, reminder=True)
+    assert _is_fixed_closing_text(closing, resumo)
+    assert _is_fixed_closing_text(closing, lembrete)
+    assert not _is_fixed_closing_text(closing, "Qual é o seu CPF?")
+
+    url = "https://app.zapsign.com.br/verificar/abc"
+    assinatura = SimpleNamespace(step="WAITING_SIGNATURE", sign_url=url)
+    assert _is_fixed_closing_text(assinatura, f"Seu contrato ficou pronto. Você pode assinar por este link: {url}")
+    assert not _is_fixed_closing_text(assinatura, "Seu contrato ficou pronto.")
+    assert not _is_fixed_closing_text(SimpleNamespace(step="CPF", sign_url=url), url)
