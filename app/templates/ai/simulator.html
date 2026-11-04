@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div><span class="eyebrow">IA · TESTE SEM WHATSAPP</span>
+    <h2>Simulador do SDR</h2>
+    <p>Converse com a SulIA como se fosse um cliente. Usa o mesmo modelo, prompt, catálogo, regras e Guardião da produção, mas não envia nada pelo WhatsApp e não grava lead nem conversa.</p>
+  </div>
+  <div>
+    <label class="field"><span>Cidade do lead (opcional)</span><input id="sim-city" placeholder="Ex.: Santa Rosa"></label>
+    <button class="button" type="button" id="sim-reset">Nova conversa</button>
+  </div>
+</div>
+<section class="panel">
+  <div id="sim-chat" class="sim-chat" data-csrf="{{ csrf_token }}"></div>
+  <form id="sim-form" class="sim-form">
+    <input id="sim-input" autocomplete="off" placeholder="Escreva como cliente e pressione Enter" maxlength="2000">
+    <button class="button button-primary" type="submit" id="sim-send">Enviar</button>
+  </form>
+</section>
+<style>
+  .sim-chat { display: flex; flex-direction: column; gap: 10px; min-height: 320px; max-height: 60vh; overflow-y: auto; padding: 8px; }
+  .sim-msg { max-width: 78%; padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; line-height: 1.45; }
+  .sim-in { align-self: flex-end; background: #fff3e8; border: 1px solid #f3c79c; }
+  .sim-out { align-self: flex-start; background: #f5f6f8; border: 1px solid #dfe2e7; }
+  .sim-meta { display: block; margin-top: 6px; font-size: 12px; color: #6b7280; white-space: normal; }
+  .sim-buttons { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .sim-buttons button { font-size: 12px; padding: 4px 8px; border-radius: 999px; border: 1px solid #f08a24; background: #fff; cursor: pointer; }
+  .sim-form { display: flex; gap: 8px; margin-top: 12px; }
+  .sim-form input { flex: 1; }
+</style>
+<script>
+(() => {
+  const chat = document.getElementById('sim-chat');
+  const form = document.getElementById('sim-form');
+  const input = document.getElementById('sim-input');
+  const send = document.getElementById('sim-send');
+  const city = document.getElementById('sim-city');
+  let history = [];
+
+  const bubble = (direction, text, meta, buttons) => {
+    const el = document.createElement('div');
+    el.className = 'sim-msg ' + (direction === 'INBOUND' ? 'sim-in' : 'sim-out');
+    el.textContent = text;
+    if (buttons && buttons.length) {
+      const row = document.createElement('div');
+      row.className = 'sim-buttons';
+      buttons.forEach(label => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        b.addEventListener('click', () => { input.value = label; form.requestSubmit(); });
+        row.appendChild(b);
+      });
+      el.appendChild(row);
+    }
+    if (meta) {
+      const m = document.createElement('span');
+      m.className = 'sim-meta';
+      m.textContent = meta;
+      el.appendChild(m);
+    }
+    chat.appendChild(el);
+    chat.scrollTop = chat.scrollHeight;
+  };
+
+  window.simulateTurn = async (message) => {
+    const response = await fetch('/ai/simulator/turn', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({csrf_token: chat.dataset.csrf, message, history, city: city.value}),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Falha na simulação');
+    history.push({direction: 'INBOUND', body: message});
+    history.push({direction: 'OUTBOUND', body: data.reply});
+    return data;
+  };
+
+  window.simulatorHistory = () => history;
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const message = input.value.trim();
+    if (!message) return;
+    input.value = '';
+    send.disabled = true;
+    bubble('INBOUND', message);
+    try {
+      const data = await window.simulateTurn(message);
+      const guardian = data.guardian ? `Guardião: ${data.guardian.verdict}${data.guardian.issue_codes.length ? ' (' + data.guardian.issue_codes.join(', ') + ')' : ''}` : 'Guardião: não acionado';
+      const meta = [
+        `Etapa: ${data.journey_state || '-'}`,
+        `Intenção: ${data.intent}`,
+        `Destino: ${data.handoff_target || 'NONE'}`,
+        guardian,
+        `${(data.elapsed_ms / 1000).toFixed(1)} s`,
+      ].concat(data.trace || []).join(' · ');
+      bubble('OUTBOUND', data.reply, meta, data.buttons);
+    } catch (error) {
+      bubble('OUTBOUND', 'Erro: ' + error.message);
+    } finally {
+      send.disabled = false;
+      input.focus();
+    }
+  });
+
+  document.getElementById('sim-reset').addEventListener('click', () => {
+    history = [];
+    chat.innerHTML = '';
+    input.focus();
+  });
+})();
+</script>
+{% endblock %}
