@@ -342,6 +342,7 @@ async def ai_simulator_turn(request: Request, db: Session = Depends(get_db)):
                 history=history,
                 message=message,
                 city=str(payload.get("city") or "")[:80],
+                variant=payload.get("variant") if isinstance(payload.get("variant"), dict) else None,
             )
         finally:
             # Simulação nunca grava nada: descarta qualquer alteração da sessão.

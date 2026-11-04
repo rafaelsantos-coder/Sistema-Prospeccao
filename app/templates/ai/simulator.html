@@ -7,6 +7,8 @@
   </div>
   <div>
     <label class="field"><span>Cidade do lead (opcional)</span><input id="sim-city" placeholder="Ex.: Santa Rosa"></label>
+    <label class="field"><span>Raciocínio (teste)</span><select id="sim-effort"><option value="">Produção</option><option value="none">none</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option></select></label>
+    <label class="queue-check"><input type="checkbox" id="sim-compact"><span>Prompt enxuto (teste)</span></label>
     <button class="button" type="button" id="sim-reset">Nova conversa</button>
   </div>
 </div>
@@ -67,7 +69,13 @@
     const response = await fetch('/ai/simulator/turn', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({csrf_token: chat.dataset.csrf, message, history, city: city.value}),
+      body: JSON.stringify({
+        csrf_token: chat.dataset.csrf, message, history, city: city.value,
+        variant: {
+          reasoning_effort: document.getElementById('sim-effort').value,
+          compact_prompt: document.getElementById('sim-compact').checked,
+        },
+      }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Falha na simulação');
