@@ -92,7 +92,7 @@ def run_case(case: dict) -> None:
     elif kind == "seller_contract_knowledge":
         state = _seller_state(data["state"])
         collected = dict(data["collected"])
-        for message, fragments in zip(data["messages"], expect["replies_contain"]):
+        for message, fragments in zip(data["messages"], expect["replies_contain"], strict=True):
             reply = ai_seller._seller_contract_knowledge_reply(state, collected, message) or ""
             for fragment in fragments:
                 assert fragment.lower() in reply.lower(), f"{message!r} → {reply!r}"
