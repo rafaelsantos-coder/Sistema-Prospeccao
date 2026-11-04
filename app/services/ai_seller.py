@@ -675,9 +675,9 @@ MOBILE_CONTRACT_BUTTONS_SDR_IA = [
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
     "COMBO_MOBILE_PLAN": [
+        {"id": "movel_2", "label": "2GB"},
         {"id": "movel_5", "label": "5GB"},
         {"id": "movel_10", "label": "10GB"},
-        {"id": "movel_15", "label": "15GB"},
     ],
     "CONFIRM_SALE": [
         {"id": "confirmo", "label": "Confirmo"},
@@ -1039,9 +1039,9 @@ def _playbook_disable_for_closing(
 
 
 def _crm_form_value(field: str, value: Any) -> Any:
-    """Valor como o CRM espera no formulário (o estado local guarda "Número Portabilidade")."""
-    if field == "tipo_contratacao" and value == "Número Portabilidade":
-        return "Portabilidade"
+    """Valor como o formulário do CRM aceita: "Número novo", "Número Portabilidade" ou "M2M"."""
+    if field == "tipo_contratacao" and _norm(str(value or "")) in {"portabilidade", "numero portabilidade"}:
+        return "Número Portabilidade"
     return value
 
 
@@ -4838,15 +4838,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         collected,
                         values[category_field],
                     )
-                    # Para tipo de contratação sem options publicadas, o CRM
-                    # usa a escolha apresentada ao cliente (Portabilidade/Número novo),
-                    # enquanto o estado local mantém "Número Portabilidade".
-                    if (
-                        _playbook_code_key(current_code) == "tipocontratacao"
-                        and not _playbook_current_options(collected)
-                        and values[category_field] == "Número Portabilidade"
-                    ):
-                        playbook_value = "Portabilidade"
+                    # O formulário do CRM (category_form_seeds.php) só aceita
+                    # "Número novo", "Número Portabilidade" ou "M2M"; com
+                    # "Portabilidade" o contract/generate recusa o contrato.
+                    if _playbook_code_key(current_code) == "tipocontratacao":
+                        playbook_value = _crm_form_value("tipo_contratacao", playbook_value)
                     client.update_playbook_field(
                         state.opportunity_id or 0,
                         patch_key=current_patch_key,
