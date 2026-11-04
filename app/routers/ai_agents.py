@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from app.config import settings
 from app.database import get_db
@@ -185,6 +185,55 @@ def ai_quality_dashboard(request: Request, days: int = 7, db: Session = Depends(
         page_title="Qualidade das conversas",
         report=report,
         days=window,
+    )
+
+
+@router.get("/quality/{conversation_id}/case.json")
+def ai_quality_case(conversation_id: int, request: Request, db: Session = Depends(get_db)):
+    """Histórico anonimizado de uma conversa, no formato de caso de teste."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    from app.models import Message
+    from app.services.pii import redact_pii_text
+
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    messages = list(
+        db.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.asc(), Message.id.asc())
+        )
+    )
+    case = {
+        "id": f"conv{conversation_id}-descreva-o-caso",
+        "conversation": conversation_id,
+        "description": "Descreva o que deu errado e o comportamento esperado.",
+        "kind": "conversation_replay",
+        "input": {
+            "history": [
+                {"direction": item.direction, "body": redact_pii_text(item.body)}
+                for item in messages
+            ],
+        },
+        "expect": {"notes": "Comportamento esperado da IA neste ponto da conversa."},
+    }
+    write_audit(
+        db,
+        user=actor,
+        action="AI_TEST_CASE_EXPORTED",
+        entity_type="conversation",
+        entity_id=conversation_id,
+        payload={"messages": len(messages)},
+    )
+    db.commit()
+    return JSONResponse(
+        case,
+        headers={
+            "Content-Disposition": f'attachment; filename="conv{conversation_id}.json"'
+        },
     )
 
 

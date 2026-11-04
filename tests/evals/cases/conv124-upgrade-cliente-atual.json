@@ -1,0 +1,14 @@
+{
+  "id": "conv124-upgrade-cliente-atual",
+  "conversation": 124,
+  "problem": 8,
+  "description": "Cliente atual pedindo aumento de plano não entra no fluxo de nova venda.",
+  "kind": "sdr_plan_change",
+  "input": {
+    "latest_customer_message": "Já tenho um plano, queria aumentar",
+    "history": []
+  },
+  "expect": {
+    "value": true
+  }
+}

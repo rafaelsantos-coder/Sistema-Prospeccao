@@ -1,0 +1,14 @@
+{
+  "id": "conv70-nao-e-cliente",
+  "conversation": 70,
+  "problem": 3,
+  "description": "\"Não\" depois de \"você já possui algum serviço da Sulnet?\" significa que não é cliente (a pergunta se repetiu 9 vezes).",
+  "kind": "sdr_existing_customer",
+  "input": {
+    "message": "Não",
+    "previous_outbound": "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"
+  },
+  "expect": {
+    "value": "NAO_CLIENTE"
+  }
+}

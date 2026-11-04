@@ -77,3 +77,47 @@ def test_quality_page_renders_for_admin():
         response = client.get("/ai/quality?days=7")
         assert response.status_code == 200
         assert "Qualidade das conversas" in response.text
+
+
+def test_case_export_is_anonymized_and_admin_only():
+    from app.database import SessionLocal
+    from app.models import Contact, Conversation, Message
+
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            contact = Contact(phone="5555900000911", name="Cliente Caso")
+            db.add(contact)
+            db.flush()
+            conversation = Conversation(contact_id=contact.id, status="EM_FILA", team="DIGITAL")
+            db.add(conversation)
+            db.flush()
+            db.add(Message(
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                direction="INBOUND",
+                message_type="TEXT",
+                body="Meu CPF é 123.456.789-09 e meu e-mail cliente@exemplo.com",
+                status="RECEIVED",
+            ))
+            db.commit()
+            conversation_id = conversation.id
+        finally:
+            db.close()
+
+        assert client.get(f"/ai/quality/{conversation_id}/case.json", follow_redirects=False).status_code == 303
+
+        page = client.get("/login")
+        token = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+        client.post(
+            "/login",
+            data={"email": "admin@sulnet.local", "password": "Sulnet@2026!", "csrf_token": token},
+            follow_redirects=False,
+        )
+        response = client.get(f"/ai/quality/{conversation_id}/case.json")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["kind"] == "conversation_replay"
+        text = body["input"]["history"][0]["body"]
+        assert "123.456.789-09" not in text
+        assert "cliente@exemplo.com" not in text

@@ -1,0 +1,27 @@
+{
+  "id": "conv114-contrato-so-com-aceite",
+  "conversation": 114,
+  "problem": 6,
+  "description": "Com o playbook liberado, o contrato não sai sem o Sim do cliente ao resumo.",
+  "kind": "seller_contract_gate",
+  "input": {
+    "state": {
+      "plan_label": "650 Mega",
+      "offer_price": 99.9
+    },
+    "collected": {
+      "_playbook_ready_for_win": true,
+      "paymentMethod": "Boleto",
+      "dueDay": 10
+    }
+  },
+  "expect": {
+    "step": "CONFIRM_SALE",
+    "contains": [
+      "650 Mega",
+      "99,90",
+      "Boleto",
+      "dia 10"
+    ]
+  }
+}

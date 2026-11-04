@@ -38,7 +38,7 @@
           <td><a href="/conversations/{{ row.conversation_id }}"><strong>{{ row.name }}</strong></a><span class="table-subline">#{{ row.conversation_id }}</span></td>
           <td>{{ row.outcome_label }}{% if row.silent_hours is not none %}<span class="table-subline">cliente falou há {{ row.silent_hours }} h</span>{% endif %}</td>
           <td>{{ row.inbound }} do cliente · {{ row.outbound }} enviadas<span class="table-subline">{{ row.followups_sent }} follow-up(s) · {{ row.runs }} execução(ões) da IA</span></td>
-          <td>{% if row.flags %}{{ row.flags|join(' · ') }}{% else %}Sem alertas{% endif %}</td>
+          <td>{% if row.flags %}{{ row.flags|join(' · ') }}{% else %}Sem alertas{% endif %}<span class="table-subline"><a href="/ai/quality/{{ row.conversation_id }}/case.json">Gerar caso de teste</a></span></td>
         </tr>
         {% else %}
         <tr><td colspan="5">Nenhuma conversa atendida pela IA neste período.</td></tr>
