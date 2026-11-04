@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import unicodedata
 from datetime import timedelta
 from difflib import SequenceMatcher
@@ -58,6 +59,8 @@ class QualificationData(BaseModel):
 class AIDecision(BaseModel):
     # O que as regras fixas mudaram (ou mudariam, em modo observação) nesta decisão.
     _policy_observations: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+    # Tempo do modelo e ferramentas chamadas nesta decisão (diagnóstico de latência).
+    _timing: dict[str, Any] = PrivateAttr(default_factory=dict)
     reply_text: str = Field(min_length=1, max_length=1800)
     quick_replies: list[QuickReply] = Field(default_factory=list, max_length=3)
     intent: Literal[
@@ -3224,9 +3227,27 @@ def _apply_journey_orchestration_policy(
     return decision
 
 
+def _official_catalog_for_context(context: dict) -> dict | None:
+    """Catálogo da cidade já no contexto, para o modelo não gastar uma ida e volta
+    com a ferramenta consultar_catalogo em todo turno (latência de 25-45 s)."""
+    from app.services.ai_sdr_policy import catalog_for
+
+    facts = context.get("confirmed_facts") or {}
+    city = str(facts.get("city") or (context.get("lead") or {}).get("city") or "").strip()
+    customer_type = str(facts.get("customer_type") or "").upper()
+    if customer_type == "EMPRESA":
+        return catalog_for("", "EMPRESA")
+    if not city:
+        return None
+    return catalog_for(city, "RESIDENCIAL")
+
+
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
+    official_catalog = _official_catalog_for_context(context)
+    if official_catalog:
+        context = {**context, "catalogo_oficial_da_cidade": official_catalog}
 
     from agents import Agent
     from app.services.ai_runtime import run_agent_sync
@@ -3299,11 +3320,14 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
             "conduza ao fechamento. Nunca pergunte se o cliente quer contratar 'mesmo sem "
             "garantia'. Quando o cliente disser que topa ou aceita a condição, trate como "
             "intenção de compra.\n"
-            "FERRAMENTAS: antes de citar plano, velocidade ou preço, chame "
-            "consultar_catalogo(cidade, segmento); ela é a fonte oficial e vence qualquer valor "
-            "escrito neste texto. Para dúvidas sobre regras, contrato, roteador, instalação ou "
-            "atendimento, chame buscar_manual(pergunta). Se a ferramenta não trouxer a resposta, "
-            "não invente.\n\n" + prompt
+            "FIDELIDADE: ao tratar objeção de fidelidade, destaque que com fidelidade a taxa de "
+            "habilitação de R$ 860 é isenta. "
+            "TAMANHO: no WhatsApp, responda em no máximo 3 frases curtas e uma pergunta. "
+            "FERRAMENTAS: se catalogo_oficial_da_cidade estiver no contexto, use-o como fonte "
+            "oficial de planos e preços e não chame consultar_catalogo; caso contrário, antes de "
+            "citar plano, velocidade ou preço, chame consultar_catalogo(cidade, segmento). Use "
+            "buscar_manual(pergunta) só quando a resposta não estiver em knowledge. Se a "
+            "ferramenta não trouxer a resposta, não invente.\n\n" + prompt
         )
 
     sdr = Agent(
@@ -3318,16 +3342,29 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         tools=tools,
         output_type=AIDecision,
     )
+    model_started = time.monotonic()
     result = run_agent_sync(sdr, prompt)
+    model_ms = int((time.monotonic() - model_started) * 1000)
     decision = result.final_output
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
+    tool_calls: list[str] = []
+    for item in getattr(result, "new_items", None) or []:
+        if getattr(item, "type", "") == "tool_call_item":
+            tool_calls.append(str(getattr(getattr(item, "raw_item", None), "name", "") or "?"))
+    decision._timing = {
+        "model_ms": model_ms,
+        "tool_calls": tool_calls,
+        "prompt_chars": len(prompt),
+        "catalog_in_context": bool(official_catalog),
+    }
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
     decision, observations = _apply_rewrite_policies(decision, context)
     decision = _apply_journey_orchestration_policy(decision, context)
     decision = _apply_existing_customer_plan_change_policy(decision, context)
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
     decision._policy_observations = observations
+    LOG.info("sdr_decision_timing %s", json.dumps(decision._timing, ensure_ascii=False))
     return decision
 
 
@@ -3934,6 +3971,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     output = decision.model_dump()
     output["policy_observations"] = list(decision._policy_observations)
+    output["timing"] = dict(decision._timing)
     closer_started = False
 
     if effective_mode == "AUTO":
@@ -4052,6 +4090,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
             output = decision.model_dump()
             output["policy_observations"] = list(decision._policy_observations)
+            output["timing"] = dict(decision._timing)
 
             _apply_crm_decision(
                 db,
@@ -4163,6 +4202,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     output = decision.model_dump()
     output["policy_observations"] = list(decision._policy_observations)
+    output["timing"] = dict(decision._timing)
     run.status = "CONCLUIDO"
     run.intent = decision.intent
     run.qualification_score = decision.qualification_score
