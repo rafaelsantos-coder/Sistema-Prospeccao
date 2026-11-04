@@ -1,0 +1,15 @@
+{
+  "id": "conv114-respostas-ao-resumo",
+  "conversation": 114,
+  "problem": 6,
+  "description": "Leitura das respostas ao resumo de contratação.",
+  "kind": "seller_acceptance",
+  "input": {
+    "answers": {
+      "Confirmo": "SIM",
+      "Quero ajustar": "NAO",
+      "mas eu nem contratei nada": "NAO_INFORMADO"
+    }
+  },
+  "expect": {}
+}

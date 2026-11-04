@@ -1,0 +1,16 @@
+{
+  "id": "conv63-follow-up-de-madrugada",
+  "conversation": 63,
+  "problem": 9,
+  "description": "Follow-up às 00:12 e 23:40 não sai: vai para o início do horário comercial.",
+  "kind": "followup_window",
+  "input": {
+    "local_times": {
+      "2026-11-04 00:12": "2026-11-04 09:00",
+      "2026-11-03 23:40": "2026-11-04 09:00",
+      "2026-11-07 14:00": "2026-11-09 09:00",
+      "2026-11-03 10:00": "2026-11-03 10:00"
+    }
+  },
+  "expect": {}
+}

@@ -1,0 +1,19 @@
+{
+  "id": "conv239-anuncio-650-handoff",
+  "conversation": 239,
+  "problem": 1,
+  "description": "Lead do anúncio pede o 650 Mega com preço e cidade conhecida: deve ir direto para o fechamento.",
+  "kind": "sdr_fast_purchase",
+  "input": {
+    "latest_customer_message": "Tenho interesse em assinar 650mb por R$ 99,90",
+    "history": [],
+    "lead": {
+      "city": "Santo Ângelo"
+    },
+    "confirmed_facts": {}
+  },
+  "expect": {
+    "plan_speed": 650,
+    "city": "Santo Ângelo"
+  }
+}
