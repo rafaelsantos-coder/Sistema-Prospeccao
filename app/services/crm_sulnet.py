@@ -230,6 +230,45 @@ class CRMPlaybookResult:
 # Cada job criava um cliente novo e repetia GET /api/capture/config (404 no
 # CRM atual) e /api/capture/context antes de qualquer chamada útil.
 _PROFILE_TTL_SECONDS = 600.0
+WON_STATUSES = {"won", "ganho", "ganha", "closed_won", "fechado_ganho"}
+_STATUS_ROUTE_RETRY_AT = [0.0]
+_SIGNED_WORDS = ("assinad", "signed", "signature_completed", "assinatura_concluida")
+
+
+def _stage_name(opportunity: dict[str, Any]) -> str:
+    stage = opportunity.get("stage") or opportunity.get("pipelineStage") or opportunity.get("etapa")
+    if isinstance(stage, dict):
+        stage = stage.get("name") or stage.get("nome") or stage.get("title")
+    return str(stage or opportunity.get("stageName") or "")
+
+
+def _signature_signals(opportunity: dict[str, Any]) -> set[str]:
+    """Sinais de assinatura/ganho num payload legado da oportunidade (sem dados pessoais)."""
+    signals: set[str] = set()
+    stage = unicodedata.normalize("NFD", _stage_name(opportunity).casefold())
+    if "ganh" in stage or "won" in stage:
+        signals.add("stage_won")
+    if "assinad" in stage:
+        signals.add("contract_signed")
+    for key in ("contract", "contrato", "signature", "assinatura", "aiClosing", "productInfo"):
+        value = opportunity.get(key)
+        if isinstance(value, dict):
+            for sub in ("status", "contractStatus", "signatureStatus", "situacao"):
+                text = str(value.get(sub) or "").casefold()
+                if any(word in text for word in _SIGNED_WORDS):
+                    signals.add("contract_signed")
+            if value.get("signedAt") or value.get("assinadoEm"):
+                signals.add("contract_signed")
+    for key in ("contractStatus", "signatureStatus", "statusContrato"):
+        text = str(opportunity.get(key) or "").casefold()
+        if any(word in text for word in _SIGNED_WORDS):
+            signals.add("contract_signed")
+    if opportunity.get("contractSignedAt") or opportunity.get("signedAt"):
+        signals.add("contract_signed")
+    signals.add("keys:" + "|".join(sorted(k for k in opportunity if any(w in k.casefold() for w in ("contr", "sign", "assin", "stage", "status", "etapa"))))[:300])
+    return signals
+
+
 _SHARED_PROFILES: dict[str, tuple[float, dict[str, Any]]] = {}
 _SHARED_PROFILES_LOCK = threading.Lock()
 
@@ -1305,17 +1344,40 @@ class SulnetCRMClient:
             )
             return result if isinstance(result, dict) else {}
 
-        # Legado não expõe estado consolidado do contrato. Mantemos apenas o
-        # estado comercial sem gerar 404 em loop; ao atualizar o CRM, o profile
-        # v2 passa automaticamente a usar /status.
+        # O perfil do CRM pode estar desatualizado (/api/capture/config 404)
+        # enquanto /status já existe. Tenta uma vez a cada 30 min; se não
+        # existir, usa a oportunidade como antes, sem gerar 404 em loop.
+        if time.monotonic() >= _STATUS_ROUTE_RETRY_AT[0]:
+            try:
+                result = self._request(
+                    "GET",
+                    f"/api/capture/leads/{opportunity_id}/status",
+                )
+                if isinstance(result, dict) and result:
+                    return result
+            except CRMIntegrationError as exc:
+                if exc.status_code not in {404, 405, 501}:
+                    raise
+                _STATUS_ROUTE_RETRY_AT[0] = time.monotonic() + 1800
+
         opportunity = self.get_opportunity(opportunity_id)
+        signals = _signature_signals(opportunity)
+        LOG.info(
+            "crm_legacy_status opportunity=%s status=%s stage=%s signals=%s",
+            opportunity_id,
+            str(opportunity.get("status") or "-")[:40],
+            str(_stage_name(opportunity) or "-")[:60],
+            ",".join(sorted(signals)) or "-",
+        )
+        won = str(opportunity.get("status") or "").strip().casefold() in WON_STATUSES or "stage_won" in signals
+        signed = won or "contract_signed" in signals
         return {
-            "opportunity": opportunity,
+            "opportunity": {**opportunity, "status": "won"} if won else opportunity,
             "contract": {
                 "status": (
                     "aguardando_backoffice"
-                    if str(opportunity.get("status") or "").lower() == "won"
-                    else "aguardando_fechamento_crm"
+                    if won
+                    else "assinado" if signed else "aguardando_fechamento_crm"
                 )
             },
         }
