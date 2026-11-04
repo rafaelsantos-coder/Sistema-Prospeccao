@@ -32,6 +32,7 @@ from app.models import (
 from app.services.ai_guardian import GuardianBlockedError, guard_outbound_message
 from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE
 from app.services.audit import write_audit
+from app.services import ai_campaign_black as black_campaign
 from app.services.crm_sulnet import (
     CRMIntegrationError,
     CRMPlaybookMissingItem,
@@ -3168,6 +3169,9 @@ def _create_crm_if_ready(
         "handoffReason": collected.get("handoffReason") or "",
         "runConsult": False,
     }
+    if black_campaign.has_marker(state.handoff_summary):
+        payload["tags"] = [black_campaign.CAMPAIGN_TAG]
+        payload["campaign"] = black_campaign.CAMPAIGN_TAG
     payload = {key: value for key, value in payload.items() if value not in (None, "")}
     result = client.create_opportunity(payload)
     state.opportunity_id = int(result.get("opportunityId") or 0) or None
@@ -3726,6 +3730,16 @@ def _handoff_to_human(
     )
 
 
+def _black_campaign_accepted(db: Session, conversation_id: int) -> bool:
+    rows = db.execute(
+        select(Message.direction, Message.body)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.id)
+    ).all()
+    history = [{"direction": direction, "body": body} for direction, body in rows]
+    return black_campaign.black_accepted(history)
+
+
 def start_closing_from_sdr(
     db: Session,
     *,
@@ -3782,6 +3796,9 @@ def start_closing_from_sdr(
             state.handoff_summary = (
                 f"{state.handoff_summary}\n{latest_summary}".strip()
             )[-5000:]
+
+    if _black_campaign_accepted(db, conversation.id):
+        state.handoff_summary = black_campaign.with_marker(state.handoff_summary)[-5000:]
 
     collected = _load_collected(state)
     if state.step == "ESCALATED":
