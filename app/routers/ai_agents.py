@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -27,6 +28,8 @@ from app.services.audit import write_audit
 from app.services.zapi_instances import queue_instance
 from app.web import flash, render
 
+
+LOG = logging.getLogger("sulnet_ai_agents")
 
 router = APIRouter(prefix="/ai")
 
@@ -296,6 +299,69 @@ def ai_weekly_run(
         "success",
     )
     return RedirectResponse("/ai/weekly", status_code=303)
+
+
+@router.get("/simulator")
+def ai_simulator_page(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    return render(
+        request,
+        "ai/simulator.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="simulator",
+        page_title="Simulador do SDR",
+    )
+
+
+@router.post("/simulator/turn")
+async def ai_simulator_turn(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return JSONResponse({"error": "Acesso restrito a gestores."}, status_code=403)
+    payload = await request.json()
+    validate_csrf(request, str(payload.get("csrf_token") or ""))
+    message = str(payload.get("message") or "").strip()[:2000]
+    if not message:
+        return JSONResponse({"error": "Mensagem vazia."}, status_code=400)
+    history = [
+        {"direction": str(row.get("direction") or ""), "body": str(row.get("body") or "")}
+        for row in (payload.get("history") or [])[-40:]
+        if isinstance(row, dict)
+    ]
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.ai_simulator import simulate_sdr_turn
+
+    def _run() -> dict:
+        try:
+            return simulate_sdr_turn(
+                db,
+                history=history,
+                message=message,
+                city=str(payload.get("city") or "")[:80],
+            )
+        finally:
+            # Simulação nunca grava nada: descarta qualquer alteração da sessão.
+            db.rollback()
+
+    try:
+        result = await run_in_threadpool(_run)
+    except Exception:
+        LOG.exception("ai_simulator_failed")
+        return JSONResponse({"error": "Falha ao simular a resposta do SDR."}, status_code=500)
+    write_audit(
+        db,
+        user=actor,
+        action="AI_SDR_SIMULATED",
+        entity_type="ai",
+        entity_id="simulator",
+        payload={"turn": len(history) // 2 + 1, "journey_state": result.get("journey_state")},
+    )
+    db.commit()
+    return JSONResponse(result)
 
 
 @router.get("/seller")
