@@ -25,7 +25,7 @@ _VALID_UNTIL = datetime(2026, 12, 1, 3, 0, 0, tzinfo=timezone.utc) - timedelta(s
 
 OFFER_QUESTION = "Quer conhecer nossa promoção Black da Sulnet?"
 OFFER_MARK = "promocao black da sulnet"
-OPTIONS_MARK = "black da sulnet pula o fim de ano"
+OPTIONS_MARK = "black que pula o fim de ano"
 
 OPTIONS_TEXT = (
     "Black da Sulnet: a Black que pula o fim de ano! 🎉\n"
