@@ -478,3 +478,117 @@ def test_guardian_mantem_bloqueio_do_vendedor_com_outro_motivo():
     )
     assert result.should_send is False
     assert "CUSTOMER_DECLINED" in result.issue_codes
+
+
+def test_guardian_shadow_observes_block_but_still_sends(monkeypatch):
+    from dataclasses import replace
+
+    from app.config import settings
+    from app.services import ai_guardian
+
+    audits: list[dict] = []
+
+    monkeypatch.setattr(
+        ai_guardian,
+        "settings",
+        replace(
+            settings,
+            ai_supervisor_guardian_enabled=False,
+            ai_supervisor_guardian_shadow_enabled=True,
+            openai_api_key="sk-test",
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "build_guardian_context",
+        lambda *args, **kwargs: _context(
+            [
+                {
+                    "code": "WON_BEFORE_SIGNATURE",
+                    "severity": "CRITICAL",
+                    "detail": "Venda marcada como ganha antes da assinatura.",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "_run_guardian_model",
+        lambda _context: GuardianReview(
+            verdict="APPROVE",
+            risk="LOW",
+            confidence=0.9,
+            quality_score=95,
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "write_audit",
+        lambda db, user=None, action="", entity_type="", entity_id=None, payload=None: audits.append(
+            {"action": action, "payload": payload or {}}
+        ),
+    )
+
+    agent = SimpleNamespace(id=7, user=None, role_type="CLOSER")
+    conversation = SimpleNamespace(id=42)
+    result = ai_guardian.guard_outbound_message(
+        None,
+        agent=agent,
+        conversation=conversation,
+        reply_text="Sua contratação foi concluída.",
+        buttons=[],
+        source="CLOSER_TEST",
+    )
+
+    assert result.should_send is True
+    assert result.verdict == "APPROVE"
+    assert result.reply_text == "Sua contratação foi concluída."
+    assert "WON_BEFORE_SIGNATURE" in result.issue_codes
+    assert audits
+    payload = audits[0]["payload"]
+    assert payload["shadow_only"] is True
+    assert payload["intervened"] is False
+    assert payload["would_intervene"] is True
+    assert payload["observed_verdict"] == "BLOCK"
+    assert payload["verdict"] == "APPROVE"
+
+
+def test_guardian_shadow_disabled_skips_review(monkeypatch):
+    from dataclasses import replace
+
+    from app.config import settings
+    from app.services import ai_guardian
+
+    called = {"model": False}
+
+    monkeypatch.setattr(
+        ai_guardian,
+        "settings",
+        replace(
+            settings,
+            ai_supervisor_guardian_enabled=False,
+            ai_supervisor_guardian_shadow_enabled=False,
+            openai_api_key="sk-test",
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "_run_guardian_model",
+        lambda _context: called.__setitem__("model", True) or GuardianReview(),
+    )
+
+    agent = SimpleNamespace(id=7, user=None, role_type="SDR")
+    conversation = SimpleNamespace(id=42)
+    result = ai_guardian.guard_outbound_message(
+        None,
+        agent=agent,
+        conversation=conversation,
+        reply_text="Olá!",
+        buttons=[],
+        source="SDR_TEST",
+    )
+
+    assert result.should_send is True
+    assert result.verdict == "APPROVE"
+    assert called["model"] is False
+    assert "desativado" in result.rationale.casefold()

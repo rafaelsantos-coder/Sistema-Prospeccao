@@ -40,7 +40,10 @@ Ver também: [`vendedor-ia-fechamento.md`](vendedor-ia-fechamento.md).
 ## Segurança
 
 - [ ] CPF e documentos não aparecem em logs de IA sem redação
-- [ ] Guardião em sombra revisou pelo menos uma semana de runs do closer
+- [ ] `AI_SUPERVISOR_GUARDIAN_SHADOW_ENABLED=true` por pelo menos uma semana nos
+  runs do closer (auditoria `AI_SUPERVISOR_GUARDIAN_REVIEW` com `shadow_only`)
+- [ ] Taxa de `would_intervene` e falsos positivos revisada antes do enforce
+- [ ] Só então `AI_SUPERVISOR_GUARDIAN_ENABLED=true` (enforce)
 - [ ] Opt-out e `NAO_CONTATAR` interrompem o fechamento
 - [ ] Rollback documentado: `AI_SELLER_ENABLED=false` e CLOSER em `SHADOW`
 

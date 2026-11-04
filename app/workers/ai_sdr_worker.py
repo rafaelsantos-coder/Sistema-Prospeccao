@@ -726,7 +726,8 @@ def run() -> None:
         settings.ai_seller_enabled,
         settings.ai_maintenance_enabled,
         settings.ai_supervisor_shadow_enabled,
-        settings.ai_supervisor_guardian_enabled,
+        settings.ai_supervisor_guardian_enabled
+        or settings.ai_supervisor_guardian_shadow_enabled,
         settings.ai_autocorrect_enabled,
         settings.ai_learning_enabled,
         settings.ai_engineer_enabled,

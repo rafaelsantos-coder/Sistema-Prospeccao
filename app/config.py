@@ -91,6 +91,12 @@ class Settings:
         "AI_SUPERVISOR_GUARDIAN_ENABLED",
         "false",
     ).strip().lower() in {"1", "true", "yes", "on"}
+    # Sombra: revisa e audita a saída sem bloquear/reescrever. Se o modo enforce
+    # (AI_SUPERVISOR_GUARDIAN_ENABLED) estiver ligado, a sombra é ignorada.
+    ai_supervisor_guardian_shadow_enabled: bool = os.getenv(
+        "AI_SUPERVISOR_GUARDIAN_SHADOW_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
     # Telefones de teste (só dígitos, separados por vírgula): a IA atende essas
     # conversas mesmo numa fila com a IA pausada, sem tocar nos outros clientes.
     ai_test_phones: tuple[str, ...] = tuple(
@@ -219,6 +225,11 @@ class Settings:
             ),
             "ai_supervisor_guardian": bool(
                 self.ai_supervisor_guardian_enabled
+                and self.openai_api_key
+            ),
+            "ai_supervisor_guardian_shadow": bool(
+                self.ai_supervisor_guardian_shadow_enabled
+                and not self.ai_supervisor_guardian_enabled
                 and self.openai_api_key
             ),
             "ai_autocorrect": bool(self.ai_autocorrect_enabled),

@@ -144,7 +144,9 @@ def _guard(db: Session, agent: AIAgentProfile, context: dict, decision) -> dict[
         "deterministic_findings": findings,
         "approved_catalog": _catalog_snapshot(),
     }
-    if settings.ai_supervisor_guardian_enabled and guardian_operational():
+    from app.services.ai_guardian import guardian_enforcing, guardian_shadowing
+
+    if (guardian_enforcing() or guardian_shadowing()) and guardian_operational():
         review = _run_guardian_model(guardian_context)
     else:
         review = GuardianReview(
@@ -158,6 +160,17 @@ def _guard(db: Session, agent: AIAgentProfile, context: dict, decision) -> dict[
         original_text=decision.reply_text,
         original_buttons=buttons,
     )
+    if guardian_shadowing() and not guardian_enforcing():
+        return {
+            "verdict": "APPROVE",
+            "observed_verdict": result.verdict,
+            "shadow_only": True,
+            "should_send": True,
+            "issue_codes": list(result.issue_codes),
+            "rationale": f"[sombra] observou {result.verdict}: {result.rationale}",
+            "reply_text": decision.reply_text,
+            "buttons": [item.get("label") for item in buttons],
+        }
     return {
         "verdict": result.verdict,
         "should_send": result.should_send,

@@ -64,10 +64,17 @@ Perdido e Não contatar são saídas controladas. “Não contatar” também bl
 
 Ativação do Vendedor IA: [`VENDEDOR-IA-ATIVACAO.md`](VENDEDOR-IA-ATIVACAO.md).
 
+## Guardião de saída
+
+- `AI_SUPERVISOR_GUARDIAN_SHADOW_ENABLED=true` — revisa e grava auditoria
+  (`shadow_only`, `observed_verdict`, `would_intervene`) sem mudar o WhatsApp.
+- `AI_SUPERVISOR_GUARDIAN_ENABLED=true` — enforce: pode reescrever ou bloquear.
+- Com enforce ligado, a sombra é ignorada. Mensagem vazia continua bloqueada.
+
 ## Evolução técnica em aberto
 
 - Fila com broker (Redis/RQ ou equivalente) para jobs de IA e disparos.
-- Guardião de saída em bloqueio após período em sombra.
+- Após janela em sombra, ligar enforce só para códigos CRITICAL/HIGH estáveis.
 - Cobertura/viabilidade geográfica integrada (hoje parcial via catálogo/cidades).
 - Redistribuição automática de leads parados, excluindo tráfego pago.
 - Painel unificado de latência e conversão da jornada IA.
