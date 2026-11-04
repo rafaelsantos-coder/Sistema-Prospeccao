@@ -2455,17 +2455,34 @@ def _finalize_signed_sale(
 SALE_ACCEPTANCE_STEP = "CONFIRM_SALE"
 
 
+def _friendly_plan_name(raw: str) -> str:
+    """Nome do plano para o cliente, sem o código interno do CRM.
+
+    "Sulnet RESID FIBRA - 800MB - 2-25" vira "Internet Fibra 800 Mega".
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    folded = _norm(text)
+    speed = re.search(r"(\d{2,4})\s*(?:mb|mega)", folded)
+    if speed and ("fibra" in folded or "ftth" in folded or "internet" in folded):
+        return f"Internet Fibra {speed.group(1)} Mega"
+    data = re.search(r"(\d{1,3})\s*gb", folded)
+    if data and ("movel" in folded or "sulmovel" in folded):
+        return f"Sulmóvel {data.group(1)}GB"
+    return text
+
+
 def _sale_acceptance_prompt(
     state: AIClosingState,
     collected: dict[str, Any],
     *,
     reminder: bool = False,
 ) -> str:
-    plan = (
+    plan = _friendly_plan_name(
         str(collected.get("catalogPlanName") or "").strip()
         or str(state.plan_label or "").strip()
-        or "plano escolhido"
-    )
+    ) or "plano escolhido"
     price = _money(state.offer_price)
     if price is None:
         price = _money(collected.get("catalogMonthlyValue"))
@@ -2481,10 +2498,13 @@ def _sale_acceptance_prompt(
     ]
     if price is not None:
         lines.append(f"• Mensalidade: R$ {_seller_brl(price)}")
-    if collected.get("paymentMethod"):
-        lines.append(f"• Pagamento: {collected['paymentMethod']}")
-    if collected.get("dueDay"):
-        lines.append(f"• Vencimento: dia {collected['dueDay']}")
+    form = _category_values(collected)
+    payment = collected.get("paymentMethod") or form.get("forma_pagamento")
+    due_day = collected.get("dueDay") or form.get("vencimento")
+    if payment:
+        lines.append(f"• Pagamento: {payment}")
+    if due_day:
+        lines.append(f"• Vencimento: dia {due_day}")
     lines.append("")
     lines.append(
         "Você confirma a contratação? Com o seu Sim, eu gero o contrato para "
