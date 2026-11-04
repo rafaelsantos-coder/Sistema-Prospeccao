@@ -136,6 +136,7 @@ def _guard(db: Session, agent: AIAgentProfile, context: dict, decision) -> dict[
                 "intent": decision.intent,
                 "handoff_target": decision.handoff_target,
                 "customer_commitment": decision.customer_commitment,
+                "tool_facts": list((getattr(decision, "_timing", {}) or {}).get("tool_facts") or []),
             },
         },
         "history": history,

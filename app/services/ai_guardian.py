@@ -62,6 +62,9 @@ Regras obrigatórias:
      COMPROVADOS: não bloqueie, não reescreva para "o valor precisa ser confirmado" e não
      remova o preço. Só aponte erro de preço quando o valor for diferente do catálogo ou o
      plano não existir na cidade do cliente.
+1.2. proposed_action.metadata.tool_facts traz os resultados das ferramentas oficiais chamadas
+     nesta resposta (catálogo, calculadora de multa, manual aprovado). Valores e fatos que estão
+     em tool_facts são COMPROVADOS: não os remova nem os troque por "não tenho essa informação".
 2. SDR não coleta CPF, data de nascimento, CEP contratual, e-mail contratual, dados bancários
    ou assinatura. Intenção clara de compra deve seguir para o Vendedor IA.
 2.1. Política comercial aprovada: assim que cidade e segmento estão confirmados, o SDR apresenta

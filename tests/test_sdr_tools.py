@@ -211,3 +211,29 @@ def test_purchase_promotion_needs_offer_and_no_hesitation():
         "history": [{"direction": "OUTBOUND", "body": "Temos 800 Mega por R$ 119,90."}],
     }
     assert ai_sdr._promote_clear_purchase_to_closing(_high_intent(), question).handoff_target != "CLOSER_AI"
+
+
+def test_tool_results_are_kept_as_evidence_for_the_guardian(monkeypatch):
+    from app.services import ai_runtime
+
+    def fake_run(agent, prompt):
+        return SimpleNamespace(
+            final_output=_decision("A multa fica em R$ 479,95."),
+            new_items=[
+                SimpleNamespace(type="tool_call_item", raw_item=SimpleNamespace(name="calcular_multa")),
+                SimpleNamespace(type="tool_call_output_item", output='{"penalty": 479.95}'),
+            ],
+        )
+
+    monkeypatch.setattr(ai_runtime, "run_agent_sync", fake_run)
+    monkeypatch.setattr(ai_sdr, "settings", replace(ai_sdr.settings, openai_api_key="sk-test"))
+    monkeypatch.setattr("app.services.ai_sdr_tools.object_session", lambda obj: None)
+    monkeypatch.setattr(ai_sdr, "_effective_execution_mode", lambda agent: "SHADOW")
+    agent = SimpleNamespace(id=0, name="SulIA", system_prompt="", model="m", reasoning_effort="low", execution_mode="SHADOW")
+
+    decision = ai_sdr.run_ai_decision(
+        agent, {"history": [], "latest_customer_message": "Quanto é a multa no 6º mês?"}
+    )
+
+    assert decision._timing["tool_calls"] == ["calcular_multa"]
+    assert decision._timing["tool_facts"] == [{"tool": "calcular_multa", "result": '{"penalty": 479.95}'}]
