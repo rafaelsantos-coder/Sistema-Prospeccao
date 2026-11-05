@@ -179,3 +179,19 @@ def test_pendencia_de_data_de_portabilidade_preenche_e_gera_de_novo():
     client.patches.clear()
     assert ai_seller._recover_contract_pending_field(client, state, collected, exc) is None
     assert client.patches == []
+
+
+def test_funil_sdr_ia_nao_espera_o_cliente_nas_etapas_de_faturamento():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="BILLING_PAYMENT_METHOD")
+    collected = {"_sdr_ia_funnel": True}
+    reply = ai_seller._sdr_ia_auto_advance(
+        state, collected, "Vou seguir apenas com os dados necessários para concluir sua contratação pelo canal digital."
+    )
+    assert state.step == "WAITING_CRM_READY"
+    assert not reply.startswith("Vou seguir apenas")
+
+
+def test_fora_do_funil_sdr_ia_nada_muda():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="BILLING_PAYMENT_METHOD")
+    assert ai_seller._sdr_ia_auto_advance(state, {}, "Qual a forma de pagamento?") == "Qual a forma de pagamento?"
+    assert state.step == "BILLING_PAYMENT_METHOD"
