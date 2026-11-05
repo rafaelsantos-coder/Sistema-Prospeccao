@@ -1131,6 +1131,8 @@ def _playbook_known_value(
             return field, value
         return None
 
+    if key == "monthlyvalue" and state.offer_price is not None:
+        return "monthlyValue", _money_for_api(state.offer_price)
     if key in {"productid", "planid"}:
         plan_id = collected.get("planId")
         if plan_id not in (None, "", 0, "0"):
@@ -1306,6 +1308,17 @@ def _sync_known_playbook_missing(
             cpf_from_crm = ""
         if len(cpf_from_crm) == 11:
             collected["cpf"] = cpf_from_crm
+    if (
+        _playbook_code_key(item.code) in {"monthlyvalue", "productid", "planid"}
+        and not collected.get("planId")
+        and state.plan_label
+    ):
+        # 2ª venda do combo: o plano veio da escolha no WhatsApp, não do
+        # PLAN_CONFIRM; resolve o produto do catálogo antes de perguntar.
+        try:
+            _sync_plan_context(client, state, collected)
+        except CRMIntegrationError:
+            pass
     known = _playbook_known_value(item, state, collected)
     if not known:
         return False
@@ -3334,6 +3347,8 @@ def _seller_step_buttons(
         if len(buttons) >= 2:
             return buttons
 
+    if step == "COMBO_MOBILE_PLAN":
+        return black_campaign.combo_page_buttons(int(current_collected.get("_combo_page") or 1))
     if step == "MOBILE_CONTRACT_TYPE" and _sdr_ia_mode(collected or {}):
         return [dict(item) for item in MOBILE_CONTRACT_BUTTONS_SDR_IA]
     if step == "BILLING":
@@ -3653,12 +3668,21 @@ def _combo_choose_mobile(state: AIClosingState, collected: dict[str, Any], text:
         state.offer_price = _money(choice["price"])
         state.step = "CPF"
         return black_campaign.combo_cpf_prompt(choice["name"], choice["price"])
-    if _yes_no(text) == "NAO" or re.search(r"\b(desist\w*|cancel\w*|nao quero|sem movel)\b", _norm(text)):
+    page = int(collected.get("_combo_page") or 1)
+    folded = _norm(text)
+    if re.search(r"\b(mais planos|ver mais|mais opcoes|outros planos)\b", folded):
+        page = page + 1 if page < black_campaign.combo_page_count() else 1
+        collected["_combo_page"] = page
+        return black_campaign.combo_mobile_prompt(page)
+    if folded in {"voltar", "inicio"}:
+        collected["_combo_page"] = 1
+        return black_campaign.combo_mobile_prompt(1)
+    if _yes_no(text) == "NAO" or re.search(r"\b(desist\w*|cancel\w*|nao quero|sem movel)\b", folded):
         collected["_black_combo"]["stage"] = black_campaign.COMBO_STAGE_DECLINED
         state.step = "COMPLETED"
         state.completed_at = utcnow()
         return black_campaign.COMBO_DECLINED_MESSAGE
-    return black_campaign.combo_mobile_prompt()
+    return black_campaign.combo_mobile_prompt(page)
 
 
 def _after_signed_text(state: AIClosingState, collected: dict[str, Any]) -> str:
@@ -3672,7 +3696,7 @@ def _after_signed_text(state: AIClosingState, collected: dict[str, Any]) -> str:
 
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == COMBO_MOBILE_STEP:
-        return black_campaign.combo_mobile_prompt()
+        return black_campaign.combo_mobile_prompt(int(collected.get("_combo_page") or 1))
     if _sdr_ia_mode(collected) and state.step in SDR_IA_FORBIDDEN_STEPS:
         return (
             "Vou seguir apenas com os dados necessários para concluir sua contratação "

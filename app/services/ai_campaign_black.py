@@ -162,14 +162,44 @@ def _brl(value: float) -> str:
     return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def combo_mobile_prompt() -> str:
-    lines = [
-        "Contrato da internet assinado! ✅",
-        f"Agora falta o seu plano móvel para garantir a Black (1ª mensalidade dos dois só em {FIRST_DUE_DATE}):",
-    ]
-    lines += [f"• {item['gb']}GB: R$ {_brl(item['price'])}/mês" for item in MOBILE_CHOICES]
+COMBO_PAGE_SIZE = 2  # WhatsApp: no máximo 3 botões; o 3º é "Mais planos"/"Voltar".
+
+
+def combo_page_count() -> int:
+    return (len(MOBILE_CHOICES) + COMBO_PAGE_SIZE - 1) // COMBO_PAGE_SIZE
+
+
+def _combo_page_items(page: int) -> tuple[int, list[dict]]:
+    page = max(1, min(int(page or 1), combo_page_count()))
+    start = (page - 1) * COMBO_PAGE_SIZE
+    return page, list(MOBILE_CHOICES[start:start + COMBO_PAGE_SIZE])
+
+
+def combo_mobile_prompt(page: int = 1) -> str:
+    page, items = _combo_page_items(page)
+    if page == 1:
+        lines = [
+            "Contrato da internet assinado! ✅",
+            f"Agora falta o seu plano móvel para garantir a Black (1ª mensalidade dos dois só em {FIRST_DUE_DATE}):",
+        ]
+    else:
+        lines = ["Mais planos móveis da Black:"]
+    lines += [f"• {item['gb']}GB: R$ {_brl(item['price'])}/mês" for item in items]
     lines.append("Qual plano móvel você quer?")
     return "\n".join(lines)
+
+
+def combo_page_buttons(page: int = 1) -> list[dict[str, str]]:
+    page, items = _combo_page_items(page)
+    buttons = [
+        {"id": f"movel_{item['gb']}", "label": f"{item['gb']}GB - R$ {_brl(item['price'])}"[:20]}
+        for item in items
+    ]
+    if page < combo_page_count():
+        buttons.append({"id": "movel_mais", "label": "Mais planos"})
+    else:
+        buttons.append({"id": "movel_voltar", "label": "Voltar"})
+    return buttons
 
 
 def combo_cpf_prompt(plan_name: str, price: float) -> str:
@@ -185,6 +215,7 @@ COMBO_DECLINED_MESSAGE = (
 )
 FIXED_PREFIXES = (
     "Contrato da internet assinado! ✅",
+    "Mais planos móveis da Black:",
     "Anotado: Sulmóvel",
     "Tudo bem! Sua internet está contratada.",
 )
