@@ -1741,6 +1741,34 @@ def _advance_with_playbook(
     return _prompt_for_step(state, collected)
 
 
+def _plan_matches_label(product: dict[str, Any], label: str) -> bool:
+    """O produto do CRM corresponde ao plano escolhido na conversa?
+
+    Em 05/11 (conversa 546) a 2ª venda do combo herdou o produto da fibra da
+    1ª venda e o resumo do móvel saiu como "Internet Fibra 800 Mega". Um
+    produto de outra categoria ou de outra franquia/velocidade nunca vale.
+    """
+    wanted = _norm(label).replace(" ", "")
+    if not wanted:
+        return True
+    name = _norm(str(product.get("name") or "")).replace(" ", "")
+    category = _norm(str(product.get("categoryName") or "")).replace(" ", "")
+    product_is_mobile = "movel" in category or "movel" in name or bool(re.search(r"\d+gb", name))
+    capacity = re.search(r"(\d{1,3})gb", wanted)
+    wanted_is_mobile = "movel" in wanted or bool(capacity)
+    wanted_is_fiber = ("fibra" in wanted or "mega" in wanted or bool(re.search(r"\d{3,4}mb", wanted))) and not wanted_is_mobile
+    if wanted_is_mobile and not product_is_mobile:
+        return False
+    if wanted_is_fiber and product_is_mobile:
+        return False
+    if capacity and f"{capacity.group(1)}gb" not in name:
+        return False
+    speed = re.search(r"(\d{3,4})(?:mega|mb)", wanted)
+    if wanted_is_fiber and speed and speed.group(1) not in name:
+        return False
+    return True
+
+
 def _sync_plan_context(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -1765,11 +1793,21 @@ def _sync_plan_context(
         (item for item in products if int(item.get("id") or 0) == plan_id),
         None,
     )
+    if selected and state.plan_label and not _plan_matches_label(selected, state.plan_label):
+        LOG.warning(
+            "seller_plan_mismatch opportunity=%s crm_plan_id=%s",
+            state.opportunity_id,
+            plan_id,
+        )
+        selected = None
 
     # O nome comercial usado no WhatsApp pode não ser o nome interno do ERP.
     # Ex.: "Sulmóvel 15GB" -> "Meu Trabalho Comigo 15GB".
     if not selected and state.plan_label:
-        query = client.products(state.plan_label)
+        query = [
+            item for item in client.products(state.plan_label)
+            if _plan_matches_label(item, state.plan_label)
+        ]
         exact = [
             item for item in query
             if _norm(str(item.get("name") or "")) == _norm(state.plan_label)
@@ -2938,6 +2976,16 @@ def _finish_sale_contract(
     if not collected.get("_sale_accepted"):
         state.step = SALE_ACCEPTANCE_STEP
         return _sale_acceptance_prompt(state, collected)
+    if state.opportunity_id:
+        # O cliente só aceita o plano que viu no resumo: se o produto do CRM
+        # foi corrigido depois (conversa 546), mostra o resumo certo de novo.
+        shown = str(collected.get("catalogPlanName") or "").strip()
+        _sync_plan_context(client, state, collected)
+        current = str(collected.get("catalogPlanName") or "").strip()
+        if shown and current and shown != current:
+            collected["_sale_accepted"] = False
+            state.step = SALE_ACCEPTANCE_STEP
+            return _sale_acceptance_prompt(state, collected)
     return _prepare_contract_before_win(client, state, collected)
 
 
@@ -3632,6 +3680,7 @@ def _apply_black_tag(client: SulnetCRMClient, state: AIClosingState) -> None:
 COMBO_MOBILE_STEP = "COMBO_MOBILE_PLAN"
 _COMBO_KEEP_KEYS = {"_black_combo", "_sdr_ia_funnel", "_sdr_ia_defaults", "handoffReason", "freeMonths", "concessionLevel"}
 _COMBO_DROP_KEYS = {
+    "planId", "categoryId", "contractProductName", "dynamicPlaybookValues",
     "crmPlaybook", "categoryFormValues", "mobileCategoryValues", "categoryName",
     "catalogPlanName", "catalogMonthlyValue", "catalogPlanId", "creditStatus",
     "paymentMethod", "dueDay", "invoiceDelivery",

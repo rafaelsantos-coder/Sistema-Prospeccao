@@ -242,3 +242,62 @@ def test_valor_mensal_vem_do_plano_e_cliente_pode_trocar_o_plano(monkeypatch):
     assert state.plan_label == "Sulmóvel 15GB" and state.offer_price == Decimal("69.80")
     assert calls == [(14373, {"monthlyValue": 69.8, "planId": 7, "planLabel": "Sulmóvel 15GB CRM"})]
     assert "_playbook_dynamic_code" not in collected
+
+
+def test_produto_do_crm_de_outra_categoria_nao_vale_para_o_plano_escolhido():
+    fibra = {"id": 800, "name": "SULNET RESID FIBRA - 800MB - 2-25", "categoryName": "FIBRA"}
+    movel15 = {"id": 392, "name": "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26", "categoryName": "TELEFONIA MÓVEL"}
+    movel2 = {"id": 390, "name": "Meu Plano Essencial 2GB", "categoryName": "Telefonia Móvel"}
+    match = ai_seller._plan_matches_label
+    assert not match(fibra, "Sulmóvel 15GB")
+    assert match(movel15, "Sulmóvel 15GB")
+    assert not match(movel2, "Sulmóvel 15GB")
+    assert match(fibra, "800 Mega") and not match(movel15, "800 Mega")
+    assert match(fibra, "plano combinado")
+
+
+class _PlanClient:
+    def __init__(self, crm_plan_id):
+        self.crm_plan_id = crm_plan_id
+        self.updated = []
+
+    def get_opportunity(self, opportunity_id):
+        return {"planId": self.crm_plan_id}
+
+    def products(self, query=""):
+        if query:
+            return []
+        return [
+            {"id": 800, "name": "SULNET RESID FIBRA - 800MB - 2-25", "monthlyValue": 119.90, "categoryId": 10, "categoryName": "FIBRA"},
+            {"id": 392, "name": "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26", "monthlyValue": 69.80, "categoryId": 83, "categoryName": "TELEFONIA MÓVEL"},
+        ]
+
+    def update_opportunity(self, opportunity_id, payload):
+        self.updated.append((opportunity_id, payload))
+        return {}
+
+
+def test_segunda_venda_corrige_produto_herdado_da_fibra():
+    client = _PlanClient(crm_plan_id=800)
+    state = _state(step="CONFIRM_SALE", plan_label="Sulmóvel 15GB", offer_price=Decimal("69.80"), opportunity_id=14373)
+    collected = {}
+    ai_seller._sync_plan_context(client, state, collected)
+    assert collected["planId"] == 392
+    assert collected["contractProductName"] == "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26"
+    assert client.updated and client.updated[0][1]["planId"] == 392
+
+
+def test_confirmo_com_resumo_errado_mostra_o_resumo_certo_antes_do_contrato():
+    client = _PlanClient(crm_plan_id=800)
+    state = _state(step="CONFIRM_SALE", plan_label="Sulmóvel 15GB", offer_price=Decimal("69.80"), opportunity_id=14373)
+    collected = {"_sale_accepted": True, "catalogPlanName": "SULNET RESID FIBRA - 800MB - 2-25"}
+    reply = ai_seller._finish_sale_contract(client, state, collected)
+    assert state.step == "CONFIRM_SALE" and not collected["_sale_accepted"]
+    assert "15GB" in reply and "Fibra" not in reply
+
+
+def test_reinicio_do_combo_descarta_o_produto_da_fibra():
+    state = _state()
+    collected = {"_black_combo": {"stage": "FIBER"}, "planId": 800, "categoryId": 10, "contractProductName": "FIBRA 800"}
+    ai_seller._after_signed_text(state, collected)
+    assert "planId" not in collected and "categoryId" not in collected and "contractProductName" not in collected
