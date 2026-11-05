@@ -34,6 +34,7 @@ LOG = logging.getLogger("sulnet_ai_agents")
 router = APIRouter(prefix="/ai")
 
 HANDLING_MODES = {
+    "AI_WHEN_OFFLINE": "IA quando não houver vendedor online",
     "AI_FIRST": "IA primeiro",
     "HYBRID": "Híbrido",
     "AI_ONLY": "IA exclusiva",

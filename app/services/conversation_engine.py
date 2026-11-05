@@ -23,7 +23,11 @@ from app.models import (
     User,
 )
 from app.services.queue_routing import (
+    AI_OWNED_STATES,
+    AI_WHEN_OFFLINE,
+    ai_owns_conversation,
     assign_queue_user,
+    human_online_in_queue,
     bind_conversation_queue,
     queue_for_conversation,
     resolve_queue,
@@ -125,17 +129,26 @@ def _presence_timestamp(value) -> float:
     return value.timestamp()
 
 
-def _queue_reserved_for_ai(db: Session, queue: ServiceQueue | None) -> bool:
+def _queue_reserved_for_ai(
+    db: Session,
+    queue: ServiceQueue | None,
+    conversation_id: int | None = None,
+) -> bool:
     if not queue or not settings.ai_sdr_enabled or not settings.ai_autonomous_enabled:
         return False
     binding = db.scalar(
         select(AIQueueBinding).where(
             AIQueueBinding.queue_id == queue.id,
             AIQueueBinding.active.is_(True),
-            AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY"}),
+            AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY", AI_WHEN_OFFLINE}),
         )
     )
-    return binding is not None
+    if binding is None:
+        return False
+    if binding.handling_mode != AI_WHEN_OFFLINE:
+        return True
+    # IA só sem vendedor online; o que a IA já começou continua com ela.
+    return ai_owns_conversation(db, conversation_id) or not human_online_in_queue(db, queue.id)
 
 
 def _conversation_ready_for_human(db: Session, conversation_id: int) -> bool:
@@ -309,7 +322,7 @@ def ensure_open_conversation(
             # permanecem humanos.
             if (
                 queue_changed
-                and _queue_reserved_for_ai(db, queue)
+                and _queue_reserved_for_ai(db, queue, conversation.id)
                 and not _conversation_ready_for_human(db, conversation.id)
                 and conversation.assigned_user_id
             ):
@@ -327,7 +340,10 @@ def ensure_open_conversation(
         if (
             assign_if_unowned
             and not conversation.assigned_user_id
-            and (not _queue_reserved_for_ai(db, queue) or _conversation_ready_for_human(db, conversation.id))
+            and (
+                not _queue_reserved_for_ai(db, queue, conversation.id)
+                or _conversation_ready_for_human(db, conversation.id)
+            )
         ):
             owner = choose_assignee(db, contact, lead, queue=queue)
             if owner:
@@ -451,7 +467,9 @@ def distribute_waiting_conversations(
                     queue.id,
                     origin="AUTO_QUEUE",
                 )
-        if _queue_reserved_for_ai(db, queue) and not _conversation_ready_for_human(db, conversation.id):
+        if _queue_reserved_for_ai(db, queue, conversation.id) and not _conversation_ready_for_human(
+            db, conversation.id
+        ):
             continue
         owner = choose_assignee(db, contact, lead, queue=queue)
         if not owner:
@@ -486,6 +504,25 @@ def _ai_reserved_queue_ids():
     )
 
 
+def _ai_owned_offline_queue_conversation_ids():
+    """Conversas que a IA já começou numa fila "IA quando não houver vendedor online"."""
+    offline_queue_ids = select(AIQueueBinding.queue_id).where(
+        AIQueueBinding.active.is_(True),
+        AIQueueBinding.handling_mode == AI_WHEN_OFFLINE,
+    )
+    return (
+        select(ConversationQueueLink.conversation_id)
+        .join(
+            AIConversationState,
+            AIConversationState.conversation_id == ConversationQueueLink.conversation_id,
+        )
+        .where(
+            ConversationQueueLink.queue_id.in_(offline_queue_ids),
+            AIConversationState.state.in_(AI_OWNED_STATES),
+        )
+    )
+
+
 def _consultant_manual_queue_waiting(user: User):
     """Conversas sem dono que o vendedor pode pegar numa fila MANUAL.
 
@@ -513,6 +550,7 @@ def _consultant_manual_queue_waiting(user: User):
         human_queue_conversation_ids = select(ConversationQueueLink.conversation_id).where(
             ConversationQueueLink.queue_id.in_(manual_queue_ids),
             ConversationQueueLink.queue_id.not_in(_ai_reserved_queue_ids()),
+            ConversationQueueLink.conversation_id.not_in(_ai_owned_offline_queue_conversation_ids()),
         )
     else:
         human_queue_conversation_ids = manual_conversation_ids
