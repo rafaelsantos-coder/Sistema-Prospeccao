@@ -64,6 +64,12 @@
       </div>
       <div class="chat-header-actions">
         <span class="conversation-status status-{{ conversation.status|lower }}">{{ conversation.status.replace('_',' ') }}</span>
+        {% if closer_escalated %}
+        <form action="/conversations/{{ conversation.id }}/ai/resume" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit" title="Retoma a venda de onde parou">Devolver para o Vendedor IA</button>
+        </form>
+        {% endif %}
         <form action="/conversations/{{ conversation.id }}/status" method="post">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           {% if conversation.status in closed_statuses %}

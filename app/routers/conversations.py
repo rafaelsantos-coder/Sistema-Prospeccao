@@ -214,10 +214,24 @@ def _render_inbox(
         messages = _contact_history_messages(db, selected)
         users = _eligible_users(db, user, selected)
 
+    closer_escalated = False
+    if selected and user.role in {"ADMIN", "GESTOR"}:
+        from app.models import AIClosingState
+
+        closer_escalated = bool(
+            db.scalar(
+                select(AIClosingState.id).where(
+                    AIClosingState.conversation_id == selected.id,
+                    AIClosingState.step == "ESCALATED",
+                )
+            )
+        )
+
     counts = _inbox_counts(db, user)
     return render(
         request,
         "conversations/inbox.html",
+        closer_escalated=closer_escalated,
         user=user,
         active_nav="conversations",
         page_title="Conversas",
@@ -734,6 +748,36 @@ def update_conversation_status(
     )
     db.commit()
     return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+
+@router.post("/conversations/{conversation_id}/ai/resume")
+def resume_conversation_closer(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    from app.services.ai_seller import resume_closer
+
+    try:
+        resumed = resume_closer(db, conversation, user)
+    except Exception:
+        db.rollback()
+        resumed = False
+    if resumed:
+        db.commit()
+        flash(request, "Venda devolvida ao Vendedor IA.")
+    else:
+        flash(request, "Esta conversa não tem venda do Vendedor IA para retomar.", "warning")
+    return RedirectResponse(f"/conversations/{conversation_id}", status_code=303)
 
 
 @router.get("/api/conversations/inbox")
