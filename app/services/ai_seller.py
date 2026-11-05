@@ -2979,6 +2979,12 @@ def _finish_sale_contract(
     # O contrato só é gerado depois de um aceite explícito do resumo
     # (conversa 114: o cliente recebeu o link e respondeu "eu nem contratei nada").
     if not collected.get("_sale_accepted"):
+        if state.opportunity_id:
+            # O resumo mostra o produto que o CRM vai usar no contrato.
+            try:
+                _sync_plan_context(client, state, collected)
+            except Exception:
+                LOG.warning("seller_summary_plan_sync_failed opportunity=%s", state.opportunity_id)
         state.step = SALE_ACCEPTANCE_STEP
         return _sale_acceptance_prompt(state, collected)
     if state.opportunity_id:
@@ -5451,6 +5457,13 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     state.step = playbook_step
                     reply = playbook_question or _prompt_for_step(state, collected)
 
+        elif state.step == SALE_ACCEPTANCE_STEP and _message_predates_summary(db, conversation.id, message):
+            # Conversa 546: "Trocar para 15GB" chegou antes do resumo, foi lido
+            # como recusa do resumo e a venda foi para um consultor. Mensagem
+            # anterior ao resumo não aceita nem recusa o resumo.
+            LOG.info("seller_stale_message_ignored conversation=%s message=%s", conversation.id, message.id)
+            reply = ""
+
         elif state.step == SALE_ACCEPTANCE_STEP:
             answer = _sale_acceptance_answer(text)
             interpreted = SellerInterpretation()
@@ -5485,10 +5498,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     agent=agent,
                     reason="Cliente não confirmou o resumo da contratação e quer ajustar.",
                 )
-                reply = (
-                    "Sem problema, nada foi contratado. Um consultor da Sulnet vai "
-                    "continuar com você por aqui para ajustar o que for preciso."
-                )
+                combo = collected.get("_black_combo") if isinstance(collected.get("_black_combo"), dict) else {}
+                reply = COMBO_MOBILE_DECLINE_NOTICE if combo.get("stage") == black_campaign.COMBO_STAGE_MOBILE else SALE_DECLINE_NOTICE
             else:
                 reply = _sale_acceptance_prompt(state, collected, reminder=True)
 
@@ -5795,6 +5806,9 @@ CONTRACT_HANDOFF_NOTICE = (
 )
 DATA_RETRY_PREFIX = "Não consegui registrar essa informação no sistema."
 _CLOSER_NOTICE_PREFIXES = (
+    "Sem problema, nada foi contratado.",
+    "Sem problema, o plano móvel ainda não foi contratado",
+    "Voltei por aqui para concluir a sua contratação.",
     CLOSER_HANDOFF_NOTICE[:60],
     CONTRACT_HANDOFF_NOTICE[:60],
     DATA_RETRY_PREFIX,
@@ -5867,6 +5881,100 @@ def _escalate_closer_failure(
         _send_text(db, agent=agent, conversation=conversation, text=notice, handoff_notice=True)
     except Exception:
         LOG.exception("closer_escalation_notice_failed conversation=%s", conversation.id)
+
+
+SALE_DECLINE_NOTICE = (
+    "Sem problema, nada foi contratado. Um consultor da Sulnet vai "
+    "continuar com você por aqui para ajustar o que for preciso."
+)
+COMBO_MOBILE_DECLINE_NOTICE = (
+    "Sem problema, o plano móvel ainda não foi contratado; a sua internet continua "
+    "contratada normalmente. Um consultor da Sulnet vai continuar com você por aqui "
+    "para ajustar o que for preciso."
+)
+RESUME_NOTICE = (
+    "Voltei por aqui para concluir a sua contratação. Só um instante enquanto "
+    "confiro os dados no sistema."
+)
+
+
+def _message_predates_summary(db: Session, conversation_id: int, message: Message | None) -> bool:
+    if message is None or not getattr(message, "id", None):
+        return False
+    summary_id = db.scalar(
+        select(Message.id)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "OUTBOUND",
+            Message.body.like("Antes de gerar o contrato, confira o resumo%"),
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    return bool(summary_id and int(message.id) < int(summary_id))
+
+
+def resume_closer(db: Session, conversation: Conversation, actor: Any) -> bool:
+    """Devolve ao Vendedor IA uma venda que foi para um consultor.
+
+    Retoma pelo playbook do CRM: o poller pergunta o próximo campo pendente ou
+    mostra o resumo para um novo aceite. Nada do que o cliente já informou se perde.
+    """
+    state = db.scalar(
+        select(AIClosingState).where(AIClosingState.conversation_id == conversation.id)
+    )
+    closer = active_closer(db)
+    if not state or state.step != "ESCALATED" or not closer:
+        return False
+    collected = _load_collected(state)
+    collected["_sale_accepted"] = False
+    collected.pop("_data_errors", None)
+    collected.pop("_retry_later_cycles", None)
+    collected.pop("_poll_failures", None)
+    collected.pop("_technical_notice_sent", None)
+    if state.sign_url and not _contract_is_signed(state.contract_status):
+        state.step = "WAITING_SIGNATURE"
+    elif state.opportunity_id:
+        state.step = "WAITING_CRM_READY"
+    else:
+        state.step = "CPF" if collected.get("name") else "NAME"
+    state.agent_id = closer.id
+    state.last_error = ""
+    _save_collected(state, collected)
+
+    ai_state = db.scalar(
+        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+    )
+    if ai_state:
+        ai_state.state = "CLOSING"
+        ai_state.agent_id = closer.id
+    else:
+        db.add(AIConversationState(conversation_id=conversation.id, agent_id=closer.id, state="CLOSING"))
+    conversation.assigned_user_id = closer.user_id
+    conversation.status = "EM_ATENDIMENTO"
+    conversation.closed_at = None
+    db.add(
+        ConversationAssignment(
+            conversation_id=conversation.id,
+            user_id=closer.user_id,
+            assigned_by_id=getattr(actor, "id", None),
+            event="AI_CLOSER_RESUMED",
+        )
+    )
+    db.flush()
+    if state.step in {"CPF", "NAME"}:
+        _send_step_message(db, agent=closer, conversation=conversation, state=state, text=_prompt_for_step(state, collected))
+    else:
+        _send_text(db, agent=closer, conversation=conversation, text=RESUME_NOTICE)
+    write_audit(
+        db,
+        user=actor,
+        action="AI_CLOSER_RESUMED",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={"step": state.step, "opportunity_id": state.opportunity_id},
+    )
+    return True
 
 
 def _deliver_signed_text(

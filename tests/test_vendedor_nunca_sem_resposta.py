@@ -64,3 +64,73 @@ def test_aviso_ao_cliente_nao_depende_do_guardiao():
         f"{ai_seller.DATA_RETRY_PREFIX} Qual é o seu CEP?",
     ):
         assert ai_seller._is_fixed_closing_text(state, text)
+
+
+def test_resumo_ja_mostra_o_produto_certo_do_crm():
+    from decimal import Decimal
+
+    class _Client:
+        def get_opportunity(self, opportunity_id):
+            return {"planId": 800}
+
+        def products(self, query=""):
+            if query:
+                return []
+            return [
+                {"id": 800, "name": "SULNET RESID FIBRA - 800MB - 2-25", "monthlyValue": 119.90, "categoryId": 10, "categoryName": "FIBRA"},
+                {"id": 392, "name": "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26", "monthlyValue": 69.80, "categoryId": 83, "categoryName": "TELEFONIA MÓVEL"},
+            ]
+
+        def update_opportunity(self, opportunity_id, payload):
+            return {}
+
+    state = AIClosingState(
+        conversation_id=1, agent_id=2, external_id="x", step="WAITING_CRM_READY",
+        opportunity_id=14373, plan_label="Sulmóvel 15GB", offer_price=Decimal("69.80"),
+    )
+    collected = {"catalogPlanName": "SULNET RESID FIBRA - 800MB - 2-25"}
+    reply = ai_seller._finish_sale_contract(_Client(), state, collected)
+    assert state.step == "CONFIRM_SALE"
+    assert "15GB" in reply and "Fibra 800" not in reply
+
+
+def test_recusa_do_movel_no_combo_nao_diz_que_nada_foi_contratado():
+    assert "internet continua contratada" in ai_seller.COMBO_MOBILE_DECLINE_NOTICE
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="ESCALATED")
+    assert ai_seller._is_fixed_closing_text(state, ai_seller.COMBO_MOBILE_DECLINE_NOTICE)
+    assert ai_seller._is_fixed_closing_text(state, ai_seller.RESUME_NOTICE)
+
+
+def test_mensagem_anterior_ao_resumo_nao_responde_o_resumo():
+    from app.database import SessionLocal
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.models import Contact, Conversation, Message
+
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            contact = Contact(phone="5555900000546", name="Cliente Aceite")
+            db.add(contact)
+            db.flush()
+            conversation = Conversation(contact_id=contact.id, status="EM_ATENDIMENTO", team="DIGITAL")
+            db.add(conversation)
+            db.flush()
+            antiga = Message(conversation_id=conversation.id, contact_id=contact.id, direction="INBOUND", message_type="TEXT", body="Trocar para 15GB")
+            db.add(antiga)
+            db.flush()
+            resumo = Message(
+                conversation_id=conversation.id, contact_id=contact.id, direction="OUTBOUND", message_type="TEXT",
+                body="Antes de gerar o contrato, confira o resumo da sua contratação: ...",
+            )
+            db.add(resumo)
+            db.flush()
+            nova = Message(conversation_id=conversation.id, contact_id=contact.id, direction="INBOUND", message_type="TEXT", body="Confirmo")
+            db.add(nova)
+            db.flush()
+            assert ai_seller._message_predates_summary(db, conversation.id, antiga)
+            assert not ai_seller._message_predates_summary(db, conversation.id, nova)
+        finally:
+            db.rollback()
+            db.close()
