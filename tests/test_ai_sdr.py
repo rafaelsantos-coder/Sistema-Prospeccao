@@ -3714,12 +3714,19 @@ def test_followup_respeita_intervalo_minimo_de_2h():
 def test_followup_do_sdr_para_depois_de_sem_interesse():
     from app.services import ai_followups
 
+    class _Msg:
+        def __init__(self, body):
+            self.body = body
+            self.id = 10
+
     class _Db:
         def __init__(self, body):
             self.body = body
+            self.calls = 0
 
         def scalar(self, _stmt):
-            return self.body
+            self.calls += 1
+            return _Msg(self.body) if self.calls == 1 else "Qual seu CPF?"
 
     assert ai_followups._customer_declined(_Db("Não tenho interesse"), 1) is True
     assert ai_followups._customer_declined(_Db("Não, obrigado"), 1) is True
@@ -3805,3 +3812,37 @@ def test_ia_assume_cliente_que_o_vendedor_online_nao_respondeu_em_10_minutos(mon
         finally:
             db.rollback()
             db.close()
+
+
+def test_nao_seco_para_a_black_depois_de_nao_obrigada_encerra_e_sem_followup():
+    from app.services import ai_followups
+    from app.services.ai_sdr_policies import REJECTION_CLOSE_MESSAGE, _apply_repeated_rejection_policy
+
+    history = [
+        {"direction": "OUTBOUND", "body": "Oi! A Sulnet tem novidades para você."},
+        {"direction": "INBOUND", "body": "Não obrigada"},
+        {"direction": "OUTBOUND", "body": "Antes de te mostrar as opções, você já é cliente Sulnet?"},
+        {"direction": "INBOUND", "body": "Sim"},
+        {"direction": "OUTBOUND", "body": "Quer conhecer nossa promoção Black da Sulnet?"},
+        {"direction": "INBOUND", "body": "Não"},
+    ]
+    decision = _apply_repeated_rejection_policy(
+        _rejection_decision(), {"latest_customer_message": "Não", "history": history}
+    )
+    assert decision.reply_text == REJECTION_CLOSE_MESSAGE
+    assert decision.followup_needed is False
+
+    class _Msg:
+        def __init__(self, body, id_=10):
+            self.body = body
+            self.id = id_
+
+    class _Db:
+        def __init__(self, inbound, outbound):
+            self.values = [_Msg(inbound), outbound]
+
+        def scalar(self, _stmt):
+            return self.values.pop(0)
+
+    assert ai_followups._customer_declined(_Db("Não", "Quer conhecer nossa promoção Black da Sulnet?"), 1) is True
+    assert ai_followups._customer_declined(_Db("Não", "A portabilidade será no seu nome? (Sim/Não)"), 1) is False

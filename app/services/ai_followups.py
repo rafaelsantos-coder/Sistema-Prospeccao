@@ -397,10 +397,25 @@ _CUSTOMER_STOP_EXACT = {"nao obrigado", "nao obrigada", "prefiro nao", "nao quer
 FOLLOWUP_MIN_GAP = timedelta(hours=2)
 
 
+# "Não" seco logo depois de uma oferta ("Quer conhecer a Black?") também é recusa:
+# a resposta da IA a ele já foi a tentativa (conversa 651: 3 follow-ups depois do "Não").
+_BARE_NEGATIVES = {"nao", "n", "agora nao", "nao quero", "nao obrigado", "nao obrigada", "nao valeu"}
+_OFFER_QUESTION_CUES = (
+    "quer conhecer",
+    "promocao",
+    "black",
+    "tem interesse",
+    "quer contratar",
+    "posso te mostrar",
+    "quer ver",
+    "gostaria de conhecer",
+)
+
+
 def _customer_declined(db: Session, conversation_id: int) -> bool:
-    """A última mensagem do cliente é uma desistência explícita."""
-    body = db.scalar(
-        select(Message.body)
+    """O cliente recusou: desistência explícita, ou "não" seco a uma oferta."""
+    latest_inbound = db.scalar(
+        select(Message)
         .where(
             Message.conversation_id == conversation_id,
             Message.direction == "INBOUND",
@@ -408,8 +423,25 @@ def _customer_declined(db: Session, conversation_id: int) -> bool:
         .order_by(Message.id.desc())
         .limit(1)
     )
-    text = _normalize_followup_text(body)
-    return text in _CUSTOMER_STOP_EXACT or bool(_CUSTOMER_STOP_RE.search(text))
+    if latest_inbound is None:
+        return False
+    text = _normalize_followup_text(latest_inbound.body)
+    if text in _CUSTOMER_STOP_EXACT or _CUSTOMER_STOP_RE.search(text):
+        return True
+    if text not in _BARE_NEGATIVES:
+        return False
+    offer = db.scalar(
+        select(Message.body)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "OUTBOUND",
+            Message.id < latest_inbound.id,
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    offer_text = _normalize_followup_text(offer)
+    return any(cue in offer_text for cue in _OFFER_QUESTION_CUES)
 
 
 def _followup_spacing_hold(db: Session, conversation_id: int, now: datetime) -> datetime | None:
