@@ -470,6 +470,97 @@ def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
         finally:
             db.close()
 
+def test_pausar_ia_na_fila_para_respostas_e_followups_do_sdr(monkeypatch):
+    from app.models import LeadQueuePreference
+    from app.services.ai_followups import _followup_allowed, schedule_followup
+
+    monkeypatch.setattr("app.services.ai_sdr.settings", replace(settings, ai_autonomous_enabled=True))
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            agent, queue, _human = _create_bound_digital_queue(db, "PAUSA")
+            agent.execution_mode = "AUTO"
+            db.commit()
+            lead = Lead(
+                business_name="Cliente Fila Pausada",
+                contact_name="Cliente",
+                phone="5555988877566",
+                segment="Empresa",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_AI_PAUSE"))
+            db.commit()
+            conversation, message, created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-PAUSE-INBOUND-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "Quero saber dos planos."},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            assert created is True
+            job = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
+            assert job is not None
+
+            state = db.scalar(
+                select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+            )
+            if state is None:
+                state = AIConversationState(conversation_id=conversation.id, agent_id=agent.id, state="AI_ACTIVE")
+                db.add(state)
+            state.state = "AI_ACTIVE"
+            state.agent_id = agent.id
+            db.flush()
+            followup = schedule_followup(
+                db,
+                agent_id=agent.id,
+                queue_id=queue.id,
+                conversation_id=conversation.id,
+                source_message_id=message.id,
+            )
+            assert followup is not None
+            assert _followup_allowed(db, followup) == (True, "")
+
+            # "Pausar IA" na fila.
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
+            binding.active = False
+            db.flush()
+
+            assert _followup_allowed(db, followup) == (False, "FILA_SEM_IA")
+            calls = []
+            monkeypatch.setattr(
+                "app.services.ai_sdr.run_ai_decision",
+                lambda agent, context: calls.append(context),
+            )
+            assert process_ai_job(db, job) == "skipped"
+            assert job.status == "IGNORADO"
+            assert calls == []
+
+            # "Ativar IA" de novo.
+            binding.active = True
+            db.flush()
+            assert _followup_allowed(db, followup) == (True, "")
+        finally:
+            db.rollback()
+            db.close()
+
+
 def test_seed_binds_sulia_to_all_active_digital_queues():
     with TestClient(app):
         db = SessionLocal()

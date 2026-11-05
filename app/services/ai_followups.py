@@ -373,6 +373,13 @@ def _latest_inbound_id(db: Session, conversation_id: int) -> int | None:
     )
 
 
+def _queue_ai_paused(db: Session, conversation_id: int) -> bool:
+    """A fila da conversa está sem IA ativa (o telefone de teste continua liberado)."""
+    from app.services.ai_sdr import binding_for_conversation  # ai_sdr importa este módulo
+
+    return binding_for_conversation(db, conversation_id) is None
+
+
 def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
     conversation = db.get(Conversation, job.conversation_id)
     if not conversation:
@@ -406,6 +413,10 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
             or int(state.agent_id or 0) != int(job.agent_id)
         ):
             return False, "OWNER_SDR_AI"
+    # "Pausar IA" na fila vale também para os follow-ups do SDR. A venda que já
+    # está com o Vendedor IA segue até o fim, então os follow-ups do closer continuam.
+    if agent is not None and agent.role_type != "CLOSER" and _queue_ai_paused(db, conversation.id):
+        return False, "FILA_SEM_IA"
     closing = db.scalar(
         select(AIClosingState).where(
             AIClosingState.conversation_id == conversation.id
