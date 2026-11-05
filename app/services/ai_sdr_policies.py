@@ -1298,12 +1298,37 @@ def _show_black_options(decision: AIDecision, status: str) -> AIDecision:
     return decision
 
 
+_BLACK_VALIDITY_CUES = ("ate quando", "validade", "vale ate", "ate que dia", "prazo da promocao", "termina quando")
+
+
+def _answer_black_validity(decision: AIDecision, status: str) -> AIDecision:
+    decision.reply_text = (
+        f"A Black da Sulnet vale para contratações feitas até {black.VALID_UNTIL_LABEL}, "
+        f"com a 1ª mensalidade só em {black.FIRST_DUE_DATE}. Qual opção você prefere?"
+    )
+    decision.quick_replies = [
+        QuickReply(id="black_movel", label="Só móvel"),
+        QuickReply(id="black_combo", label="Combo fibra + móvel"),
+    ]
+    decision.intent = "INFORMATION"
+    decision.sales_state = "DISCOVERY"
+    decision.qualification.existing_customer = status
+    decision.summary = "Cliente perguntou a validade da Black; SulIA respondeu e voltou às opções."
+    decision.next_action = "Cliente escolher entre móvel e combo da Black."
+    _reset_entry_offer(decision)
+    return decision
+
+
 def _apply_black_entry(decision: AIDecision, context: dict, status: str, *, just_identified: bool) -> AIDecision | None:
     """Etapa da Black logo após "já é cliente?". None = segue o fluxo normal."""
     if not black.black_active():
         return None
     previous = _last_outbound_text(context)
     latest_raw = str(context.get("latest_customer_message") or "")
+    if (black.is_offer_question(previous) or black.is_options_question(previous)) and any(
+        cue in _fold_sales_text(latest_raw) for cue in _BLACK_VALIDITY_CUES
+    ):
+        return _answer_black_validity(decision, status)
     if just_identified and not black.was_offered(context.get("history")):
         return _show_black_offer_question(decision, status)
     if black.is_offer_question(previous):
@@ -1314,7 +1339,9 @@ def _apply_black_entry(decision: AIDecision, context: dict, status: str, *, just
             if status == "CLIENTE":
                 return _show_existing_customer_product_question(decision)
             return _show_new_customer_product_question(decision)
-        return _show_black_offer_question(decision, status)
+        # Pergunta livre ("até quando vai?"): o modelo responde com a base da Black.
+        # Repetir a mesma pergunta travava a conversa (integridade: REPEATED_QUESTION).
+        return None
     if black.is_options_question(previous):
         choice = black.choice_from_options(latest_raw)
         if choice == "MOBILE":
@@ -1323,7 +1350,7 @@ def _apply_black_entry(decision: AIDecision, context: dict, status: str, *, just
             return result
         if choice == "COMBO":
             return _show_internet_segment_question(decision, existing_customer=status == "CLIENTE")
-        return _show_black_options(decision, status)
+        return None
     return None
 
 

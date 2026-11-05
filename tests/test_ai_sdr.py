@@ -3846,3 +3846,28 @@ def test_nao_seco_para_a_black_depois_de_nao_obrigada_encerra_e_sem_followup():
 
     assert ai_followups._customer_declined(_Db("Não", "Quer conhecer nossa promoção Black da Sulnet?"), 1) is True
     assert ai_followups._customer_declined(_Db("Não", "A portabilidade será no seu nome? (Sim/Não)"), 1) is False
+
+
+def test_pergunta_livre_na_black_nao_repete_as_opcoes(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    from app.services.ai_campaign_black import OPTIONS_TEXT
+
+    context = {
+        "latest_customer_message": "Até quando vai a promoção ?",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "CLIENTE"},
+        "history": _black_history(("OUTBOUND", OPTIONS_TEXT), ("INBOUND", "Até quando vai a promoção ?")),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "30/11/2026" in result.reply_text
+    assert result.reply_text != OPTIONS_TEXT
+    assert [item.label for item in result.quick_replies] == ["Só móvel", "Combo fibra + móvel"]
+
+    other = {
+        "latest_customer_message": "Funciona em qualquer celular?",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "CLIENTE"},
+        "history": _black_history(("OUTBOUND", OPTIONS_TEXT), ("INBOUND", "Funciona em qualquer celular?")),
+    }
+    base = _base_prospecting_entry_decision()
+    original = base.reply_text
+    result = _apply_prospecting_entry_policy(base, other)
+    assert result.reply_text == original  # o modelo responde a dúvida
