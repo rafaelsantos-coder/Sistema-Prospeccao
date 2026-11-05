@@ -3161,7 +3161,7 @@ def _is_fixed_closing_text(closing: AIClosingState | None, text: str) -> bool:
     """
     if not closing or not text.strip():
         return False
-    if text.startswith(black_campaign.FIXED_PREFIXES):
+    if text.startswith(black_campaign.FIXED_PREFIXES) or text.startswith(_CLOSER_NOTICE_PREFIXES):
         return True
     if closing.step == SALE_ACCEPTANCE_STEP and text.startswith(
         ("Antes de gerar o contrato, confira o resumo", "Só preciso da sua confirmação para gerar o contrato")
@@ -5600,6 +5600,60 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         job.error = str(exc)[:1200]
 
         attempts = int(job.attempts or 0)
+        kind = _closer_failure_kind(exc)
+        crm_message = str(exc)[:300]
+        if kind == "ownership":
+            job.status = "IGNORADO"
+            job.locked_at = None
+            return "skipped"
+        if kind == "contract" or (kind in {"config", "logic"} and attempts >= 1):
+            # O CRM não vai gerar o contrato/aceitar a operação só com novas
+            # tentativas (ex.: "Nenhum template de contrato para o produto").
+            job.status = "CONCLUIDO"
+            job.locked_at = None
+            _escalate_closer_failure(
+                db,
+                state=state,
+                conversation=conversation,
+                agent=agent,
+                reason=f"CRM recusou ({kind}) na etapa {state.step}: {crm_message}",
+                notice=CONTRACT_HANDOFF_NOTICE if kind == "contract" else CLOSER_HANDOFF_NOTICE,
+            )
+            return "escalated"
+        if kind == "data" and attempts >= 1:
+            # Dado recusado pelo CRM: não repete o mesmo PATCH para sempre.
+            errors = collected.setdefault("_data_errors", {})
+            errors[state.step] = int(errors.get(state.step) or 0) + 1
+            _save_collected(state, collected)
+            job.status = "CONCLUIDO"
+            job.locked_at = None
+            if errors[state.step] >= 2:
+                _escalate_closer_failure(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    reason=f"CRM recusou o dado da etapa {state.step} duas vezes: {crm_message}",
+                    notice=CLOSER_HANDOFF_NOTICE,
+                )
+                return "escalated"
+            try:
+                _send_step_message(
+                    db,
+                    agent=agent,
+                    conversation=conversation,
+                    state=state,
+                    text=f"{DATA_RETRY_PREFIX} {_prompt_for_step(state, collected)}",
+                )
+            except Exception:
+                LOG.exception("closer_data_retry_prompt_failed conversation=%s", conversation.id)
+            LOG.warning(
+                "closer_data_rejected conversation=%s job=%s error=%s",
+                conversation.id,
+                job.id,
+                crm_message,
+            )
+            return "reasked"
         if attempts < 3:
             run.reply_text = ""
             job.status = "PENDENTE"
@@ -5628,6 +5682,23 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             except Exception:
                 LOG.exception("seller_technical_notice_failed conversation=%s", conversation.id)
 
+        cycles = int(collected.get("_retry_later_cycles") or 0) + 1
+        collected["_retry_later_cycles"] = cycles
+        _save_collected(state, collected)
+        if cycles > 3:
+            # ~15 minutos sem conseguir falar com o CRM: um consultor assume.
+            job.status = "CONCLUIDO"
+            job.locked_at = None
+            _escalate_closer_failure(
+                db,
+                state=state,
+                conversation=conversation,
+                agent=agent,
+                reason=f"CRM indisponível por mais de 15 minutos na etapa {state.step}: {crm_message}",
+                notice=CLOSER_HANDOFF_NOTICE,
+            )
+            return "escalated"
+
         run.reply_text = ""
         job.status = "PENDENTE"
         job.attempts = 0
@@ -5649,11 +5720,99 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         run.finished_at = utcnow()
         job.status = "FALHOU"
         job.error = str(exc)[:1200]
-        _handoff_to_human(
-            db, state=state, conversation=conversation, agent=agent,
-            reason="Falha inesperada no Vendedor IA.",
+        _escalate_closer_failure(
+            db,
+            state=state,
+            conversation=conversation,
+            agent=agent,
+            reason=f"Falha inesperada no Vendedor IA: {type(exc).__name__}",
+            notice=CLOSER_HANDOFF_NOTICE,
         )
         return "failed"
+
+
+CLOSER_HANDOFF_NOTICE = (
+    "Para não te deixar esperando, um consultor da Sulnet vai concluir sua contratação "
+    "com você por aqui. Tudo o que você já informou está salvo."
+)
+CONTRACT_HANDOFF_NOTICE = (
+    "Sua contratação já está registrada. Um consultor da Sulnet vai concluir a emissão "
+    "do contrato e te enviar o link de assinatura por aqui."
+)
+DATA_RETRY_PREFIX = "Não consegui registrar essa informação no sistema."
+_CLOSER_NOTICE_PREFIXES = (
+    CLOSER_HANDOFF_NOTICE[:60],
+    CONTRACT_HANDOFF_NOTICE[:60],
+    DATA_RETRY_PREFIX,
+    "Tive uma instabilidade momentânea no sistema",
+)
+
+
+def _closer_failure_kind(exc: Exception) -> str:
+    """Classifica a falha para decidir entre tentar de novo, perguntar de novo ou passar a um consultor.
+
+    - transient: CRM/WhatsApp fora do ar ou lento (rede, 429, 502-504, 52x, 500 em leitura);
+    - contract: o CRM recusou gerar o contrato (template ausente, campos pendentes);
+    - data: o CRM recusou um dado gravado (4xx, ou 500 em escrita);
+    - config: credencial/permissão (401/403);
+    - logic: regra interna do Vendedor IA (erro sem resposta HTTP);
+    - ownership: a conversa não é mais do Vendedor IA (não se mexe nela).
+    """
+    if isinstance(exc, ZApiError):
+        return "transient"
+    if "propriedade exclusiva" in str(exc):
+        # A conversa já é de um humano (ou de outro agente): não mexe nela.
+        return "ownership"
+    status = getattr(exc, "status_code", None)
+    path = str(getattr(exc, "path", "") or "")
+    method = str(getattr(exc, "method", "") or "").upper()
+    code = str(getattr(exc, "error_code", "") or "")
+    if code == "CRM_HTTP_ERROR" or status in {429, 502, 503, 504} or (status or 0) >= 520:
+        return "transient"
+    if "contract/generate" in path and status is not None and 400 <= status < 500:
+        return "contract"
+    if status in {401, 403}:
+        return "config"
+    if status is not None and 400 <= status < 500:
+        return "data"
+    if status == 500:
+        return "data" if method in {"PATCH", "PUT"} else "transient"
+    if status is None and not path:
+        return "logic"
+    return "transient"
+
+
+def _escalate_closer_failure(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    agent: AIAgentProfile,
+    reason: str,
+    notice: str,
+) -> None:
+    """Passa a venda a um consultor com o motivo e avisa o cliente: nunca fica em silêncio."""
+    _handoff_to_human(db, state=state, conversation=conversation, agent=agent, reason=reason)
+    _record_activity(
+        db,
+        conversation=conversation,
+        agent=agent,
+        outcome="VENDEDOR_IA_TRANSFERIU",
+        description=(
+            f"Vendedor IA transferiu a venda para um consultor. Motivo: {reason} "
+            f"Oportunidade CRM: {state.opportunity_id or '-'}. Plano: {state.plan_label or '-'}."
+        ),
+    )
+    LOG.warning(
+        "closer_escalated conversation=%s opportunity=%s reason=%s",
+        conversation.id,
+        state.opportunity_id,
+        reason[:200],
+    )
+    try:
+        _send_text(db, agent=agent, conversation=conversation, text=notice, handoff_notice=True)
+    except Exception:
+        LOG.exception("closer_escalation_notice_failed conversation=%s", conversation.id)
 
 
 def _deliver_signed_text(
@@ -5994,5 +6153,24 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 state.id,
                 getattr(exc, "error_code", None) or type(exc).__name__,
             )
+            # Assinatura pendente: o cliente já tem o link, só segue consultando.
+            if step_before_poll in {"WAITING_CRM_READY", "WAITING_CONTRACT"}:
+                kind = _closer_failure_kind(exc)
+                poll_collected = _load_collected(state)
+                failures = int(poll_collected.get("_poll_failures") or 0) + 1
+                poll_collected["_poll_failures"] = failures
+                _save_collected(state, poll_collected)
+                if kind == "ownership":
+                    pass
+                elif kind == "contract" or (kind != "transient" and failures >= 3) or failures >= 20:
+                    _escalate_closer_failure(
+                        db,
+                        state=state,
+                        conversation=conversation,
+                        agent=agent,
+                        reason=f"Contrato não gerado pelo CRM ({kind}): {str(exc)[:300]}",
+                        notice=CONTRACT_HANDOFF_NOTICE,
+                    )
+                    processed += 1
 
     return processed
