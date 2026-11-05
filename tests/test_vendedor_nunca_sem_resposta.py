@@ -134,3 +134,48 @@ def test_mensagem_anterior_ao_resumo_nao_responde_o_resumo():
         finally:
             db.rollback()
             db.close()
+
+
+class _PortClient:
+    def __init__(self):
+        self.patches = []
+
+    def update_playbook_field(self, opportunity_id, *, patch_key, value):
+        self.patches.append((patch_key, value))
+        return {}
+
+
+def test_portabilidade_sem_data_usa_a_data_da_venda():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", opportunity_id=14373, plan_label="Sulmóvel 15GB")
+    collected = {"categoryFormValues": {"tipo_contratacao": "Número Portabilidade", "numero_portado": "55999002508"}}
+    client = _PortClient()
+    assert ai_seller._ensure_port_date(client, state, collected)
+    key, value = client.patches[0]
+    assert key == "productInfo.categoryForm.values.port_data"
+    assert len(value) == 10 and value[4] == "-" and value[7] == "-"
+    assert not ai_seller._ensure_port_date(client, state, collected)
+
+
+def test_numero_novo_nao_precisa_de_data_de_portabilidade():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", opportunity_id=1)
+    client = _PortClient()
+    assert not ai_seller._ensure_port_date(client, state, {"categoryFormValues": {"tipo_contratacao": "Número novo"}})
+    assert client.patches == []
+
+
+def test_pendencia_de_data_de_portabilidade_preenche_e_gera_de_novo():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", opportunity_id=14373)
+    collected = {"categoryFormValues": {"tipo_contratacao": "Número Portabilidade", "port_data": "2026-11-05"}}
+    client = _PortClient()
+    exc = CRMIntegrationError(
+        "Campos pendentes para contrato: Data portabilidade",
+        status_code=400,
+        method="POST",
+        path="/api/integracoes/agent/v1/opportunities/14373/contract/generate",
+    )
+    assert ai_seller._recover_contract_pending_field(client, state, collected, exc) is None
+    assert client.patches and client.patches[0][0] == "productInfo.categoryForm.values.port_data"
+    assert collected["_contract_recovery_reason"] == "mobile_contract_type_synced"
+    client.patches.clear()
+    assert ai_seller._recover_contract_pending_field(client, state, collected, exc) is None
+    assert client.patches == []
