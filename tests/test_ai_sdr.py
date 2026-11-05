@@ -676,6 +676,85 @@ def test_vendedor_ia_nao_insiste_com_quem_desistiu_nem_com_fila_pausada(monkeypa
             db.close()
 
 
+def test_fila_ia_quando_nao_houver_vendedor_online(monkeypatch):
+    from app.models import LeadQueuePreference
+    from app.services.whatsapp_presence import leave_whatsapp
+
+    auto = replace(settings, ai_autonomous_enabled=True)
+    monkeypatch.setattr("app.services.ai_sdr.settings", auto)
+    monkeypatch.setattr("app.services.conversation_engine.settings", auto)
+
+    def _inbound(db, queue, phone, message_id, text):
+        lead = db.scalar(select(Lead).where(Lead.phone == phone))
+        if lead is None:
+            lead = Lead(
+                business_name=f"Cliente {phone}",
+                contact_name="Cliente",
+                phone=phone,
+                segment="Residencial",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_AI_OFFLINE"))
+            db.commit()
+        conversation, message, _created = store_received_payload(
+            db,
+            {
+                "phone": phone,
+                "messageId": message_id,
+                "senderName": "Cliente",
+                "text": {"message": text},
+                "fromMe": False,
+                "status": "RECEIVED",
+            },
+        )
+        db.commit()
+        job = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
+        return conversation, job
+
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            agent, queue, human = _create_bound_digital_queue(db, "OFFLINE")
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
+            binding.handling_mode = "AI_WHEN_OFFLINE"
+            db.commit()
+
+            # Vendedor online: o cliente novo vai para ele, a IA não entra.
+            conversation, job = _inbound(db, queue, "5555988877588", "AI-OFFLINE-1", "Oi, quero internet.")
+            assert job is None
+            assert conversation.assigned_user_id == human.id
+
+            # O que a IA já começou continua com ela, mesmo com vendedor online.
+            started, _job = _inbound(db, queue, "5555988877599", "AI-OFFLINE-2", "Oi")
+            db.add(AIConversationState(conversation_id=started.id, agent_id=agent.id, state="AI_ACTIVE"))
+            db.commit()
+            _same, job = _inbound(db, queue, "5555988877599", "AI-OFFLINE-3", "Quero o de 800 Mega")
+            assert job is not None
+
+            # Sem vendedor online: a IA assume o cliente novo e ninguém é atribuído.
+            leave_whatsapp(db, human)
+            db.commit()
+            conversation, job = _inbound(db, queue, "5555988877611", "AI-OFFLINE-4", "Boa noite, tem fibra?")
+            assert job is not None
+            assert job.agent_id == agent.id
+            assert conversation.assigned_user_id is None
+        finally:
+            db.rollback()
+            db.close()
+
+
 def test_seed_binds_sulia_to_all_active_digital_queues():
     with TestClient(app):
         db = SessionLocal()

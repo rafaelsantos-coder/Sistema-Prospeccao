@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     AIAgentProfile,
+    AIConversationState,
     CampaignQueueLink,
     Conversation,
     ConversationQueueLink,
@@ -388,3 +389,41 @@ def queue_summary(db: Session, queue: ServiceQueue) -> dict[str, int]:
         "open": open_count,
         "waiting": waiting_count,
     }
+
+
+# Modo de fila: a IA atende só quando nenhum vendedor da fila está online.
+AI_WHEN_OFFLINE = "AI_WHEN_OFFLINE"
+AI_OWNED_STATES = ("AI_ACTIVE", "CLOSING")
+
+
+def human_online_in_queue(db: Session, queue_id: int | None) -> bool:
+    """Algum vendedor de verdade (não um agente de IA) da fila está online."""
+    if not queue_id:
+        return False
+    online = set(online_user_ids(db))
+    if not online:
+        return False
+    ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
+    members = db.scalars(
+        select(ServiceQueueMember.user_id)
+        .join(User, User.id == ServiceQueueMember.user_id)
+        .where(
+            ServiceQueueMember.queue_id == queue_id,
+            ServiceQueueMember.active.is_(True),
+            User.active.is_(True),
+            ServiceQueueMember.user_id.in_(online),
+        )
+    )
+    return any(user_id not in ai_users for user_id in members)
+
+
+def ai_owns_conversation(db: Session, conversation_id: int | None) -> bool:
+    """A IA já começou este atendimento (SDR ou Vendedor IA) e segue até o fim."""
+    if not conversation_id:
+        return False
+    state = db.scalar(
+        select(AIConversationState.state).where(
+            AIConversationState.conversation_id == conversation_id
+        )
+    )
+    return state in AI_OWNED_STATES
