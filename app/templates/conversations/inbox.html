@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block page_content_class %}conversation-page-content{% endblock %}
 {% block content %}
-<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
+<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" data-assignee="{{ assignee_id or '' }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
   <aside class="inbox-list-panel">
     <div class="inbox-list-head">
       <div>
@@ -25,6 +25,33 @@
       {% endif %}
       <a href="/conversations?view=closed" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
     </div>
+
+    {% if sellers %}
+    <div class="seller-panel">
+      <div class="seller-panel-title">Vendedores</div>
+      <a href="/conversations?view=active" class="seller-row {% if not assignee_id %}active{% endif %}">
+        <span>Todos</span><b>{{ counts.active }}</b>
+      </a>
+      {% for seller in sellers %}
+      <a href="/conversations?view=active&amp;assignee={{ seller.id }}" class="seller-row {% if assignee_id == seller.id %}active{% endif %}">
+        <span><i class="seller-dot {% if seller.online %}on{% endif %}"></i>{{ seller.name }}</span>
+        <small>{{ 'online' if seller.online else 'offline' }}</small>
+        <b>{{ seller.open }}</b>
+      </a>
+      {% endfor %}
+    </div>
+    <style>
+      .seller-panel{margin:8px 12px 4px;border:1px solid var(--line,#e5e7eb);border-radius:10px;padding:6px;max-height:210px;overflow:auto;font-size:13px}
+      .seller-panel-title{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.6;padding:4px 6px}
+      .seller-row{display:flex;align-items:center;gap:6px;padding:6px;border-radius:8px;color:inherit;text-decoration:none}
+      .seller-row span{flex:1;display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .seller-row small{opacity:.6;font-size:11px}
+      .seller-row b{min-width:22px;text-align:center;border-radius:999px;background:rgba(127,127,127,.15);padding:1px 6px}
+      .seller-row.active{background:rgba(255,122,36,.14);font-weight:600}
+      .seller-dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block;flex:none}
+      .seller-dot.on{background:#16a34a}
+    </style>
+    {% endif %}
 
     <div class="conversation-list" id="conversation-list">
       {% for item in conversations %}
@@ -317,6 +344,7 @@
   const conversationId = Number(root.dataset.conversationId || 0);
   const view = root.dataset.view || 'active';
   const query = root.dataset.query || '';
+  const assignee = root.dataset.assignee || '';
   let inboxSignature = '';
 
   const statusLabel = value => (value || '').replaceAll('_', ' ');
@@ -360,7 +388,7 @@
     for (const item of items) {
       const row = document.createElement('a');
       row.className = 'conversation-row' + (Number(item.id) === conversationId ? ' selected' : '');
-      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '');
+      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '') + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '');
 
       const avatar = document.createElement('div');
       avatar.className = 'conversation-avatar';
@@ -405,7 +433,7 @@
 
   const pollInbox = async () => {
     try {
-      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query);
+      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query) + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '');
       const response = await fetch(url, {headers:{'Accept':'application/json'}, credentials:'same-origin'});
       if (!response.ok) return;
       const data = await response.json();

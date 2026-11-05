@@ -143,8 +143,17 @@ def _eligible_users(db: Session, user: User, conversation: Conversation | None =
     return users
 
 
-def _inbox_query(db: Session, user: User, *, q: str, view: str) -> list[Conversation]:
+def _inbox_query(
+    db: Session,
+    user: User,
+    *,
+    q: str,
+    view: str,
+    assignee_id: int | None = None,
+) -> list[Conversation]:
     stmt = _conversation_stmt(user).join(Contact, Conversation.contact_id == Contact.id)
+    if assignee_id:
+        stmt = stmt.where(Conversation.assigned_user_id == assignee_id)
     if q:
         term = f"%{q.strip()}%"
         stmt = stmt.outerjoin(Lead, Conversation.lead_id == Lead.id).where(
@@ -183,6 +192,37 @@ def _inbox_counts(db: Session, user: User) -> dict[str, int]:
     }
 
 
+def _seller_panel(db: Session, user: User) -> list[dict]:
+    """Vendedores visíveis para o usuário, com presença online e carga de conversas abertas."""
+    if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
+        return []
+    stmt = select(User).where(User.active.is_(True), User.role == "CONSULTOR").order_by(User.name)
+    sellers = list(db.scalars(stmt))
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            sellers = [item for item in sellers if item.branch_id == user.branch_id]
+        else:
+            sellers = [item for item in sellers if item.team == user.team]
+    online_ids = set(online_user_ids(db))
+    open_counts: dict[int, int] = {}
+    for assigned_id in db.scalars(
+        select(Conversation.assigned_user_id).where(
+            Conversation.assigned_user_id.is_not(None),
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+        )
+    ):
+        open_counts[assigned_id] = open_counts.get(assigned_id, 0) + 1
+    return [
+        {
+            "id": item.id,
+            "name": item.name,
+            "online": item.id in online_ids,
+            "open": open_counts.get(item.id, 0),
+        }
+        for item in sellers
+    ]
+
+
 def _render_inbox(
     request: Request,
     db: Session,
@@ -191,8 +231,9 @@ def _render_inbox(
     conversation_id: int | None = None,
     q: str = "",
     view: str = "active",
+    assignee_id: int | None = None,
 ):
-    conversations = _inbox_query(db, user, q=q, view=view)
+    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee_id)
     selected = None
     if conversation_id is not None:
         selected = _get_conversation(db, user, conversation_id)
@@ -244,6 +285,8 @@ def _render_inbox(
         counts=counts,
         query=q,
         view=view,
+        assignee_id=assignee_id,
+        sellers=_seller_panel(db, user),
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -254,12 +297,13 @@ def inbox(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
     if redirect:
         return redirect
-    return _render_inbox(request, db, user, q=q, view=view)
+    return _render_inbox(request, db, user, q=q, view=view, assignee_id=assignee)
 
 
 @router.get("/conversations/{conversation_id}")
@@ -268,6 +312,7 @@ def conversation_detail(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
@@ -278,6 +323,7 @@ def conversation_detail(
         db,
         user,
         conversation_id=conversation_id,
+        assignee_id=assignee,
         q=q,
         view=view,
     )
@@ -785,6 +831,7 @@ def conversation_inbox_api(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
     db: Session = Depends(get_db),
 ):
     user = get_current_user(request, db)
@@ -795,7 +842,7 @@ def conversation_inbox_api(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Entre no WhatsApp para acessar o canal.",
         )
-    conversations = _inbox_query(db, user, q=q, view=view)
+    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee)
     return {
         "counts": _inbox_counts(db, user),
         "items": [
