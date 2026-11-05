@@ -201,6 +201,7 @@ def enqueue_ai_job(
     *,
     conversation: Conversation,
     message: Message,
+    takeover: bool = False,
 ) -> AIJob | None:
     if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
         return None
@@ -287,6 +288,7 @@ def enqueue_ai_job(
         return None
     if (
         binding.handling_mode == AI_WHEN_OFFLINE
+        and not takeover
         and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
         and not ai_owns_conversation(db, conversation.id)
         and human_online_in_queue(db, binding.queue_id)
@@ -298,7 +300,7 @@ def enqueue_ai_job(
             binding.queue_id,
         )
         return None
-    if not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_is_attending(
+    if not takeover and not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_is_attending(
         db, conversation
     ):
         LOG.info(

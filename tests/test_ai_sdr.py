@@ -3726,3 +3726,82 @@ def test_followup_do_sdr_para_depois_de_sem_interesse():
     assert ai_followups._customer_declined(_Db("me remova da lista"), 1) is True
     assert ai_followups._customer_declined(_Db("Não"), 1) is False
     assert ai_followups._customer_declined(_Db("Qual a multa de cancelamento?"), 1) is False
+
+
+def test_ia_assume_cliente_que_o_vendedor_online_nao_respondeu_em_10_minutos(monkeypatch):
+    from datetime import timedelta as _td
+
+    from app.models import LeadQueuePreference
+    from app.timeutils import utcnow as _now
+    from app.workers.ai_sdr_worker import _takeover_unanswered_human_conversations
+
+    auto = replace(settings, ai_autonomous_enabled=True)
+    monkeypatch.setattr("app.services.ai_sdr.settings", auto)
+    monkeypatch.setattr("app.services.conversation_engine.settings", auto)
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            agent, queue, human = _create_bound_digital_queue(db, "TAKEOVER")
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
+            binding.handling_mode = "AI_WHEN_OFFLINE"
+            db.commit()
+            lead = Lead(
+                business_name="Cliente Sem Resposta",
+                contact_name="Cliente",
+                phone="5555988877622",
+                segment="Residencial",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_AI_TAKEOVER"))
+            db.commit()
+            conversation, message, _created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-TAKEOVER-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "Quero saber mais"},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            assert conversation.assigned_user_id == human.id
+            assert db.scalar(select(AIJob).where(AIJob.message_id == message.id)) is None
+
+            # Ainda dentro dos 10 minutos: fica com o vendedor.
+            binding.updated_at = _now() - _td(hours=1)
+            db.commit()
+            _takeover_unanswered_human_conversations()
+            db.expire_all()
+            assert db.scalar(select(AIJob).where(AIJob.message_id == message.id)) is None
+
+            # 15 minutos sem resposta: a IA assume.
+            message = db.get(Message, message.id)
+            message.created_at = _now() - _td(minutes=15)
+            db.commit()
+            assert _takeover_unanswered_human_conversations() >= 1
+            db.expire_all()
+            job = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
+            assert job is not None
+            assert job.agent_id == agent.id
+            assert db.get(type(conversation), conversation.id).assigned_user_id is None
+            state = db.scalar(
+                select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+            )
+            assert state.state == "AI_ACTIVE"
+        finally:
+            db.rollback()
+            db.close()
