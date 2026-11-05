@@ -285,6 +285,7 @@ def test_segunda_venda_corrige_produto_herdado_da_fibra():
     assert collected["planId"] == 392
     assert collected["contractProductName"] == "SULMOVEL MEU TRABALHO COMIGO 15GB - 2-26"
     assert client.updated and client.updated[0][1]["planId"] == 392
+    assert client.updated[0][1]["categoryId"] == 83
 
 
 def test_confirmo_com_resumo_errado_mostra_o_resumo_certo_antes_do_contrato():

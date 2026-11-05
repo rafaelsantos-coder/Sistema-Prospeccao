@@ -1793,6 +1793,7 @@ def _sync_plan_context(
         (item for item in products if int(item.get("id") or 0) == plan_id),
         None,
     )
+    plan_corrected = False
     if selected and state.plan_label and not _plan_matches_label(selected, state.plan_label):
         LOG.warning(
             "seller_plan_mismatch opportunity=%s crm_plan_id=%s",
@@ -1800,6 +1801,7 @@ def _sync_plan_context(
             plan_id,
         )
         selected = None
+        plan_corrected = True
 
     # O nome comercial usado no WhatsApp pode não ser o nome interno do ERP.
     # Ex.: "Sulmóvel 15GB" -> "Meu Trabalho Comigo 15GB".
@@ -1884,6 +1886,9 @@ def _sync_plan_context(
             "planId": resolved_plan_id,
             "planLabel": collected["catalogPlanName"],
         }
+        if plan_corrected and resolved_category_id:
+            # O produto errado veio de outra categoria (fibra no lugar do móvel).
+            payload["categoryId"] = resolved_category_id
         if catalog_value not in (None, ""):
             payload["catalogMonthlyValue"] = catalog_value
             if state.offer_price is None:
