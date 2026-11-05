@@ -15,6 +15,7 @@ from app.services.ai_quick_replies import QuickReply
 from app.services import ai_campaign_black as black
 from app.services.ai_sdr_models import AIDecision, QualificationData
 from app.services.ai_sdr_policy import (
+    CENTRAL_REDIRECT_MESSAGE,
     CORPORATE_PLANS,
     FTTH_PLANS,
     MOBILE_PLANS,
@@ -1095,18 +1096,52 @@ def _existing_customer_plan_change_requested(context: dict) -> bool:
     return confirmed_existing or mentions_existing_service
 
 
+# Assuntos de quem já é cliente que não são venda nova: vão para a central.
+_EXISTING_CUSTOMER_SERVICE_CUES = (
+    "upgrade ou suporte",
+    "upgrade",
+    "suporte tecnico",
+    "preciso de suporte",
+    "falar com o suporte",
+    "falar com suporte",
+    "financeiro",
+    "2 via",
+    "segunda via",
+    "boleto da minha",
+    "minha fatura",
+    "sem internet",
+    "internet caiu",
+    "internet lenta",
+    "internet ta lenta",
+    "internet esta lenta",
+    "internet nao funciona",
+    "internet parou",
+    "mudanca de endereco",
+    "cancelar meu plano",
+    "cancelar minha internet",
+)
+
+
+def _existing_customer_service_requested(context: dict) -> bool:
+    if _existing_customer_from_context(context) != "CLIENTE":
+        return False
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    return bool(latest) and any(cue in latest for cue in _EXISTING_CUSTOMER_SERVICE_CUES)
+
+
 def _apply_existing_customer_plan_change_policy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
-    if not _existing_customer_plan_change_requested(context):
+    if not (
+        _existing_customer_plan_change_requested(context)
+        or _existing_customer_service_requested(context)
+    ):
         return decision
 
-    decision.reply_text = (
-        "Entendi! Como você já é cliente e quer aumentar ou trocar o seu plano atual, "
-        f"essa alteração é feita pelo nosso atendimento. Entre em contato pelo {PLAN_CHANGE_SERVICE_PHONE} "
-        "que a equipe consegue verificar as opções para sua conexão."
-    )
+    # Canal exclusivo comercial: upgrade, suporte e financeiro vão para a central,
+    # com botão que abre o WhatsApp oficial (o envio monta o botão de link).
+    decision.reply_text = CENTRAL_REDIRECT_MESSAGE
     decision.quick_replies = []
     decision.intent = "INFORMATION"
     decision.sales_state = "WAITING_CUSTOMER"
@@ -1122,10 +1157,10 @@ def _apply_existing_customer_plan_change_policy(
     decision.concession_level = 0
     decision.free_months = 0
     decision.summary = (
-        "Cliente atual pediu aumento/troca do plano existente e foi direcionado ao canal "
+        "Cliente atual pediu upgrade, suporte ou financeiro e foi direcionado à central "
         f"{PLAN_CHANGE_SERVICE_PHONE}."
     )
-    decision.next_action = "Tratativa comercial encerrada; alteração de plano segue pelo atendimento."
+    decision.next_action = "Tratativa comercial encerrada; o assunto segue pela central de atendimento."
     decision.journey_state = "DISCOVERY"
     decision.journey_pending_action = "Nenhuma ação comercial pendente."
     decision.service_redirect = True
@@ -1169,12 +1204,14 @@ def _show_new_customer_product_question(decision: AIDecision) -> AIDecision:
 
 def _show_existing_customer_product_question(decision: AIDecision) -> AIDecision:
     decision.reply_text = (
-        "Legal! Para uma nova contratação, você quer Telefonia Móvel ou uma nova conexão "
-        "de internet para outro endereço?"
+        "Tudo bem! Como posso te ajudar hoje? Por aqui eu faço novas contratações: "
+        "Telefonia Móvel ou uma nova conexão de internet para outro endereço. "
+        "Se for upgrade, suporte ou financeiro, toque em \"Upgrade ou suporte\"."
     )
     decision.quick_replies = [
         QuickReply(id="cliente_movel", label="Telefonia Móvel"),
         QuickReply(id="cliente_nova_conexao", label="Nova conexão"),
+        QuickReply(id="cliente_upgrade_suporte", label="Upgrade ou suporte"),
     ]
     decision.intent = "QUALIFYING"
     decision.sales_state = "DISCOVERY"
@@ -1221,11 +1258,18 @@ def _show_internet_segment_question(
 
 
 def _show_black_offer_question(decision: AIDecision, status: str) -> AIDecision:
-    decision.reply_text = black.OFFER_QUESTION
-    decision.quick_replies = [
-        QuickReply(id="black_sim", label="Sim"),
-        QuickReply(id="black_nao", label="Não"),
-    ]
+    if status == "CLIENTE":
+        decision.reply_text = black.CUSTOMER_OFFER_QUESTION
+        decision.quick_replies = [
+            QuickReply(id="black_sim", label="Quero saber"),
+            QuickReply(id="black_nao", label="Agora não"),
+        ]
+    else:
+        decision.reply_text = black.OFFER_QUESTION
+        decision.quick_replies = [
+            QuickReply(id="black_sim", label="Sim"),
+            QuickReply(id="black_nao", label="Não"),
+        ]
     decision.intent = "QUALIFYING"
     decision.sales_state = "DISCOVERY"
     decision.recommended_stage = "CONTATO_REALIZADO"

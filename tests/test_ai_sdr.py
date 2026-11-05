@@ -2507,6 +2507,7 @@ def test_existing_customer_confirmation_routes_to_mobile_or_new_connection(monke
     assert [item.label for item in result.quick_replies] == [
         "Telefonia Móvel",
         "Nova conexão",
+        "Upgrade ou suporte",
     ]
 
 
@@ -3213,7 +3214,7 @@ def test_existing_customer_plan_change_redirects_to_service_channel():
     assert result.followup_needed is False
     assert result.offer_plan_code is None
     assert "(55) 3520-8000" in result.reply_text
-    assert "aumentar ou trocar" in result.reply_text
+    assert "exclusivo para novas contratações" in result.reply_text
 
 
 def test_purchase_intent_tenho_interesse_em_assinar_enters_closing():
@@ -3428,6 +3429,13 @@ def _black_history(*pairs):
 
 def test_black_perguntada_logo_depois_de_ser_cliente(monkeypatch):
     monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    expected = {
+        "CLIENTE": (
+            "Você já está sabendo da Black da Sulnet, que beneficia os nossos clientes?",
+            ["Quero saber", "Agora não"],
+        ),
+        "NAO_CLIENTE": ("Quer conhecer nossa promoção Black da Sulnet?", ["Sim", "Não"]),
+    }
     for answer, status in (("Sim", "CLIENTE"), ("Não", "NAO_CLIENTE")):
         context = {
             "latest_customer_message": answer,
@@ -3439,8 +3447,84 @@ def test_black_perguntada_logo_depois_de_ser_cliente(monkeypatch):
         }
         result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
         assert result.qualification.existing_customer == status
-        assert result.reply_text == "Quer conhecer nossa promoção Black da Sulnet?"
-        assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+        assert result.reply_text == expected[status][0]
+        assert [item.label for item in result.quick_replies] == expected[status][1]
+
+
+def test_cliente_sem_interesse_na_black_escolhe_assunto_e_suporte_vai_para_central(monkeypatch):
+    from app.services.ai_campaign_black import CUSTOMER_OFFER_QUESTION
+
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    lead = {"city": "Santa Rosa", "confirmed_existing_customer": "CLIENTE"}
+    context = {
+        "latest_customer_message": "Agora não",
+        "lead": lead,
+        "history": _black_history(("OUTBOUND", CUSTOMER_OFFER_QUESTION), ("INBOUND", "Agora não")),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert [item.label for item in result.quick_replies] == [
+        "Telefonia Móvel",
+        "Nova conexão",
+        "Upgrade ou suporte",
+    ]
+
+    for text in ("Upgrade ou suporte", "Preciso da segunda via do boleto", "minha internet está lenta"):
+        context = {
+            "latest_customer_message": text,
+            "lead": lead,
+            "history": _black_history(("OUTBOUND", result.reply_text), ("INBOUND", text)),
+        }
+        redirect = _apply_existing_customer_plan_change_policy(_base_prospecting_entry_decision(), context)
+        assert redirect.service_redirect is True, text
+        assert "(55) 3520-8000" in redirect.reply_text
+        assert redirect.followup_needed is False
+
+    # Quem não é cliente perguntando de suporte segue na venda.
+    context = {
+        "latest_customer_message": "Como funciona o suporte técnico?",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": [],
+    }
+    assert _apply_existing_customer_plan_change_policy(
+        _base_prospecting_entry_decision(), context
+    ).service_redirect is False
+
+
+def test_central_vai_com_botao_que_abre_whatsapp(monkeypatch):
+    from app.services.zapi import ZApiService
+
+    calls = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"messageId": "X"}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            calls["url"] = url
+            calls["json"] = json
+            return _Resp()
+
+    monkeypatch.setattr("app.services.zapi.httpx.Client", _Client)
+    service = ZApiService.__new__(ZApiService)
+    monkeypatch.setattr(service, "_url", lambda path: f"https://zapi/{path}", raising=False)
+    monkeypatch.setattr(service, "_headers", lambda json_request=False: {}, raising=False)
+    monkeypatch.setattr(service, "normalize_phone", lambda phone: phone, raising=False)
+    service.send_link_button(phone="5555999", message="Oi", label="Falar com a central", url="https://wa.me/555535208000")
+    assert calls["url"].endswith("send-button-actions")
+    action = calls["json"]["buttonActions"][0]
+    assert action == {"id": "1", "type": "URL", "url": "https://wa.me/555535208000", "label": "Falar com a central"}
 
 
 def test_black_sim_apresenta_movel_e_combo(monkeypatch):

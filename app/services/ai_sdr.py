@@ -1135,7 +1135,27 @@ def _send_autonomous_reply(
         decision.reply_text,
         decision.quick_replies,
     )
-    if quick_replies:
+    if decision.service_redirect:
+        # Upgrade, suporte e financeiro: botão que abre o WhatsApp da central.
+        from app.services.ai_sdr_policy import CENTRAL_BUTTON_LABEL, CENTRAL_WHATSAPP_URL
+        from app.services.zapi import ZApiError
+
+        try:
+            result = zapi.send_link_button(
+                phone=phone,
+                message=decision.reply_text,
+                label=CENTRAL_BUTTON_LABEL,
+                url=CENTRAL_WHATSAPP_URL,
+            )
+            message_type = "BUTTONS"
+        except ZApiError:
+            LOG.warning("central_link_button_failed conversation=%s", conversation.id)
+            result = zapi.send_text(
+                phone=phone,
+                message=f"{decision.reply_text}\n{CENTRAL_WHATSAPP_URL}",
+            )
+            message_type = "TEXT"
+    elif quick_replies:
         result = zapi.send_button_list(
             phone=phone,
             message=decision.reply_text,

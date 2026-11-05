@@ -363,6 +363,7 @@ def _apply_guardrails(
     # do comercial: o modelo não pode reescrevê-los como "promoção não comprovada".
     if black_campaign.black_active() and original_text.strip() in {
         black_campaign.OFFER_QUESTION,
+        black_campaign.CUSTOMER_OFFER_QUESTION,
         black_campaign.OPTIONS_TEXT,
     }:
         return GuardianResult(

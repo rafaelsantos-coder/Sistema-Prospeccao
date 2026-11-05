@@ -7,6 +7,15 @@ from zoneinfo import ZoneInfo
 
 
 PLAN_CHANGE_SERVICE_PHONE = "(55) 3520-8000"
+# Botão que abre o WhatsApp oficial da central (upgrade, suporte, financeiro).
+CENTRAL_WHATSAPP_URL = "https://wa.me/555535208000"
+CENTRAL_BUTTON_LABEL = "Falar com a central"
+CENTRAL_REDIRECT_MESSAGE = (
+    "Poxa, este WhatsApp é exclusivo para novas contratações, então por aqui não consigo "
+    "te ajudar com upgrade de plano, suporte técnico ou financeiro. 😕\n"
+    f"Mas a nossa central resolve isso para você: é só chamar no WhatsApp {PLAN_CHANGE_SERVICE_PHONE}, "
+    "tocando no botão abaixo."
+)
 
 
 CORE_COMMERCIAL_POLICY = {
