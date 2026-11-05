@@ -5,7 +5,7 @@ import logging
 from collections import Counter
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import JSONResponse, RedirectResponse
@@ -887,3 +887,73 @@ def toggle_queue_binding(
     )
     db.commit()
     return RedirectResponse("/ai", status_code=303)
+
+
+@router.post("/test-chat/inbound")
+async def ai_test_chat_inbound(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Teste de ponta a ponta sem WhatsApp Web: a mensagem entra como se o
+    telefone de teste tivesse escrito no WhatsApp da fila (mesmo caminho do
+    webhook da Z-API). As respostas da IA saem pelo WhatsApp real para esse
+    telefone. Só administradores e só telefones de AI_TEST_PHONES.
+    """
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return JSONResponse({"error": "Acesso restrito."}, status_code=403)
+    payload = await request.json()
+    validate_csrf(request, str(payload.get("csrf_token") or ""))
+    require_roles(actor, "ADMIN")
+
+    from uuid import uuid4
+
+    from app.routers.zapi import _process_zapi_payload
+    from app.services.ai_sdr import is_ai_test_phone
+
+    phone = "".join(ch for ch in str(payload.get("phone") or "") if ch.isdigit())
+    text = str(payload.get("text") or "").strip()[:2000]
+    if not text:
+        return JSONResponse({"error": "Mensagem vazia."}, status_code=400)
+    if not is_ai_test_phone(phone):
+        return JSONResponse(
+            {"error": "Telefone fora de AI_TEST_PHONES: o teste só pode falar como um telefone de teste."},
+            status_code=400,
+        )
+    try:
+        queue_id = int(payload.get("queue_id") or 0)
+    except (TypeError, ValueError):
+        queue_id = 0
+    instance = queue_instance(db, queue_id) if queue_id else None
+    if not instance:
+        return JSONResponse({"error": "Fila sem instância de WhatsApp."}, status_code=400)
+
+    message_id = f"TESTE-{uuid4().hex}"
+    result = _process_zapi_payload(
+        {
+            "type": "ReceivedCallback",
+            "instanceId": instance.instance_id,
+            "phone": phone,
+            "fromMe": False,
+            "messageId": message_id,
+            "momment": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "senderName": "Teste IA",
+            "text": {"message": text},
+        },
+        db=db,
+        background_tasks=background_tasks,
+        expected_instance_id=instance.instance_id,
+        queue_id=queue_id,
+        zapi_instance_id=instance.id,
+    )
+    write_audit(
+        db,
+        user=actor,
+        action="AI_TEST_CHAT_INBOUND",
+        entity_type="conversation",
+        entity_id=result.get("conversation_id") or "-",
+        payload={"queue_id": queue_id, "message_id": message_id},
+    )
+    db.commit()
+    return JSONResponse(result)
