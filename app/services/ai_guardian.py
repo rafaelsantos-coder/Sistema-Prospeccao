@@ -473,6 +473,10 @@ def _apply_guardrails(
         str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER"
         and metadata.get("authoritative_contract_knowledge") is True
     )
+    authoritative_sdr_script = bool(
+        str((context.get("agent") or {}).get("role") or "").upper() == "SDR"
+        and metadata.get("authoritative_sdr_script") is True
+    )
 
     # Dúvidas contratuais resolvidas pela base oficial são fatos autoritativos.
     # O Guardião continua podendo bloquear um risco objetivo HIGH/CRITICAL, mas
@@ -625,6 +629,27 @@ def _apply_guardrails(
         review.reply_text = ""
         review.corrected_state = ""
 
+    # Catálogo e Black são textos fixos. Reescrever aqui trocou o menu de
+    # planos por um convite ao 15GB e cortou o botão em "Quero conhecer opçõe".
+    if (
+        authoritative_sdr_script
+        and not critical
+        and review.verdict in {"REWRITE", "CORRECT_STATE", "APPROVE"}
+    ):
+        review.verdict = "APPROVE"
+        review.risk = "LOW"
+        review.confidence = max(review.confidence, 0.95)
+        review.quality_score = max(review.quality_score, 95)
+        review.reply_text = ""
+        review.suggested_buttons = []
+        review.corrected_state = ""
+        review.issue_codes = [
+            code for code in review.issue_codes if code in deterministic_codes
+        ]
+        review.rationale = (
+            "Resposta comercial montada por regra fixa; preservar texto e botões."
+        )
+
     final_text = original_text
     final_buttons = list(original_buttons)
 
@@ -653,6 +678,7 @@ def _apply_guardrails(
         and final_text
         and not playbook_recovery
         and not authoritative_contract_knowledge
+        and not authoritative_sdr_script
     ):
         prior_outbounds = [
             str(item.get("body") or "")

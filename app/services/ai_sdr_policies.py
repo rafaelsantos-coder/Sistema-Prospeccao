@@ -1400,7 +1400,32 @@ def _apply_catalog_navigation_policy(
         "planos moveis",
         "plano movel",
         "celular",
-    }:
+        "so movel",
+        "so o movel",
+        "somente movel",
+        "apenas movel",
+        "telefonia movel",
+    } or "so movel" in latest:
+        return _show_mobile_catalog_page(decision, page=1)
+
+    # "Quero conhecer opções" estoura o limite de 20 caracteres do botão
+    # ("Quero conhecer opçõe") e o cliente pede a lista depois de um plano único.
+    wants_plan_list = any(
+        cue in latest
+        for cue in (
+            "quero conhecer",
+            "conhecer opco",
+            "ver opco",
+            "outras opco",
+            "ver planos",
+            "ver os planos",
+            "quais planos",
+        )
+    )
+    previous_is_mobile = any(
+        token in previous for token in ("sulmovel", "so movel", "telefonia movel", " gb", "portabilidade")
+    )
+    if wants_plan_list and previous_is_mobile:
         return _show_mobile_catalog_page(decision, page=1)
 
     if latest in {"mais planos", "ver mais", "mais opcoes"}:

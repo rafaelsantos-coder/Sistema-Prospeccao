@@ -1024,6 +1024,17 @@ def _observed_policy_names() -> set[str]:
     return observed_policy_names(settings.ai_sdr_observe_policies)
 
 
+def _sdr_script_is_authoritative(decision: AIDecision) -> bool:
+    """Resposta já reescrita por regra fixa (catálogo, Black, entrada).
+
+    O Guardião não pode trocar esse texto por um plano único nem cortar o botão.
+    """
+    return any(
+        item.get("mode") == "rewrite" and "reply_text" in (item.get("changed") or [])
+        for item in getattr(decision, "_policy_observations", []) or []
+    )
+
+
 def _decision_signature(decision: AIDecision) -> dict[str, Any]:
     from app.services.ai_sdr_rewrite import decision_signature
 
@@ -1712,6 +1723,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                         "handoff_target": decision.handoff_target,
                         "customer_commitment": decision.customer_commitment,
                         "tool_facts": list(decision._timing.get("tool_facts") or []),
+                        "authoritative_sdr_script": _sdr_script_is_authoritative(decision),
                     },
                 )
             if not guardian.should_send:
@@ -1739,6 +1751,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                         "handoff_target": decision.handoff_target,
                         "customer_commitment": decision.customer_commitment,
                         "tool_facts": list(decision._timing.get("tool_facts") or []),
+                        "authoritative_sdr_script": _sdr_script_is_authoritative(decision),
                     },
                 )
 

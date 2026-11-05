@@ -88,7 +88,11 @@ def choice_from_options(text: str | None) -> str:
         return ""
     if "combo" in folded or ("fibra" in folded and "movel" in folded) or ("internet" in folded and "movel" in folded):
         return "COMBO"
-    if folded in {"so movel", "movel", "telefonia movel", "so o movel", "somente movel", "celular"}:
+    if (
+        folded in {"so movel", "movel", "telefonia movel", "so o movel", "somente movel", "apenas movel", "celular"}
+        or "so movel" in folded
+        or folded.startswith("somente movel")
+    ):
         return "MOBILE"
     return ""
 
