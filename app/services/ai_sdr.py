@@ -1569,6 +1569,17 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         from app.services.ai_seller import process_seller_job
         return process_seller_job(db, job, agent)
 
+    # Mensagem que entrou antes de "Pausar IA" na fila não recebe resposta do SDR.
+    if binding_for_conversation(db, job.conversation_id) is None:
+        job.status = "IGNORADO"
+        job.error = "IA pausada na fila da conversa."
+        LOG.info(
+            "ai_sdr_job_ignored_queue_paused job=%s conversation=%s",
+            job.id,
+            job.conversation_id,
+        )
+        return "skipped"
+
     context = build_ai_context(db, job=job, agent=agent)
     effective_mode = _effective_execution_mode(agent)
     run = AIRun(
