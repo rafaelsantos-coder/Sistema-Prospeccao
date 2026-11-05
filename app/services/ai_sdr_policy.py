@@ -431,9 +431,9 @@ def catalog_for(city: str = "", segment: str = "RESIDENCIAL") -> dict:
     }
 
 FOLLOWUP_CADENCE = [
-    (1, timedelta(minutes=10), "reativação 1: retomar o contexto com uma pergunta curta e diferente da mensagem anterior"),
-    (2, timedelta(minutes=30), "reativação 2: mudar o ângulo comercial e facilitar a resposta, preferindo botões quando fizer sentido"),
-    (3, timedelta(hours=2), "reativação 3: usar outro argumento ou pergunta, sem repetir frase, pergunta ou CTA já enviada"),
+    (1, timedelta(hours=2), "reativação 1: retomar o contexto com uma pergunta curta e diferente da mensagem anterior"),
+    (2, timedelta(hours=3), "reativação 2: mudar o ângulo comercial e facilitar a resposta, preferindo botões quando fizer sentido"),
+    (3, timedelta(hours=3), "reativação 3: usar outro argumento ou pergunta, sem repetir frase, pergunta ou CTA já enviada"),
     (4, timedelta(hours=6), "retomar a conversa com novo ângulo comercial e sem pressão"),
     (5, timedelta(days=1), "reabrir com pergunta curta sobre a situação atual do cliente"),
     (6, timedelta(days=2), "explorar provedor, velocidade ou preço atual ainda não descobertos"),

@@ -1822,6 +1822,69 @@ def _apply_offer_rejection_diagnostic_policy(
     return decision
 
 
+_FIRM_REJECTION_CUES = _OFFER_REJECTION_CUES + _EXPLICIT_CONTACT_STOP_CUES + (
+    "nao preciso mais",
+    "nao quero mais",
+    "nao vou querer",
+    "sem interesse",
+    "desisti",
+    "desisto",
+)
+_FIRM_REJECTION_EXACT = {"nao obrigado", "nao obrigada", "dispenso", "prefiro nao", "nao quero"}
+
+REJECTION_CLOSE_MESSAGE = (
+    "Tudo bem, respeito a sua decisão e não vou mais insistir. "
+    "Se um dia precisar da Sulnet, é só chamar por aqui. Obrigado pela atenção!"
+)
+
+
+def _is_firm_rejection(text: str | None) -> bool:
+    folded = _fold_sales_text(text)
+    return bool(folded) and (
+        folded in _FIRM_REJECTION_EXACT or any(cue in folded for cue in _FIRM_REJECTION_CUES)
+    )
+
+
+def _apply_repeated_rejection_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    """Cliente sem interesse: a IA tenta uma vez; se ele recusar de novo, encerra.
+
+    Pedido do comercial (05/11): respeitar o cliente depois de uma tentativa.
+    """
+    if not _is_firm_rejection(context.get("latest_customer_message")):
+        return decision
+    rows = list(context.get("history") or [])
+    # A mensagem atual (e a rajada dela) fica de fora: procuramos uma recusa anterior
+    # seguida de uma tentativa nossa.
+    while rows and str(rows[-1].get("direction") or "").upper() == "INBOUND":
+        rows.pop()
+    rejected_before = False
+    attempted_after = False
+    for row in rows:
+        direction = str(row.get("direction") or "").upper()
+        if direction == "INBOUND":
+            if _is_firm_rejection(row.get("body")):
+                rejected_before, attempted_after = True, False
+            else:
+                rejected_before, attempted_after = False, False
+        elif direction == "OUTBOUND" and rejected_before:
+            attempted_after = True
+    if not (rejected_before and attempted_after):
+        return decision
+
+    decision.reply_text = REJECTION_CLOSE_MESSAGE
+    decision.quick_replies = []
+    decision.intent = "NOT_INTERESTED"
+    decision.objection = "NO_INTEREST"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.followup_needed = False
+    decision.next_action = "Cliente recusou duas vezes: não insistir nem mandar follow-up."
+    return decision
+
+
 def _recent_outbound_messages_for_repetition(
     context: dict,
     *,

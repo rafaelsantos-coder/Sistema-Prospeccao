@@ -44,7 +44,7 @@ def test_650_official_speed_is_650_200():
     assert plan["price_fidelity"] == 99.90
 
 
-def test_followup_cadence_starts_10m_30m_2h_and_becomes_monthly_after_step_20():
+def test_followup_cadence_starts_2h_3h_3h_and_becomes_monthly_after_step_20():
     delay_1, theme_1 = followup_spec(1)
     delay_2, theme_2 = followup_spec(2)
     delay_3, theme_3 = followup_spec(3)
@@ -54,9 +54,9 @@ def test_followup_cadence_starts_10m_30m_2h_and_becomes_monthly_after_step_20():
     delay_20, _theme_20 = followup_spec(20)
     delay_21, theme_21 = followup_spec(21)
 
-    assert delay_1 == timedelta(minutes=10)
-    assert delay_2 == timedelta(minutes=30)
-    assert delay_3 == timedelta(hours=2)
+    assert delay_1 == timedelta(hours=2)
+    assert delay_2 == timedelta(hours=3)
+    assert delay_3 == timedelta(hours=3)
     assert "reativação 1" in theme_1
     assert "reativação 2" in theme_2
     assert "reativação 3" in theme_3

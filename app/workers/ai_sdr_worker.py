@@ -594,7 +594,8 @@ def _recover_recent_unqueued_inbounds() -> int:
     inspected: list[str] = []
     try:
         cutoff = _real_mode_cutoff()
-        threshold = utcnow() - timedelta(minutes=30)
+        # Só mensagem nova: a IA não vai atrás de mensagem antiga não lida na fila.
+        threshold = utcnow() - timedelta(minutes=10)
         if cutoff and cutoff > threshold:
             threshold = cutoff
         messages = list(
@@ -675,6 +676,13 @@ def _recover_recent_unqueued_inbounds() -> int:
                         bool(target_binding),
                     )
                 )
+
+            enabled_at = utc_naive(getattr(target_binding, "updated_at", None)) if target_binding else None
+            message_at = utc_naive(message.created_at)
+            if enabled_at and message_at and message_at < enabled_at:
+                # Chegou antes de a IA ser ligada na fila: fica para o vendedor.
+                reasons["before_ai_enabled"] += 1
+                continue
 
             if instance and target_queue and target_binding:
                 if not current_queue or current_queue.id != target_queue.id:

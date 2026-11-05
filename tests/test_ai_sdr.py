@@ -2081,10 +2081,10 @@ def test_router_question_with_unsupported_explicit_speed_keeps_unavailable_plan_
 
 
 
-def test_followup_initial_cadence_is_10m_30m_2h_then_6h():
-    assert followup_spec(1)[0].total_seconds() == 10 * 60
-    assert followup_spec(2)[0].total_seconds() == 30 * 60
-    assert followup_spec(3)[0].total_seconds() == 2 * 60 * 60
+def test_followup_initial_cadence_is_2h_3h_3h_then_6h():
+    assert followup_spec(1)[0].total_seconds() == 2 * 60 * 60
+    assert followup_spec(2)[0].total_seconds() == 3 * 60 * 60
+    assert followup_spec(3)[0].total_seconds() == 3 * 60 * 60
     assert followup_spec(4)[0].total_seconds() == 6 * 60 * 60
 
 
@@ -3547,3 +3547,98 @@ def test_mobile_catalog_third_page_shows_15gb_and_back():
     }
     result = _apply_catalog_navigation_policy(decision, context)
     assert [item.label for item in result.quick_replies] == ["15GB - R$ 69,80", "Voltar"]
+
+
+def _rejection_decision():
+    return AIDecision(
+        reply_text="Entendi! E hoje você já tem internet em casa?",
+        intent="QUALIFYING",
+        qualification_score=20,
+        temperature="FRIO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.8,
+        summary="Cliente sem interesse.",
+        next_action="Entender a situação.",
+        qualification=QualificationData(),
+        crm_notes=[],
+    )
+
+
+def test_cliente_sem_interesse_recebe_uma_tentativa_e_depois_ia_encerra():
+    from app.services.ai_sdr_policies import REJECTION_CLOSE_MESSAGE, _apply_repeated_rejection_policy
+
+    first = {
+        "latest_customer_message": "Não tenho interesse",
+        "history": [
+            {"direction": "OUTBOUND", "body": "Quer conhecer os planos de fibra?"},
+            {"direction": "INBOUND", "body": "Não tenho interesse"},
+        ],
+    }
+    decision = _apply_repeated_rejection_policy(_rejection_decision(), first)
+    assert decision.reply_text != REJECTION_CLOSE_MESSAGE  # 1ª recusa: uma tentativa
+
+    second = {
+        "latest_customer_message": "Não, obrigado",
+        "history": first["history"] + [
+            {"direction": "OUTBOUND", "body": "Entendi! E hoje você já tem internet em casa?"},
+            {"direction": "INBOUND", "body": "Não, obrigado"},
+        ],
+    }
+    decision = _apply_repeated_rejection_policy(_rejection_decision(), second)
+    assert decision.reply_text == REJECTION_CLOSE_MESSAGE
+    assert decision.followup_needed is False
+    assert decision.quick_replies == []
+
+    # Voltou a se interessar no meio: a recusa antiga não conta.
+    renewed = {
+        "latest_customer_message": "Não quero",
+        "history": first["history"] + [
+            {"direction": "OUTBOUND", "body": "Entendi! E hoje você já tem internet em casa?"},
+            {"direction": "INBOUND", "body": "Tenho, mas quero ver o preço do 800"},
+            {"direction": "OUTBOUND", "body": "O 800 Mega sai por R$ 119,90."},
+            {"direction": "INBOUND", "body": "Não quero"},
+        ],
+    }
+    decision = _apply_repeated_rejection_policy(_rejection_decision(), renewed)
+    assert decision.reply_text != REJECTION_CLOSE_MESSAGE
+
+
+def test_followup_respeita_intervalo_minimo_de_2h():
+    from datetime import timedelta as _td
+
+    from app.services import ai_followups
+    from app.timeutils import utcnow as _now
+
+    now = _now()
+
+    class _Db:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar(self, _stmt):
+            return self.value
+
+    hold = ai_followups._followup_spacing_hold(_Db(now - _td(minutes=30)), 1, now)
+    assert hold is not None
+    assert hold >= now - _td(minutes=30) + _td(hours=2)
+    assert ai_followups._followup_spacing_hold(_Db(now - _td(hours=3)), 1, now) is None
+    assert ai_followups._followup_spacing_hold(_Db(None), 1, now) is None
+
+
+def test_followup_do_sdr_para_depois_de_sem_interesse():
+    from app.services import ai_followups
+
+    class _Db:
+        def __init__(self, body):
+            self.body = body
+
+        def scalar(self, _stmt):
+            return self.body
+
+    assert ai_followups._customer_declined(_Db("Não tenho interesse"), 1) is True
+    assert ai_followups._customer_declined(_Db("Não, obrigado"), 1) is True
+    assert ai_followups._customer_declined(_Db("me remova da lista"), 1) is True
+    assert ai_followups._customer_declined(_Db("Não"), 1) is False
+    assert ai_followups._customer_declined(_Db("Qual a multa de cancelamento?"), 1) is False
