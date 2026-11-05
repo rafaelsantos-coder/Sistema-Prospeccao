@@ -92,6 +92,10 @@ class _FakeClient:
             raise CRMIntegrationError("campo inválido", status_code=400)
         return {"opportunityId": 99, "protocol": "X"}
 
+    def add_opportunity_tag(self, opportunity_id, tag_name):
+        self.tagged = (opportunity_id, tag_name)
+        return True
+
 
 def _create(monkeypatch, reject):
     fake = _FakeClient(reject)
@@ -108,6 +112,7 @@ def test_venda_black_envia_tag_e_data(monkeypatch):
     assert fake.calls[0]["tags"] == ["Promoção Black 2027"]
     assert fake.calls[0]["firstDueDate"] == "2027-01-10"
     assert state.opportunity_id == 99
+    assert fake.tagged == (99, "Promoção Black 2027")
 
 
 def test_crm_que_recusa_campos_extras_nao_trava_a_venda(monkeypatch):
@@ -157,3 +162,64 @@ def test_pergunta_da_etapa_nunca_e_bloqueada_pelo_guardiao():
     state.collected_json = '{"_playbook_question": "Qual é o número que será portado?"}'
     assert ai_seller._is_step_prompt(state, "Qual é o número que será portado?")
     assert not ai_seller._is_step_prompt(state, "Texto livre gerado pelo modelo sobre outra coisa")
+
+
+def test_planos_moveis_do_combo_em_paginas_de_botoes():
+    first = black.combo_page_buttons(1)
+    assert [b["label"] for b in first] == ["2GB - R$ 33,90", "5GB - R$ 44,90", "Mais planos"]
+    assert [b["label"] for b in black.combo_page_buttons(2)] == ["7GB - R$ 47,90", "10GB - R$ 53,90", "Mais planos"]
+    assert [b["label"] for b in black.combo_page_buttons(3)] == ["15GB - R$ 69,80", "Voltar"]
+    assert all(len(black.combo_page_buttons(p)) <= 3 for p in (1, 2, 3))
+
+
+def test_mais_planos_avanca_e_botao_escolhe_o_plano():
+    state = _state(step="COMBO_MOBILE_PLAN", opportunity_id=None)
+    collected = {"_black_combo": {"stage": "MOBILE"}}
+    reply = ai_seller._combo_choose_mobile(state, collected, "Mais planos")
+    assert collected["_combo_page"] == 2 and "7GB" in reply and "2GB" not in reply
+    assert ai_seller._seller_step_buttons("COMBO_MOBILE_PLAN", reply, collected)[0]["label"].startswith("7GB")
+    ai_seller._combo_choose_mobile(state, collected, "10GB - R$ 53,90")
+    assert state.plan_label == "Sulmóvel 10GB" and state.step == "CPF"
+
+
+def test_segunda_venda_preenche_valor_mensal_sem_perguntar():
+    from app.services.crm_sulnet import CRMPlaybookMissingItem
+
+    state = _state(step="CEP", plan_label="Sulmóvel 2GB", offer_price=Decimal("33.90"))
+    item = CRMPlaybookMissingItem(code="monthlyValue", label="Valor mensal")
+    assert ai_seller._playbook_known_value(item, state, {}) == ("monthlyValue", 33.9)
+
+
+def test_tag_black_e_adicionada_sem_apagar_as_outras():
+    from app.services.crm_sulnet import SulnetCRMClient
+
+    calls = []
+
+    class _Client(SulnetCRMClient):
+        def __init__(self):
+            pass
+
+        def _request(self, method, path, json_body=None, **kwargs):
+            calls.append((method, path, json_body))
+            if path == "/api/catalog/reference":
+                return {"tags": [{"id": 3, "name": "VIP"}, {"id": 9, "name": "Promoção Black 2027"}]}
+            if method == "GET":
+                return {"id": 14373, "tagIds": [3]}
+            return {}
+
+    client = _Client()
+    assert client.add_opportunity_tag(14373, "promoção black 2027")
+    assert calls[-1] == ("PATCH", "/api/opportunities/14373", {"tagIds": [3, 9]})
+
+
+def test_tag_inexistente_no_crm_nao_trava():
+    from app.services.crm_sulnet import SulnetCRMClient
+
+    class _Client(SulnetCRMClient):
+        def __init__(self):
+            pass
+
+        def _request(self, method, path, json_body=None, **kwargs):
+            return {"tags": []}
+
+    assert _Client().add_opportunity_tag(1, "Promoção Black 2027") is False
