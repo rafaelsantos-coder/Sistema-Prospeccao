@@ -724,6 +724,140 @@ def _recover_recent_unqueued_inbounds() -> int:
     return recovered
 
 
+# Fila "IA quando não houver vendedor online": se o vendedor online não responder
+# o cliente em 10 minutos, a IA assume (pedido do comercial, 05/11).
+UNANSWERED_TAKEOVER_AFTER = timedelta(minutes=10)
+UNANSWERED_TAKEOVER_WINDOW = timedelta(hours=3)
+_TAKEOVER_BLOCKED_STATES = {
+    "AI_ACTIVE",
+    "CLOSING",
+    "HANDOFF",
+    "HANDOFF_HUMAN",
+    "HUMAN_ACTIVE",
+    "OPT_OUT",
+    "ESCALATED",
+    "COMPLETED",
+}
+
+
+def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
+    from app.models import ConversationAssignment, ConversationQueueLink
+    from app.services.queue_routing import AI_WHEN_OFFLINE
+
+    db = SessionLocal()
+    taken = 0
+    try:
+        now = utcnow()
+        bindings = list(
+            db.scalars(
+                select(AIQueueBinding).where(
+                    AIQueueBinding.active.is_(True),
+                    AIQueueBinding.handling_mode == AI_WHEN_OFFLINE,
+                )
+            )
+        )
+        ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
+        for binding in bindings:
+            enabled_at = utc_naive(binding.updated_at)
+            conversations = list(
+                db.scalars(
+                    select(Conversation)
+                    .join(ConversationQueueLink, ConversationQueueLink.conversation_id == Conversation.id)
+                    .where(
+                        ConversationQueueLink.queue_id == binding.queue_id,
+                        Conversation.status.not_in(["RESOLVIDO", "ENCERRADO", "BLOQUEADO"]),
+                        Conversation.updated_at >= now - UNANSWERED_TAKEOVER_WINDOW,
+                    )
+                    .order_by(Conversation.updated_at.desc())
+                    .limit(limit)
+                )
+            )
+            for conversation in conversations:
+                state = db.scalar(
+                    select(AIConversationState.state).where(
+                        AIConversationState.conversation_id == conversation.id
+                    )
+                )
+                if state in _TAKEOVER_BLOCKED_STATES:
+                    continue
+                latest = db.scalar(
+                    select(Message)
+                    .where(
+                        Message.conversation_id == conversation.id,
+                        Message.direction.in_(["INBOUND", "OUTBOUND"]),
+                    )
+                    .order_by(Message.id.desc())
+                    .limit(1)
+                )
+                if not latest or latest.direction != "INBOUND" or latest.message_type != "TEXT":
+                    continue
+                received_at = utc_naive(latest.created_at)
+                if not received_at or now - received_at < UNANSWERED_TAKEOVER_AFTER:
+                    continue
+                if now - received_at > UNANSWERED_TAKEOVER_WINDOW:
+                    continue
+                if enabled_at and received_at < enabled_at:
+                    continue
+                if db.scalar(select(AIJob.id).where(AIJob.message_id == latest.id).limit(1)):
+                    continue
+                previous_owner = conversation.assigned_user_id
+                if previous_owner and previous_owner not in ai_users:
+                    conversation.assigned_user_id = None
+                    conversation.status = "EM_FILA"
+                    db.add(
+                        ConversationAssignment(
+                            conversation_id=conversation.id,
+                            user_id=None,
+                            assigned_by_id=None,
+                            event="AI_TAKEOVER_UNANSWERED",
+                        )
+                    )
+                # A conversa passa a ser da IA já agora, para a distribuição não
+                # devolvê-la ao vendedor antes de o worker responder.
+                ai_state = db.scalar(
+                    select(AIConversationState).where(
+                        AIConversationState.conversation_id == conversation.id
+                    )
+                )
+                created_state = ai_state is None
+                previous_state = ai_state.state if ai_state else None
+                previous_agent = ai_state.agent_id if ai_state else None
+                if created_state:
+                    ai_state = AIConversationState(
+                        conversation_id=conversation.id,
+                        agent_id=binding.agent_id,
+                        state="AI_ACTIVE",
+                    )
+                    db.add(ai_state)
+                else:
+                    ai_state.state = "AI_ACTIVE"
+                    ai_state.agent_id = binding.agent_id
+                db.flush()
+                job = enqueue_ai_job(db, conversation=conversation, message=latest, takeover=True)
+                if not job:
+                    if created_state:
+                        db.delete(ai_state)
+                    else:
+                        ai_state.state = previous_state
+                        ai_state.agent_id = previous_agent
+                if job:
+                    taken += 1
+                    LOG.info(
+                        "ai_takeover_unanswered conversation=%s message=%s previous_owner=%s",
+                        conversation.id,
+                        latest.id,
+                        previous_owner,
+                    )
+                elif previous_owner and conversation.assigned_user_id is None:
+                    # A IA não pôde assumir: devolve para quem estava.
+                    conversation.assigned_user_id = previous_owner
+                    conversation.status = "EM_ATENDIMENTO"
+        db.commit()
+    finally:
+        db.close()
+    return taken
+
+
 def run() -> None:
     if not settings.is_production:
         Base.metadata.create_all(bind=engine)
@@ -832,6 +966,10 @@ def run() -> None:
                     LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
             except Exception:
                 LOG.exception("Falha na recuperação periódica de mensagens sem job.")
+            try:
+                _takeover_unanswered_human_conversations()
+            except Exception:
+                LOG.exception("Falha ao assumir conversas sem resposta do vendedor.")
             last_inbound_recovery = now_mono
 
         if now_mono - last_stale_recovery >= 300:
