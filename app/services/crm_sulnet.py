@@ -18,6 +18,12 @@ from app.config import settings
 LOG = logging.getLogger("sulnet_crm_client")
 
 
+
+def _fold_tag(value: str) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", text.casefold()).strip()
+
 class CRMIntegrationError(RuntimeError):
     def __init__(
         self,
@@ -1056,6 +1062,51 @@ class SulnetCRMClient:
                 record["aiClosing"] = ai_closing
 
         return record
+
+    def tag_id_by_name(self, name: str) -> int | None:
+        """Id da tag do CRM (GET /api/catalog/reference → tags)."""
+        wanted = _fold_tag(name)
+        result = self._request("GET", "/api/catalog/reference")
+        tags = result.get("tags") if isinstance(result, dict) else None
+        if not isinstance(tags, list) and isinstance(result, dict) and isinstance(result.get("data"), dict):
+            tags = result["data"].get("tags")
+        for tag in tags or []:
+            if isinstance(tag, dict) and _fold_tag(str(tag.get("name") or "")) == wanted:
+                try:
+                    return int(tag.get("id"))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def add_opportunity_tag(self, opportunity_id: int, tag_name: str) -> bool:
+        """Adiciona a tag sem apagar as outras: o PATCH de tagIds substitui a lista inteira."""
+        tag_id = self.tag_id_by_name(tag_name)
+        if not tag_id:
+            LOG.warning("crm_tag_missing opportunity=%s", opportunity_id)
+            return False
+        current = self._request("GET", f"/api/opportunities/{opportunity_id}")
+        record = current.get("data") if isinstance(current, dict) and isinstance(current.get("data"), dict) else current
+        existing: list[int] = []
+        raw = record.get("tagIds") if isinstance(record, dict) else None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raw = []
+        for item in raw or []:
+            try:
+                existing.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if tag_id in existing:
+            return True
+        self._request(
+            "PATCH",
+            f"/api/opportunities/{opportunity_id}",
+            json_body={"tagIds": existing + [tag_id]},
+        )
+        LOG.info("crm_tag_added opportunity=%s tag_id=%s", opportunity_id, tag_id)
+        return True
 
     def get_opportunity(self, opportunity_id: int) -> dict[str, Any]:
         # Preferir o endpoint genérico: ele traz product_info completo.

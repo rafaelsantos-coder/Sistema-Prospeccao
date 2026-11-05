@@ -3615,6 +3615,18 @@ def _create_crm_if_ready(
     state.protocol = str(result.get("protocol") or "")
     if not state.opportunity_id:
         raise CRMIntegrationError("CRM não retornou o identificador da oportunidade.")
+    if black_campaign.has_marker(state.handoff_summary):
+        _apply_black_tag(client, state)
+
+
+def _apply_black_tag(client: SulnetCRMClient, state: AIClosingState) -> None:
+    """Tag "Promoção Black 2027" na oportunidade; falha da tag nunca trava a venda."""
+    if not state.opportunity_id:
+        return
+    try:
+        client.add_opportunity_tag(state.opportunity_id, black_campaign.CAMPAIGN_TAG)
+    except CRMIntegrationError as exc:
+        LOG.warning("crm_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
 
 
 COMBO_MOBILE_STEP = "COMBO_MOBILE_PLAN"

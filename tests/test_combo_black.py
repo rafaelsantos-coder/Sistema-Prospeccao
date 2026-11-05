@@ -92,6 +92,10 @@ class _FakeClient:
             raise CRMIntegrationError("campo inválido", status_code=400)
         return {"opportunityId": 99, "protocol": "X"}
 
+    def add_opportunity_tag(self, opportunity_id, tag_name):
+        self.tagged = (opportunity_id, tag_name)
+        return True
+
 
 def _create(monkeypatch, reject):
     fake = _FakeClient(reject)
@@ -108,6 +112,7 @@ def test_venda_black_envia_tag_e_data(monkeypatch):
     assert fake.calls[0]["tags"] == ["Promoção Black 2027"]
     assert fake.calls[0]["firstDueDate"] == "2027-01-10"
     assert state.opportunity_id == 99
+    assert fake.tagged == (99, "Promoção Black 2027")
 
 
 def test_crm_que_recusa_campos_extras_nao_trava_a_venda(monkeypatch):
@@ -183,3 +188,38 @@ def test_segunda_venda_preenche_valor_mensal_sem_perguntar():
     state = _state(step="CEP", plan_label="Sulmóvel 2GB", offer_price=Decimal("33.90"))
     item = CRMPlaybookMissingItem(code="monthlyValue", label="Valor mensal")
     assert ai_seller._playbook_known_value(item, state, {}) == ("monthlyValue", 33.9)
+
+
+def test_tag_black_e_adicionada_sem_apagar_as_outras():
+    from app.services.crm_sulnet import SulnetCRMClient
+
+    calls = []
+
+    class _Client(SulnetCRMClient):
+        def __init__(self):
+            pass
+
+        def _request(self, method, path, json_body=None, **kwargs):
+            calls.append((method, path, json_body))
+            if path == "/api/catalog/reference":
+                return {"tags": [{"id": 3, "name": "VIP"}, {"id": 9, "name": "Promoção Black 2027"}]}
+            if method == "GET":
+                return {"id": 14373, "tagIds": [3]}
+            return {}
+
+    client = _Client()
+    assert client.add_opportunity_tag(14373, "promoção black 2027")
+    assert calls[-1] == ("PATCH", "/api/opportunities/14373", {"tagIds": [3, 9]})
+
+
+def test_tag_inexistente_no_crm_nao_trava():
+    from app.services.crm_sulnet import SulnetCRMClient
+
+    class _Client(SulnetCRMClient):
+        def __init__(self):
+            pass
+
+        def _request(self, method, path, json_body=None, **kwargs):
+            return {"tags": []}
+
+    assert _Client().add_opportunity_tag(1, "Promoção Black 2027") is False
