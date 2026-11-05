@@ -1691,11 +1691,13 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
     )
 
     assert client.generate_calls == 2
-    assert client.playbook_field_patches == [
-        (
-            "productInfo.categoryForm.values.tipo_contratacao",
-            "Número Portabilidade",
-        )
+    # Portabilidade sem data: a data da venda é gravada antes de gerar (conversa 546).
+    assert (
+        "productInfo.categoryForm.values.tipo_contratacao",
+        "Número Portabilidade",
+    ) in client.playbook_field_patches
+    assert [key for key, _ in client.playbook_field_patches if key.endswith("port_data")] == [
+        "productInfo.categoryForm.values.port_data"
     ]
     assert collected["categoryFormValues"]["tipo_contratacao"] == (
         "Número Portabilidade"

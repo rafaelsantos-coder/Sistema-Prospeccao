@@ -41,7 +41,7 @@ from app.services.crm_sulnet import (
 )
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.services.zapi import ZApiError
-from app.timeutils import utcnow
+from app.timeutils import LOCAL_TZ, utcnow
 
 
 LOG = logging.getLogger("sulnet_ai_seller")
@@ -2466,6 +2466,39 @@ def _infer_mobile_contract_type(collected: dict[str, Any]) -> str | None:
     return None
 
 
+PORT_DATE_PATCH_KEY = "productInfo.categoryForm.values.port_data"
+
+
+def _ensure_port_date(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> bool:
+    """Portabilidade sem data: usa a data da venda.
+
+    No fluxo da IA a data não é perguntada ao cliente (ele não sabe a janela
+    da operadora), mas o contract/generate do CRM passou a exigir "Data
+    portabilidade" (conversa 546, 05/11). O BKO agenda a janela real.
+    """
+    if not state.opportunity_id:
+        return False
+    values = _mobile_values(collected)
+    if "port" not in _norm(str(values.get("tipo_contratacao") or "")):
+        return False
+    if values.get("port_data"):
+        return False
+    today = utcnow().astimezone(LOCAL_TZ).strftime("%Y-%m-%d")
+    values["port_data"] = today
+    _store_category_values(collected, values, mobile=True)
+    client.update_playbook_field(
+        state.opportunity_id,
+        patch_key=PORT_DATE_PATCH_KEY,
+        value=today,
+    )
+    LOG.info("seller_port_date_default opportunity=%s", state.opportunity_id)
+    return True
+
+
 def _recover_contract_pending_field(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -2481,6 +2514,19 @@ def _recover_contract_pending_field(
     """
     pending = _contract_pending_message(exc)
     if exc.status_code != 400:
+        return None
+
+    if "data portabilidade" in pending and not collected.get("_port_date_synced"):
+        values = _mobile_values(collected)
+        values.pop("port_data", None)
+        _store_category_values(collected, values, mobile=True)
+        try:
+            if _ensure_port_date(client, state, collected):
+                # Mesmo caminho do tipo de contratação: gerar de novo uma vez.
+                collected["_contract_recovery_reason"] = "mobile_contract_type_synced"
+                collected["_port_date_synced"] = True
+        except CRMIntegrationError:
+            LOG.warning("seller_port_date_recovery_failed opportunity=%s", state.opportunity_id)
         return None
 
     if "tipo de contratacao movel" not in pending:
@@ -2610,6 +2656,10 @@ def _prepare_contract_before_win(
     generated: dict[str, Any] = {}
 
     if not collected.get("_contract_generation_requested"):
+        try:
+            _ensure_port_date(client, state, collected)
+        except CRMIntegrationError:
+            LOG.warning("seller_port_date_default_failed opportunity=%s", state.opportunity_id)
         try:
             generated = client.generate_agent_contract(
                 state.opportunity_id,
@@ -5927,7 +5977,10 @@ def resume_closer(db: Session, conversation: Conversation, actor: Any) -> bool:
     if not state or state.step != "ESCALATED" or not closer:
         return False
     collected = _load_collected(state)
-    collected["_sale_accepted"] = False
+    # O aceite do resumo continua valendo: se o produto mudar, o resumo é
+    # reapresentado antes do contrato (_finish_sale_contract).
+    collected.pop("_contract_recovery_reason", None)
+    collected.pop("_port_date_synced", None)
     collected.pop("_data_errors", None)
     collected.pop("_retry_later_cycles", None)
     collected.pop("_poll_failures", None)
