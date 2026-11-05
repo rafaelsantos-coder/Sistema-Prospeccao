@@ -958,9 +958,119 @@ class SulnetCRMClient:
         )
         return self._fallback_update_opportunity(opportunity_id, payload)
 
+    @staticmethod
+    def _parse_json_object(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                return {}
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        return {}
+
+    @classmethod
+    def _normalize_opportunity_record(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        """Normaliza GET de oportunidade para o formato camelCase do Vendedor IA.
+
+        O endpoint genérico devolve `product_info` como JSON string; o playbook
+        e os PATCHes usam `productInfo.categoryForm.values`. Sem essa normalização
+        o merge do formulário começa vazio e um PATCH de um campo só apaga o
+        restante (ex.: tipo_contratacao some depois de gravar numero_portado).
+        """
+        record = dict(payload)
+        lead = record.get("lead")
+        if isinstance(lead, dict):
+            merged = dict(lead)
+            for key, value in record.items():
+                if key == "lead":
+                    continue
+                if key not in merged or merged.get(key) in (None, "", [], {}):
+                    merged[key] = value
+            record = merged
+
+        product_info = record.get("productInfo")
+        if not isinstance(product_info, dict):
+            product_info = cls._parse_json_object(record.get("product_info"))
+        if product_info:
+            category_form = product_info.get("categoryForm")
+            if not isinstance(category_form, dict):
+                category_form = cls._parse_json_object(
+                    product_info.get("category_form")
+                )
+            if category_form:
+                values = category_form.get("values")
+                if not isinstance(values, dict):
+                    values = cls._parse_json_object(category_form.get("values"))
+                files = category_form.get("files")
+                if not isinstance(files, dict):
+                    files = cls._parse_json_object(category_form.get("files"))
+                ai_closing = product_info.get("aiClosing")
+                if not isinstance(ai_closing, dict):
+                    ai_closing = cls._parse_json_object(
+                        product_info.get("ai_closing")
+                    )
+                product_info = {
+                    **{
+                        key: value
+                        for key, value in product_info.items()
+                        if key
+                        not in {
+                            "categoryForm",
+                            "category_form",
+                            "aiClosing",
+                            "ai_closing",
+                        }
+                    },
+                    "categoryForm": {
+                        **{
+                            key: value
+                            for key, value in category_form.items()
+                            if key not in {"values", "files"}
+                        },
+                        "values": values,
+                        "files": files,
+                    },
+                }
+                if not isinstance(ai_closing, dict):
+                    ai_closing = cls._parse_json_object(record.get("aiClosing"))
+                if not isinstance(ai_closing, dict):
+                    ai_closing = cls._parse_json_object(record.get("ai_closing"))
+                if ai_closing:
+                    product_info["aiClosing"] = ai_closing
+            record["productInfo"] = product_info
+
+        if "aiClosing" not in record or not isinstance(record.get("aiClosing"), dict):
+            ai_closing = cls._parse_json_object(record.get("aiClosing"))
+            if not ai_closing:
+                ai_closing = cls._parse_json_object(record.get("ai_closing"))
+            if not ai_closing and isinstance(record.get("productInfo"), dict):
+                ai_closing = cls._parse_json_object(
+                    record["productInfo"].get("aiClosing")
+                )
+            if ai_closing:
+                record["aiClosing"] = ai_closing
+
+        return record
+
     def get_opportunity(self, opportunity_id: int) -> dict[str, Any]:
+        # Preferir o endpoint genérico: ele traz product_info completo.
+        try:
+            result = self._request("GET", f"/api/opportunities/{opportunity_id}")
+            if isinstance(result, dict) and result:
+                return self._normalize_opportunity_record(result)
+        except CRMIntegrationError as exc:
+            if exc.status_code not in {404, 405, 501}:
+                raise
+
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}")
-        return result if isinstance(result, dict) else {}
+        if isinstance(result, dict) and result:
+            return self._normalize_opportunity_record(result)
+        return {}
 
     def update_category_form(
         self,
@@ -991,7 +1101,12 @@ class SulnetCRMClient:
         merged_values = dict(current_values)
         merged_values.update(values)
         # O formulário do CRM só aceita "Número novo", "Número Portabilidade" ou "M2M".
-        if str(merged_values.get("tipo_contratacao") or "").strip().lower() == "portabilidade":
+        tipo_raw = str(merged_values.get("tipo_contratacao") or "").strip().lower()
+        tipo_folded = unicodedata.normalize("NFKD", tipo_raw)
+        tipo_folded = "".join(ch for ch in tipo_folded if not unicodedata.combining(ch))
+        if tipo_folded in {"portabilidade", "numero portabilidade"} or (
+            "port" in tipo_folded and "novo" not in tipo_folded and "m2m" not in tipo_folded
+        ):
             merged_values["tipo_contratacao"] = "Número Portabilidade"
 
         current_files = category_form.get("files")
@@ -1087,14 +1202,42 @@ class SulnetCRMClient:
         patch_key: str,
         value: Any,
     ) -> dict[str, Any]:
-        payload = self._playbook_patch_payload(patch_key, value)
+        canonical_value = value
+        # Mesma regra do formulário: CRM rejeita "Portabilidade" solto.
+        patch_key_folded = re.sub(
+            r"[^a-z0-9]+",
+            "",
+            unicodedata.normalize("NFKD", str(patch_key or "").lower()),
+        )
+        patch_key_folded = "".join(
+            ch for ch in patch_key_folded if not unicodedata.combining(ch)
+        )
+        if "tipocontratacao" in patch_key_folded:
+            tipo_raw = str(value or "").strip().lower()
+            tipo_folded = unicodedata.normalize("NFKD", tipo_raw)
+            tipo_folded = "".join(
+                ch for ch in tipo_folded if not unicodedata.combining(ch)
+            )
+            if tipo_folded in {"portabilidade", "numero portabilidade"} or (
+                "port" in tipo_folded
+                and "novo" not in tipo_folded
+                and "m2m" not in tipo_folded
+            ):
+                canonical_value = "Número Portabilidade"
+
+        payload = self._playbook_patch_payload(patch_key, canonical_value)
         current = self.get_opportunity(opportunity_id)
         if isinstance(current, dict):
+            # O CRM substitui o objeto `values` inteiro no PATCH. Sem merge com
+            # o formulário atual, gravar tipocontratacao apaga numero_portado
+            # (e o inverso). Sempre reconstruímos productInfo a partir do GET.
             payload = self._deep_merge_dict(current, payload)
 
         # Nunca devolvemos identificadores/estado capturados pelo GET no PATCH.
         # Preservamos apenas os ramos que o patchKey pediu para alterar.
-        patch_root = next(iter(self._playbook_patch_payload(patch_key, value)))
+        patch_root = next(
+            iter(self._playbook_patch_payload(patch_key, canonical_value))
+        )
         payload = {patch_root: payload.get(patch_root)}
 
         result = self._request(

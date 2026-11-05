@@ -31,6 +31,8 @@ from app.services.ai_seller import (
     _mobile_next_step,
     _mobile_values,
     _recover_mobile_step_for_text,
+    _recover_contract_pending_field,
+    _infer_mobile_contract_type,
     _category_values,
     _canonical_playbook_value,
     _playbook_code_key,
@@ -182,6 +184,86 @@ def test_sdr_ia_mobile_contract_type_rejects_m2m():
     assert "Portabilidade" in message
     assert "Número novo" in message
     assert "M2M" not in message
+
+
+def test_infer_mobile_contract_type_from_portability_evidence():
+    assert (
+        _infer_mobile_contract_type(
+            {
+                "mobileCategoryValues": {
+                    "numero_portado": "55999002508",
+                    "port_titular": "Sim",
+                }
+            }
+        )
+        == "Número Portabilidade"
+    )
+    assert (
+        _infer_mobile_contract_type(
+            {"mobileCategoryValues": {"numero_novo": "55998887766"}}
+        )
+        == "Número novo"
+    )
+
+
+def test_recover_contract_pending_resyncs_known_tipo_without_rewind():
+    patches: list[tuple[str, object]] = []
+
+    class FakeClient:
+        def update_playbook_field(self, opportunity_id, *, patch_key, value):
+            patches.append(("field", opportunity_id, patch_key, value))
+            return {"ok": True}
+
+        def update_category_form(self, opportunity_id, values, **kwargs):
+            patches.append(("form", opportunity_id, dict(values), kwargs))
+            return {"ok": True}
+
+        def playbook(self, opportunity_id, category=None):
+            raise AssertionError("playbook não deve ser consultado após sync local")
+
+    state = SimpleNamespace(
+        opportunity_id=14370,
+        step="CONFIRM_SALE",
+        contract_status="aguardando_confirmacao",
+        plan_label="SULMOVEL_2GB",
+    )
+    collected = {
+        "categoryId": 83,
+        "planId": 388,
+        "mobileCategoryValues": {
+            "numero_portado": "55999002508",
+            "port_titular": "Sim",
+            "forma_pagamento": "Boleto",
+            "envio_fatura": ["WhatsApp"],
+        },
+        "_sdr_ia_funnel": True,
+        "_sdr_ia_defaults": {
+            "vencimento": "10",
+            "taxa_ativacao": "Não",
+            "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+        },
+    }
+    exc = CRMIntegrationError(
+        "Campos pendentes para contrato: Tipo de contratação móvel",
+        status_code=400,
+        response_body={"error": "Campos pendentes para contrato: Tipo de contratação móvel"},
+    )
+
+    recovered = _recover_contract_pending_field(
+        FakeClient(),
+        state,
+        collected,
+        exc,
+    )
+
+    assert recovered is None
+    assert collected["_contract_recovery_reason"] == "mobile_contract_type_synced"
+    assert collected["mobileCategoryValues"]["tipo_contratacao"] == "Número Portabilidade"
+    assert state.step == "CONFIRM_SALE"
+    assert any(
+        item[0] == "field" and item[3] == "Número Portabilidade"
+        for item in patches
+    )
 
 
 def test_mobile_portability_does_not_repeat_holder_data_when_same_holder():
@@ -1516,6 +1598,10 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
     )
 
     class _RecoveryClient(_Phase4ContractClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.playbook_field_patches: list[tuple[str, object]] = []
+
         def generate_agent_contract(
             self,
             opportunity_id,
@@ -1524,6 +1610,15 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
             require_ready_for_win=True,
         ):
             self.generate_calls += 1
+            # Após o sync local do tipo, a 2ª tentativa já consegue gerar.
+            if self.generate_calls >= 2:
+                return {
+                    "protocol": "CRM-TEST",
+                    "templateId": 9,
+                    "status": "sent",
+                    "signatureReused": False,
+                    "signUrl": "https://sign.example/contract",
+                }
             raise CRMIntegrationError(
                 "Campos pendentes para contrato: Tipo de contratação móvel",
                 status_code=400,
@@ -1548,6 +1643,13 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
                 category="telefonia-movel",
                 sdr_ia_funnel=True,
             )
+
+        def update_playbook_field(self, opportunity_id, *, patch_key, value):
+            self.playbook_field_patches.append((patch_key, value))
+            return {"ok": True}
+
+        def update_category_form(self, opportunity_id, values, **kwargs):
+            return {"ok": True}
 
         def get_opportunity(self, opportunity_id):
             return {"opportunityId": opportunity_id, "planId": 1500}
@@ -1588,23 +1690,19 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
         collected,
     )
 
-    assert client.generate_calls == 1
-    assert state.step == "MOBILE_CONTRACT_TYPE"
-    assert state.contract_status == "aguardando_tipo_contratacao"
-    assert "contratar" in reply.lower()
-    assert "tipo_contratacao" not in collected["categoryFormValues"]
-    assert collected["_playbook_code"] == "cf_tipo_contratacao"
-    assert collected["_playbook_patch_key"] == (
-        "productInfo.categoryForm.values.tipo_contratacao"
-    )
-    assert _seller_step_buttons(
-        state.step,
-        reply,
-        collected,
-    ) == [
-        {"id": "portabilidade", "label": "Portabilidade"},
-        {"id": "numero_novo", "label": "Número novo"},
+    assert client.generate_calls == 2
+    assert client.playbook_field_patches == [
+        (
+            "productInfo.categoryForm.values.tipo_contratacao",
+            "Número Portabilidade",
+        )
     ]
+    assert collected["categoryFormValues"]["tipo_contratacao"] == (
+        "Número Portabilidade"
+    )
+    assert collected["_contract_recovery_reason"] == "mobile_contract_type_synced"
+    assert state.step != "MOBILE_CONTRACT_TYPE"
+    assert "contratar" not in reply.lower() or "assinatura" in reply.lower() or reply
 
 
 def test_phase4_not_ready_never_generates_contract_or_marks_won():

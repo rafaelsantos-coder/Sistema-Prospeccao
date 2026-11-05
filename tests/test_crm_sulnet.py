@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import app.services.crm_sulnet as crm_module
@@ -149,7 +150,29 @@ class CategoryFormClient:
             {"method": method, "url": url, "json": kwargs.get("json")}
         )
         response = FakeResponse()
-        if method == "GET" and url.endswith("/api/capture/leads/1234"):
+        opportunity_payload = {
+            "id": 1234,
+            "aiClosing": {"paymentMethod": "Boleto", "dueDay": 10},
+            "product_info": json.dumps(
+                {
+                    "categoryForm": {
+                        "values": {
+                            "vencimento": 10,
+                            "forma_pagamento": "Boleto",
+                        },
+                        "files": {
+                            "documento_existente": {
+                                "name": "arquivo.pdf",
+                            }
+                        },
+                    }
+                },
+                ensure_ascii=False,
+            ),
+        }
+        if method == "GET" and url.endswith("/api/opportunities/1234"):
+            response.payload = opportunity_payload
+        elif method == "GET" and url.endswith("/api/capture/leads/1234"):
             response.payload = {
                 "opportunityId": 1234,
                 "aiClosing": {"paymentMethod": "Boleto", "dueDay": 10},
@@ -212,6 +235,53 @@ def test_update_category_form_uses_generic_opportunity_patch(monkeypatch):
         "documento_existente": {"name": "arquivo.pdf"}
     }
 
+
+def test_update_playbook_field_merges_existing_category_values(monkeypatch):
+    CategoryFormClient.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", CategoryFormClient)
+
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="service-token-value",
+    )
+    result = client.update_playbook_field(
+        1234,
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+        value="Portabilidade",
+    )
+
+    assert result["ok"] is True
+    patch = next(
+        item
+        for item in CategoryFormClient.captured
+        if item["method"] == "PATCH"
+    )
+    assert patch["url"].endswith("/api/opportunities/1234")
+    values = patch["json"]["productInfo"]["categoryForm"]["values"]
+    # Campo novo entra com valor canônico do CRM...
+    assert values["tipo_contratacao"] == "Número Portabilidade"
+    # ...sem apagar o que já existia no formulário.
+    assert values["forma_pagamento"] == "Boleto"
+    assert values["vencimento"] == 10
+
+
+def test_normalize_opportunity_record_parses_product_info_string():
+    normalized = SulnetCRMClient._normalize_opportunity_record(
+        {
+            "id": 99,
+            "product_info": json.dumps(
+                {
+                    "categoryForm": {
+                        "values": {"numero_portado": "55999002508"},
+                        "files": {},
+                    }
+                }
+            ),
+        }
+    )
+    assert normalized["productInfo"]["categoryForm"]["values"]["numero_portado"] == (
+        "55999002508"
+    )
 
 
 class CatalogFallbackClient:
