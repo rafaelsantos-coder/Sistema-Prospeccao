@@ -3187,6 +3187,47 @@ def test_black_nao_segue_fluxo_normal(monkeypatch):
     assert "planos de internet ou Telefonia Móvel" in result.reply_text
 
 
+def test_black_so_movel_abre_menu_de_planos(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    context = {
+        "latest_customer_message": "Só móvel",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": _black_history(
+            ("OUTBOUND", "Black da Sulnet: a Black que pula o fim de ano! Qual você prefere?"),
+            ("INBOUND", "Só móvel"),
+        ),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "Sulmóvel" in result.reply_text
+    assert [item.label for item in result.quick_replies][:2] == [
+        "2GB - R$ 33,90",
+        "5GB - R$ 44,90",
+    ]
+    assert all(len(item.label) <= 20 for item in result.quick_replies)
+
+
+def test_pedido_de_opcoes_depois_de_plano_unico_abre_menu():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Quero conhecer opçõe",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Para usar só móvel, o plano com mais internet é o Sulmóvel 15GB "
+                    "por R$ 69,80. Quer contratar esse plano agora?"
+                ),
+            }
+        ],
+    }
+    result = _apply_catalog_navigation_policy(decision, context)
+    assert [item.label for item in result.quick_replies][:2] == [
+        "2GB - R$ 33,90",
+        "5GB - R$ 44,90",
+    ]
+
+
 def test_black_combo_vai_para_internet(monkeypatch):
     monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
     context = {

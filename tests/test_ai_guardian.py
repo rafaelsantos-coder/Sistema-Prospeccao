@@ -242,6 +242,50 @@ def test_guardian_allows_real_sign_url_in_waiting_signature():
 
 
 
+def test_guardian_keeps_authoritative_sdr_catalog_script():
+    review = GuardianReview(
+        verdict="REWRITE",
+        risk="MEDIUM",
+        confidence=0.8,
+        quality_score=60,
+        issue_codes=["POSSIBLE_REPEAT"],
+        rationale="Trocaria o menu por um único plano.",
+        reply_text=(
+            "Para usar só móvel, o plano com mais internet é o Sulmóvel 15GB "
+            "por R$ 69,80. Quer contratar esse plano agora?"
+        ),
+        suggested_buttons=["Sim, quero contratar", "Quero conhecer opções"],
+    )
+    context = _context([], role="SDR")
+    context["proposed_action"] = {
+        "proposed_state": "OFFERING",
+        "metadata": {"authoritative_sdr_script": True},
+    }
+    original = "No Sulmóvel temos planos nacionais com valores confirmados. Escolha uma opção para continuar:"
+    buttons = [
+        {"id": "mobile_2gb", "label": "2GB - R$ 33,90"},
+        {"id": "mobile_5gb", "label": "5GB - R$ 44,90"},
+        {"id": "mobile_mais", "label": "Mais planos"},
+    ]
+
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=context,
+        original_text=original,
+        original_buttons=buttons,
+    )
+
+    assert result.verdict == "APPROVE"
+    assert result.should_send is True
+    assert result.reply_text == original
+    assert [item["label"] for item in result.buttons] == [
+        "2GB - R$ 33,90",
+        "5GB - R$ 44,90",
+        "Mais planos",
+    ]
+
+
 def test_guardian_allows_authoritative_crm_playbook_recovery():
     review = GuardianReview(
         verdict="BLOCK",
