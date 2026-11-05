@@ -561,6 +561,110 @@ def test_pausar_ia_na_fila_para_respostas_e_followups_do_sdr(monkeypatch):
             db.close()
 
 
+def test_vendedor_ia_nao_insiste_com_quem_desistiu_nem_com_fila_pausada(monkeypatch):
+    from app.models import LeadQueuePreference
+    from app.services.ai_followups import _followup_allowed, schedule_followup
+
+    monkeypatch.setattr("app.services.ai_sdr.settings", replace(settings, ai_autonomous_enabled=True))
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            _sdr, queue, _human = _create_bound_digital_queue(db, "CLOSER-PAUSA")
+            closer = db.scalar(
+                select(AIAgentProfile).where(AIAgentProfile.slug == "sulia-vendedor-fechamento")
+            )
+            assert closer is not None
+            assert closer.role_type == "CLOSER"
+            lead = Lead(
+                business_name="Cliente Vendedor Desistiu",
+                contact_name="Cliente",
+                phone="5555988877577",
+                segment="Residencial",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_AI_CLOSER_PAUSE"))
+            db.commit()
+            conversation, message, _created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-CLOSER-PAUSE-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "Quero contratar o plano de 650 Mega."},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            state = db.scalar(
+                select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+            )
+            if state is None:
+                state = AIConversationState(conversation_id=conversation.id, agent_id=closer.id, state="CLOSING")
+                db.add(state)
+            state.state = "CLOSING"
+            state.agent_id = closer.id
+            db.flush()
+
+            followup = schedule_followup(
+                db,
+                agent_id=closer.id,
+                queue_id=queue.id,
+                conversation_id=conversation.id,
+                source_message_id=message.id,
+            )
+            assert followup is not None
+            assert _followup_allowed(db, followup) == (True, "")
+
+            # Fila pausada: o Vendedor IA também não puxa conversa.
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
+            binding.active = False
+            db.flush()
+            assert _followup_allowed(db, followup) == (False, "FILA_SEM_IA")
+            binding.active = True
+            db.flush()
+
+            # Cliente desistiu: nada de "Qual seu CPF?" depois disso.
+            _conversation, declined, _created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-CLOSER-PAUSE-2",
+                    "senderName": "Cliente",
+                    "text": {"message": "Não preciso mais"},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.flush()
+            assert _followup_allowed(db, followup) == (False, "CLIENTE_DESISTIU")
+            assert (
+                schedule_followup(
+                    db,
+                    agent_id=closer.id,
+                    queue_id=queue.id,
+                    conversation_id=conversation.id,
+                    source_message_id=declined.id,
+                )
+                is None
+            )
+        finally:
+            db.rollback()
+            db.close()
+
+
 def test_seed_binds_sulia_to_all_active_digital_queues():
     with TestClient(app):
         db = SessionLocal()
