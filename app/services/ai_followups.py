@@ -151,6 +151,8 @@ def schedule_followup(
     )
     if closing and closing.step in {"ESCALATED", "COMPLETED"}:
         return None
+    if agent and agent.role_type == "CLOSER" and _customer_declined(db, conversation_id):
+        return None
 
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
     delay, theme = followup_spec(step)
@@ -373,6 +375,33 @@ def _latest_inbound_id(db: Session, conversation_id: int) -> int | None:
     )
 
 
+# Desistência explícita do cliente. Só frases inequívocas: "não" sozinho pode ser
+# resposta a uma pergunta de sim/não da contratação.
+_CUSTOMER_STOP_RE = re.compile(
+    r"\b("
+    r"nao preciso mais|nao quero mais|nao vou querer|nao vou mais|"
+    r"nao (tenho|tem) (mais )?interesse|sem interesse|"
+    r"desisti|desisto|desistir|"
+    r"cancel(a|ar|em|ei|e|ado|ada)|"
+    r"par(a|e|em) de (mandar|enviar|me)|nao me (mande|manda|envie|chame)"
+    r")\b"
+)
+
+
+def _customer_declined(db: Session, conversation_id: int) -> bool:
+    """A última mensagem do cliente é uma desistência explícita."""
+    body = db.scalar(
+        select(Message.body)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "INBOUND",
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    return bool(_CUSTOMER_STOP_RE.search(_normalize_followup_text(body)))
+
+
 def _queue_ai_paused(db: Session, conversation_id: int) -> bool:
     """A fila da conversa está sem IA ativa (o telefone de teste continua liberado)."""
     from app.services.ai_sdr import binding_for_conversation  # ai_sdr importa este módulo
@@ -413,10 +442,14 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
             or int(state.agent_id or 0) != int(job.agent_id)
         ):
             return False, "OWNER_SDR_AI"
-    # "Pausar IA" na fila vale também para os follow-ups do SDR. A venda que já
-    # está com o Vendedor IA segue até o fim, então os follow-ups do closer continuam.
-    if agent is not None and agent.role_type != "CLOSER" and _queue_ai_paused(db, conversation.id):
+    # "Pausar IA" na fila: a IA não puxa conversa (nem SDR nem Vendedor IA).
+    # O Vendedor IA ainda responde quem escrever e entrega contrato/assinatura.
+    if agent is not None and _queue_ai_paused(db, conversation.id):
         return False, "FILA_SEM_IA"
+    # Sem o Guardião bloqueando (modo sombra), o Vendedor IA mandava "Qual seu
+    # CPF?" para quem já tinha dito "Não preciso mais" (conversa 237).
+    if agent is not None and agent.role_type == "CLOSER" and _customer_declined(db, conversation.id):
+        return False, "CLIENTE_DESISTIU"
     closing = db.scalar(
         select(AIClosingState).where(
             AIClosingState.conversation_id == conversation.id
