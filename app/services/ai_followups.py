@@ -151,7 +151,7 @@ def schedule_followup(
     )
     if closing and closing.step in {"ESCALATED", "COMPLETED"}:
         return None
-    if agent and agent.role_type == "CLOSER" and _customer_declined(db, conversation_id):
+    if agent and _customer_declined(db, conversation_id):
         return None
     # Fila pausada: o backfill recriava a cadência a cada ciclo só para ser cancelada.
     if agent and _queue_ai_paused(db, conversation_id):
@@ -384,11 +384,17 @@ _CUSTOMER_STOP_RE = re.compile(
     r"\b("
     r"nao preciso mais|nao quero mais|nao vou querer|nao vou mais|"
     r"nao (tenho|tem) (mais )?interesse|sem interesse|"
-    r"desisti|desisto|desistir|"
+    r"nao quero (nada|internet|esse plano|o plano|contratar)|"
+    r"desisti|desisto|desistir|dispenso|"
     r"cancel(a|ar|em|ei|e|ado|ada)|"
-    r"par(a|e|em) de (mandar|enviar|me)|nao me (mande|manda|envie|chame)"
+    r"par(a|e|em) de (mandar|enviar|me)|nao me (mande|manda|envie|chame|contate)|"
+    r"nao entre em contato|me remova|remover meu numero|sair da lista|descadastrar"
     r")\b"
 )
+# Mensagem inteira (não trecho): "não, obrigado" depois de uma oferta.
+_CUSTOMER_STOP_EXACT = {"nao obrigado", "nao obrigada", "prefiro nao", "nao quero"}
+# Intervalo mínimo entre uma mensagem nossa e um follow-up (pedido do comercial).
+FOLLOWUP_MIN_GAP = timedelta(hours=2)
 
 
 def _customer_declined(db: Session, conversation_id: int) -> bool:
@@ -402,7 +408,25 @@ def _customer_declined(db: Session, conversation_id: int) -> bool:
         .order_by(Message.id.desc())
         .limit(1)
     )
-    return bool(_CUSTOMER_STOP_RE.search(_normalize_followup_text(body)))
+    text = _normalize_followup_text(body)
+    return text in _CUSTOMER_STOP_EXACT or bool(_CUSTOMER_STOP_RE.search(text))
+
+
+def _followup_spacing_hold(db: Session, conversation_id: int, now: datetime) -> datetime | None:
+    """Nada de rajada: o follow-up só sai 2 h depois da última mensagem nossa."""
+    last_outbound_at = db.scalar(
+        select(Message.created_at)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "OUTBOUND",
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    last = utc_naive(last_outbound_at)
+    if not last or now - last >= FOLLOWUP_MIN_GAP:
+        return None
+    return business_window_start(last + FOLLOWUP_MIN_GAP)
 
 
 def _queue_ai_paused(db: Session, conversation_id: int) -> bool:
@@ -449,9 +473,9 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
     # O Vendedor IA ainda responde quem escrever e entrega contrato/assinatura.
     if agent is not None and _queue_ai_paused(db, conversation.id):
         return False, "FILA_SEM_IA"
-    # Sem o Guardião bloqueando (modo sombra), o Vendedor IA mandava "Qual seu
-    # CPF?" para quem já tinha dito "Não preciso mais" (conversa 237).
-    if agent is not None and agent.role_type == "CLOSER" and _customer_declined(db, conversation.id):
+    # Cliente disse que não tem interesse: a resposta da IA a essa mensagem já foi
+    # a única tentativa; follow-up não sai (conversa 237: "Qual seu CPF?" 3 vezes).
+    if agent is not None and _customer_declined(db, conversation.id):
         return False, "CLIENTE_DESISTIU"
     closing = db.scalar(
         select(AIClosingState).where(
@@ -609,6 +633,14 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         job.locked_at = None
         job.attempts = max(0, int(job.attempts or 0) - 1)
         return "outside_business_hours"
+
+    hold_until = _followup_spacing_hold(db, job.conversation_id, now)
+    if hold_until and hold_until > now:
+        job.status = "PENDENTE"
+        job.due_at = hold_until
+        job.locked_at = None
+        job.attempts = max(0, int(job.attempts or 0) - 1)
+        return "spacing"
 
     if not settings.ai_autonomous_enabled:
         job.status = "PENDENTE"

@@ -40,6 +40,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _apply_prospecting_entry_policy,
     _apply_router_information_policy,
     _apply_secondary_decline_reengagement_policy,
+    _apply_repeated_rejection_policy,
     _apply_stagnation_strategy,
     _apply_unavailable_plan_policy,
     _asks_existing_customer,
@@ -1034,6 +1035,7 @@ SDR_REWRITE_POLICIES = (
     ("secondary_decline", _apply_secondary_decline_reengagement_policy),
     ("offer_rejection", _apply_offer_rejection_diagnostic_policy),
     ("prospecting_entry", _apply_prospecting_entry_policy),
+    ("repeated_rejection", _apply_repeated_rejection_policy),
 )
 
 
