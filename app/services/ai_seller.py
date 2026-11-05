@@ -4689,6 +4689,23 @@ def _resolve_plan_value_field(
     )
 
 
+def _sdr_ia_auto_advance(state: AIClosingState, collected: dict[str, Any], reply: str) -> str:
+    """No funil SDR IA as etapas de faturamento não são perguntadas ao cliente.
+
+    Em 05/11 (conversa 631) a IA disse "Vou seguir apenas com os dados
+    necessários..." e ficou esperando o cliente escrever algo. A venda segue
+    sozinha pelo poller (validação do CRM → resumo para aceite).
+    """
+    if not _sdr_ia_mode(collected):
+        return reply
+    if state.step not in SDR_IA_FORBIDDEN_STEPS and state.step != "BILLING":
+        return reply
+    state.step = "WAITING_CRM_READY"
+    if not reply or reply.startswith("Vou seguir apenas com os dados necessários"):
+        return _prompt_for_step(state, collected)
+    return reply
+
+
 def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     conversation = db.get(Conversation, job.conversation_id)
     message = db.get(Message, job.message_id)
@@ -5619,6 +5636,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             reply = "Vou conferir o andamento da sua contratação."
             state.step = "WAITING_CONTRACT"
 
+        reply = _sdr_ia_auto_advance(state, collected, reply)
         _save_collected(state, collected)
         if reply:
             _send_step_message(
