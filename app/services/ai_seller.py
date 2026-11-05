@@ -2397,6 +2397,19 @@ def _contract_pending_message(exc: CRMIntegrationError) -> str:
     return _norm(" ".join(parts))
 
 
+def _infer_mobile_contract_type(collected: dict[str, Any]) -> str | None:
+    """Recupera tipo de contratação a partir do que já foi coletado na conversa."""
+    values = _mobile_values(collected)
+    current = _crm_form_value("tipo_contratacao", values.get("tipo_contratacao"))
+    if current in {"Número novo", "Número Portabilidade", "M2M"}:
+        return str(current)
+    if values.get("numero_portado") or values.get("port_titular"):
+        return "Número Portabilidade"
+    if values.get("numero_novo"):
+        return "Número novo"
+    return None
+
+
 def _recover_contract_pending_field(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -2405,9 +2418,10 @@ def _recover_contract_pending_field(
 ) -> str | None:
     """Converte pendência do contract/generate em etapa conversacional segura.
 
-    O CRM é a fonte de verdade. Quando o gerador de contrato rejeita um campo
-    que o playbook havia aceitado, não insistimos em PATCH/retry automático:
-    pedimos novamente a escolha usando as opções publicadas pelo próprio CRM.
+    O CRM é a fonte de verdade. Quando o gerador de contrato rejeita
+    tipocontratacao, primeiro tentamos regravar o valor já conhecido
+    (Portabilidade/Número novo) sem rebobinar a conversa. Só perguntamos de
+    novo se não houver evidência local confiável.
     """
     pending = _contract_pending_message(exc)
     if exc.status_code != 400:
@@ -2418,6 +2432,44 @@ def _recover_contract_pending_field(
 
     if not state.opportunity_id:
         return None
+
+    inferred = _infer_mobile_contract_type(collected)
+    patch_key = "productInfo.categoryForm.values.tipo_contratacao"
+    already_synced = (
+        collected.get("_contract_recovery_reason") == "mobile_contract_type_synced"
+    )
+    if inferred and not already_synced:
+        values = _mobile_values(collected)
+        values["tipo_contratacao"] = inferred
+        _store_category_values(collected, values, mobile=True)
+        try:
+            client.update_playbook_field(
+                state.opportunity_id,
+                patch_key=patch_key,
+                value=inferred,
+            )
+            _persist_mobile_category_form(client, state, collected)
+        except CRMIntegrationError as sync_exc:
+            LOG.warning(
+                "seller_contract_pending_tipo_sync_failed opportunity=%s error=%s",
+                state.opportunity_id,
+                str(sync_exc)[:200],
+            )
+        else:
+            collected["_contract_generation_requested"] = False
+            collected.pop("_contract_generation_response", None)
+            collected["_contract_generation_allowed"] = True
+            collected["_contract_recovery_reason"] = "mobile_contract_type_synced"
+            collected["_playbook_code"] = "cf_tipo_contratacao"
+            collected["_playbook_patch_key"] = patch_key
+            LOG.warning(
+                "seller_contract_pending_tipo_resynced opportunity=%s tipo=%s",
+                state.opportunity_id,
+                inferred,
+            )
+            # Retorna None para o chamador tentar gerar o contrato de novo com o
+            # campo já sincronizado, em vez de reperguntar Portabilidade.
+            return None
 
     result = client.playbook(
         state.opportunity_id,
@@ -2447,7 +2499,7 @@ def _recover_contract_pending_field(
     collected["_playbook_patch_key"] = (
         item.patch_key
         if item and item.patch_key
-        else "productInfo.categoryForm.values.tipo_contratacao"
+        else patch_key
     )
     collected["_playbook_question"] = question
     collected["_playbook_options"] = [
@@ -2455,10 +2507,8 @@ def _recover_contract_pending_field(
         for option in (item.options if item else [])
     ]
 
-    values = _mobile_values(collected)
-    values.pop("tipo_contratacao", None)
-    _store_category_values(collected, values, mobile=True)
-
+    # Não apagar evidência local de portabilidade/número novo — só pedimos a
+    # confirmação do tipo quando realmente não há valor para sincronizar.
     state.step = "MOBILE_CONTRACT_TYPE"
     state.contract_status = "aguardando_tipo_contratacao"
 
@@ -2519,10 +2569,45 @@ def _prepare_contract_before_win(
             )
             if recovered is not None:
                 return recovered
-            if exc.status_code not in {404, 405, 501}:
+            # Recovery sincronizou tipocontratacao no CRM: tenta gerar de novo
+            # uma única vez sem reperguntar Portabilidade ao cliente.
+            if collected.get("_contract_recovery_reason") == "mobile_contract_type_synced":
+                try:
+                    generated = client.generate_agent_contract(
+                        state.opportunity_id,
+                        send_signature=True,
+                        require_ready_for_win=True,
+                    )
+                except CRMIntegrationError as retry_exc:
+                    recovered_retry = _recover_contract_pending_field(
+                        client,
+                        state,
+                        collected,
+                        retry_exc,
+                    )
+                    if recovered_retry is not None:
+                        return recovered_retry
+                    if retry_exc.status_code not in {404, 405, 501}:
+                        raise
+                    generated = {}
+                    collected["_contract_generation_endpoint_unavailable"] = True
+                else:
+                    collected["_contract_generation_requested"] = True
+                    collected["_contract_generation_response"] = {
+                        key: generated.get(key)
+                        for key in (
+                            "protocol",
+                            "templateId",
+                            "status",
+                            "signatureReused",
+                        )
+                        if generated.get(key) not in (None, "")
+                    }
+            elif exc.status_code not in {404, 405, 501}:
                 raise
-            generated = {}
-            collected["_contract_generation_endpoint_unavailable"] = True
+            else:
+                generated = {}
+                collected["_contract_generation_endpoint_unavailable"] = True
         else:
             collected["_contract_generation_requested"] = True
             collected["_contract_generation_response"] = {
