@@ -25,6 +25,9 @@ _VALID_UNTIL = datetime(2026, 12, 1, 3, 0, 0, tzinfo=timezone.utc) - timedelta(s
 
 OFFER_QUESTION = "Quer conhecer nossa promoção Black da Sulnet?"
 OFFER_MARK = "promocao black da sulnet"
+# Para quem já é cliente (pedido do comercial, 05/11).
+CUSTOMER_OFFER_QUESTION = "Você já está sabendo da Black da Sulnet, que beneficia os nossos clientes?"
+CUSTOMER_OFFER_MARK = "black da sulnet que beneficia"
 OPTIONS_MARK = "black que pula o fim de ano"
 
 OPTIONS_TEXT = (
@@ -52,7 +55,8 @@ def _fold(value: str | None) -> str:
 
 
 def is_offer_question(previous_outbound: str | None) -> bool:
-    return OFFER_MARK in _fold(previous_outbound)
+    folded = _fold(previous_outbound)
+    return OFFER_MARK in folded or CUSTOMER_OFFER_MARK in folded
 
 
 def is_options_question(previous_outbound: str | None) -> bool:
@@ -62,13 +66,13 @@ def is_options_question(previous_outbound: str | None) -> bool:
 def was_offered(history: list[dict] | None) -> bool:
     return any(
         str(row.get("direction") or "").upper() == "OUTBOUND"
-        and (OFFER_MARK in _fold(row.get("body")) or OPTIONS_MARK in _fold(row.get("body")))
+        and (is_offer_question(row.get("body")) or OPTIONS_MARK in _fold(row.get("body")))
         for row in history or []
     )
 
 
 _YES = {"sim", "quero", "quero sim", "claro", "pode", "pode ser", "pode sim", "bora", "ok", "s", "black",
-        "quero conhecer", "quero conhecer a promocao"}
+        "quero conhecer", "quero conhecer a promocao", "quero saber", "ja sei", "ja estou sabendo"}
 _NO = {"nao", "n", "agora nao", "nao quero", "nao obrigado", "nao precisa", "depois"}
 
 
