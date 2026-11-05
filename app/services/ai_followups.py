@@ -153,6 +153,9 @@ def schedule_followup(
         return None
     if agent and agent.role_type == "CLOSER" and _customer_declined(db, conversation_id):
         return None
+    # Fila pausada: o backfill recriava a cadência a cada ciclo só para ser cancelada.
+    if agent and _queue_ai_paused(db, conversation_id):
+        return None
 
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
     delay, theme = followup_spec(step)

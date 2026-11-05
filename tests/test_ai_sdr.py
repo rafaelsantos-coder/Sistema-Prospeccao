@@ -543,6 +543,17 @@ def test_pausar_ia_na_fila_para_respostas_e_followups_do_sdr(monkeypatch):
             db.flush()
 
             assert _followup_allowed(db, followup) == (False, "FILA_SEM_IA")
+            # O backfill não recria a cadência enquanto a fila estiver pausada.
+            assert (
+                schedule_followup(
+                    db,
+                    agent_id=agent.id,
+                    queue_id=queue.id,
+                    conversation_id=conversation.id,
+                    source_message_id=message.id,
+                )
+                is None
+            )
             calls = []
             monkeypatch.setattr(
                 "app.services.ai_sdr.run_ai_decision",
