@@ -1889,6 +1889,23 @@ def _is_firm_rejection(text: str | None) -> bool:
     )
 
 
+_BARE_NEGATIVE_ANSWERS = {"nao", "n", "agora nao", "nao valeu"}
+_INTEREST_CUES = (
+    "quero",
+    "interesse",
+    "plano",
+    "preco",
+    "valor",
+    "contratar",
+    "como funciona",
+    "quanto",
+    "mega",
+    "movel",
+    "internet",
+)
+_OFFER_CUES = ("quer conhecer", "promocao", "black", "tem interesse", "quer contratar", "gostaria de conhecer")
+
+
 def _apply_repeated_rejection_policy(
     decision: AIDecision,
     context: dict,
@@ -1896,8 +1913,16 @@ def _apply_repeated_rejection_policy(
     """Cliente sem interesse: a IA tenta uma vez; se ele recusar de novo, encerra.
 
     Pedido do comercial (05/11): respeitar o cliente depois de uma tentativa.
+    Um "não" seco a uma oferta conta como recusa (conversa 651: "Não obrigada",
+    depois "Não" para a Black).
     """
-    if not _is_firm_rejection(context.get("latest_customer_message")):
+    latest = context.get("latest_customer_message")
+    folded_latest = _fold_sales_text(latest)
+    offer_before = _fold_sales_text(_last_outbound_text(context))
+    soft_decline = folded_latest in _BARE_NEGATIVE_ANSWERS and any(
+        cue in offer_before for cue in _OFFER_CUES
+    )
+    if not (_is_firm_rejection(latest) or soft_decline):
         return decision
     rows = list(context.get("history") or [])
     # A mensagem atual (e a rajada dela) fica de fora: procuramos uma recusa anterior
@@ -1909,10 +1934,13 @@ def _apply_repeated_rejection_policy(
     for row in rows:
         direction = str(row.get("direction") or "").upper()
         if direction == "INBOUND":
+            body = _fold_sales_text(row.get("body"))
             if _is_firm_rejection(row.get("body")):
                 rejected_before, attempted_after = True, False
-            else:
+            elif any(cue in body for cue in _INTEREST_CUES):
+                # Voltou a se interessar: a recusa antiga não vale mais.
                 rejected_before, attempted_after = False, False
+            # "Sim" para "já é cliente?" e respostas curtas não mudam nada.
         elif direction == "OUTBOUND" and rejected_before:
             attempted_after = True
     if not (rejected_before and attempted_after):
