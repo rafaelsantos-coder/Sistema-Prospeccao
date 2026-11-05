@@ -4536,6 +4536,49 @@ def _finish_run(
         ai_state.updated_at = utcnow()
 
 
+def _resolve_plan_value_field(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    text: str,
+) -> str:
+    """Valor/produto do plano vêm do plano escolhido, nunca do texto livre.
+
+    Em 05/11 (conversa 546) o CRM perguntou "Confirme o valor mensal do plano",
+    o cliente respondeu "15GB" e o PATCH de monthlyValue="15GB" devolveu 500
+    em ciclo. Se o cliente citar outro plano móvel, a escolha é trocada.
+    """
+    choice = black_campaign.mobile_choice_from_text(text) if _is_mobile_plan(state, collected) else None
+    if choice and choice["name"] != state.plan_label:
+        state.plan_label = choice["name"]
+        state.offer_price = _money(choice["price"])
+        for key in ("planId", "categoryId", "catalogPlanName", "contractProductName", "_catalog_plan_synced"):
+            collected.pop(key, None)
+    _sync_plan_context(client, state, collected)
+    payload: dict[str, Any] = {}
+    if state.offer_price is not None:
+        payload["monthlyValue"] = _money_for_api(state.offer_price)
+    if collected.get("planId"):
+        payload["planId"] = collected["planId"]
+        payload["planLabel"] = collected.get("catalogPlanName") or state.plan_label
+    if payload and state.opportunity_id:
+        client.update_opportunity(state.opportunity_id, payload)
+    for key in (
+        "_playbook_dynamic_code",
+        "_playbook_dynamic_patch_key",
+        "_playbook_dynamic_label",
+        "_playbook_dynamic_options",
+    ):
+        collected.pop(key, None)
+    _save_collected(state, collected)
+    return _advance_with_playbook(
+        client,
+        state,
+        collected,
+        fallback_step="WAITING_CRM_READY",
+    )
+
+
 def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     conversation = db.get(Conversation, job.conversation_id)
     message = db.get(Message, job.message_id)
@@ -5080,6 +5123,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     "Já registrei suas respostas. Para você não precisar repetir nada, "
                     "um consultor da Sulnet vai concluir este último registro com você por aqui."
                 )
+
+        elif state.step == "PLAYBOOK_DYNAMIC_FIELD" and _playbook_code_key(
+            str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
+        ) in {"monthlyvalue", "productid", "planid"}:
+            reply = _resolve_plan_value_field(client, state, collected, text)
 
         elif state.step == "PLAYBOOK_DYNAMIC_FIELD":
             value = _resolve_dynamic_playbook_value(text, collected)

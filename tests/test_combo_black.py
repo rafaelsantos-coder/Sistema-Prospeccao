@@ -223,3 +223,22 @@ def test_tag_inexistente_no_crm_nao_trava():
             return {"tags": []}
 
     assert _Client().add_opportunity_tag(1, "Promoção Black 2027") is False
+
+
+def test_valor_mensal_vem_do_plano_e_cliente_pode_trocar_o_plano(monkeypatch):
+    calls = []
+
+    class _Client:
+        def update_opportunity(self, opportunity_id, payload):
+            calls.append((opportunity_id, payload))
+            return {}
+
+    monkeypatch.setattr(ai_seller, "_sync_plan_context", lambda client, state, collected: collected.update(planId=7, catalogPlanName="Sulmóvel 15GB CRM"))
+    monkeypatch.setattr(ai_seller, "_advance_with_playbook", lambda client, state, collected, fallback_step: "próxima pergunta")
+    state = _state(step="PLAYBOOK_DYNAMIC_FIELD", plan_label="Sulmóvel 2GB", offer_price=Decimal("33.90"), opportunity_id=14373)
+    collected = {"_playbook_dynamic_code": "monthlyValue", "categoryName": "Telefonia Móvel"}
+    reply = ai_seller._resolve_plan_value_field(_Client(), state, collected, "15GB")
+    assert reply == "próxima pergunta"
+    assert state.plan_label == "Sulmóvel 15GB" and state.offer_price == Decimal("69.80")
+    assert calls == [(14373, {"monthlyValue": 69.8, "planId": 7, "planLabel": "Sulmóvel 15GB CRM"})]
+    assert "_playbook_dynamic_code" not in collected
