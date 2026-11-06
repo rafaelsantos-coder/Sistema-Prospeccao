@@ -285,3 +285,41 @@ def test_tool_results_are_kept_as_evidence_for_the_guardian(monkeypatch):
 
     assert decision._timing["tool_calls"] == ["calcular_multa"]
     assert decision._timing["tool_facts"] == [{"tool": "calcular_multa", "result": '{"penalty": 479.95}'}]
+
+
+def _two_no_context(latest="Não"):
+    return {
+        "latest_customer_message": latest,
+        "history": [
+            {"direction": "OUTBOUND", "body": "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"},
+            {"direction": "INBOUND", "body": "Não"},
+            {"direction": "OUTBOUND", "body": "Quer conhecer nossa promoção Black da Sulnet?"},
+            {"direction": "INBOUND", "body": latest},
+        ],
+    }
+
+
+def test_two_bare_no_answers_close_the_conversation():
+    # Conversa de 06/11 (Loine): "Não" duas vezes e a IA seguiu perguntando.
+    from app.services import ai_sdr_policies
+
+    decision = _decision("Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?")
+    result = ai_sdr_policies._apply_repeated_rejection_policy(decision, _two_no_context())
+    assert result.reply_text == ai_sdr_policies.REJECTION_CLOSE_MESSAGE
+    assert result.intent == "NOT_INTERESTED"
+    assert result.followup_needed is False
+
+
+def test_single_no_does_not_close_yet():
+    from app.services import ai_sdr_policies
+
+    context = {
+        "latest_customer_message": "Não",
+        "history": [
+            {"direction": "OUTBOUND", "body": "Quer conhecer nossa promoção Black da Sulnet?"},
+            {"direction": "INBOUND", "body": "Não"},
+        ],
+    }
+    decision = _decision("Tudo bem! Quer ver a Telefonia Móvel?")
+    result = ai_sdr_policies._apply_repeated_rejection_policy(decision, context)
+    assert result.reply_text == "Tudo bem! Quer ver a Telefonia Móvel?"

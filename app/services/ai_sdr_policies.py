@@ -1962,7 +1962,9 @@ def _apply_repeated_rejection_policy(
         direction = str(row.get("direction") or "").upper()
         if direction == "INBOUND":
             body = _fold_sales_text(row.get("body"))
-            if _is_firm_rejection(row.get("body")):
+            # "Não" seco a uma pergunta ou oferta também é recusa (10/11: "Não" para
+            # "já possui serviço?" e depois "Não" para a Black seguiu a venda).
+            if _is_firm_rejection(row.get("body")) or body in _BARE_NEGATIVE_ANSWERS:
                 rejected_before, attempted_after = True, False
             elif any(cue in body for cue in _INTEREST_CUES):
                 # Voltou a se interessar: a recusa antiga não vale mais.
