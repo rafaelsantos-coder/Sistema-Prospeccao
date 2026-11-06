@@ -3691,6 +3691,13 @@ def _create_crm_if_ready(
         return
 
     client = SulnetCRMClient.from_settings()
+    if conversation.crm_opportunity_id:
+        # A lead já foi aberta na primeira mensagem: reaproveita e atualiza o nome real.
+        state.opportunity_id = int(conversation.crm_opportunity_id)
+        client.update_opportunity(state.opportunity_id, {"clientName": name, "clientPhone": phone})
+        if black_campaign.has_marker(state.handoff_summary):
+            _apply_black_tag(client, state)
+        return
     payload: dict[str, Any] = {
         "externalId": state.external_id,
         "conversationId": conversation.id,
@@ -3724,6 +3731,7 @@ def _create_crm_if_ready(
     state.protocol = str(result.get("protocol") or "")
     if not state.opportunity_id:
         raise CRMIntegrationError("CRM não retornou o identificador da oportunidade.")
+    conversation.crm_opportunity_id = state.opportunity_id
     if black_campaign.has_marker(state.handoff_summary):
         _apply_black_tag(client, state)
 

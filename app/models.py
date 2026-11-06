@@ -242,6 +242,8 @@ class Conversation(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
     lead_id: Mapped[int | None] = mapped_column(ForeignKey("leads.id"), nullable=True, index=True)
+    # Lead aberta no CRM assim que o cliente escreve (nome do WhatsApp + telefone).
+    crm_opportunity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     assigned_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True, index=True)
     team: Mapped[str] = mapped_column(String(30), default="B2B", index=True)

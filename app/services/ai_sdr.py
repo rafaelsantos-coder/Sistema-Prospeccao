@@ -1767,6 +1767,17 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         job.error = "Agente inexistente ou inativo."
         return "skipped"
 
+    # Toda conversa iniciada pelo cliente vira lead no CRM (nome + telefone),
+    # antes de qualquer resposta. Falha do CRM não bloqueia a conversa.
+    job_conversation = db.get(Conversation, job.conversation_id)
+    if job_conversation and not job_conversation.crm_opportunity_id:
+        try:
+            from app.services.crm_lead import ensure_crm_lead  # noqa: PLC0415
+
+            ensure_crm_lead(db, job_conversation)
+        except Exception:
+            LOG.exception("crm_lead_unexpected conversation=%s", job.conversation_id)
+
     current_state = db.scalar(
         select(AIConversationState).where(
             AIConversationState.conversation_id == job.conversation_id
