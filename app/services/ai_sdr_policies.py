@@ -1122,11 +1122,34 @@ _EXISTING_CUSTOMER_SERVICE_CUES = (
 )
 
 
+# Relato de problema no serviço: quem diz isso quase sempre já tem a internet,
+# então não se vende plano nessa hora (conversa Rafael Trennepohl, 06/11: "Estou com
+# problema na internet" e a IA ofereceu telefonia móvel).
+_SERVICE_PROBLEM_CUES = (
+    "problema",
+    "problemas",
+    "sem sinal",
+    "caiu",
+    "caindo",
+    "lenta",
+    "lento",
+    "nao funciona",
+    "nao esta funcionando",
+    "nao pega",
+    "travando",
+    "sem conexao",
+)
+
+
 def _existing_customer_service_requested(context: dict) -> bool:
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    if not latest:
+        return False
+    if any(cue in latest for cue in _SERVICE_PROBLEM_CUES):
+        return True
     if _existing_customer_from_context(context) != "CLIENTE":
         return False
-    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
-    return bool(latest) and any(cue in latest for cue in _EXISTING_CUSTOMER_SERVICE_CUES)
+    return any(cue in latest for cue in _EXISTING_CUSTOMER_SERVICE_CUES)
 
 
 def _apply_existing_customer_plan_change_policy(
