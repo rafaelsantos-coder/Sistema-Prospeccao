@@ -55,6 +55,7 @@ from app.services.ai_sdr import (
     build_ai_context,
     claim_ai_job,
     process_ai_job,
+    sdr_debounce_seconds_for_message,
 )
 from app.services.conversation_engine import store_received_payload
 from app.services.queue_routing import queue_for_conversation
@@ -3867,3 +3868,27 @@ def test_pergunta_livre_na_black_nao_repete_as_opcoes(monkeypatch):
     original = base.reply_text
     result = _apply_prospecting_entry_policy(base, other)
     assert result.reply_text == original  # o modelo responde a dúvida
+
+
+def test_sdr_debounce_is_short_for_button_like_replies(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        "app.services.ai_sdr.settings",
+        replace(
+            settings,
+            ai_sdr_debounce_seconds=6,
+            ai_sdr_debounce_short_seconds=1,
+        ),
+    )
+    assert sdr_debounce_seconds_for_message("Sim") == 1
+    assert sdr_debounce_seconds_for_message("Ok") == 1
+    assert sdr_debounce_seconds_for_message("Santa Rosa") == 1
+    assert sdr_debounce_seconds_for_message(
+        "Me desculpe vc pegou o número errado"
+    ) == 1
+    assert sdr_debounce_seconds_for_message(
+        "Queria entender melhor o plano de 500 mega para a minha empresa "
+        "porque hoje pago caro e a internet cai toda hora no escritório."
+    ) == 6
+    assert sdr_debounce_seconds_for_message("linha1\nlinha2") == 6

@@ -636,3 +636,65 @@ def test_guardian_shadow_disabled_skips_review(monkeypatch):
     assert result.verdict == "APPROVE"
     assert called["model"] is False
     assert "desativado" in result.rationale.casefold()
+
+
+def test_guardian_skips_model_for_authoritative_sdr_script(monkeypatch):
+    from dataclasses import replace
+
+    from app.config import settings
+    from app.services import ai_guardian
+
+    called = {"model": False}
+
+    monkeypatch.setattr(
+        ai_guardian,
+        "settings",
+        replace(
+            settings,
+            ai_supervisor_guardian_enabled=True,
+            ai_supervisor_guardian_shadow_enabled=False,
+            openai_api_key="sk-test",
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "build_guardian_context",
+        lambda *args, **kwargs: {
+            "conversation_id": 42,
+            "agent": {"role": "SDR"},
+            "history": [],
+            "deterministic_findings": [],
+            "proposed": {
+                "reply_text": "Escolha um plano Sulmóvel:",
+                "buttons": [{"id": "1", "label": "15GB"}],
+                "metadata": {"authoritative_sdr_script": True},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "_run_guardian_model",
+        lambda _context: called.__setitem__("model", True) or GuardianReview(),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "write_audit",
+        lambda *args, **kwargs: None,
+    )
+
+    agent = SimpleNamespace(id=7, user=None, role_type="SDR")
+    conversation = SimpleNamespace(id=42)
+    result = ai_guardian.guard_outbound_message(
+        None,
+        agent=agent,
+        conversation=conversation,
+        reply_text="Escolha um plano Sulmóvel:",
+        buttons=[{"id": "1", "label": "15GB"}],
+        source="SDR_DECISION",
+        metadata={"authoritative_sdr_script": True},
+    )
+
+    assert called["model"] is False
+    assert result.should_send is True
+    assert result.verdict == "APPROVE"
+    assert "autoritativo" in result.rationale.casefold()
