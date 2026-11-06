@@ -41,6 +41,7 @@ from app.services.ai_sdr import (
     _confirmed_customer_type_from_lead,
     _confirmed_existing_customer_from_lead,
     _confirmed_facts_from_history,
+    _existing_customer_from_text,
     _explicit_purchase_commitment,
     _is_company_context,
     _journey_integrity_issues,
@@ -2491,6 +2492,44 @@ def test_first_prospecting_question_is_existing_customer_before_any_offer():
     assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
 
 
+def test_volunteered_assinante_is_read_before_asking_existing_customer(monkeypatch):
+    """Bug 06/11: 'Já sou assinante. Obrigado.' não pode virar 'você já é cliente?'."""
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Já sou assinante. Obrigado.",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {"direction": "INBOUND", "body": "Já sou assinante. Obrigado."},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "CLIENTE"
+    assert "já é cliente Sulnet" not in (result.reply_text or "")
+    assert "Telefonia Móvel" in result.reply_text
+    assert "outro endereço" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Telefonia Móvel",
+        "Nova conexão",
+        "Upgrade ou suporte",
+    ]
+
+
+def test_existing_customer_from_text_recognizes_assinante_variants():
+    assert _existing_customer_from_text("Já sou assinante. Obrigado.") == "CLIENTE"
+    assert _existing_customer_from_text("Sou assinante da Sulnet") == "CLIENTE"
+    assert _existing_customer_from_text("Já sou cliente, valeu") == "CLIENTE"
+    assert _existing_customer_from_text("Não sou assinante") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Não sou cliente, quero conhecer") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Sou cliente da Vivo hoje") == ""
+    assert _existing_customer_from_text("Já sou assinante da Claro") == ""
+
+
 def test_existing_customer_confirmation_routes_to_mobile_or_new_connection(monkeypatch):
     monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
     decision = _base_prospecting_entry_decision()
@@ -3877,9 +3916,9 @@ def test_ia_assume_cliente_que_o_vendedor_online_nao_respondeu_em_10_minutos(mon
             db.close()
 
 
-def test_nao_seco_para_a_black_depois_de_nao_obrigada_encerra_e_sem_followup():
+def test_nao_seco_para_a_black_depois_de_nao_obrigada_confirma_parada():
     from app.services import ai_followups
-    from app.services.ai_sdr_policies import REJECTION_CLOSE_MESSAGE, _apply_repeated_rejection_policy
+    from app.services.ai_sdr_policies import STOP_CONFIRM_MESSAGE, _apply_repeated_rejection_policy
 
     history = [
         {"direction": "OUTBOUND", "body": "Oi! A Sulnet tem novidades para você."},
@@ -3892,7 +3931,8 @@ def test_nao_seco_para_a_black_depois_de_nao_obrigada_encerra_e_sem_followup():
     decision = _apply_repeated_rejection_policy(
         _rejection_decision(), {"latest_customer_message": "Não", "history": history}
     )
-    assert decision.reply_text == REJECTION_CLOSE_MESSAGE
+    # Após recusa prévia + tentativa, a 2ª recusa confirma se deve parar.
+    assert decision.reply_text == STOP_CONFIRM_MESSAGE
     assert decision.followup_needed is False
 
     class _Msg:

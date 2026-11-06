@@ -164,6 +164,35 @@ def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
     return facts
 
 
+# Provedores concorrentes: "sou cliente da Vivo" não confirma Sulnet.
+_COMPETITOR_PROVIDER_CUES = (
+    "vivo",
+    "claro",
+    "tim",
+    "oi",
+    "algar",
+    "desktop",
+    "vero",
+    "unifique",
+    "brisanet",
+    "net virtua",
+    "virtua",
+    "sky",
+    "starlink",
+)
+
+
+def _mentions_competitor_provider(folded: str) -> bool:
+    tokens = set(folded.split())
+    for cue in _COMPETITOR_PROVIDER_CUES:
+        if " " in cue:
+            if cue in folded:
+                return True
+        elif cue in tokens:
+            return True
+    return False
+
+
 def _existing_customer_from_text(
     value: str | None,
     *,
@@ -174,39 +203,69 @@ def _existing_customer_from_text(
     if not folded:
         return ""
 
-    negative_exact = {
+    # Negativos primeiro: "nao sou cliente" contém o trecho "sou cliente".
+    negative_cues = (
         "nao sou cliente",
         "ainda nao sou cliente",
         "nunca fui cliente",
-    }
-    negative_sulnet_cues = (
+        "nao sou assinante",
+        "ainda nao sou assinante",
         "nao sou cliente sulnet",
         "nao sou cliente da sulnet",
+        "nao sou assinante sulnet",
+        "nao sou assinante da sulnet",
         "nao tenho sulnet",
         "nao sou da sulnet",
     )
-    positive_exact = {
-        "sou cliente",
-        "ja sou cliente",
-    }
-    positive_sulnet_cues = (
-        "sou cliente sulnet",
-        "sou cliente da sulnet",
-        "ja sou cliente sulnet",
-        "ja sou cliente da sulnet",
+    # Âncora Sulnet: sempre confirma cliente.
+    sulnet_positive_cues = (
+        "assinante sulnet",
+        "assinante da sulnet",
+        "cliente sulnet",
+        "cliente da sulnet",
+        "sou da sulnet",
         "ja tenho sulnet",
         "tenho sulnet",
+        "ja tenho internet da sulnet",
+        "tenho internet da sulnet",
     )
-    if folded in negative_exact or any(cue in folded for cue in negative_sulnet_cues):
+    # Voluntário sem citar marca ("Já sou assinante. Obrigado.") — só conta
+    # se não mencionar concorrente (ex.: "sou cliente da Vivo").
+    generic_positive_cues = (
+        "ja sou assinante",
+        "sou assinante",
+        "ja sou cliente",
+        "sou cliente",
+    )
+    if any(cue in folded for cue in negative_cues):
         return "NAO_CLIENTE"
-    if folded in positive_exact or any(cue in folded for cue in positive_sulnet_cues):
+    if any(cue in folded for cue in sulnet_positive_cues):
+        return "CLIENTE"
+    if any(cue in folded for cue in generic_positive_cues):
+        if _mentions_competitor_provider(folded):
+            return ""
         return "CLIENTE"
 
     status_question = _asks_existing_customer(previous_outbound)
     if status_question:
-        if folded in {"sim", "sim sou", "sou", "ja sou", "sou sim"}:
+        if folded in {
+            "sim",
+            "sim sou",
+            "sou",
+            "ja sou",
+            "sou sim",
+            "sim sou assinante",
+            "sou assinante",
+            "ja sou assinante",
+        }:
             return "CLIENTE"
-        if folded in {"nao", "nao sou", "ainda nao", "nao ainda"}:
+        if folded in {
+            "nao",
+            "nao sou",
+            "ainda nao",
+            "nao ainda",
+            "nao sou assinante",
+        }:
             return "NAO_CLIENTE"
     return ""
 
