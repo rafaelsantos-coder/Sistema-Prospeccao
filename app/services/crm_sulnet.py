@@ -1533,6 +1533,91 @@ class SulnetCRMClient:
             "contract": {"status": "aguardando_backoffice"},
         }
 
+    def mark_lost(
+        self,
+        opportunity_id: int,
+        *,
+        reason_code: str,
+        reason_label: str,
+        notes: str = "",
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Marca oportunidade como perdida com motivo estruturado.
+
+        Prefere POST /api/capture/leads/{id}/loss quando o CRM publica a
+        capability `markLost`. No legado, PATCHa status/stage + lossReason.
+        """
+        request_key = str(idempotency_key or uuid.uuid4())
+        try:
+            uuid.UUID(request_key)
+        except (ValueError, AttributeError) as exc:
+            raise CRMIntegrationError(
+                "Idempotency-Key inválido para marcar perda.",
+                error_code="CRM_IDEMPOTENCY_KEY_INVALID",
+            ) from exc
+
+        idempotency_headers = {"Idempotency-Key": request_key}
+        loss_body = {
+            "reasonCode": reason_code,
+            "reason": reason_label,
+            "lossReason": reason_label,
+            "notes": (notes or "")[:1000],
+            "historyAction": (
+                f"SDR IA marcou como perdido: {reason_label} ({reason_code})."
+            ),
+        }
+        if self.supports("markLost"):
+            result = self._request(
+                "POST",
+                f"/api/capture/leads/{opportunity_id}/loss",
+                json_body=loss_body,
+                extra_headers=idempotency_headers,
+            )
+            return result if isinstance(result, dict) else {}
+
+        lost_stage_id = self._stage_id_by_name("PERDIDO", "PERDA", "LOST")
+        LOG.warning(
+            "crm_lost_legacy_generic opportunity_id=%s stage_id=%s reason=%s",
+            opportunity_id,
+            lost_stage_id or "not-published",
+            reason_code,
+        )
+        lost_payload: dict[str, Any] = {
+            "status": "lost",
+            "lossReason": reason_label,
+            "lossReasonCode": reason_code,
+            "historyAction": loss_body["historyAction"],
+        }
+        if notes:
+            lost_payload["notes"] = notes[:1000]
+        if lost_stage_id:
+            lost_payload["stageId"] = lost_stage_id
+
+        # Preferência: PATCH lead capture; senão oportunidade genérica.
+        if self.supports("leadUpdate"):
+            updated = self._request(
+                "PATCH",
+                f"/api/capture/leads/{opportunity_id}",
+                json_body=lost_payload,
+                extra_headers=idempotency_headers,
+            )
+        else:
+            updated = self._request(
+                "PATCH",
+                f"/api/opportunities/{opportunity_id}",
+                json_body=lost_payload,
+                extra_headers=idempotency_headers,
+            )
+        if not isinstance(updated, dict):
+            updated = {}
+        return {
+            "alreadyLost": str(updated.get("status") or "").lower()
+            in {"lost", "perdido", "perda"},
+            "opportunity": updated,
+            "reasonCode": reason_code,
+            "reason": reason_label,
+        }
+
     def get_status(self, opportunity_id: int) -> dict[str, Any]:
         if self.supports("status"):
             result = self._request(

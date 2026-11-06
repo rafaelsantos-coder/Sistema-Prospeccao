@@ -3684,6 +3684,31 @@ def _create_crm_if_ready(
 ) -> None:
     if state.opportunity_id:
         return
+
+    # Reusa a oportunidade aberta pelo SDR na 1ª resposta humana.
+    from app.services.ai_sdr_crm import get_crm_opportunity_meta, set_crm_opportunity_meta
+
+    lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
+    if lead:
+        sdr_meta = get_crm_opportunity_meta(lead)
+        existing_id = int(sdr_meta.get("id") or 0) or None
+        existing_status = str(sdr_meta.get("status") or "").upper()
+        if existing_id and existing_status not in {"LOST", "LOST_SYNC_FAILED"}:
+            state.opportunity_id = existing_id
+            state.protocol = str(sdr_meta.get("protocol") or state.protocol or "")
+            set_crm_opportunity_meta(
+                lead,
+                status="CLOSING",
+                reused_by="SELLER_IA",
+                reused_at=utcnow().isoformat(),
+            )
+            LOG.info(
+                "crm_reuse_sdr_opportunity conversation=%s opportunity=%s",
+                conversation.id,
+                existing_id,
+            )
+            return
+
     collected = _load_collected(state)
     name = str(collected.get("name") or "").strip()
     phone = _digits(str(collected.get("phone") or conversation.contact.phone or ""))
@@ -3724,6 +3749,17 @@ def _create_crm_if_ready(
     state.protocol = str(result.get("protocol") or "")
     if not state.opportunity_id:
         raise CRMIntegrationError("CRM não retornou o identificador da oportunidade.")
+    if lead:
+        set_crm_opportunity_meta(
+            lead,
+            id=state.opportunity_id,
+            protocol=state.protocol,
+            status="CLOSING",
+            source="SELLER_IA",
+            client_name=name,
+            client_phone=phone,
+            created_at=utcnow().isoformat(),
+        )
     if black_campaign.has_marker(state.handoff_summary):
         _apply_black_tag(client, state)
 

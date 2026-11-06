@@ -1300,15 +1300,38 @@ def _apply_crm_decision(
     conversation = db.get(Conversation, job.conversation_id)
     if not conversation:
         return
+
+    # Ciclo CRM do SDR: 1ª resposta humana → oportunidade; opt-out → perda.
+    from app.services.ai_sdr_crm import sync_sdr_crm_lifecycle
+
+    latest_message = db.get(Message, job.message_id) if job.message_id else None
+    try:
+        sync_sdr_crm_lifecycle(
+            db,
+            conversation=conversation,
+            decision=decision,
+            latest_message=latest_message,
+            agent_user_id=agent.user_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — CRM nunca pode travar o WhatsApp
+        LOG.warning(
+            "sdr_crm_lifecycle_failed job=%s conversation=%s error=%s",
+            job.id,
+            job.conversation_id,
+            exc,
+        )
+
     lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
     if not lead:
         return
 
     if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
+        # sync_sdr_crm_lifecycle já marca PERDIDO + motivo; aqui só reforça DNC.
         lead.do_not_contact = True
-        lead.stage = "NAO_CONTATAR"
+        if lead.stage not in {"PERDIDO", "GANHO"}:
+            lead.stage = "PERDIDO"
         lead.next_action_at = None
-    elif lead.stage not in {"GANHO", "NAO_CONTATAR"}:
+    elif lead.stage not in {"GANHO", "PERDIDO", "NAO_CONTATAR"}:
         next_stage = decision.recommended_stage
         if next_stage == "NAO_CONTATAR":
             next_stage = "CONTATO_REALIZADO"
