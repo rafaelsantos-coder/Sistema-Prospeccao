@@ -731,10 +731,10 @@ def test_fila_ia_quando_nao_houver_vendedor_online(monkeypatch):
             binding.handling_mode = "AI_WHEN_OFFLINE"
             db.commit()
 
-            # Vendedor online: o cliente novo vai para ele, a IA não entra.
+            # Fila da IA (06/11): vendedor online não tira o cliente da IA.
             conversation, job = _inbound(db, queue, "5555988877588", "AI-OFFLINE-1", "Oi, quero internet.")
-            assert job is None
-            assert conversation.assigned_user_id == human.id
+            assert job is not None
+            assert conversation.assigned_user_id != human.id
 
             # O que a IA já começou continua com ela, mesmo com vendedor online.
             started, _job = _inbound(db, queue, "5555988877599", "AI-OFFLINE-2", "Oi")
@@ -3791,30 +3791,20 @@ def test_ia_assume_cliente_que_o_vendedor_online_nao_respondeu_em_10_minutos(mon
                 },
             )
             db.commit()
-            assert conversation.assigned_user_id == human.id
-            assert db.scalar(select(AIJob).where(AIJob.message_id == message.id)) is None
-
-            # Ainda dentro dos 10 minutos: fica com o vendedor.
-            binding.updated_at = _now() - _td(hours=1)
-            db.commit()
-            _takeover_unanswered_human_conversations()
-            db.expire_all()
-            assert db.scalar(select(AIJob).where(AIJob.message_id == message.id)) is None
-
-            # 15 minutos sem resposta: a IA assume.
-            message = db.get(Message, message.id)
-            message.created_at = _now() - _td(minutes=15)
-            db.commit()
-            assert _takeover_unanswered_human_conversations() >= 1
-            db.expire_all()
+            # Fila da IA (06/11): a IA responde na hora e o vendedor não é atribuído,
+            # então não há o que "assumir" depois de 10 ou 15 minutos.
             job = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
             assert job is not None
             assert job.agent_id == agent.id
-            assert db.get(type(conversation), conversation.id).assigned_user_id is None
-            state = db.scalar(
-                select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
-            )
-            assert state.state == "AI_ACTIVE"
+            assert conversation.assigned_user_id != human.id
+            binding.updated_at = _now() - _td(hours=1)
+            db.commit()
+            message = db.get(Message, message.id)
+            message.created_at = _now() - _td(minutes=15)
+            db.commit()
+            _takeover_unanswered_human_conversations()
+            db.expire_all()
+            assert db.get(type(conversation), conversation.id).assigned_user_id != human.id
         finally:
             db.rollback()
             db.close()
