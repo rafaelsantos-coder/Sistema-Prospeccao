@@ -4687,6 +4687,24 @@ def _sdr_ia_auto_advance(state: AIClosingState, collected: dict[str, Any], reply
     return reply
 
 
+def _reopen_as_new_sale(db: Session, job: AIJob, conversation: Conversation) -> str | None:
+    """Venda já concluída: a nova mensagem vira uma venda nova no SDR."""
+    from app.services.ai_sdr import binding_for_conversation, process_ai_job  # noqa: PLC0415
+
+    binding = binding_for_conversation(db, conversation.id)
+    if not binding or not binding.agent or not binding.agent.active:
+        return None
+    ai_state = db.scalar(
+        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+    )
+    if ai_state is not None:
+        ai_state.state = "AI_ACTIVE"
+        ai_state.agent_id = binding.agent_id
+    job.agent_id = binding.agent_id
+    db.flush()
+    return process_ai_job(db, job)
+
+
 def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     conversation = db.get(Conversation, job.conversation_id)
     message = db.get(Message, job.message_id)
@@ -4698,7 +4716,13 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         job.error = "Estado do fechamento não encontrado."
         return "skipped"
     if state.step in {"COMPLETED", PLAN_CHANGE_STEP}:
+        # Venda já fechada: nunca deixar o cliente sem resposta. O que ele pedir
+        # agora é uma venda nova, pelo fluxo de prospecção (SDR).
+        reopened = _reopen_as_new_sale(db, job, conversation)
+        if reopened is not None:
+            return reopened
         job.status = "IGNORADO"
+        job.error = "Venda fechada sem agente de prospecção disponível."
         return "skipped"
     if state.step == "ESCALATED":
         # Legado: venda que tinha ido para um consultor volta para a IA.
