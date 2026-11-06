@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ import httpx
 from app.config import settings
 
 
+CREDIT_REJECTED_OUTCOME_FALLBACK_ID = 19
 LOG = logging.getLogger("sulnet_crm_client")
 
 
@@ -1472,6 +1474,44 @@ class SulnetCRMClient:
             params={"q": query} if query else None,
         )
         return result if isinstance(result, list) else []
+
+    def credit_rejected_outcome_id(self) -> int:
+        """Id do motivo "Análise de Crédito Reprovada" (type=lost) no catálogo do CRM."""
+        wanted = _fold_tag("Analise de Crédito Reprovada")
+        try:
+            result = self._request("GET", "/api/catalog/reference")
+            reasons = result.get("outcomeReasons") if isinstance(result, dict) else None
+            for reason in reasons or []:
+                if not isinstance(reason, dict) or str(reason.get("type") or "").lower() != "lost":
+                    continue
+                name = _fold_tag(str(reason.get("name") or ""))
+                if name == wanted or "credito reprovada" in name:
+                    return int(reason.get("id"))
+        except (CRMIntegrationError, TypeError, ValueError) as exc:
+            LOG.warning("crm_outcome_reason_lookup_failed error=%s", type(exc).__name__)
+        # Id fixo em produção (confirmado com o CRM em 06/11/2026).
+        return CREDIT_REJECTED_OUTCOME_FALLBACK_ID
+
+    def mark_lost_credit_rejected(
+        self,
+        opportunity_id: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Perda automática por crédito reprovado: só status lost + outcomeReasonId."""
+        request_key = str(idempotency_key or f"lose-{opportunity_id}-{uuid.uuid4()}")
+        closed_at = datetime.now(timezone(timedelta(hours=-3))).isoformat(timespec="seconds")
+        result = self._request(
+            "PATCH",
+            f"/api/opportunities/{opportunity_id}",
+            json_body={
+                "status": "lost",
+                "outcomeReasonId": self.credit_rejected_outcome_id(),
+                "closedAt": closed_at,
+            },
+            extra_headers={"Idempotency-Key": request_key},
+        )
+        return result if isinstance(result, dict) else {}
 
     def mark_won(
         self,

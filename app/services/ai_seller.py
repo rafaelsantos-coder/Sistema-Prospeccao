@@ -3676,6 +3676,21 @@ def _record_activity(
     )
 
 
+def _mark_credit_rejected_lost(client: SulnetCRMClient, state: AIClosingState) -> None:
+    """Crédito reprovado: a oportunidade vai para perda com o motivo do CRM.
+
+    Falha do CRM aqui não pode travar a conversa: o cliente segue atendido pela
+    IA e o erro vai para o estado da venda e para o log.
+    """
+    if not state.opportunity_id:
+        return
+    try:
+        client.mark_lost_credit_rejected(state.opportunity_id)
+    except CRMIntegrationError as exc:
+        state.last_error = f"Perda por crédito não registrada no CRM: {str(exc)[:300]}"
+        LOG.warning("credit_lost_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
+
+
 def _create_crm_if_ready(
     db: Session,
     *,
@@ -4874,6 +4889,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         )
                     elif credit.get("rejected"):
                         state.step = "CREDIT_REJECTED"
+                        _mark_credit_rejected_lost(client, state)
                         reply = _prompt_for_step(state, collected)
                     else:
                         state.step = "CREDIT_REVIEW"
@@ -4901,6 +4917,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     )
                 elif credit.get("rejected"):
                     state.step = "CREDIT_REJECTED"
+                    _mark_credit_rejected_lost(client, state)
                     reply = _prompt_for_step(state, collected)
                 else:
                     state.step = "CREDIT_REVIEW"
@@ -4920,6 +4937,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 )
             elif "reprov" in n:
                 state.step = "CREDIT_REJECTED"
+                _mark_credit_rejected_lost(client, state)
                 reply = _prompt_for_step(state, collected)
             else:
                 reply = "A análise cadastral ainda está em andamento. Assim que houver decisão, eu continuo a contratação."
@@ -4946,6 +4964,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     )
                 elif credit.get("rejected"):
                     state.step = "CREDIT_REJECTED"
+                    _mark_credit_rejected_lost(client, state)
                     reply = "Esse novo CPF também não foi aprovado. Se quiser, podemos tentar com outro CPF."
                 else:
                     state.step = "CREDIT_REVIEW"
@@ -6274,6 +6293,7 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     processed += 1
                 elif "reprov" in normalized_credit:
                     state.step = "CREDIT_REJECTED"
+                    _mark_credit_rejected_lost(client, state)
                     prompt = _prompt_for_step(state, collected)
                     _send_step_message(
                         db,
