@@ -62,8 +62,11 @@ class Settings:
     resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     ai_sdr_enabled: bool = os.getenv("AI_SDR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-    # Espera curta para juntar mensagens seguidas do cliente numa única resposta do SDR.
+    # Espera para juntar mensagens seguidas do cliente numa única resposta do SDR.
+    # Mensagens curtas (Sim/Não, botão, cidade) usam o debounce curto; texto longo
+    # mantém o debounce completo para não responder no meio de uma rajada.
     ai_sdr_debounce_seconds: int = int(os.getenv("AI_SDR_DEBOUNCE_SECONDS", "6"))
+    ai_sdr_debounce_short_seconds: int = int(os.getenv("AI_SDR_DEBOUNCE_SHORT_SECONDS", "1"))
     # Regras fixas do SDR que só são observadas (registram o que mudariam, mas
     # não reescrevem a resposta). As ferramentas de catálogo e manual cobrem esses fatos.
     ai_sdr_observe_policies: str = os.getenv(
@@ -72,7 +75,7 @@ class Settings:
     ai_weekly_analyst_enabled: bool = os.getenv("AI_WEEKLY_ANALYST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_tools_enabled: bool = os.getenv("AI_SDR_TOOLS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-    ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
+    ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "2"))
     ai_maintenance_enabled: bool = os.getenv(
         "AI_MAINTENANCE_ENABLED",
         "true",

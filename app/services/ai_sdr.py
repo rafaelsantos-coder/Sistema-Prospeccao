@@ -257,6 +257,28 @@ def reclaim_conversation_for_ai(
     return True
 
 
+def sdr_debounce_seconds_for_message(body: str) -> int:
+    """Debounce curto para Sim/Não/botão/cidade; completo para texto longo.
+
+    O debounce de 6s evita responder no meio de uma rajada. Em resposta de
+    botão ou frase curta ("número errado", "Ok", "Santa Rosa") esse atraso
+    só empilha com o poll do worker e a chamada ao modelo.
+    """
+    full = max(0, int(settings.ai_sdr_debounce_seconds or 0))
+    short = max(0, int(settings.ai_sdr_debounce_short_seconds or 0))
+    if short >= full:
+        return full
+    text = (body or "").strip()
+    if not text:
+        return full
+    if "\n" in text:
+        return full
+    words = [part for part in re.split(r"\s+", text) if part]
+    if len(text) <= 80 and len(words) <= 12:
+        return short
+    return full
+
+
 def enqueue_ai_job(
     db: Session,
     *,
@@ -375,23 +397,25 @@ def enqueue_ai_job(
         pending.status = "IGNORADO"
         pending.error = "AGRUPADA_COM_MENSAGEM_SEGUINTE"
 
+    debounce_seconds = sdr_debounce_seconds_for_message(message.body or "")
     job = AIJob(
         agent_id=binding.agent_id,
         queue_id=binding.queue_id,
         conversation_id=conversation.id,
         message_id=message.id,
         status="PENDENTE",
-        available_at=utcnow() + timedelta(seconds=max(0, settings.ai_sdr_debounce_seconds)),
+        available_at=utcnow() + timedelta(seconds=max(0, debounce_seconds)),
     )
     db.add(job)
     db.flush()
     LOG.info(
-        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s",
+        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s debounce=%ss",
         job.id,
         conversation.id,
         message.id,
         binding.queue_id,
         binding.agent_id,
+        debounce_seconds,
     )
     return job
 
@@ -2147,6 +2171,9 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
+                # Número errado / opt-out: sai da fila imediatamente (antes ficava EM FILA).
+                conversation.status = "ENCERRADO"
+                conversation.closed_at = utcnow()
             elif (
                 not closer_started
                 and sent_message is not None
