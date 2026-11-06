@@ -1898,6 +1898,9 @@ _FIRM_REJECTION_CUES = _OFFER_REJECTION_CUES + _EXPLICIT_CONTACT_STOP_CUES + (
     "nao quero mais",
     "nao vou querer",
     "sem interesse",
+    "nao temos interesse",
+    "nao tenho interesse",
+    "nao tem interesse",
     "desisti",
     "desisto",
 )
@@ -1946,9 +1949,9 @@ def _apply_repeated_rejection_policy(
     latest = context.get("latest_customer_message")
     folded_latest = _fold_sales_text(latest)
     offer_before = _fold_sales_text(_last_outbound_text(context))
-    soft_decline = folded_latest in _BARE_NEGATIVE_ANSWERS and any(
-        cue in offer_before for cue in _OFFER_CUES
-    )
+    # "Agora não" / "Não" seco conta como recusa em qualquer pergunta nossa
+    # (conversa Dona Ella, 06/11: "Agora não" respondido a uma pergunta de contrato).
+    soft_decline = folded_latest in _BARE_NEGATIVE_ANSWERS
     if not (_is_firm_rejection(latest) or soft_decline):
         return decision
     rows = list(context.get("history") or [])

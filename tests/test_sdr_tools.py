@@ -323,3 +323,24 @@ def test_single_no_does_not_close_yet():
     decision = _decision("Tudo bem! Quer ver a Telefonia Móvel?")
     result = ai_sdr_policies._apply_repeated_rejection_policy(decision, context)
     assert result.reply_text == "Tudo bem! Quer ver a Telefonia Móvel?"
+
+
+def test_recusa_sem_interesse_conta_e_bare_no_fecha_na_segunda():
+    # Conversa Dona Ella (06/11): "Agora não" -> IA insiste -> "não temos interesse no momento"
+    # (a palavra "interesse" zerava a contagem) -> IA insiste -> "Agora não" seguia a venda.
+    from app.services import ai_sdr_policies
+
+    context = {
+        "latest_customer_message": "Agora não",
+        "history": [
+            {"direction": "OUTBOUND", "body": "Você já está sabendo da Black da Sulnet?"},
+            {"direction": "INBOUND", "body": "Agora não"},
+            {"direction": "OUTBOUND", "body": "Para sua próxima contratação, prefere Telefonia Móvel?"},
+            {"direction": "INBOUND", "body": "nao temos interesse no momento!!"},
+            {"direction": "OUTBOUND", "body": "Certo! Seria para sua casa ou para uma empresa?"},
+        ],
+    }
+    decision = _decision("Certo! Posso te mostrar os planos disponíveis?")
+    result = ai_sdr_policies._apply_repeated_rejection_policy(decision, context)
+    assert result.reply_text == ai_sdr_policies.REJECTION_CLOSE_MESSAGE
+    assert result.followup_needed is False
