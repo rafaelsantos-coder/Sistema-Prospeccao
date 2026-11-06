@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -1499,6 +1499,18 @@ def _greeting_word(folded: str) -> str:
     return "Olá"
 
 
+def _time_greeting() -> str:
+    """Cumprimento pela hora de Santa Rosa/RS (horário de Brasília)."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    hour = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
+    if hour < 12:
+        return "Bom dia"
+    if hour < 18:
+        return "Boa tarde"
+    return "Boa noite"
+
+
 def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
     """Resposta segura que a própria IA envia quando a resposta gerada não passou.
 
@@ -1517,14 +1529,13 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
 
     candidates: list[tuple[str, list[QuickReply]]] = []
     if not previous:
+        # Abertura padrão de prospecção (comercial, 06/11): primeiro saber se já é cliente.
         candidates.append(
             (
-                f"{greeting}! Aqui é da Sulnet 😊 Você procura internet para casa, "
-                "para empresa ou um plano de celular?",
+                f"{_time_greeting()}, você já é cliente da Sulnet?",
                 [
-                    QuickReply(id="casa", label="Casa"),
-                    QuickReply(id="empresa", label="Empresa"),
-                    QuickReply(id="celular", label="Celular"),
+                    QuickReply(id="cliente_sulnet_sim", label="Sim"),
+                    QuickReply(id="cliente_sulnet_nao", label="Não"),
                 ],
             )
         )

@@ -2310,7 +2310,7 @@ def test_company_difference_question_explains_business_value_instead_of_reopenin
     result = _apply_corporate_customer_policy(decision, context)
 
     assert result.qualification.customer_type == "EMPRESA"
-    assert "SLA de atendimento de até 8 horas" in result.reply_text
+    assert "compromisso de reparo de até 8 horas" in result.reply_text
     assert "suporte nível 2" in result.reply_text
     assert "equipe especializada em empresas" in result.reply_text
     assert "não é compartilhada da mesma forma que no residencial" in result.reply_text
@@ -2337,7 +2337,7 @@ def test_corporate_sla_is_presented_as_service_sla_not_resolution_deadline():
 
     result = _apply_corporate_customer_policy(decision, context)
 
-    assert "SLA de atendimento de até 8 horas" in result.reply_text
+    assert "compromisso de reparo de até 8 horas" in result.reply_text
     assert "resolução em até 8 horas" not in result.reply_text.lower()
     assert "resolve em até 8 horas" not in result.reply_text.lower()
 
