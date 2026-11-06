@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block page_content_class %}conversation-page-content{% endblock %}
 {% block content %}
-<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" data-assignee="{{ assignee_id or '' }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
+<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" data-assignee="{{ assignee_id or '' }}" data-queue="{{ queue_id or '' }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
   <aside class="inbox-list-panel">
     <div class="inbox-list-head">
       <div>
@@ -25,6 +25,18 @@
       {% endif %}
       <a href="/conversations?view=closed" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
     </div>
+
+    {% if queues %}
+    <div class="seller-panel">
+      <div class="seller-panel-title">Filas ativas</div>
+      {% for item in queues %}
+      <a href="/conversations?view=active&amp;queue={{ item.id }}" class="seller-row {% if queue_id == item.id %}active{% endif %}">
+        <span>{{ item.name }}</span>
+        <b>{{ item.open }}</b>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
 
     {% if sellers %}
     <div class="seller-panel">
@@ -345,6 +357,7 @@
   const view = root.dataset.view || 'active';
   const query = root.dataset.query || '';
   const assignee = root.dataset.assignee || '';
+  const queue = root.dataset.queue || '';
   let inboxSignature = '';
 
   const statusLabel = value => (value || '').replaceAll('_', ' ');
@@ -388,7 +401,7 @@
     for (const item of items) {
       const row = document.createElement('a');
       row.className = 'conversation-row' + (Number(item.id) === conversationId ? ' selected' : '');
-      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '') + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '');
+      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '') + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '') + (queue ? '&queue=' + encodeURIComponent(queue) : '');
 
       const avatar = document.createElement('div');
       avatar.className = 'conversation-avatar';
@@ -433,7 +446,7 @@
 
   const pollInbox = async () => {
     try {
-      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query) + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '');
+      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query) + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '') + (queue ? '&queue=' + encodeURIComponent(queue) : '');
       const response = await fetch(url, {headers:{'Accept':'application/json'}, credentials:'same-origin'});
       if (!response.ok) return;
       const data = await response.json();
