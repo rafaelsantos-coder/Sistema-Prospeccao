@@ -789,6 +789,14 @@ def store_received_payload(
     )
 
     from_me = payload_from_me(payload)
+    if message_type == "AUDIO" and not from_me:
+        # Áudio do cliente vira texto para a IA conseguir entender e responder.
+        from app.services.audio_transcription import transcribe_audio_url
+
+        transcript = transcribe_audio_url(media_url, mime_type)
+        if transcript:
+            message_type = "TEXT"
+            body = f"[Áudio transcrito] {transcript}"
     direction = "OUTBOUND" if from_me else "INBOUND"
     message = register_message(
         db,
