@@ -20,7 +20,7 @@ class _Client:
         return {"opportunityId": 14501}
 
 
-def _conversation(name="Loine Patia", phone="555581243140", crm=None):
+def _conversation(name="Cliente Teste", phone="5555900000001", crm=None):
     contact = SimpleNamespace(name=name, business_name="", phone=phone)
     return SimpleNamespace(id=7, lead_id=None, contact=contact, crm_opportunity_id=crm)
 
@@ -36,8 +36,8 @@ def test_abre_lead_com_nome_e_telefone(monkeypatch):
     conversation = _conversation()
     assert crm_lead.ensure_crm_lead(_Db(), conversation) == 14501
     assert conversation.crm_opportunity_id == 14501
-    assert _Client.created[0]["clientName"] == "Loine Patia"
-    assert _Client.created[0]["clientPhone"] == "555581243140"
+    assert _Client.created[0]["clientName"] == "Cliente Teste"
+    assert _Client.created[0]["clientPhone"] == "5555900000001"
 
 
 def test_nao_duplica_lead_da_conversa(monkeypatch):
