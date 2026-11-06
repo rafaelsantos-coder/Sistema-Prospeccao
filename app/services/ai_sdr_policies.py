@@ -1809,6 +1809,10 @@ _OFFER_REJECTION_CUES = (
     "nao quero contratar",
     "nao tenho interesse",
     "nao quero nada",
+    "nao quero saber",
+    "nao quero mais",
+    "nao quero ver",
+    "nao quero agora",
 )
 
 _EXPLICIT_CONTACT_STOP_CUES = (
@@ -1824,6 +1828,19 @@ _EXPLICIT_CONTACT_STOP_CUES = (
     "sair da lista",
     "descadastrar",
 )
+
+# 1ª recusa firme: reconhecimento + um gancho curto (sem diagnóstico nem catálogo).
+SOFT_REFUSAL_HOOK_MESSAGE = (
+    "Sem problema. Só pra eu não te atrapalhar: o que te fez abrir a conversa — "
+    "preço, velocidade ou Telefonia Móvel? Se não for o momento, eu paro por aqui."
+)
+SOFT_REFUSAL_HOOK_MARK = "o que te fez abrir a conversa"
+
+# 2ª recusa: confirma se deve parar de mandar mensagem (não fecha sozinho).
+STOP_CONFIRM_MESSAGE = (
+    "Entendi. Para eu respeitar sua decisão, você quer que eu pare de enviar mensagens?"
+)
+STOP_CONFIRM_MARK = "pare de enviar mensagens"
 
 
 def _is_company_context(context: dict) -> bool:
@@ -1869,10 +1886,55 @@ def _is_residential_context(context: dict) -> bool:
     return False
 
 
+def _apply_soft_refusal_hook(decision: AIDecision) -> AIDecision:
+    """1ª recusa: gancho curto. Sem pergunta de funil e sem catálogo."""
+    decision.reply_text = SOFT_REFUSAL_HOOK_MESSAGE
+    # Z-API: no máximo 3 botões. Móvel fica no texto para resposta livre.
+    decision.quick_replies = [
+        QuickReply(id="recusa_preco", label="Preço"),
+        QuickReply(id="recusa_velocidade", label="Velocidade"),
+        QuickReply(id="recusa_parar", label="Pode parar"),
+    ]
+    decision.intent = "NOT_INTERESTED"
+    decision.sales_state = "WAITING_CUSTOMER"
+    decision.objection = "NO_INTEREST"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.followup_needed = True
+    decision.next_action = (
+        "Aguardar se o cliente reabre por preço/velocidade/móvel ou pede para parar."
+    )
+    return decision
+
+
+def _apply_stop_confirm(decision: AIDecision) -> AIDecision:
+    """2ª recusa: confirma opt-out sem fechar sozinho."""
+    decision.reply_text = STOP_CONFIRM_MESSAGE
+    decision.quick_replies = [
+        QuickReply(id="pare_mensagens_sim", label="Sim, pare"),
+        QuickReply(id="pare_mensagens_nao", label="Não"),
+    ]
+    decision.intent = "NOT_INTERESTED"
+    decision.sales_state = "WAITING_CUSTOMER"
+    decision.objection = "NO_INTEREST"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.followup_needed = False
+    decision.next_action = (
+        "Se confirmar que quer parar, encerrar contato; se não, aguardar sem insistir."
+    )
+    return decision
+
+
 def _apply_offer_rejection_diagnostic_policy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
+    """1ª rejeição de oferta/interesse: gancho curto (não pergunta se já tem internet).
+
+    Pedido comercial (06/11): "não quero" não pode virar diagnóstico de conexão
+    nem catálogo móvel — isso parece insistência e queima a reabertura.
+    """
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
     if not latest:
         return decision
@@ -1880,40 +1942,12 @@ def _apply_offer_rejection_diagnostic_policy(
         return decision
     if not any(cue in latest for cue in _OFFER_REJECTION_CUES):
         return decision
-
-    # Não repetir esse mesmo gatilho indefinidamente.
-    for row in context.get("history") or []:
-        if str(row.get("direction") or "").upper() != "OUTBOUND":
-            continue
-        body = _fold_sales_text(str(row.get("body") or ""))
-        if (
-            "possui conexao de internet na sua casa" in body
-            or "sua empresa ja possui conexao de internet" in body
-        ):
-            return decision
-
-    if _is_company_context(context):
-        question = "Entendi. Hoje sua empresa já possui conexão de internet?"
-    elif _is_residential_context(context):
-        question = "Entendi. Hoje você já possui conexão de internet na sua casa?"
-    else:
-        question = "Entendi. Hoje você já possui conexão de internet?"
-
-    decision.reply_text = question
-    decision.quick_replies = [
-        QuickReply(id="possui_internet_sim", label="Sim"),
-        QuickReply(id="possui_internet_nao", label="Não"),
-    ]
-    decision.intent = "QUALIFYING"
-    decision.sales_state = "DISCOVERY"
-    decision.objection = "NO_INTEREST"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.followup_needed = True
-    decision.next_action = (
-        "Descobrir a situação atual da conexão antes de retomar uma oferta."
-    )
-    return decision
+    # Já fizemos o gancho ou estamos na confirmação de parada: deixa a
+    # política de recusa repetida conduzir o próximo passo.
+    last_out = _fold_sales_text(_last_outbound_text(context))
+    if SOFT_REFUSAL_HOOK_MARK in last_out or STOP_CONFIRM_MARK in last_out:
+        return decision
+    return _apply_soft_refusal_hook(decision)
 
 
 _FIRM_REJECTION_CUES = _OFFER_REJECTION_CUES + _EXPLICIT_CONTACT_STOP_CUES + (
@@ -1940,6 +1974,17 @@ def _is_firm_rejection(text: str | None) -> bool:
 
 
 _BARE_NEGATIVE_ANSWERS = {"nao", "n", "agora nao", "nao valeu"}
+_STOP_CONFIRM_YES = {
+    "sim",
+    "sim pare",
+    "sim, pare",
+    "pode parar",
+    "pare",
+    "parar",
+    "quero que pare",
+    "pode parar sim",
+}
+_STOP_CONFIRM_NO = {"nao", "n", "nao precisa", "nao quero que pare", "continua"}
 _INTEREST_CUES = (
     "quero",
     "interesse",
@@ -1952,31 +1997,14 @@ _INTEREST_CUES = (
     "mega",
     "movel",
     "internet",
+    "velocidade",
 )
 _OFFER_CUES = ("quer conhecer", "promocao", "black", "tem interesse", "quer contratar", "gostaria de conhecer")
 
 
-def _apply_repeated_rejection_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    """Cliente sem interesse: a IA tenta uma vez; se ele recusar de novo, encerra.
-
-    Pedido do comercial (05/11): respeitar o cliente depois de uma tentativa.
-    Um "não" seco a uma oferta conta como recusa (conversa 651: "Não obrigada",
-    depois "Não" para a Black).
-    """
-    latest = context.get("latest_customer_message")
-    folded_latest = _fold_sales_text(latest)
-    offer_before = _fold_sales_text(_last_outbound_text(context))
-    soft_decline = folded_latest in _BARE_NEGATIVE_ANSWERS and any(
-        cue in offer_before for cue in _OFFER_CUES
-    )
-    if not (_is_firm_rejection(latest) or soft_decline):
-        return decision
+def _prior_refusal_and_attempt(context: dict) -> bool:
+    """True se já houve recusa do cliente + uma tentativa nossa depois."""
     rows = list(context.get("history") or [])
-    # A mensagem atual (e a rajada dela) fica de fora: procuramos uma recusa anterior
-    # seguida de uma tentativa nossa.
     while rows and str(rows[-1].get("direction") or "").upper() == "INBOUND":
         rows.pop()
     rejected_before = False
@@ -1985,28 +2013,79 @@ def _apply_repeated_rejection_policy(
         direction = str(row.get("direction") or "").upper()
         if direction == "INBOUND":
             body = _fold_sales_text(row.get("body"))
-            # "Não" seco a uma pergunta ou oferta também é recusa (10/11: "Não" para
-            # "já possui serviço?" e depois "Não" para a Black seguiu a venda).
             if _is_firm_rejection(row.get("body")) or body in _BARE_NEGATIVE_ANSWERS:
                 rejected_before, attempted_after = True, False
             elif any(cue in body for cue in _INTEREST_CUES):
-                # Voltou a se interessar: a recusa antiga não vale mais.
                 rejected_before, attempted_after = False, False
-            # "Sim" para "já é cliente?" e respostas curtas não mudam nada.
         elif direction == "OUTBOUND" and rejected_before:
             attempted_after = True
-    if not (rejected_before and attempted_after):
+    return rejected_before and attempted_after
+
+
+def _apply_repeated_rejection_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    """Recusa de interesse: 1ª = gancho; 2ª = confirmar parada; confirmação = opt-out.
+
+    Conversa 06/11: "não quero mais" → pergunta de internet → catálogo móvel.
+    Agora a 1ª recusa só reabre com Preço/Velocidade/Móvel/Pode parar; a 2ª
+    pergunta se deve parar; desconto/meses grátis ficam para objeção de preço.
+    """
+    latest = context.get("latest_customer_message")
+    folded_latest = _fold_sales_text(latest)
+    last_out = _fold_sales_text(_last_outbound_text(context))
+
+    # Resposta à pergunta "quer que eu pare de enviar mensagens?"
+    if STOP_CONFIRM_MARK in last_out:
+        if folded_latest in _STOP_CONFIRM_YES or folded_latest == "pode parar":
+            decision.reply_text = REJECTION_CLOSE_MESSAGE
+            decision.quick_replies = []
+            decision.intent = "DO_NOT_CONTACT"
+            decision.sales_state = "OPT_OUT"
+            decision.objection = "NO_INTEREST"
+            decision.handoff_recommended = False
+            decision.handoff_reason = ""
+            decision.followup_needed = False
+            decision.next_action = "Opt-out confirmado: encerrar e cancelar follow-ups."
+            return decision
+        if folded_latest in _STOP_CONFIRM_NO:
+            decision.reply_text = (
+                "Combinado. Fico por aqui sem insistir. Se quiser retomar depois, "
+                "é só mandar um oi."
+            )
+            decision.quick_replies = []
+            decision.intent = "NOT_INTERESTED"
+            decision.sales_state = "WAITING_CUSTOMER"
+            decision.objection = "NO_INTEREST"
+            decision.followup_needed = False
+            decision.next_action = "Cliente pediu para não parar, mas sem venda ativa."
+            return decision
+
+    # Botão "Pode parar" no gancho da 1ª recusa.
+    if folded_latest in {"pode parar", "pare", "parar"} and SOFT_REFUSAL_HOOK_MARK in last_out:
+        return _apply_stop_confirm(decision)
+
+    offer_before = last_out
+    soft_decline = folded_latest in _BARE_NEGATIVE_ANSWERS and any(
+        cue in offer_before for cue in _OFFER_CUES
+    )
+    firm = _is_firm_rejection(latest)
+    if not (firm or soft_decline):
         return decision
 
-    decision.reply_text = REJECTION_CLOSE_MESSAGE
-    decision.quick_replies = []
-    decision.intent = "NOT_INTERESTED"
-    decision.objection = "NO_INTEREST"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.followup_needed = False
-    decision.next_action = "Cliente recusou duas vezes: não insistir nem mandar follow-up."
-    return decision
+    # Opt-out explícito já tratado por outras regras / modelo.
+    if any(cue in folded_latest for cue in _EXPLICIT_CONTACT_STOP_CUES):
+        return decision
+
+    if _prior_refusal_and_attempt(context):
+        return _apply_stop_confirm(decision)
+
+    # 1ª recusa: se o gancho já foi a última mensagem nossa, não repetir.
+    if SOFT_REFUSAL_HOOK_MARK in last_out:
+        return _apply_stop_confirm(decision)
+
+    return _apply_soft_refusal_hook(decision)
 
 
 def _recent_outbound_messages_for_repetition(

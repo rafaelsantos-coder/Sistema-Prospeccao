@@ -299,18 +299,19 @@ def _two_no_context(latest="Não"):
     }
 
 
-def test_two_bare_no_answers_close_the_conversation():
-    # Conversa de 06/11 (Loine): "Não" duas vezes e a IA seguiu perguntando.
+def test_two_bare_no_answers_ask_to_stop_messages():
+    # Conversa de 06/11 (Loine): "Não" duas vezes — agora confirma se deve parar.
     from app.services import ai_sdr_policies
 
     decision = _decision("Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?")
     result = ai_sdr_policies._apply_repeated_rejection_policy(decision, _two_no_context())
-    assert result.reply_text == ai_sdr_policies.REJECTION_CLOSE_MESSAGE
+    assert result.reply_text == ai_sdr_policies.STOP_CONFIRM_MESSAGE
     assert result.intent == "NOT_INTERESTED"
     assert result.followup_needed is False
+    assert [item.label for item in result.quick_replies] == ["Sim, pare", "Não"]
 
 
-def test_single_no_does_not_close_yet():
+def test_single_no_to_offer_gets_soft_hook():
     from app.services import ai_sdr_policies
 
     context = {
@@ -322,7 +323,7 @@ def test_single_no_does_not_close_yet():
     }
     decision = _decision("Tudo bem! Quer ver a Telefonia Móvel?")
     result = ai_sdr_policies._apply_repeated_rejection_policy(decision, context)
-    assert result.reply_text == "Tudo bem! Quer ver a Telefonia Móvel?"
+    assert result.reply_text == ai_sdr_policies.SOFT_REFUSAL_HOOK_MESSAGE
 
 
 def test_relato_de_problema_na_internet_vai_para_a_central_sem_venda():
