@@ -323,3 +323,14 @@ def test_single_no_does_not_close_yet():
     decision = _decision("Tudo bem! Quer ver a Telefonia Móvel?")
     result = ai_sdr_policies._apply_repeated_rejection_policy(decision, context)
     assert result.reply_text == "Tudo bem! Quer ver a Telefonia Móvel?"
+
+
+def test_relato_de_problema_na_internet_vai_para_a_central_sem_venda():
+    # Conversa Rafael Trennepohl (06/11): "Estou com problema na internet" e a IA ofereceu plano.
+    from app.services import ai_sdr_policies
+
+    context = {"latest_customer_message": "Estou com problema na internet", "history": []}
+    decision = _decision("Para sua próxima contratação, prefere Telefonia Móvel?")
+    result = ai_sdr_policies._apply_existing_customer_plan_change_policy(decision, context)
+    assert result.reply_text == ai_sdr_policies.CENTRAL_REDIRECT_MESSAGE
+    assert result.offer_plan_code is None
