@@ -191,6 +191,11 @@ class ProspectingJob(Base):
     found_count: Mapped[int] = mapped_column(Integer, default=0)
     imported_count: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Plano de execução pós-busca: só importar, ou criar/iniciar disparo.
+    # Ex.: {"mode":"SEARCH_AND_DISPATCH","campaign_id":1,"queue_id":2,
+    #       "interval_seconds":30,"daily_limit":100,"auto_start":true,
+    #       "dispatch_id":9}
+    execution_json: Mapped[str] = mapped_column(Text, default="{}")
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
