@@ -13,8 +13,10 @@ from app.models import (
     Contact,
     Conversation,
     ConversationAssignment,
+    ConversationQueueLink,
     Lead,
     Message,
+    ServiceQueue,
     User,
 )
 from app.security import get_current_user, require_roles, validate_csrf
@@ -143,8 +145,23 @@ def _eligible_users(db: Session, user: User, conversation: Conversation | None =
     return users
 
 
-def _inbox_query(db: Session, user: User, *, q: str, view: str) -> list[Conversation]:
+def _inbox_query(
+    db: Session,
+    user: User,
+    *,
+    q: str,
+    view: str,
+    assignee_id: int | None = None,
+    queue_id: int | None = None,
+) -> list[Conversation]:
     stmt = _conversation_stmt(user).join(Contact, Conversation.contact_id == Contact.id)
+    if assignee_id:
+        stmt = stmt.where(Conversation.assigned_user_id == assignee_id)
+    if queue_id:
+        stmt = stmt.join(
+            ConversationQueueLink,
+            ConversationQueueLink.conversation_id == Conversation.id,
+        ).where(ConversationQueueLink.queue_id == queue_id)
     if q:
         term = f"%{q.strip()}%"
         stmt = stmt.outerjoin(Lead, Conversation.lead_id == Lead.id).where(
@@ -183,6 +200,57 @@ def _inbox_counts(db: Session, user: User) -> dict[str, int]:
     }
 
 
+def _seller_panel(db: Session, user: User) -> list[dict]:
+    """Vendedores visíveis para o usuário, com presença online e carga de conversas abertas."""
+    if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
+        return []
+    stmt = select(User).where(User.active.is_(True), User.role == "CONSULTOR").order_by(User.name)
+    sellers = list(db.scalars(stmt))
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            sellers = [item for item in sellers if item.branch_id == user.branch_id]
+        else:
+            sellers = [item for item in sellers if item.team == user.team]
+    online_ids = set(online_user_ids(db))
+    open_counts: dict[int, int] = {}
+    for assigned_id in db.scalars(
+        select(Conversation.assigned_user_id).where(
+            Conversation.assigned_user_id.is_not(None),
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+        )
+    ):
+        open_counts[assigned_id] = open_counts.get(assigned_id, 0) + 1
+    return [
+        {
+            "id": item.id,
+            "name": item.name,
+            "online": item.id in online_ids,
+            "open": open_counts.get(item.id, 0),
+        }
+        for item in sellers
+    ]
+
+
+def _queue_panel(db: Session, user: User) -> list[dict]:
+    """Filas ativas com quantas conversas abertas cada uma tem agora."""
+    if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
+        return []
+    queues = list(db.scalars(select(ServiceQueue).where(ServiceQueue.active.is_(True)).order_by(ServiceQueue.name)))
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            queues = [item for item in queues if item.branch_id == user.branch_id]
+        else:
+            queues = [item for item in queues if item.team == user.team]
+    open_counts: dict[int, int] = {}
+    for queue_id in db.scalars(
+        select(ConversationQueueLink.queue_id)
+        .join(Conversation, Conversation.id == ConversationQueueLink.conversation_id)
+        .where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES))
+    ):
+        open_counts[queue_id] = open_counts.get(queue_id, 0) + 1
+    return [{"id": item.id, "name": item.name, "open": open_counts.get(item.id, 0)} for item in queues]
+
+
 def _render_inbox(
     request: Request,
     db: Session,
@@ -191,8 +259,10 @@ def _render_inbox(
     conversation_id: int | None = None,
     q: str = "",
     view: str = "active",
+    assignee_id: int | None = None,
+    queue_id: int | None = None,
 ):
-    conversations = _inbox_query(db, user, q=q, view=view)
+    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee_id, queue_id=queue_id)
     selected = None
     if conversation_id is not None:
         selected = _get_conversation(db, user, conversation_id)
@@ -244,6 +314,10 @@ def _render_inbox(
         counts=counts,
         query=q,
         view=view,
+        assignee_id=assignee_id,
+        queue_id=queue_id,
+        sellers=_seller_panel(db, user),
+        queues=_queue_panel(db, user),
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -254,12 +328,14 @@ def inbox(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
+    queue: int | None = None,
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
     if redirect:
         return redirect
-    return _render_inbox(request, db, user, q=q, view=view)
+    return _render_inbox(request, db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
 
 
 @router.get("/conversations/{conversation_id}")
@@ -268,6 +344,8 @@ def conversation_detail(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
+    queue: int | None = None,
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
@@ -278,6 +356,8 @@ def conversation_detail(
         db,
         user,
         conversation_id=conversation_id,
+        assignee_id=assignee,
+        queue_id=queue,
         q=q,
         view=view,
     )
@@ -785,6 +865,8 @@ def conversation_inbox_api(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
+    queue: int | None = None,
     db: Session = Depends(get_db),
 ):
     user = get_current_user(request, db)
@@ -795,7 +877,7 @@ def conversation_inbox_api(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Entre no WhatsApp para acessar o canal.",
         )
-    conversations = _inbox_query(db, user, q=q, view=view)
+    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
     return {
         "counts": _inbox_counts(db, user),
         "items": [
