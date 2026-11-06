@@ -350,6 +350,42 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .integration-banner.disconnected { color: var(--warning); background: var(--warning-soft); border-color: rgba(185,109,16,.15); }
 .prospecting-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); gap: 17px; align-items: stretch; }
 .prospecting-form-card { padding: 24px; }
+.section-heading.compact { margin-top: 18px; }
+.execution-choice { display: grid; gap: 10px; margin: 4px 0 14px; }
+.execution-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.execution-option:has(input:checked) {
+  border-color: rgba(243, 111, 33, 0.45);
+  background: var(--orange-soft);
+}
+.execution-option input { margin-top: 3px; }
+.execution-option strong { display: block; font-size: 12px; }
+.execution-option small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.dispatch-execution-panel {
+  margin: 0 0 14px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px dashed rgba(243, 111, 33, 0.35);
+  background: rgba(243, 111, 33, 0.04);
+}
+.checkbox-field {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.checkbox-field input { margin-top: 3px; }
+.checkbox-field strong { display: block; font-size: 12px; }
+.checkbox-field small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .prospecting-flow { padding: 24px; border-radius: var(--radius); color: white; background: linear-gradient(145deg, #252c35, #151a20); box-shadow: var(--shadow); }
 .flow-step { display: flex; gap: 13px; align-items: flex-start; }
 .flow-step > span { width: 29px; height: 29px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; background: rgba(243,111,33,.16); color: #ffae7b; font-size: 9px; font-weight: 900; }
