@@ -88,9 +88,7 @@ from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import (
     AI_WHEN_OFFLINE,
-    ai_owns_conversation,
     assign_queue_user,
-    human_online_in_queue,
     queue_for_conversation,
 )
 from app.timeutils import is_past, utcnow
@@ -343,22 +341,12 @@ def enqueue_ai_job(
             binding.queue_id,
         )
         return None
+    # Fila da IA (AI_WHEN_OFFLINE): somente a IA atende, sem checar vendedor online.
     if (
-        binding.handling_mode == AI_WHEN_OFFLINE
+        binding.handling_mode != AI_WHEN_OFFLINE
         and not takeover
         and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
-        and not ai_owns_conversation(db, conversation.id)
-        and human_online_in_queue(db, binding.queue_id)
-    ):
-        # Fila "IA quando não houver vendedor online": tem vendedor, a conversa é dele.
-        LOG.info(
-            "ai_job_skipped conversation=%s reason=human_online queue=%s",
-            conversation.id,
-            binding.queue_id,
-        )
-        return None
-    if not takeover and not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_is_attending(
-        db, conversation
+        and human_is_attending(db, conversation)
     ):
         LOG.info(
             "ai_job_skipped conversation=%s reason=human_attending queue=%s",
