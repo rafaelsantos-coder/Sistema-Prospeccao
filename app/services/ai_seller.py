@@ -5961,12 +5961,11 @@ def _record_ai_block(
         entity_id=conversation.id,
         payload={"step": state.step, "opportunity_id": state.opportunity_id, "reason": reason[:500]},
     )
+    # O motivo pode conter dado do cliente vindo do CRM: fica só na auditoria.
     LOG.warning(
-        "closer_blocked_kept_with_ai conversation=%s opportunity=%s step=%s reason=%s",
+        "closer_blocked_kept_with_ai conversation=%s opportunity=%s",
         conversation.id,
         state.opportunity_id,
-        state.step,
-        reason[:200],
     )
 
 

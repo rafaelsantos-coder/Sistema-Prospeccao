@@ -1674,7 +1674,7 @@ AI_OWNS_CONVERSATION_TEXT = (
 def _never_hand_to_human(decision: AIDecision, context: dict) -> AIDecision:
     decision = _keep_decision_with_ai(decision)
     if _reply_promises_human(decision.reply_text):
-        LOG.warning("ai_sdr_reply_promised_human reply=%s", (decision.reply_text or "")[:200])
+        LOG.warning("ai_sdr_reply_promised_human replaced=true")
         text, buttons = _ai_recovery_reply(context)
         if _explicit_human_request(context):
             text = f"{AI_OWNS_CONVERSATION_TEXT} {text.removeprefix('Certo! ')}"
