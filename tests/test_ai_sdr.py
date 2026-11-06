@@ -2943,8 +2943,12 @@ def test_model_only_purchase_intent_does_not_start_closer_without_customer_evide
     assert result.sales_state == "OFFERING"
 
 
-def test_explicit_human_request_routes_only_to_human():
+def test_explicit_human_request_stays_with_ai():
+    # Não existe atendimento humano (06/11): pedido de pessoa não vira handoff.
+    from app.services import ai_sdr
+
     decision = _base_journey_decision()
+    decision.reply_text = "Claro! Vou te transferir para um atendente."
     context = {
         "latest_customer_message": "Quero falar com uma pessoa",
         "lead": {
@@ -2957,12 +2961,14 @@ def test_explicit_human_request_routes_only_to_human():
     }
 
     result = _apply_journey_orchestration_policy(decision, context)
+    assert result.journey_state != "HUMAN_HANDOFF"
+    assert result.handoff_target != "HUMAN"
 
-    assert result.journey_state == "HUMAN_HANDOFF"
-    assert result.handoff_target == "HUMAN"
-    assert result.handoff_recommended is True
-    assert result.intent == "HUMAN_REQUEST"
-    assert result.followup_needed is False
+    result = ai_sdr._never_hand_to_human(result, context)
+    assert result.handoff_target == "NONE"
+    assert result.intent != "HUMAN_REQUEST"
+    assert result.reply_text.startswith(ai_sdr.AI_OWNS_CONVERSATION_TEXT)
+    assert not ai_sdr._reply_promises_human(result.reply_text)
 
 
 def test_model_cannot_handoff_human_without_explicit_human_request():

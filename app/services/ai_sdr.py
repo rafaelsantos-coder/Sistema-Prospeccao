@@ -196,6 +196,69 @@ def human_is_attending(db: Session, conversation: Conversation) -> bool:
     return any(body not in automated for body in bodies)
 
 
+HUMAN_HANDOFF_STATES = {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "ESCALATED"}
+
+
+def reclaim_conversation_for_ai(
+    db: Session,
+    conversation: Conversation,
+    ai_state: AIConversationState | None,
+) -> bool:
+    """Conversa que tinha sido passada a um humano volta para a IA.
+
+    Não existe mais atendimento humano: estados antigos de handoff (e vendas
+    ESCALATED) deixavam o cliente sem resposta ("Bom dia" de 06/11). Só fica
+    de fora quem um vendedor de verdade está atendendo (escreveu nas últimas
+    24 horas), para a IA não atropelar a pessoa.
+    """
+    from app.models import AIClosingState  # noqa: PLC0415
+
+    if not ai_state or ai_state.state not in HUMAN_HANDOFF_STATES:
+        return False
+    if not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_is_attending(db, conversation):
+        return False
+    previous = ai_state.state
+    closing = db.scalar(
+        select(AIClosingState).where(AIClosingState.conversation_id == conversation.id)
+    )
+    if closing and closing.step not in {"COMPLETED", "PLAN_CHANGE"}:
+        from app.services.ai_seller import active_closer, resume_closer  # noqa: PLC0415
+
+        if closing.step == "ESCALATED" and resume_closer(db, conversation, None):
+            reclaimed = "CLOSING"
+        else:
+            closer = active_closer(db)
+            if closer:
+                ai_state.state = "CLOSING"
+                ai_state.agent_id = closer.id
+                conversation.assigned_user_id = closer.user_id
+                reclaimed = "CLOSING"
+            else:
+                reclaimed = ""
+        if reclaimed:
+            LOG.warning(
+                "ai_conversation_reclaimed conversation=%s from=%s to=CLOSING",
+                conversation.id,
+                previous,
+            )
+            return True
+    binding = binding_for_conversation(db, conversation.id)
+    if not binding or not binding.agent or not binding.agent.active:
+        return False
+    ai_state.state = "AI_ACTIVE"
+    ai_state.agent_id = binding.agent_id
+    if binding.agent.user_id:
+        conversation.assigned_user_id = binding.agent.user_id
+    conversation.status = "EM_ATENDIMENTO"
+    db.flush()
+    LOG.warning(
+        "ai_conversation_reclaimed conversation=%s from=%s to=AI_ACTIVE",
+        conversation.id,
+        previous,
+    )
+    return True
+
+
 def enqueue_ai_job(
     db: Session,
     *,
@@ -218,6 +281,7 @@ def enqueue_ai_job(
             AIConversationState.conversation_id == conversation.id
         )
     )
+    reclaim_conversation_for_ai(db, conversation, ai_state)
     if ai_state and ai_state.state == "CLOSING" and settings.ai_seller_enabled:
         closer = db.get(AIAgentProfile, ai_state.agent_id)
         queue = queue_for_conversation(db, conversation.id)
@@ -244,14 +308,7 @@ def enqueue_ai_job(
             )
             return job
 
-    if ai_state and ai_state.state in {
-        "HANDOFF",
-        "HANDOFF_HUMAN",
-        "HUMAN_ACTIVE",
-        "OPT_OUT",
-        "ESCALATED",
-        "COMPLETED",
-    }:
+    if ai_state and ai_state.state in {"OPT_OUT", "COMPLETED"} | HUMAN_HANDOFF_STATES:
         LOG.info(
             "ai_job_skipped conversation=%s reason=terminal_state state=%s",
             conversation.id,
@@ -995,6 +1052,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = _promote_clear_purchase_to_closing(decision, context)
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
     decision = _one_question_per_message(decision)
+    decision = _never_hand_to_human(decision, context)
     decision._policy_observations = observations
     LOG.info("sdr_decision_timing %s", json.dumps(decision._timing, ensure_ascii=False))
     return decision
@@ -1418,40 +1476,105 @@ def _perform_handoff(
     )
 
 
-HUMAN_FALLBACK_NOTICE = (
-    "Quero te responder com precisão, então vou chamar um consultor da Sulnet "
-    "para continuar com você por aqui. Ele já vê toda a nossa conversa."
+CLOSER_PREPARING_TEXT = (
+    "Perfeito! Já estou preparando a sua contratação e te chamo por aqui "
+    "com o próximo passo em instantes."
+)
+CLOSER_START_MAX_ATTEMPTS = 6
+
+_GREETING_ONLY = re.compile(
+    r"^(?:oi+e?|ola|opa|e ai|eai|bom dia|boa tarde|boa noite|alo|hello)"
+    r"(?:[\s,!.]+(?:tudo bem|td bem|tudo bom|tudo certo|sulnet|pessoal))*[\s!?.,]*$"
 )
 
 
-def _send_human_fallback(
+def _greeting_word(folded: str) -> str:
+    for cue, word in (("bom dia", "Bom dia"), ("boa tarde", "Boa tarde"), ("boa noite", "Boa noite")):
+        if cue in folded:
+            return word
+    return "Olá"
+
+
+def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
+    """Resposta segura que a própria IA envia quando a resposta gerada não passou.
+
+    Não existe atendimento humano: em vez de chamar um consultor (ou ficar em
+    silêncio), a IA responde o cumprimento e puxa a próxima informação que
+    ainda falta para vender, sem repetir a última mensagem enviada.
+    """
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    facts = context.get("confirmed_facts") or {}
+    lead = context.get("lead") or {}
+    city = str(facts.get("city") or lead.get("city") or "").strip()
+    segment = str(facts.get("customer_type") or lead.get("confirmed_customer_type") or "").strip()
+    previous = set(_recent_outbound_messages_for_repetition(context))
+    greeting_only = bool(_GREETING_ONLY.match(latest))
+    greeting = _greeting_word(latest)
+
+    candidates: list[tuple[str, list[QuickReply]]] = []
+    if not previous:
+        candidates.append(
+            (
+                f"{greeting}! Aqui é da Sulnet 😊 Você procura internet para casa, "
+                "para empresa ou um plano de celular?",
+                [
+                    QuickReply(id="casa", label="Casa"),
+                    QuickReply(id="empresa", label="Empresa"),
+                    QuickReply(id="celular", label="Celular"),
+                ],
+            )
+        )
+    prefix = f"{greeting}! Vamos continuar de onde paramos. " if greeting_only else "Certo! "
+    if not city:
+        candidates.append((f"{prefix}Em qual cidade seria a instalação?", []))
+    if not segment:
+        candidates.append(
+            (
+                f"{prefix}Seria para sua casa ou para uma empresa?",
+                [QuickReply(id="casa", label="Casa"), QuickReply(id="empresa", label="Empresa")],
+            )
+        )
+    if city:
+        candidates.append(
+            (
+                f"{prefix}Posso te mostrar os planos disponíveis em {city} e já seguir "
+                "com a contratação por aqui. Quer ver as opções?",
+                [QuickReply(id="ver_planos", label="Ver planos"), QuickReply(id="duvida", label="Tenho uma dúvida")],
+            )
+        )
+    candidates.append(
+        (
+            f"{prefix}Me conta com suas palavras o que você precisa que eu resolvo por aqui.",
+            [],
+        )
+    )
+    for text, buttons in candidates:
+        if text not in previous:
+            return text, buttons
+    return candidates[-1]
+
+
+def _send_ai_recovery(
     db: Session,
     *,
     agent: AIAgentProfile,
     job: AIJob,
     run: AIRun,
     decision: AIDecision,
+    context: dict,
     reason: str,
 ) -> str:
-    """Depois de tentativas sem resposta aprovada, passa para um humano com aviso.
+    """A resposta gerada não passou na revisão: a IA mesma responde e segue.
 
-    Antes, o job era reagendado a cada 2 minutos indefinidamente (Guardião) ou
-    falhava em silêncio (integridade), e o cliente ficava sem resposta.
+    Substitui a antiga passagem para consultor (HUMAN_FALLBACK). O cliente
+    nunca fica sem resposta e a conversa continua com a IA (AI_ACTIVE). O
+    motivo vai para a auditoria, que alimenta a supervisão e o analista.
     """
-    fallback = decision.model_copy(deep=True)
-    fallback.reply_text = HUMAN_FALLBACK_NOTICE
-    fallback.quick_replies = []
-    fallback.handoff_target = "HUMAN"
-    fallback.handoff_recommended = True
-    fallback.handoff_reason = reason[:600]
-    fallback.sales_state = "READY_FOR_HUMAN_SALES"
-    fallback.journey_state = "HUMAN_HANDOFF"
-    fallback.customer_commitment = False
-    fallback.followup_needed = False
-
-    _apply_crm_decision(db, agent=agent, job=job, decision=fallback)
-    message = _send_autonomous_reply(db, agent=agent, job=job, decision=fallback)
-    _perform_handoff(db, agent=agent, job=job, decision=fallback)
+    recovery = decision.model_copy(deep=True)
+    recovery.reply_text, recovery.quick_replies = _ai_recovery_reply(context)
+    _keep_decision_with_ai(recovery)
+    recovery.customer_commitment = False
+    recovery.followup_needed = True
 
     state = db.scalar(
         select(AIConversationState).where(
@@ -1461,15 +1584,31 @@ def _send_human_fallback(
     if not state:
         state = AIConversationState(conversation_id=job.conversation_id, agent_id=agent.id)
         db.add(state)
-    state.state = "HANDOFF"
-    state.handoff_at = utcnow()
+    state.state = "AI_ACTIVE"
+    state.agent_id = agent.id
     state.last_run_id = run.id
+    db.flush()
 
-    output = fallback.model_dump()
-    output["human_fallback_reason"] = reason
+    _apply_crm_decision(db, agent=agent, job=job, decision=recovery)
+    message = _send_autonomous_reply(db, agent=agent, job=job, decision=recovery)
+    if message is not None:
+        from app.services.ai_followups import schedule_followup
+
+        schedule_followup(
+            db,
+            agent_id=agent.id,
+            queue_id=job.queue_id,
+            conversation_id=job.conversation_id,
+            source_message_id=job.message_id,
+            step=1,
+            pending_action=recovery.journey_pending_action or recovery.next_action,
+        )
+
+    output = recovery.model_dump()
+    output["ai_recovery_reason"] = reason
     run.status = "CONCLUIDO"
     run.error = reason[:2000]
-    run.reply_text = fallback.reply_text
+    run.reply_text = recovery.reply_text
     run.output_json = json.dumps(output, ensure_ascii=False, default=str)
     run.finished_at = utcnow()
     job.status = "CONCLUIDO"
@@ -1477,7 +1616,7 @@ def _send_human_fallback(
     write_audit(
         db,
         user=agent.user,
-        action="AI_SDR_HUMAN_FALLBACK",
+        action="AI_SDR_RECOVERY",
         entity_type="conversation",
         entity_id=job.conversation_id,
         payload={
@@ -1487,12 +1626,60 @@ def _send_human_fallback(
         },
     )
     LOG.warning(
-        "ai_sdr_human_fallback job=%s conversation=%s reason=%s",
+        "ai_sdr_recovery job=%s conversation=%s reason=%s",
         job.id,
         job.conversation_id,
         reason[:300],
     )
-    return "human_fallback"
+    return "ai_recovery"
+
+
+_HUMAN_PROMISE = re.compile(
+    r"(chamar|encaminh|transferi|direcion|passar (?:o seu|seu|a sua|sua|voce|o)|acionar|"
+    r"vai (?:te )?(?:ligar|chamar|retornar|entrar em contato)|entrara em contato|retornara)"
+    r"[^.?!]{0,60}(consultor|atendente|vendedor|especialista|humano)"
+    r"|(consultor|atendente|vendedor|especialista)[^.?!]{0,40}"
+    r"(vai|ira|vao)[^.?!]{0,20}(continuar|concluir|seguir|te (?:chamar|ligar|atender|responder)|entrar em contato|retornar)"
+)
+
+
+def _reply_promises_human(text: str | None) -> bool:
+    folded = _fold_sales_text(text or "")
+    if "vendedor ia" in folded:
+        folded = folded.replace("vendedor ia", "")
+    return bool(_HUMAN_PROMISE.search(folded))
+
+
+def _keep_decision_with_ai(decision: AIDecision) -> AIDecision:
+    """Não existe atendimento humano: nenhuma decisão sai como handoff para pessoa."""
+    if decision.handoff_target == "HUMAN":
+        decision.handoff_target = "NONE"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+    if decision.journey_state == "HUMAN_HANDOFF":
+        decision.journey_state = "DISCOVERY"
+    if decision.sales_state == "READY_FOR_HUMAN_SALES":
+        decision.sales_state = "OFFERING"
+    if decision.intent == "HUMAN_REQUEST":
+        decision.intent = "INTEREST"
+    return decision
+
+
+AI_OWNS_CONVERSATION_TEXT = (
+    "Aqui na Sulnet eu mesma resolvo tudo com você, inclusive a contratação, "
+    "sem precisar esperar ninguém."
+)
+
+
+def _never_hand_to_human(decision: AIDecision, context: dict) -> AIDecision:
+    decision = _keep_decision_with_ai(decision)
+    if _reply_promises_human(decision.reply_text):
+        LOG.warning("ai_sdr_reply_promised_human replaced=true")
+        text, buttons = _ai_recovery_reply(context)
+        if _explicit_human_request(context):
+            text = f"{AI_OWNS_CONVERSATION_TEXT} {text.removeprefix('Certo! ')}"
+        decision.reply_text, decision.quick_replies = text, buttons
+    return decision
 
 
 def _try_fast_purchase_path(
@@ -1585,18 +1772,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             AIConversationState.conversation_id == job.conversation_id
         )
     )
+    if current_state and current_state.state in HUMAN_HANDOFF_STATES:
+        job_conversation = db.get(Conversation, job.conversation_id)
+        if job_conversation and reclaim_conversation_for_ai(db, job_conversation, current_state):
+            closer = db.get(AIAgentProfile, current_state.agent_id)
+            if current_state.state == "CLOSING" and closer and closer.role_type == "CLOSER":
+                # Venda retomada pelo Vendedor IA: este job passa a ser dele.
+                job.agent_id = closer.id
+                from app.services.ai_seller import process_seller_job
+
+                return process_seller_job(db, job, closer)
     if (
         agent.role_type != "CLOSER"
         and current_state
-        and current_state.state in {
-            "CLOSING",
-            "HANDOFF",
-            "HANDOFF_HUMAN",
-            "HUMAN_ACTIVE",
-            "OPT_OUT",
-            "ESCALATED",
-            "COMPLETED",
-        }
+        and current_state.state in {"CLOSING", "OPT_OUT", "COMPLETED"} | HUMAN_HANDOFF_STATES
     ):
         job.status = "IGNORADO"
         job.error = f"Conversa já saiu do SDR: {current_state.state}"
@@ -1681,17 +1870,16 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             decision = run_ai_decision(agent, retry_context)
             integrity_issues = _journey_integrity_issues(decision, context)
 
-        if (
-            integrity_issues
-            and effective_mode == "AUTO"
-            and int(job.attempts or 0) >= 3
-        ):
-            return _send_human_fallback(
+        if integrity_issues and effective_mode == "AUTO":
+            # Já houve uma regeneração: a IA responde agora com a recuperação
+            # segura em vez de deixar o cliente esperando novas tentativas.
+            return _send_ai_recovery(
                 db,
                 agent=agent,
                 job=job,
                 run=run,
                 decision=decision,
+                context=context,
                 reason="Integridade da jornada bloqueou as respostas: " + ", ".join(integrity_issues),
             )
 
@@ -1738,6 +1926,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     output["policy_observations"] = list(decision._policy_observations)
     output["timing"] = dict(decision._timing)
     closer_started = False
+    retry_closer_job = False
 
     if effective_mode == "AUTO":
         try:
@@ -1809,13 +1998,14 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     },
                 )
 
-            if not guardian.should_send and int(job.attempts or 0) >= 2:
-                return _send_human_fallback(
+            if not guardian.should_send:
+                return _send_ai_recovery(
                     db,
                     agent=agent,
                     job=job,
                     run=run,
                     decision=decision,
+                    context=context,
                     reason=(
                         "Guardião bloqueou as respostas geradas: "
                         + (", ".join(guardian.issue_codes) or guardian.rationale)
@@ -1843,13 +2033,14 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 ]
 
             post_guard_issues = _journey_integrity_issues(decision, context)
-            if post_guard_issues and int(job.attempts or 0) >= 3:
-                return _send_human_fallback(
+            if post_guard_issues:
+                return _send_ai_recovery(
                     db,
                     agent=agent,
                     job=job,
                     run=run,
                     decision=decision,
+                    context=context,
                     reason="Integridade bloqueou a saída do Guardião: " + ", ".join(post_guard_issues),
                 )
             if post_guard_issues:
@@ -1885,6 +2076,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 decision=decision,
             )
             sent_message = None
+            skip_reply = False
             wants_closer = (
                 decision.handoff_target == "CLOSER_AI"
                 or (
@@ -1905,21 +2097,28 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     decision=decision,
                 )
                 if not closer_started:
-                    decision.handoff_target = "HUMAN"
-                    decision.handoff_recommended = True
-                    decision.handoff_reason = (
-                        "Vendedor IA de Fechamento indisponível no momento."
-                    )
-                    decision.journey_state = "HUMAN_HANDOFF"
+                    # Sem humano: o SDR segura a conversa, avisa o cliente uma
+                    # vez e o mesmo job tenta abrir o fechamento de novo em 2 min.
+                    decision.handoff_target = "NONE"
+                    decision.handoff_recommended = False
+                    decision.handoff_reason = ""
+                    decision.customer_commitment = False
                     decision.journey_pending_action = (
-                        "Transferir para atendimento humano por indisponibilidade operacional do Vendedor IA."
+                        "Abrir o fechamento com o Vendedor IA assim que ele estiver disponível."
                     )
-                    decision.reply_text = (
-                        "Perfeito! Vou encaminhar seu atendimento para um vendedor "
-                        "concluir a contratação com você."
-                    )
+                    decision.reply_text = CLOSER_PREPARING_TEXT
                     decision.quick_replies = []
                     decision.followup_needed = False
+                    retry_closer_job = int(job.attempts or 0) < CLOSER_START_MAX_ATTEMPTS
+                    skip_reply = CLOSER_PREPARING_TEXT in _recent_outbound_messages_for_repetition(context)
+                    write_audit(
+                        db,
+                        user=agent.user,
+                        action="AI_SDR_CLOSER_UNAVAILABLE",
+                        entity_type="conversation",
+                        entity_id=job.conversation_id,
+                        payload={"ai_run_id": run.id},
+                    )
                     fallback_conversation = db.get(Conversation, job.conversation_id)
                     if fallback_conversation and fallback_conversation.lead:
                         _persist_journey_memory(
@@ -1928,7 +2127,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                             conversation_id=fallback_conversation.id,
                         )
 
-            if not closer_started:
+            if not closer_started and not skip_reply:
                 sent_message = _send_autonomous_reply(
                     db,
                     agent=agent,
@@ -1944,13 +2143,6 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
-            elif not closer_started and decision.handoff_target == "HUMAN":
-                _perform_handoff(
-                    db,
-                    agent=agent,
-                    job=job,
-                    decision=decision,
-                )
             elif (
                 not closer_started
                 and sent_message is not None
@@ -2022,9 +2214,6 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             state.state = "SHADOW_REVIEW"
         elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
             state.state = "OPT_OUT"
-        elif decision.handoff_target == "HUMAN":
-            state.state = "HANDOFF"
-            state.handoff_at = utcnow()
         elif decision.service_redirect:
             state.state = "COMPLETED"
         else:
@@ -2037,6 +2226,11 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     job.status = "CONCLUIDO"
     job.error = None
+    if retry_closer_job:
+        job.status = "PENDENTE"
+        job.error = "Vendedor IA indisponível: nova tentativa de abrir o fechamento."
+        job.available_at = utcnow() + timedelta(minutes=2)
+        job.locked_at = None
 
     write_audit(
         db,

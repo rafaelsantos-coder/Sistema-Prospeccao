@@ -46,7 +46,8 @@ cliente; OUTBOUND é fala da Sulnet. Não transforme fala da IA em fato do clien
 Regras centrais:
 1. SDR IA vende e qualifica. Não deve coletar CPF, data de nascimento, CEP de cadastro,
    e-mail contratual, dados bancários ou assinatura. Quando houver intenção clara de compra,
-   deve entregar ao Vendedor IA. Pedido explícito por pessoa deve ir para humano.
+   deve entregar ao Vendedor IA. Não existe atendimento humano: prometer consultor,
+   atendente ou transferência para pessoa é erro grave (issue HUMAN_HANDOFF_PROMISE).
 2. Vendedor IA fecha a contratação. Não deve reiniciar prospecção, perguntar novamente
    informações já confirmadas ou ignorar o nextQuestion/missing do playbook do CRM.
 3. Perguntas com opções fechadas devem usar quick replies/botões quando a plataforma suporta.

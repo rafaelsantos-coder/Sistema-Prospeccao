@@ -2178,7 +2178,7 @@ def test_playbook_category_id_is_persisted_with_resolved_plan():
     ]
 
 
-def test_closer_ownership_allows_only_the_final_handoff_notice():
+def test_closer_ownership_requires_closing_state():
     from app.services.ai_seller import CRMIntegrationError, _assert_closer_owns_conversation
 
     agent = SimpleNamespace(id=2, role_type="CLOSER")
@@ -2192,18 +2192,12 @@ def test_closer_ownership_allows_only_the_final_handoff_notice():
             return SimpleNamespace(state=self.state, agent_id=2)
 
     _assert_closer_owns_conversation(_Db("CLOSING"), conversation=conversation, agent=agent)
-    _assert_closer_owns_conversation(
-        _Db("HANDOFF_HUMAN"),
-        conversation=conversation,
-        agent=agent,
-        handoff_notice=True,
-    )
     try:
-        _assert_closer_owns_conversation(_Db("HANDOFF_HUMAN"), conversation=conversation, agent=agent)
+        _assert_closer_owns_conversation(_Db("AI_ACTIVE"), conversation=conversation, agent=agent)
     except CRMIntegrationError:
         pass
     else:
-        raise AssertionError("Mensagem comum não pode sair depois do handoff humano.")
+        raise AssertionError("Vendedor IA não envia em conversa que voltou ao SDR.")
 
 
 def test_seller_followup_blocked_by_guardian_is_cancelled_not_retried(monkeypatch):
