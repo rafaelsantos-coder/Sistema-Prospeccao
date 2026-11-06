@@ -97,6 +97,11 @@ Regras obrigatórias:
 9. CORRECT_STATE só deve ser usado quando o contexto provar o estado correto. Não adivinhe.
 10. Se houver dúvida factual, não crie um problema novo. Prefira APPROVE quando não houver
     evidência objetiva de erro.
+11. Não existe atendimento humano na Sulnet digital. Mensagem que promete consultor, atendente,
+    vendedor humano ou transferência para uma pessoa deve ser REWRITE: a própria IA responde a
+    dúvida do cliente (ou faz a próxima pergunta da venda) e segue o atendimento.
+12. Mensagem do cliente sem resposta é o pior erro: prefira REWRITE a BLOCK sempre que for
+    possível corrigir a resposta, para o cliente receber uma resposta agora.
 
 Para REWRITE, preencha reply_text com a mensagem final pronta para envio.
 Para perguntas fechadas, preencha suggested_buttons com 2 ou 3 rótulos curtos.

@@ -3186,7 +3186,7 @@ def _seller_question_reply(
         collected["_unanswered_questions"] = pending[-10:]
         body = (
             "Essa informação eu não tenho confirmada aqui, e prefiro não te passar "
-            "nada errado. Se quiser, posso chamar um consultor da Sulnet."
+            "nada errado. Já registrei sua dúvida e sigo com a sua contratação."
         )
     return f"{body}\n\n{_prompt_for_step(state, collected)}"
 
@@ -3819,6 +3819,8 @@ def _after_signed_text(state: AIClosingState, collected: dict[str, Any]) -> str:
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == COMBO_MOBILE_STEP:
         return black_campaign.combo_mobile_prompt(int(collected.get("_combo_page") or 1))
+    if state.step == SALE_ADJUST_STEP:
+        return "Me diz o que você quer ajustar: o plano, a forma de pagamento ou o dia de vencimento?"
     if _sdr_ia_mode(collected) and state.step in SDR_IA_FORBIDDEN_STEPS:
         return (
             "Vou seguir apenas com os dados necessários para concluir sua contratação "
@@ -3945,6 +3947,7 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
 SELLER_CUSTOMER_INPUT_STEPS = {
     "COMBO_MOBILE_PLAN",
     "CONFIRM_SALE",
+    "SALE_ADJUST",
     "NAME",
     "CPF",
     "BIRTH_DATE",
@@ -4327,48 +4330,6 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50, since=None)
         db.flush()
     return resumed
 
-def _handoff_to_human(
-    db: Session,
-    *,
-    state: AIClosingState,
-    conversation: Conversation,
-    agent: AIAgentProfile,
-    reason: str,
-) -> None:
-    queue = queue_for_conversation(db, conversation.id)
-    owner = assign_queue_user(db, queue) if queue else None
-    if owner and owner.id == agent.user_id:
-        owner = None
-    conversation.assigned_user_id = owner.id if owner else None
-    conversation.status = "EM_ATENDIMENTO" if owner else "EM_FILA"
-    if conversation.lead:
-        conversation.lead.assigned_user_id = owner.id if owner else conversation.lead.assigned_user_id
-    db.add(
-        ConversationAssignment(
-            conversation_id=conversation.id,
-            user_id=owner.id if owner else None,
-            assigned_by_id=agent.user_id,
-            event="AI_CLOSER_HANDOFF_HUMAN",
-        )
-    )
-    state.step = "ESCALATED"
-    state.last_error = reason[:1000]
-    ai_state = db.scalar(
-        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
-    )
-    if ai_state:
-        ai_state.state = "HANDOFF_HUMAN"
-        ai_state.handoff_at = utcnow()
-    write_audit(
-        db,
-        user=agent.user,
-        action="AI_CLOSER_HANDOFF_HUMAN",
-        entity_type="conversation",
-        entity_id=conversation.id,
-        payload={"assigned_user_id": owner.id if owner else None, "reason": reason[:300]},
-    )
-
-
 def _conversation_history_rows(db: Session, conversation_id: int) -> list[dict[str, Any]]:
     rows = db.execute(
         select(Message.direction, Message.body)
@@ -4431,7 +4392,12 @@ def start_closing_from_sdr(
         db.flush()
     else:
         if state.step == "COMPLETED":
-            return False
+            # Tentativa encerrada (recusa/desistência): o cliente voltou a querer
+            # comprar, então o fechamento recomeça do ponto em que parou.
+            if _contract_is_signed(str(state.contract_status or "")):
+                return False
+            state.completed_at = None
+            state.step = _resume_step_for(state, _load_collected(state))
         state.agent_id = closer.id
         if not state.plan_label:
             state.plan_label = plan_label
@@ -4451,12 +4417,24 @@ def start_closing_from_sdr(
     collected = _load_collected(state)
     if black_combo and "_black_combo" not in collected:
         collected["_black_combo"] = {"stage": black_campaign.COMBO_STAGE_FIBER}
+    plan_change = state.step == PLAN_CHANGE_STEP
     if state.step == "ESCALATED":
+        # Não existe mais transferência para humano: vendas antigas paradas em
+        # ESCALATED voltam para a IA do ponto em que estavam.
         resume_step = str(collected.pop("_resume_step", "") or "").strip()
-        if not resume_step:
-            # Escalonamento real para humano não deve ser reaberto automaticamente.
-            return False
-        state.step = resume_step
+        state.step = resume_step or _resume_step_for(state, collected)
+        state.last_error = ""
+        _save_collected(state, collected)
+    elif plan_change:
+        # Cliente pediu outro plano no resumo: o SDR renegociou e devolveu.
+        new_label = plan_label if plan_label != "plano combinado" else ""
+        if new_label:
+            state.plan_label = new_label
+        new_price = _money(getattr(decision, "offer_price", None))
+        if new_price is not None:
+            state.offer_price = new_price
+        collected.pop("_sale_accepted", None)
+        state.step = "PLAN_CONFIRM"
         state.last_error = ""
         _save_collected(state, collected)
     phone = _digits(conversation.contact.phone if conversation.contact else "")
@@ -4547,7 +4525,7 @@ def start_closing_from_sdr(
     prompt = ""
     try:
         _create_crm_if_ready(db, state=state, conversation=conversation)
-        if state.opportunity_id:
+        if state.opportunity_id and not plan_change:
             playbook_client = SulnetCRMClient.from_settings()
             prompt = _advance_with_playbook(
                 playbook_client,
@@ -4639,9 +4617,12 @@ def _finish_run(
     ai_state = db.scalar(
         select(AIConversationState).where(AIConversationState.conversation_id == job.conversation_id)
     )
-    if ai_state:
+    if ai_state and state.step == PLAN_CHANGE_STEP:
+        # A conversa voltou para o SDR renegociar o plano.
+        ai_state.last_run_id = run.id
+    elif ai_state:
         ai_state.agent_id = state.agent_id
-        ai_state.state = "CLOSING" if state.step not in {"COMPLETED", "ESCALATED"} else state.step
+        ai_state.state = "CLOSING" if state.step != "COMPLETED" else "COMPLETED"
         ai_state.last_run_id = run.id
         ai_state.updated_at = utcnow()
 
@@ -4716,9 +4697,13 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         job.status = "IGNORADO"
         job.error = "Estado do fechamento não encontrado."
         return "skipped"
-    if state.step in {"COMPLETED", "ESCALATED"}:
+    if state.step in {"COMPLETED", PLAN_CHANGE_STEP}:
         job.status = "IGNORADO"
         return "skipped"
+    if state.step == "ESCALATED":
+        # Legado: venda que tinha ido para um consultor volta para a IA.
+        state.step = _resume_step_for(state, _load_collected(state))
+        state.last_error = ""
 
     run = AIRun(
         job_id=job.id,
@@ -4746,7 +4731,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         return "configuration"
 
     collected = _load_collected(state)
-    text = (message.body or "").strip()
+    from app.services.audio_transcription import UNREADABLE_BODY, strip_transcription_prefix
+
+    raw_text = (message.body or "").strip()
+    audio_unreadable = raw_text == UNREADABLE_BODY
+    text = strip_transcription_prefix(raw_text)
     reply = ""
     output: dict[str, Any] = {"step_before": state.step}
     client = SulnetCRMClient.from_settings()
@@ -4764,12 +4753,15 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     }
 
     try:
-        contract_knowledge_reply = _seller_contract_knowledge_reply(
+        contract_knowledge_reply = "" if audio_unreadable else _seller_contract_knowledge_reply(
             state,
             collected,
             text,
         )
-        if contract_knowledge_reply:
+        if audio_unreadable:
+            reply = f"Não consegui ouvir o seu áudio. Pode me mandar por escrito? {_prompt_for_step(state, collected)}"
+
+        elif contract_knowledge_reply:
             reply = contract_knowledge_reply
 
         elif _seller_existing_customer_plan_change_requested(
@@ -4982,14 +4974,19 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     plan_label=state.plan_label,
                 )
                 if interpreted.human_requested or interpreted.wants_contest:
-                    _handoff_to_human(
+                    _record_ai_block(
                         db,
                         state=state,
                         conversation=conversation,
                         agent=agent,
-                        reason="Cliente solicitou análise/contestação após reprovação de crédito.",
+                        reason="Cliente quer contestar a reprovação de crédito.",
                     )
-                    reply = "Certo. Encaminhei seu caso para análise de um atendente, com todo o histórico da contratação."
+                    reply = (
+                        "Entendi. A análise de crédito é feita automaticamente pelo sistema da Sulnet "
+                        "e eu não consigo alterar o resultado por aqui. Você pode seguir com o CPF de "
+                        "outra pessoa da família ou encerrar esta tentativa. "
+                        + _prompt_for_step(state, collected)
+                    )
                 else:
                     reply = _prompt_for_step(state, collected)
 
@@ -5105,14 +5102,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 if answer == "NAO_INFORMADO":
                     answer = interpreted.confirmation
             if interpreted.human_requested:
-                _handoff_to_human(
-                    db,
-                    state=state,
-                    conversation=conversation,
-                    agent=agent,
-                    reason="Cliente pediu atendente durante confirmação do plano.",
-                )
-                reply = "Certo. Encaminhei a conversa para um atendente com todo o histórico."
+                reply = f"{AI_OWNS_NOTICE} {_prompt_for_step(state, collected)}"
             elif answer == "SIM":
                 try:
                     client.update_opportunity(
@@ -5239,17 +5229,16 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
             ) == "categoryid"
             if not category_saved or (still_pending and category_attempts >= 2):
-                _handoff_to_human(
+                _record_ai_block(
                     db,
                     state=state,
                     conversation=conversation,
                     agent=agent,
                     reason="Categoria do produto não registrada no CRM após confirmação do cliente.",
                 )
-                reply = (
-                    "Já registrei suas respostas. Para você não precisar repetir nada, "
-                    "um consultor da Sulnet vai concluir este último registro com você por aqui."
-                )
+                state.step = "WAITING_CRM_READY"
+                _save_collected(state, collected)
+                reply = CLOSER_HOLD_NOTICE
 
         elif state.step == "PLAYBOOK_DYNAMIC_FIELD" and _playbook_code_key(
             str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
@@ -5544,31 +5533,22 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 )
                 answer = interpreted.confirmation
             if interpreted.human_requested:
-                _handoff_to_human(
-                    db,
-                    state=state,
-                    conversation=conversation,
-                    agent=agent,
-                    reason="Cliente pediu atendente no resumo da contratação.",
-                )
-                reply = "Certo. Encaminhei a conversa para um atendente com todo o histórico."
+                reply = f"{AI_OWNS_NOTICE} {_sale_acceptance_prompt(state, collected, reminder=True)}"
             elif answer == "SIM":
                 collected["_sale_accepted"] = True
                 collected["_sale_accepted_at"] = utcnow().isoformat()
                 collected["_sale_accepted_message_id"] = message.id
                 reply = _finish_sale_contract(client, state, collected)
             elif answer == "NAO":
-                _handoff_to_human(
-                    db,
-                    state=state,
-                    conversation=conversation,
-                    agent=agent,
-                    reason="Cliente não confirmou o resumo da contratação e quer ajustar.",
-                )
                 combo = collected.get("_black_combo") if isinstance(collected.get("_black_combo"), dict) else {}
+                state.step = SALE_ADJUST_STEP
+                _save_collected(state, collected)
                 reply = COMBO_MOBILE_DECLINE_NOTICE if combo.get("stage") == black_campaign.COMBO_STAGE_MOBILE else SALE_DECLINE_NOTICE
             else:
                 reply = _sale_acceptance_prompt(state, collected, reminder=True)
+
+        elif state.step == SALE_ADJUST_STEP:
+            reply = _handle_sale_adjustment(db, state=state, conversation=conversation, collected=collected, text=text)
 
         elif state.step == "WAITING_CRM_READY":
             playbook_step, playbook_question = _query_playbook_guidance(
@@ -5637,6 +5617,9 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             state.step = "WAITING_CONTRACT"
 
         reply = _sdr_ia_auto_advance(state, collected, reply)
+        # Rodada sem falha do CRM: encerra o bloqueio anterior, se havia.
+        collected.pop("_hold_retries", None)
+        collected.pop("_hold_notice_step", None)
         _save_collected(state, collected)
         if reply:
             _send_step_message(
@@ -5663,6 +5646,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 )
                 conversation.status = "RESOLVIDO"
                 conversation.closed_at = utcnow()
+        if state.step == PLAN_CHANGE_STEP:
+            _return_to_sdr_for_plan_change(db, state=state, conversation=conversation)
         _record_activity(
             db,
             conversation=conversation,
@@ -5740,19 +5725,19 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             job.locked_at = None
             return "skipped"
         if kind == "contract" or (kind in {"config", "logic"} and attempts >= 1):
-            # O CRM não vai gerar o contrato/aceitar a operação só com novas
-            # tentativas (ex.: "Nenhum template de contrato para o produto").
-            job.status = "CONCLUIDO"
-            job.locked_at = None
-            _escalate_closer_failure(
+            # O CRM não gera o contrato só com novas tentativas imediatas
+            # (ex.: "Nenhum template de contrato"): a venda fica com a IA, o
+            # cliente é avisado e o job volta a tentar mais tarde.
+            _retry_job_later(job, state)
+            _keep_sale_with_ai(
                 db,
                 state=state,
                 conversation=conversation,
                 agent=agent,
                 reason=f"CRM recusou ({kind}) na etapa {state.step}: {crm_message}",
-                notice=CONTRACT_HANDOFF_NOTICE if kind == "contract" else CLOSER_HANDOFF_NOTICE,
+                notice=CONTRACT_HOLD_NOTICE if kind == "contract" else CLOSER_HOLD_NOTICE,
             )
-            return "escalated"
+            return "held"
         if kind == "data" and attempts >= 1:
             # Dado recusado pelo CRM: não repete o mesmo PATCH para sempre.
             errors = collected.setdefault("_data_errors", {})
@@ -5761,15 +5746,16 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             job.status = "CONCLUIDO"
             job.locked_at = None
             if errors[state.step] >= 2:
-                _escalate_closer_failure(
+                _retry_job_later(job, state)
+                _keep_sale_with_ai(
                     db,
                     state=state,
                     conversation=conversation,
                     agent=agent,
                     reason=f"CRM recusou o dado da etapa {state.step} duas vezes: {crm_message}",
-                    notice=CLOSER_HANDOFF_NOTICE,
+                    notice=CLOSER_HOLD_NOTICE,
                 )
-                return "escalated"
+                return "held"
             try:
                 _send_step_message(
                     db,
@@ -5819,18 +5805,18 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         collected["_retry_later_cycles"] = cycles
         _save_collected(state, collected)
         if cycles > 3:
-            # ~15 minutos sem conseguir falar com o CRM: um consultor assume.
-            job.status = "CONCLUIDO"
-            job.locked_at = None
-            _escalate_closer_failure(
+            # ~15 minutos sem CRM: a venda continua com a IA, que tenta de novo
+            # a cada 30 minutos e avisa o supervisor.
+            _retry_job_later(job, state)
+            _keep_sale_with_ai(
                 db,
                 state=state,
                 conversation=conversation,
                 agent=agent,
                 reason=f"CRM indisponível por mais de 15 minutos na etapa {state.step}: {crm_message}",
-                notice=CLOSER_HANDOFF_NOTICE,
+                notice=CLOSER_HOLD_NOTICE,
             )
-            return "escalated"
+            return "held"
 
         run.reply_text = ""
         job.status = "PENDENTE"
@@ -5851,41 +5837,52 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         run.status = "FALHOU"
         run.error = str(exc)[:1200]
         run.finished_at = utcnow()
-        job.status = "FALHOU"
         job.error = str(exc)[:1200]
-        _escalate_closer_failure(
+        _retry_job_later(job, state)
+        _keep_sale_with_ai(
             db,
             state=state,
             conversation=conversation,
             agent=agent,
-            reason=f"Falha inesperada no Vendedor IA: {type(exc).__name__}",
-            notice=CLOSER_HANDOFF_NOTICE,
+            reason=f"Falha inesperada no Vendedor IA: {type(exc).__name__}: {str(exc)[:200]}",
+            notice=CLOSER_HOLD_NOTICE,
         )
-        return "failed"
+        return "held"
 
 
-CLOSER_HANDOFF_NOTICE = (
-    "Para não te deixar esperando, um consultor da Sulnet vai concluir sua contratação "
-    "com você por aqui. Tudo o que você já informou está salvo."
+AI_OWNS_NOTICE = (
+    "Eu mesma concluo tudo com você por aqui, sem precisar esperar ninguém."
 )
-CONTRACT_HANDOFF_NOTICE = (
-    "Sua contratação já está registrada. Um consultor da Sulnet vai concluir a emissão "
-    "do contrato e te enviar o link de assinatura por aqui."
+CLOSER_HOLD_NOTICE = (
+    "Tive um problema no sistema para registrar essa etapa, mas tudo o que você "
+    "informou está salvo. Já estou resolvendo e te chamo por aqui assim que concluir."
+)
+CONTRACT_HOLD_NOTICE = (
+    "Sua contratação já está registrada. Estou finalizando a emissão do contrato "
+    "e te envio o link de assinatura por aqui assim que ele sair."
 )
 DATA_RETRY_PREFIX = "Não consegui registrar essa informação no sistema."
 _CLOSER_NOTICE_PREFIXES = (
     "Sem problema, nada foi contratado.",
     "Sem problema, o plano móvel ainda não foi contratado",
     "Voltei por aqui para concluir a sua contratação.",
-    CLOSER_HANDOFF_NOTICE[:60],
-    CONTRACT_HANDOFF_NOTICE[:60],
+    CLOSER_HOLD_NOTICE[:60],
+    CONTRACT_HOLD_NOTICE[:60],
+    AI_OWNS_NOTICE[:50],
+    "Não consegui ouvir o seu áudio.",
+    "Sem problema, nada foi contratado ainda.",
+    "Combinado! Me diz qual plano",
+    "Perfeito! Seguimos só com a sua internet",
+    "Certo, encerramos esta tentativa",
+    "Me diz o que você quer ajustar",
+    "Entendi. A análise de crédito é feita automaticamente",
     DATA_RETRY_PREFIX,
     "Tive uma instabilidade momentânea no sistema",
 )
 
 
 def _closer_failure_kind(exc: Exception) -> str:
-    """Classifica a falha para decidir entre tentar de novo, perguntar de novo ou passar a um consultor.
+    """Classifica a falha para decidir entre tentar de novo agora, perguntar de novo ou segurar a venda.
 
     - transient: CRM/WhatsApp fora do ar ou lento (rede, 429, 502-504, 52x, 500 em leitura);
     - contract: o CRM recusou gerar o contrato (template ausente, campos pendentes);
@@ -5918,7 +5915,62 @@ def _closer_failure_kind(exc: Exception) -> str:
     return "transient"
 
 
-def _escalate_closer_failure(
+AI_HOLD_RETRY = timedelta(minutes=30)
+AI_HOLD_MAX_RETRIES = 12  # ~6 horas tentando antes de parar de reprocessar
+SALE_ADJUST_STEP = "SALE_ADJUST"
+PLAN_CHANGE_STEP = "PLAN_CHANGE"
+
+
+def _resume_step_for(state: AIClosingState, collected: dict[str, Any]) -> str:
+    if state.sign_url and not _contract_is_signed(str(state.contract_status or "")):
+        return "WAITING_SIGNATURE"
+    if state.opportunity_id:
+        return "WAITING_CRM_READY"
+    return "CPF" if collected.get("name") else "NAME"
+
+
+def _record_ai_block(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    agent: AIAgentProfile,
+    reason: str,
+) -> None:
+    """Registra para a supervisão o que a IA não conseguiu resolver sozinha.
+
+    Não tira a conversa da IA: vira alerta no painel/auditoria para o
+    programador da IA corrigir a causa (CRM, template, regra).
+    """
+    state.last_error = reason[:1000]
+    _record_activity(
+        db,
+        conversation=conversation,
+        agent=agent,
+        outcome="VENDEDOR_IA_BLOQUEIO",
+        description=(
+            f"Vendedor IA segue com a venda, mas precisa de correção: {reason} "
+            f"Oportunidade CRM: {state.opportunity_id or '-'}. Plano: {state.plan_label or '-'}."
+        ),
+    )
+    write_audit(
+        db,
+        user=agent.user,
+        action="AI_CLOSER_BLOCKED",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={"step": state.step, "opportunity_id": state.opportunity_id, "reason": reason[:500]},
+    )
+    LOG.warning(
+        "closer_blocked_kept_with_ai conversation=%s opportunity=%s step=%s reason=%s",
+        conversation.id,
+        state.opportunity_id,
+        state.step,
+        reason[:200],
+    )
+
+
+def _keep_sale_with_ai(
     db: Session,
     *,
     state: AIClosingState,
@@ -5927,38 +5979,121 @@ def _escalate_closer_failure(
     reason: str,
     notice: str,
 ) -> None:
-    """Passa a venda a um consultor com o motivo e avisa o cliente: nunca fica em silêncio."""
-    _handoff_to_human(db, state=state, conversation=conversation, agent=agent, reason=reason)
-    _record_activity(
-        db,
-        conversation=conversation,
-        agent=agent,
-        outcome="VENDEDOR_IA_TRANSFERIU",
-        description=(
-            f"Vendedor IA transferiu a venda para um consultor. Motivo: {reason} "
-            f"Oportunidade CRM: {state.opportunity_id or '-'}. Plano: {state.plan_label or '-'}."
-        ),
-    )
-    LOG.warning(
-        "closer_escalated conversation=%s opportunity=%s reason=%s",
-        conversation.id,
-        state.opportunity_id,
-        reason[:200],
-    )
+    """Falha que a IA não resolve na hora: a venda continua com a IA.
+
+    Antes a venda ia para um consultor (ESCALATED). Agora a etapa fica salva,
+    o cliente recebe um aviso uma única vez por bloqueio, a supervisão é
+    alertada e o job volta a tentar mais tarde. Se o cliente escrever, o
+    Vendedor IA continua respondendo normalmente.
+    """
+    _record_ai_block(db, state=state, conversation=conversation, agent=agent, reason=reason)
+    collected = _load_collected(state)
+    if collected.get("_hold_notice_step") == state.step:
+        return
     try:
-        _send_text(db, agent=agent, conversation=conversation, text=notice, handoff_notice=True)
+        _send_text(db, agent=agent, conversation=conversation, text=notice)
+        collected["_hold_notice_step"] = state.step
+        _save_collected(state, collected)
     except Exception:
-        LOG.exception("closer_escalation_notice_failed conversation=%s", conversation.id)
+        LOG.exception("closer_hold_notice_failed conversation=%s", conversation.id)
+
+
+def _retry_job_later(job: AIJob, state: AIClosingState) -> None:
+    collected = _load_collected(state)
+    retries = int(collected.get("_hold_retries") or 0) + 1
+    collected["_hold_retries"] = retries
+    _save_collected(state, collected)
+    job.locked_at = None
+    if retries > AI_HOLD_MAX_RETRIES:
+        job.status = "FALHOU"
+        return
+    job.status = "PENDENTE"
+    job.attempts = 0
+    job.available_at = utcnow() + AI_HOLD_RETRY
+
+
+_ADJUST_PAYMENT = re.compile(r"pagament|boleto|debito|forma|cartao|pix")
+_ADJUST_DUE_DAY = re.compile(r"vencimento|\bdia\b|data")
+_ADJUST_PLAN = re.compile(r"plano|mega|giga|\bgb\b|velocidade|outro|trocar|mudar|valor|preco|caro")
+_ADJUST_ONLY_INTERNET = re.compile(r"so (a )?internet|sem (o )?(movel|celular|chip)|so com a internet")
+_ADJUST_QUIT = re.compile(r"desist|cancel|encerr|deixa pra la|nao quero mais|nao vou (mais )?contratar|nao quero contratar")
+_ADJUST_NOTHING = re.compile(r"^(nada|ta certo|esta certo|pode gerar|confirmo|sim|ok|tudo certo)\b")
+
+
+def _handle_sale_adjustment(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    collected: dict[str, Any],
+    text: str,
+) -> str:
+    """Cliente recusou o resumo: a própria IA ajusta (antes ia para um consultor)."""
+    folded = _norm(text)
+    mobile = _is_mobile_plan(state, collected)
+    combo = collected.get("_black_combo") if isinstance(collected.get("_black_combo"), dict) else {}
+    if _ADJUST_QUIT.search(folded):
+        state.step = "COMPLETED"
+        state.completed_at = utcnow()
+        return (
+            "Certo, encerramos esta tentativa sem contratar nada. "
+            "Se mudar de ideia, é só me chamar por aqui."
+        )
+    if combo.get("stage") == black_campaign.COMBO_STAGE_MOBILE and _ADJUST_ONLY_INTERNET.search(folded):
+        state.step = "COMPLETED"
+        state.completed_at = utcnow()
+        return (
+            "Perfeito! Seguimos só com a sua internet, que já está contratada. "
+            "Qualquer coisa, é só me chamar por aqui."
+        )
+    if _ADJUST_PAYMENT.search(folded):
+        state.step = "MOBILE_PAYMENT_METHOD" if mobile else "BILLING_PAYMENT_METHOD"
+        _save_collected(state, collected)
+        return _prompt_for_step(state, collected)
+    if _ADJUST_DUE_DAY.search(folded):
+        state.step = "MOBILE_DUE_DAY" if mobile else "BILLING_DUE_DAY"
+        _save_collected(state, collected)
+        return _prompt_for_step(state, collected)
+    if _ADJUST_PLAN.search(folded):
+        # A troca de dono para o SDR acontece depois do envio desta resposta.
+        state.step = PLAN_CHANGE_STEP
+        return "Combinado! Me diz qual plano você prefere que eu ajusto a proposta por aqui."
+    if _ADJUST_NOTHING.search(folded):
+        state.step = SALE_ACCEPTANCE_STEP
+        _save_collected(state, collected)
+        return _sale_acceptance_prompt(state, collected, reminder=True)
+    return "Me diz o que você quer ajustar: o plano, a forma de pagamento ou o dia de vencimento?"
+
+
+def _return_to_sdr_for_plan_change(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+) -> None:
+    from app.services.ai_sdr import binding_for_conversation  # noqa: PLC0415
+
+    from app.services.ai_followups import cancel_pending_followups  # noqa: PLC0415
+
+    binding = binding_for_conversation(db, conversation.id)
+    cancel_pending_followups(db, conversation.id, reason="TROCA_DE_PLANO_SDR")
+    ai_state = db.scalar(
+        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+    )
+    if ai_state and binding and binding.agent:
+        # A próxima resposta do cliente vai para o SDR (enqueue_ai_job olha o estado).
+        ai_state.state = "AI_ACTIVE"
+        ai_state.agent_id = binding.agent_id
 
 
 SALE_DECLINE_NOTICE = (
-    "Sem problema, nada foi contratado. Um consultor da Sulnet vai "
-    "continuar com você por aqui para ajustar o que for preciso."
+    "Sem problema, nada foi contratado ainda. O que você quer ajustar: "
+    "o plano, a forma de pagamento ou o dia de vencimento?"
 )
 COMBO_MOBILE_DECLINE_NOTICE = (
     "Sem problema, o plano móvel ainda não foi contratado; a sua internet continua "
-    "contratada normalmente. Um consultor da Sulnet vai continuar com você por aqui "
-    "para ajustar o que for preciso."
+    "contratada normalmente. O que você quer ajustar no móvel: o plano, a forma de "
+    "pagamento ou o dia de vencimento? Se preferir seguir só com a internet, é só me dizer."
 )
 RESUME_NOTICE = (
     "Voltei por aqui para concluir a sua contratação. Só um instante enquanto "
@@ -6396,14 +6531,16 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 if kind == "ownership":
                     pass
                 elif kind == "contract" or (kind != "transient" and failures >= 3) or failures >= 20:
-                    _escalate_closer_failure(
+                    _keep_sale_with_ai(
                         db,
                         state=state,
                         conversation=conversation,
                         agent=agent,
                         reason=f"Contrato não gerado pelo CRM ({kind}): {str(exc)[:300]}",
-                        notice=CONTRACT_HANDOFF_NOTICE,
+                        notice=CONTRACT_HOLD_NOTICE,
                     )
+                    # Próxima tentativa em 30 minutos (o poller ordena por updated_at).
+                    state.updated_at = utcnow() + AI_HOLD_RETRY
                     processed += 1
 
     return processed

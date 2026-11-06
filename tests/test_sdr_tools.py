@@ -120,7 +120,9 @@ def test_sdr_agent_receives_catalog_and_manual_tools(monkeypatch):
     assert isinstance(decision, AIDecision)
 
 
-def test_human_fallback_sends_notice_and_hands_off(monkeypatch):
+def test_ai_recovery_answers_and_keeps_the_conversation_with_ai(monkeypatch):
+    # 06/11: "Bom dia" sem resposta e "vou chamar um consultor". Agora a IA
+    # mesma responde e a conversa continua AI_ACTIVE.
     calls = []
     monkeypatch.setattr(ai_sdr, "_apply_crm_decision", lambda db, **kw: calls.append(("crm", kw["decision"].handoff_target)))
     monkeypatch.setattr(
@@ -128,8 +130,10 @@ def test_human_fallback_sends_notice_and_hands_off(monkeypatch):
         "_send_autonomous_reply",
         lambda db, **kw: calls.append(("send", kw["decision"].reply_text)) or SimpleNamespace(id=77),
     )
-    monkeypatch.setattr(ai_sdr, "_perform_handoff", lambda db, **kw: calls.append(("handoff", kw["decision"].handoff_reason)))
     monkeypatch.setattr(ai_sdr, "write_audit", lambda db, **kw: calls.append(("audit", kw["action"])))
+    monkeypatch.setattr(
+        "app.services.ai_followups.schedule_followup", lambda db, **kw: calls.append(("followup", kw["step"]))
+    )
 
     class _Db:
         added = []
@@ -140,22 +144,66 @@ def test_human_fallback_sends_notice_and_hands_off(monkeypatch):
         def add(self, obj):
             self.added.append(obj)
 
+        def flush(self):
+            return None
+
     db = _Db()
-    job = SimpleNamespace(id=1, conversation_id=10, status="PROCESSANDO", error=None, attempts=2)
+    job = SimpleNamespace(id=1, conversation_id=10, queue_id=4, message_id=9, status="PROCESSANDO", error=None, attempts=1)
     run = SimpleNamespace(id=5, status="PROCESSANDO", error=None, reply_text="", output_json="", finished_at=None)
     agent = SimpleNamespace(id=3, user=None)
+    decision = _decision()
+    decision.handoff_target = "HUMAN"
 
-    outcome = ai_sdr._send_human_fallback(
-        db, agent=agent, job=job, run=run, decision=_decision(), reason="Guardião bloqueou: X",
+    outcome = ai_sdr._send_ai_recovery(
+        db,
+        agent=agent,
+        job=job,
+        run=run,
+        decision=decision,
+        context={"latest_customer_message": "Bom dia", "history": [], "confirmed_facts": {}, "lead": {}},
+        reason="Guardião bloqueou: X",
     )
 
-    assert outcome == "human_fallback"
-    assert ("send", ai_sdr.HUMAN_FALLBACK_NOTICE) in calls
-    assert ("crm", "HUMAN") in calls
-    assert ("audit", "AI_SDR_HUMAN_FALLBACK") in calls
+    assert outcome == "ai_recovery"
+    sent = [item[1] for item in calls if item[0] == "send"][0]
+    assert sent.startswith("Bom dia! Aqui é da Sulnet")
+    assert ("crm", "NONE") in calls
+    assert ("audit", "AI_SDR_RECOVERY") in calls
+    assert ("followup", 1) in calls
     assert job.status == "CONCLUIDO"
-    assert db.added[0].state == "HANDOFF"
-    assert not ai_sdr._sdr_exposes_internal_handoff(ai_sdr.HUMAN_FALLBACK_NOTICE)
+    assert db.added[0].state == "AI_ACTIVE"
+    assert not ai_sdr._reply_promises_human(sent)
+
+
+def test_recovery_continues_where_the_conversation_stopped():
+    context = {
+        "latest_customer_message": "bom dia",
+        "history": [{"direction": "OUTBOUND", "body": "Temos 650 Mega por R$ 99,90."}],
+        "confirmed_facts": {"city": "Santa Rosa", "customer_type": "RESIDENCIAL"},
+        "lead": {},
+    }
+    text, buttons = ai_sdr._ai_recovery_reply(context)
+    assert text.startswith("Bom dia! Vamos continuar de onde paramos.")
+    assert "Santa Rosa" in text and buttons
+
+
+def test_reply_promising_a_human_is_replaced():
+    for text in (
+        "Quero te responder com precisão, então vou chamar um consultor da Sulnet para continuar com você.",
+        "Perfeito! Vou encaminhar seu atendimento para um vendedor concluir a contratação com você.",
+        "Um atendente vai continuar com você por aqui.",
+    ):
+        assert ai_sdr._reply_promises_human(text), text
+    for text in (
+        "Temos 800 Mega por R$ 119,90. Quer contratar?",
+        "O técnico vai até sua casa em até 45 dias úteis.",
+    ):
+        assert not ai_sdr._reply_promises_human(text), text
+    decision = _decision("Vou chamar um consultor para te ajudar.")
+    decision.handoff_target = "HUMAN"
+    result = ai_sdr._never_hand_to_human(decision, {"latest_customer_message": "Oi", "history": [], "lead": {}})
+    assert result.handoff_target == "NONE"
+    assert not ai_sdr._reply_promises_human(result.reply_text)
 
 
 def test_penalty_tool_matches_seller_rule():

@@ -2068,7 +2068,7 @@ _JOURNEY_PENDING_ACTIONS = {
     "HANDLE_OBJECTION": "Resolver a objeção atual com um ângulo novo e avançar a decisão.",
     "CONFIRM_PURCHASE": "Obter aceite explícito para contratar a oferta escolhida.",
     "CLOSING": "Iniciar o Vendedor IA de Fechamento com todo o contexto coletado.",
-    "HUMAN_HANDOFF": "Transferir para atendimento humano porque o cliente pediu uma pessoa.",
+    "HUMAN_HANDOFF": "Seguir atendendo pela IA: não existe atendimento humano.",
     "OPT_OUT": "Encerrar contato e cancelar follow-ups.",
     "DISCOVERY": "Descobrir a próxima informação comercial necessária sem repetir perguntas.",
 }
@@ -2350,8 +2350,8 @@ def _journey_product_kind(decision: AIDecision, context: dict) -> str:
 def _derive_journey_state(decision: AIDecision, context: dict) -> str:
     if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
         return "OPT_OUT"
-    if _explicit_human_request(context):
-        return "HUMAN_HANDOFF"
+    # Pedido de "falar com uma pessoa" não muda a etapa: não existe atendimento
+    # humano, a IA responde e segue a jornada (ai_sdr._never_hand_to_human).
     if _explicit_purchase_commitment(context):
         return "CLOSING"
 

@@ -33,37 +33,88 @@ def test_classificacao_das_falhas_do_crm():
     assert kind(ZApiError("whatsapp disconnected")) == "transient"
 
 
-def test_escalonamento_passa_para_consultor_e_avisa_o_cliente(monkeypatch):
+def test_falha_do_crm_mantem_a_venda_com_a_ia_e_avisa_uma_vez(monkeypatch):
     calls = []
-    monkeypatch.setattr(ai_seller, "_handoff_to_human", lambda db, **kw: calls.append(("handoff", kw["reason"])))
     monkeypatch.setattr(ai_seller, "_record_activity", lambda db, **kw: calls.append(("activity", kw["outcome"])))
-    monkeypatch.setattr(
-        ai_seller,
-        "_send_text",
-        lambda db, **kw: calls.append(("send", kw["text"], kw.get("handoff_notice"))),
+    monkeypatch.setattr(ai_seller, "write_audit", lambda db, **kw: calls.append(("audit", kw["action"])))
+    monkeypatch.setattr(ai_seller, "_send_text", lambda db, **kw: calls.append(("send", kw["text"])))
+    state = AIClosingState(
+        conversation_id=1, agent_id=2, external_id="x", opportunity_id=14370, plan_label="2GB", step="WAITING_CRM_READY",
     )
-    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", opportunity_id=14370, plan_label="2GB")
-    ai_seller._escalate_closer_failure(
-        None,
-        state=state,
-        conversation=SimpleNamespace(id=1),
-        agent=SimpleNamespace(id=2),
-        reason="Nenhum template de contrato para o produto: Meu Plano Essencial 2GB",
-        notice=ai_seller.CONTRACT_HANDOFF_NOTICE,
-    )
-    assert calls[0][0] == "handoff" and "template" in calls[0][1]
-    assert calls[1] == ("activity", "VENDEDOR_IA_TRANSFERIU")
-    assert calls[2] == ("send", ai_seller.CONTRACT_HANDOFF_NOTICE, True)
+    for _ in range(2):
+        ai_seller._keep_sale_with_ai(
+            None,
+            state=state,
+            conversation=SimpleNamespace(id=1),
+            agent=SimpleNamespace(id=2, user=None),
+            reason="Nenhum template de contrato para o produto: Meu Plano Essencial 2GB",
+            notice=ai_seller.CONTRACT_HOLD_NOTICE,
+        )
+    assert state.step == "WAITING_CRM_READY"
+    assert ("activity", "VENDEDOR_IA_BLOQUEIO") in calls
+    assert ("audit", "AI_CLOSER_BLOCKED") in calls
+    assert [item for item in calls if item[0] == "send"] == [("send", ai_seller.CONTRACT_HOLD_NOTICE)]
+    assert "consultor" not in ai_seller.CONTRACT_HOLD_NOTICE.lower()
 
 
-def test_aviso_ao_cliente_nao_depende_do_guardiao():
-    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="ESCALATED")
+def test_job_bloqueado_volta_a_tentar_mais_tarde():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="WAITING_CRM_READY")
+    job = SimpleNamespace(status="PROCESSANDO", attempts=3, locked_at=object(), available_at=None)
+    ai_seller._retry_job_later(job, state)
+    assert job.status == "PENDENTE" and job.attempts == 0 and job.locked_at is None
+    for _ in range(ai_seller.AI_HOLD_MAX_RETRIES):
+        ai_seller._retry_job_later(job, state)
+    assert job.status == "FALHOU"
+
+
+def test_avisos_ao_cliente_nao_dependem_do_guardiao():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="WAITING_CRM_READY")
     for text in (
-        ai_seller.CLOSER_HANDOFF_NOTICE,
-        ai_seller.CONTRACT_HANDOFF_NOTICE,
+        ai_seller.CLOSER_HOLD_NOTICE,
+        ai_seller.CONTRACT_HOLD_NOTICE,
+        f"{ai_seller.AI_OWNS_NOTICE} Qual é o seu CPF?",
         f"{ai_seller.DATA_RETRY_PREFIX} Qual é o seu CEP?",
     ):
         assert ai_seller._is_fixed_closing_text(state, text)
+
+
+def test_nenhum_aviso_do_vendedor_chama_consultor():
+    for text in (
+        ai_seller.CLOSER_HOLD_NOTICE,
+        ai_seller.CONTRACT_HOLD_NOTICE,
+        ai_seller.SALE_DECLINE_NOTICE,
+        ai_seller.COMBO_MOBILE_DECLINE_NOTICE,
+        ai_seller.AI_OWNS_NOTICE,
+    ):
+        assert "consultor" not in text.lower() and "atendente" not in text.lower()
+
+
+def test_recusa_do_resumo_a_ia_ajusta(monkeypatch):
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step=ai_seller.SALE_ADJUST_STEP, plan_label="800 Mega")
+    collected = {}
+    reply = ai_seller._handle_sale_adjustment(None, state=state, conversation=SimpleNamespace(id=1), collected=collected, text="a forma de pagamento")
+    assert state.step == "BILLING_PAYMENT_METHOD" and reply
+
+    state.step = ai_seller.SALE_ADJUST_STEP
+    reply = ai_seller._handle_sale_adjustment(None, state=state, conversation=SimpleNamespace(id=1), collected=collected, text="quero outro plano")
+    assert state.step == ai_seller.PLAN_CHANGE_STEP and "plano" in reply
+
+    state.step = ai_seller.SALE_ADJUST_STEP
+    reply = ai_seller._handle_sale_adjustment(None, state=state, conversation=SimpleNamespace(id=1), collected=collected, text="desisti")
+    assert state.step == "COMPLETED"
+
+    state.step = ai_seller.SALE_ADJUST_STEP
+    reply = ai_seller._handle_sale_adjustment(None, state=state, conversation=SimpleNamespace(id=1), collected=collected, text="hmm")
+    assert state.step == ai_seller.SALE_ADJUST_STEP and "ajustar" in reply
+
+
+def test_venda_escalada_antiga_volta_para_a_ia():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="ESCALATED", opportunity_id=14370)
+    assert ai_seller._resume_step_for(state, {}) == "WAITING_CRM_READY"
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="ESCALATED", sign_url="https://z/s", contract_status="PENDENTE")
+    assert ai_seller._resume_step_for(state, {}) == "WAITING_SIGNATURE"
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="ESCALATED")
+    assert ai_seller._resume_step_for(state, {"name": "Ana Souza"}) == "CPF"
 
 
 def test_resumo_ja_mostra_o_produto_certo_do_crm():
@@ -96,7 +147,7 @@ def test_resumo_ja_mostra_o_produto_certo_do_crm():
 
 def test_recusa_do_movel_no_combo_nao_diz_que_nada_foi_contratado():
     assert "internet continua contratada" in ai_seller.COMBO_MOBILE_DECLINE_NOTICE
-    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="ESCALATED")
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step=ai_seller.SALE_ADJUST_STEP)
     assert ai_seller._is_fixed_closing_text(state, ai_seller.COMBO_MOBILE_DECLINE_NOTICE)
     assert ai_seller._is_fixed_closing_text(state, ai_seller.RESUME_NOTICE)
 

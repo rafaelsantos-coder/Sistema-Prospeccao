@@ -284,10 +284,9 @@ def simulate_sdr_turn(
         trace.append(_model_trace(decision, retry=True))
         guardian = _guard(db, agent, context, decision)
         if not guardian["should_send"]:
-            trace.append("Guardião bloqueou de novo: em produção o cliente iria para um consultor.")
-            decision.reply_text = ai_sdr.HUMAN_FALLBACK_NOTICE
-            decision.quick_replies = []
-            decision.handoff_target = "HUMAN"
+            trace.append("Guardião bloqueou de novo: a IA envia a resposta de recuperação e segue atendendo.")
+            decision.reply_text, decision.quick_replies = ai_sdr._ai_recovery_reply(context)
+            decision.handoff_target = "NONE"
     if guardian["should_send"] and guardian["verdict"] in {"REWRITE", "CORRECT_STATE"} and guardian["reply_text"]:
         trace.append("Guardião reescreveu a resposta.")
         decision.reply_text = guardian["reply_text"]

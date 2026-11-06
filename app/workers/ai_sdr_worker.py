@@ -640,7 +640,9 @@ def _recover_recent_unqueued_inbounds() -> int:
                     AIConversationState.conversation_id == conversation.id
                 )
             )
-            if state and state.state in {"HANDOFF", "HUMAN_ACTIVE", "OPT_OUT"}:
+            # Estados de handoff humano não bloqueiam mais: enqueue_ai_job devolve
+            # a conversa para a IA (não existe atendimento humano).
+            if state and state.state == "OPT_OUT":
                 reasons[f"state_{state.state.lower()}"] += 1
                 continue
 
@@ -858,6 +860,108 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
     return taken
 
 
+# Supervisão em tempo real: nenhuma mensagem do cliente fica sem resposta.
+STALLED_AFTER = timedelta(minutes=2)
+STALLED_WINDOW = timedelta(hours=6)
+STALLED_RETRY_MARK = "[retomado pela supervisão]"
+_STALLED_JOB_STATUSES = {"FALHOU", "IGNORADO", "CANCELADO"}
+
+
+def _answer_stalled_conversations(*, limit: int = 300) -> int:
+    """Acha cliente sem resposta e faz a IA responder.
+
+    Cobre o que escapava das outras rotinas: mensagem que caiu em estado de
+    handoff humano (o "Bom dia" sem resposta de 06/11), job que falhou ou foi
+    ignorado e mensagem com mais de 10 minutos sem job. Cada mensagem é
+    retomada uma única vez, para não entrar em laço.
+    """
+    from app.services.ai_sdr import human_is_attending  # noqa: PLC0415
+
+    db = SessionLocal()
+    answered = 0
+    try:
+        now = utcnow()
+        cutoff = _real_mode_cutoff()
+        since = now - STALLED_WINDOW
+        if cutoff and cutoff > since:
+            since = cutoff
+        latest_ids = list(
+            db.scalars(
+                select(Message.id)
+                .where(
+                    Message.direction == "INBOUND",
+                    Message.message_type == "TEXT",
+                    Message.created_at >= since,
+                    Message.created_at <= now - STALLED_AFTER,
+                )
+                .order_by(Message.id.desc())
+                .limit(limit)
+            )
+        )
+        seen: set[int] = set()
+        for message_id in latest_ids:
+            message = db.get(Message, message_id)
+            if not message or message.conversation_id in seen:
+                continue
+            seen.add(message.conversation_id)
+            later = db.scalar(
+                select(Message.id)
+                .where(
+                    Message.conversation_id == message.conversation_id,
+                    Message.id > message.id,
+                    Message.direction.in_(["INBOUND", "OUTBOUND"]),
+                )
+                .limit(1)
+            )
+            if later:
+                continue
+            conversation = db.get(Conversation, message.conversation_id)
+            if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+                continue
+            state = db.scalar(
+                select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+            )
+            if not state or state.state in {"OPT_OUT", "COMPLETED", "SHADOW_REVIEW"}:
+                # Sem estado = a IA nunca atendeu: fica com a recuperação normal / fila.
+                continue
+            if human_is_attending(db, conversation):
+                continue
+            job = db.scalar(
+                select(AIJob).where(AIJob.message_id == message.id).order_by(AIJob.id.desc()).limit(1)
+            )
+            if job and job.status in {"PENDENTE", "PROCESSANDO"}:
+                continue
+            if job and (job.status not in _STALLED_JOB_STATUSES or STALLED_RETRY_MARK in (job.error or "")):
+                continue
+            if job:
+                job.status = "PENDENTE"
+                job.attempts = 0
+                job.locked_at = None
+                job.available_at = now
+                job.error = f"{STALLED_RETRY_MARK} {job.error or ''}"[:2000]
+                if state.state in {"CLOSING", "AI_ACTIVE"} and state.agent_id:
+                    job.agent_id = state.agent_id
+                resumed = job
+            else:
+                resumed = enqueue_ai_job(db, conversation=conversation, message=message)
+            if resumed:
+                answered += 1
+                LOG.warning(
+                    "ai_supervision_stalled_resumed conversation=%s message=%s state=%s job=%s",
+                    conversation.id,
+                    message.id,
+                    state.state,
+                    resumed.id,
+                )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return answered
+
+
 def run() -> None:
     if not settings.is_production:
         Base.metadata.create_all(bind=engine)
@@ -970,6 +1074,12 @@ def run() -> None:
                 _takeover_unanswered_human_conversations()
             except Exception:
                 LOG.exception("Falha ao assumir conversas sem resposta do vendedor.")
+            try:
+                stalled = _answer_stalled_conversations()
+                if stalled:
+                    LOG.warning("Supervisão: conversas sem resposta retomadas=%s", stalled)
+            except Exception:
+                LOG.exception("Falha na supervisão de conversas sem resposta.")
             last_inbound_recovery = now_mono
 
         if now_mono - last_stale_recovery >= 300:

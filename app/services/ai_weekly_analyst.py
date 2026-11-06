@@ -150,7 +150,7 @@ def weekly_report(db: Session, *, days: int = 7) -> dict:
         list(
             db.scalars(
                 select(AuditLog.id).where(
-                    AuditLog.action == "AI_SDR_HUMAN_FALLBACK",
+                    AuditLog.action.in_(("AI_SDR_HUMAN_FALLBACK", "AI_SDR_RECOVERY")),
                     AuditLog.created_at >= since,
                 )
             )

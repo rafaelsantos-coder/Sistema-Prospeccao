@@ -14,6 +14,16 @@ MAX_AUDIO_BYTES = 20 * 1024 * 1024
 TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 TRANSCRIPTION_MODEL = "whisper-1"
 MAX_TRANSCRIPT_CHARS = 2000
+TRANSCRIBED_PREFIX = "[Áudio transcrito]"
+UNREADABLE_BODY = "[Áudio não transcrito]"
+
+
+def strip_transcription_prefix(text: str) -> str:
+    """Texto do cliente sem o marcador de áudio (o Vendedor IA lê só o conteúdo)."""
+    value = (text or "").strip()
+    if value.startswith(TRANSCRIBED_PREFIX):
+        return value[len(TRANSCRIBED_PREFIX):].strip()
+    return value
 
 
 def _extension_for(mime_type: str) -> str:
