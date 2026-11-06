@@ -25,9 +25,7 @@ from app.models import (
 from app.services.queue_routing import (
     AI_OWNED_STATES,
     AI_WHEN_OFFLINE,
-    ai_owns_conversation,
     assign_queue_user,
-    human_online_in_queue,
     bind_conversation_queue,
     queue_for_conversation,
     resolve_queue,
@@ -145,10 +143,9 @@ def _queue_reserved_for_ai(
     )
     if binding is None:
         return False
-    if binding.handling_mode != AI_WHEN_OFFLINE:
-        return True
-    # IA só sem vendedor online; o que a IA já começou continua com ela.
-    return ai_owns_conversation(db, conversation_id) or not human_online_in_queue(db, queue.id)
+    # Fila da IA: só a IA trabalha, mesmo com vendedor online (06/11/2026).
+    # "IA quando não houver vendedor online" passou a funcionar como IA sempre.
+    return True
 
 
 def _conversation_ready_for_human(db: Session, conversation_id: int) -> bool:
