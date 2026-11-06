@@ -4889,7 +4889,6 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         )
                     elif credit.get("rejected"):
                         state.step = "CREDIT_REJECTED"
-                        _mark_credit_rejected_lost(client, state)
                         reply = _prompt_for_step(state, collected)
                     else:
                         state.step = "CREDIT_REVIEW"
@@ -4917,7 +4916,6 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     )
                 elif credit.get("rejected"):
                     state.step = "CREDIT_REJECTED"
-                    _mark_credit_rejected_lost(client, state)
                     reply = _prompt_for_step(state, collected)
                 else:
                     state.step = "CREDIT_REVIEW"
@@ -4937,7 +4935,6 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 )
             elif "reprov" in n:
                 state.step = "CREDIT_REJECTED"
-                _mark_credit_rejected_lost(client, state)
                 reply = _prompt_for_step(state, collected)
             else:
                 reply = "A análise cadastral ainda está em andamento. Assim que houver decisão, eu continuo a contratação."
@@ -4964,7 +4961,6 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     )
                 elif credit.get("rejected"):
                     state.step = "CREDIT_REJECTED"
-                    _mark_credit_rejected_lost(client, state)
                     reply = "Esse novo CPF também não foi aprovado. Se quiser, podemos tentar com outro CPF."
                 else:
                     state.step = "CREDIT_REVIEW"
@@ -4980,6 +4976,9 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 reply = "Claro. Qual é o novo CPF que você quer usar para a contratação?"
 
             elif normalized_text in {"encerrar", "nao", "não"} or _yes_no(text) == "NAO":
+                # Só aqui a oportunidade vai para perda: o cliente desistiu de
+                # tentar outro CPF e quer encerrar. A reprovação em si não perde.
+                _mark_credit_rejected_lost(client, state)
                 state.step = "COMPLETED"
                 state.completed_at = utcnow()
                 reply = "Certo. Encerramos esta tentativa de contratação. Se quiser tentar novamente depois, é só me chamar."
@@ -6293,7 +6292,6 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     processed += 1
                 elif "reprov" in normalized_credit:
                     state.step = "CREDIT_REJECTED"
-                    _mark_credit_rejected_lost(client, state)
                     prompt = _prompt_for_step(state, collected)
                     _send_step_message(
                         db,
