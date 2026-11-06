@@ -1375,6 +1375,16 @@ def _apply_crm_decision(
     )
 
 
+def _client_asked_for_human(db: Session, conversation: Conversation) -> bool:
+    latest = db.scalar(
+        select(Message.body)
+        .where(Message.conversation_id == conversation.id, Message.direction == "INBOUND")
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return _explicit_human_request({"latest_customer_message": latest or ""})
+
+
 def _perform_handoff(
     db: Session,
     *,
@@ -1388,8 +1398,14 @@ def _perform_handoff(
     queue = queue_for_conversation(db, conversation.id)
     owner = conversation.assigned_user
     if not owner or owner.role == "AI_SDR":
-        owner = assign_queue_user(db, queue) if queue else None
-        conversation.assigned_user_id = owner.id if owner else None
+        if not _client_asked_for_human(db, conversation):
+            # A IA é o vendedor: a conversa fica com ela e nenhum vendedor vê,
+            # a não ser que o cliente peça um humano (regra de 06/11).
+            conversation.assigned_user_id = agent.user_id or None
+            owner = None
+        else:
+            owner = assign_queue_user(db, queue) if queue else None
+            conversation.assigned_user_id = owner.id if owner else None
 
     conversation.status = "EM_ATENDIMENTO" if owner else "EM_FILA"
     db.add(

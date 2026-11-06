@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import (
+    AIAgentProfile,
     AIConversationState,
     AIQueueBinding,
     Contact,
@@ -580,6 +581,12 @@ def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
             stmt = stmt.where(Conversation.team == user.team)
         if inbox:
             stmt = stmt.where(Conversation.assigned_user_id.is_not(None))
+            # Conversa da IA não aparece para vendedores/supervisores na caixa.
+            stmt = stmt.where(
+                Conversation.assigned_user_id.not_in(
+                    select(AIAgentProfile.user_id).where(AIAgentProfile.user_id.is_not(None))
+                )
+            )
         return stmt
     if user.role == "CONSULTOR":
         return stmt.where(
