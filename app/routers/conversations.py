@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse, RedirectResponse
 from app.database import get_db
 from app.models import (
     Activity,
+    AIAgentProfile,
     Contact,
     Conversation,
     ConversationAssignment,
@@ -212,6 +213,16 @@ def _seller_panel(db: Session, user: User) -> list[dict]:
         else:
             sellers = [item for item in sellers if item.team == user.team]
     online_ids = set(online_user_ids(db))
+    # Agente de IA não faz login: está online enquanto o perfil estiver ativo.
+    ai_user_ids = set(
+        db.scalars(
+            select(AIAgentProfile.user_id).where(
+                AIAgentProfile.active.is_(True),
+                AIAgentProfile.user_id.is_not(None),
+            )
+        )
+    )
+    online_ids |= ai_user_ids
     open_counts: dict[int, int] = {}
     for assigned_id in db.scalars(
         select(Conversation.assigned_user_id).where(
