@@ -834,7 +834,7 @@ def _looks_like_corporate_differential_question(value: str | None) -> bool:
 
 def _show_corporate_differentials(decision: AIDecision) -> AIDecision:
     decision.reply_text = (
-        "O link corporativo é pensado para manter sua empresa operando: tem SLA de atendimento de até 8 horas, "
+        "O link corporativo é pensado para manter sua empresa operando: tem compromisso de reparo de até 8 horas, "
         "suporte nível 2 e equipe especializada em empresas. A entrega da banda é diferenciada e não é compartilhada "
         "da mesma forma que no residencial; além disso, os planos têm IP fixo e Sulnet Monitora, com o NOC acompanhando "
         "quedas ou oscilações e atuando de forma proativa sempre que possível. Quer ver as opções corporativas?"

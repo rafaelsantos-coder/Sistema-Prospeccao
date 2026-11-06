@@ -546,7 +546,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "Corp. 200 Mega: R$139,00/mês, 200 Mbps download / 80 Mbps upload, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
             "Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
             "Corp. 650 Mega: R$199,90/mês, 650/200 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
-            "Todos os links corporativos têm SLA de atendimento de até 8 horas, suporte nível 2, equipe especializada em empresas, "
+            "Todos os links corporativos têm compromisso de reparo de até 8 horas, suporte nível 2, equipe especializada em empresas, "
             "entrega de banda diferenciada em relação ao plano residencial e acompanhamento proativo do NOC pelo Sulnet Monitora. "
             "Cada plano corporativo inclui 1 IP Fixo. Fidelidade de 24 meses. Ativação em até 48 horas após a viabilidade. "
             "O Sulnet Monitora é uma atividade de cuidado proativo da conexão: a equipe acompanha a rede para antecipar problemas "
@@ -562,12 +562,12 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "tags": "empresa,corporativo,diferencial,sla,8 horas,suporte n2,noc,monitora,ip fixo,banda,prioritario",
         "content": (
             "O valor do link corporativo não deve ser defendido apenas por velocidade. O principal valor é continuidade operacional para a empresa. "
-            "Diferenciais confirmados: SLA de atendimento de até 8 horas; suporte nível 2; equipe especializada em atendimento empresarial; "
+            "Diferenciais confirmados: compromisso de reparo de até 8 horas; suporte nível 2; equipe especializada em atendimento empresarial; "
             "entrega de banda diferenciada, não compartilhada da mesma forma que um plano residencial; IP Fixo; Sulnet Monitora; "
             "monitoramento contínuo do NOC e atuação proativa diante de queda ou oscilação, antecipando problemas sempre que possível. "
             "Ao explicar isso ao cliente, traduzir tecnologia em resultado: atendimento mais rápido e eficaz, maior previsibilidade, melhor qualidade de suporte "
-            "e menor risco de a empresa ficar parada. Não chamar o produto de link dedicado, não prometer disponibilidade absoluta e não dizer que o SLA de 8 horas é prazo de resolução; "
-            "a regra confirmada é SLA de atendimento de até 8 horas."
+            "e menor risco de a empresa ficar parada. Não chamar o produto de link dedicado e não prometer disponibilidade absoluta; "
+            "a regra confirmada é compromisso de reparo de até 8 horas."
         ),
     },
     {
@@ -951,11 +951,11 @@ Quando o cliente confirmar que a internet é para empresa, PJ, comércio, loja, 
 - Corp. 200 Mega: R$139,00/mês, 200/80 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
 - Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
 - Corp. 650 Mega: R$199,90/mês, 650/200 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
-- todos os links corporativos têm SLA de atendimento de até 8 horas, suporte nível 2 e equipe especializada em empresas;
+- todos os links corporativos têm compromisso de reparo de até 8 horas, suporte nível 2 e equipe especializada em empresas;
 - a entrega de banda é diferenciada e não é compartilhada da mesma forma que um plano residencial; NÃO chamar de link dedicado;
 - o Sulnet Monitora permite acompanhamento do NOC, com atuação proativa diante de queda ou oscilação para antecipar problemas sempre que possível;
 - venda esses diferenciais como continuidade operacional: atendimento mais rápido e eficaz, suporte qualificado, maior previsibilidade e menor risco de a empresa ficar parada;
-- nunca diga que 8 horas é prazo garantido de resolução: é SLA de atendimento de até 8 horas;
+- o compromisso de reparo é de até 8 horas; não prometa reparo em prazo menor sem essa regra;
 - não prometa cobertura no endereço antes da consulta técnica;
 - não aplique meses grátis, descontos ou promoções dos planos residenciais ao corporativo sem regra específica aprovada.
 Se o cliente confirmar que é para casa/residência, grave Residencial e use o catálogo residencial.
