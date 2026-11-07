@@ -37,7 +37,29 @@
           <td>{{ campaign.segment or 'Todos os segmentos' }}<span class="table-subline">{{ constants.teams.get(campaign.team, campaign.team) if campaign.team else 'Todas as equipes' }}</span></td>
           <td><span class="soft-badge">{{ constants.channels.get(campaign.channel, campaign.channel) }}</span></td>
           {% set service_queue = campaign_queues.get(campaign.id) %}
-          <td>{% if service_queue %}<strong>{{ service_queue.name }}</strong><span class="table-subline">{{ routing_strategies.get(service_queue.routing_strategy, service_queue.routing_strategy) if routing_strategies is defined else service_queue.routing_strategy }}</span>{% else %}<span class="text-danger">Não definida</span>{% endif %}</td>
+          <td>{% if service_queue %}<strong>{{ service_queue.name }}</strong><span class="table-subline">{{ routing_strategies.get(service_queue.routing_strategy, service_queue.routing_strategy) if routing_strategies is defined else service_queue.routing_strategy }}</span>{% else %}<span class="text-danger">Não definida</span>{% endif %}
+            {% if service_queue and meta_queue_ids is defined and service_queue.id in meta_queue_ids %}
+              {% set cmt = campaign_meta_templates.get(campaign.id) %}
+              <span class="table-subline"><strong>API oficial da Meta</strong> · {% if cmt and cmt.approved %}template {{ cmt.template.name }}{% elif cmt %}<span class="text-danger">template não aprovado</span>{% else %}<span class="text-danger">sem template (só envia a quem falou nas últimas 24h)</span>{% endif %}</span>
+              {% if current_user.role in ['ADMIN','GESTOR'] %}
+              <details class="top-space">
+                <summary>Template da Meta</summary>
+                <form action="/campaigns/{{ campaign.id }}/meta-template" method="post" class="stack-form compact">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <label class="field"><span>Template aprovado</span>
+                    <select name="template_id">
+                      <option value="">Sem template</option>
+                      {% for template in meta_templates %}<option value="{{ template.id }}" {% if cmt and cmt.template and cmt.template.id == template.id %}selected{% endif %}>{{ template.name }} · {{ template.language }} · {{ meta_template_vars.get(template.id, [])|length }} variável(is){% if template.header_format in ['IMAGE','VIDEO','DOCUMENT'] %} · {{ template.header_format|lower }}{% endif %}</option>{% endfor %}
+                    </select>
+                  </label>
+                  <label class="field"><span>Valores das variáveis (um por linha, na ordem)</span><textarea name="params" rows="3" placeholder="{{ '{{nome}}' }}|cliente
+{{ '{{empresa}}' }}">{% if cmt %}{{ cmt.params|join('\n') }}{% endif %}</textarea><small>Use {{ '{{nome}}' }}, {{ '{{empresa}}' }}, {{ '{{cidade}}' }}, {{ '{{segmento}}' }}. Depois de “|” vai o valor usado quando o lead não tem o dado. Cabeçalho com imagem/vídeo usa a mídia da campanha.</small></label>
+                  <button class="mini-button success" type="submit">Salvar template</button>
+                </form>
+              </details>
+              {% endif %}
+            {% endif %}
+          </td>
           {% set cq = queue_counts.get(campaign.id, {}) %}
           <td><strong>{{ cq.get('sent', 0) }}/{{ cq.get('total', 0) }}</strong><span class="table-subline">{{ campaign.daily_limit }}/dia · {{ cq.get('pending', 0) }} pendentes</span></td>
           <td>{{ campaign.branch.city if campaign.branch else 'Todas' }}</td>

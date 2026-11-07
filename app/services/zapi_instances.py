@@ -188,7 +188,18 @@ def bind_conversation_instance(
 
 
 def service_for_queue(db: Session, queue_id: int | None) -> ZApiService:
+    """Serviço de envio da fila.
+
+    Fila com número da API oficial da Meta vinculado envia pela Meta
+    (``MetaCloudService`` tem os mesmos métodos de envio). Sem vínculo Meta,
+    tudo segue pela Z-API como antes.
+    """
     if queue_id:
+        from app.services.meta_numbers import queue_meta_number, service_for_meta_number
+
+        meta_number = queue_meta_number(db, queue_id)
+        if meta_number:
+            return service_for_meta_number(meta_number)  # type: ignore[return-value]
         instance = queue_instance(db, queue_id)
         if not instance:
             raise ZApiNotConfigured(
@@ -206,10 +217,22 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
     sobrescrever o número configurado atualmente na fila. Se estiver antigo,
     ele é autocorrigido antes do envio.
     """
+    from app.services.meta_numbers import (
+        bind_conversation_meta_number,
+        conversation_meta_number,
+        queue_meta_number,
+        service_for_meta_number,
+    )
     from app.services.queue_routing import queue_for_conversation
 
     queue = queue_for_conversation(db, conversation_id)
     if queue:
+        meta_number = queue_meta_number(db, queue.id)
+        if meta_number:
+            current_meta = conversation_meta_number(db, conversation_id)
+            if not current_meta or current_meta.id != meta_number.id:
+                bind_conversation_meta_number(db, conversation_id, meta_number.id)
+            return service_for_meta_number(meta_number)  # type: ignore[return-value]
         instance = queue_instance(db, queue.id)
         if not instance:
             raise ZApiNotConfigured(
@@ -220,6 +243,9 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
             bind_conversation_instance(db, conversation_id, instance.id)
         return service_for_instance(instance)
 
+    meta_number = conversation_meta_number(db, conversation_id)
+    if meta_number:
+        return service_for_meta_number(meta_number)  # type: ignore[return-value]
     instance = conversation_instance(db, conversation_id)
     if instance:
         return service_for_instance(instance)

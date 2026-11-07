@@ -13,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings, validate_production_settings
 from app.database import Base, SessionLocal, engine
-from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, zapi, zapsign
+from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, dispatches, leads, meta_whatsapp, presence, prospecting, queues, reports, settings as settings_router, zapi, zapsign
 from app.services.seed import seed_database
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import instance_webhook_url, list_zapi_instances, service_for_instance
@@ -29,11 +29,15 @@ class _RedactWebhookSecretFilter(logging.Filter):
     """Mascara o segredo que vai na URL dos webhooks (/webhooks/<tipo>/<segredo>) no log de acesso."""
 
     _PATTERN = re.compile(r"(/webhooks/[^/\s?]+/(?:instance/)?)[^/\s?]+")
+    # Verificação do webhook da Meta: o verify_token vem na query string.
+    _QUERY_TOKEN = re.compile(r"(hub\.verify_token=)[^&\s]+")
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
         if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str) and "/webhooks/" in args[2]:
-            record.args = (*args[:2], self._PATTERN.sub(r"\1***", args[2]), *args[3:])
+            path = self._PATTERN.sub(r"\1***", args[2])
+            path = self._QUERY_TOKEN.sub(r"\1***", path)
+            record.args = (*args[:2], path, *args[3:])
         return True
 
 
@@ -154,6 +158,7 @@ app.include_router(presence.router)
 app.include_router(queues.router)
 app.include_router(settings_router.router)
 app.include_router(zapi.router)
+app.include_router(meta_whatsapp.router)
 app.include_router(zapsign.router)
 app.include_router(api.router)
 

@@ -167,6 +167,8 @@ def _process_zapi_payload(
     expected_instance_id: str | None = None,
     queue_id: int | None = None,
     zapi_instance_id: int | None = None,
+    meta_number_id: int | None = None,
+    provider_label: str = "Z-API",
 ):
     if not isinstance(payload, dict):
         LOG.info("zapi_callback ignored=payload_not_dict instance_db=%s", zapi_instance_id)
@@ -231,6 +233,7 @@ def _process_zapi_payload(
         payload,
         queue_id=queue_id,
         zapi_instance_id=zapi_instance_id,
+        meta_number_id=meta_number_id,
     )
     if not conversation or not message:
         db.commit()
@@ -260,7 +263,9 @@ def _process_zapi_payload(
                     status="CONCLUIDA",
                     channel="WHATSAPP",
                     outcome=outcome,
-                    description="Mensagem recebida via Z-API; conteúdo disponível na conversa.",
+                    description=(
+                        f"Mensagem recebida via {provider_label}; conteúdo disponível na conversa."
+                    ),
                     completed_at=now,
                 )
             )
@@ -285,6 +290,7 @@ def _process_zapi_payload(
                 "provider_message_id": message.provider_message_id,
                 "opt_out": opt_out,
                 "zapi_instance_id": zapi_instance_id,
+                "meta_number_id": meta_number_id,
                 "queue_id": queue_id,
             },
         )

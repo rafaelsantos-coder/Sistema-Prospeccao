@@ -300,7 +300,48 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
         active_zapi_instances=active_zapi_instances,
         zapi_instance_info=zapi_instance_info,
         duplicate_instance_ids=duplicate_instance_ids,
+        **_meta_numbers_context(db),
     )
+
+
+def _meta_numbers_context(db: Session) -> dict:
+    """Números da API oficial da Meta para a página de WhatsApp."""
+    from app.models import MetaMessageTemplate, ServiceQueueMetaNumber
+    from app.services.meta_cloud import MetaCloudError
+    from app.services.meta_numbers import list_meta_numbers, meta_webhook_url, refresh_meta_number_info
+
+    numbers = list_meta_numbers(db, active_only=False)
+    info: dict[int, dict] = {}
+    for number in numbers:
+        item = {"ok": False, "error": None}
+        if number.active:
+            try:
+                refresh_meta_number_info(number)
+                item["ok"] = True
+            except MetaCloudError as exc:
+                item["error"] = str(exc)
+        info[number.id] = item
+    if numbers:
+        db.commit()
+    templates = list(
+        db.scalars(
+            select(MetaMessageTemplate).order_by(
+                MetaMessageTemplate.meta_number_id,
+                MetaMessageTemplate.name,
+                MetaMessageTemplate.language,
+            )
+        )
+    )
+    queue_counts: dict[int, int] = {}
+    for link in db.scalars(select(ServiceQueueMetaNumber)):
+        queue_counts[link.meta_number_id] = queue_counts.get(link.meta_number_id, 0) + 1
+    return {
+        "meta_numbers": numbers,
+        "meta_number_info": info,
+        "meta_templates": templates,
+        "meta_queue_counts": queue_counts,
+        "meta_webhook_url": meta_webhook_url(),
+    }
 
 
 @router.get("/operations")

@@ -58,6 +58,12 @@ class Settings:
     zapi_instance_token: str = os.getenv("ZAPI_INSTANCE_TOKEN", "")
     zapi_client_token: str = os.getenv("ZAPI_CLIENT_TOKEN", "")
     zapi_webhook_secret: str = os.getenv("ZAPI_WEBHOOK_SECRET", "")
+    # WhatsApp Cloud API oficial (Meta). As credenciais ficam por número no banco;
+    # aqui só a versão padrão da Graph API e o host (sobrescrevível para testes).
+    meta_graph_api_version: str = os.getenv("META_GRAPH_API_VERSION", "v24.0").strip()
+    meta_graph_base_url: str = os.getenv(
+        "META_GRAPH_BASE_URL", "https://graph.facebook.com"
+    ).rstrip("/")
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")
     resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")

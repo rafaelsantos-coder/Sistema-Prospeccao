@@ -15,6 +15,7 @@ from app.models import (
     Conversation,
     ConversationAssignment,
     ConversationQueueLink,
+    ConversationMetaNumber,
     ConversationZApiInstance,
     Lead,
     Message,
@@ -32,6 +33,7 @@ from app.services.queue_routing import (
     resolve_queue,
 )
 from app.services.scoring import normalize_phone
+from app.services.meta_numbers import bind_conversation_meta_number
 from app.services.zapi_instances import bind_conversation_instance
 from app.services.whatsapp_presence import mark_whatsapp_assignment, online_user_ids, presence_for_users
 from app.timeutils import utcnow
@@ -230,8 +232,46 @@ def ensure_open_conversation(
     queue_origin: str = "INBOUND",
     assign_if_unowned: bool = True,
     zapi_instance_id: int | None = None,
+    meta_number_id: int | None = None,
 ) -> Conversation:
-    if zapi_instance_id:
+    if meta_number_id:
+        # Número da API oficial da Meta: a conversa fica isolada por número,
+        # como já acontece com cada instância Z-API.
+        conversation = db.scalar(
+            select(Conversation)
+            .join(
+                ConversationMetaNumber,
+                ConversationMetaNumber.conversation_id == Conversation.id,
+            )
+            .where(
+                Conversation.contact_id == contact.id,
+                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                ConversationMetaNumber.meta_number_id == meta_number_id,
+            )
+            .order_by(Conversation.updated_at.desc())
+            .limit(1)
+        )
+        if not conversation:
+            conversation = db.scalar(
+                select(Conversation)
+                .outerjoin(
+                    ConversationZApiInstance,
+                    ConversationZApiInstance.conversation_id == Conversation.id,
+                )
+                .outerjoin(
+                    ConversationMetaNumber,
+                    ConversationMetaNumber.conversation_id == Conversation.id,
+                )
+                .where(
+                    Conversation.contact_id == contact.id,
+                    Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                    ConversationZApiInstance.id.is_(None),
+                    ConversationMetaNumber.id.is_(None),
+                )
+                .order_by(Conversation.updated_at.desc())
+                .limit(1)
+            )
+    elif zapi_instance_id:
         conversation = db.scalar(
             select(Conversation)
             .join(
@@ -253,10 +293,15 @@ def ensure_open_conversation(
                     ConversationZApiInstance,
                     ConversationZApiInstance.conversation_id == Conversation.id,
                 )
+                .outerjoin(
+                    ConversationMetaNumber,
+                    ConversationMetaNumber.conversation_id == Conversation.id,
+                )
                 .where(
                     Conversation.contact_id == contact.id,
                     Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
                     ConversationZApiInstance.id.is_(None),
+                    ConversationMetaNumber.id.is_(None),
                 )
                 .order_by(Conversation.updated_at.desc())
                 .limit(1)
@@ -277,6 +322,8 @@ def ensure_open_conversation(
     if conversation:
         if zapi_instance_id:
             bind_conversation_instance(db, conversation.id, zapi_instance_id)
+        if meta_number_id:
+            bind_conversation_meta_number(db, conversation.id, meta_number_id)
         if lead and not conversation.lead_id:
             conversation.lead_id = lead.id
             conversation.branch_id = lead.branch_id
@@ -286,7 +333,9 @@ def ensure_open_conversation(
         # Quando a mensagem entra por uma instância Z-API vinculada a uma fila,
         # essa fila é a fonte oficial do roteamento de entrada. Isso corrige
         # conversas antigas que ainda estavam presas a outra fila.
-        explicit_inbound_queue = queue_id if zapi_instance_id and queue_id else None
+        explicit_inbound_queue = (
+            queue_id if (zapi_instance_id or meta_number_id) and queue_id else None
+        )
         queue = resolve_queue(
             db,
             conversation_id=conversation.id,
@@ -393,6 +442,8 @@ def ensure_open_conversation(
 
     if zapi_instance_id:
         bind_conversation_instance(db, conversation.id, zapi_instance_id)
+    if meta_number_id:
+        bind_conversation_meta_number(db, conversation.id, meta_number_id)
 
     if queue:
         bind_conversation_queue(
@@ -753,6 +804,7 @@ def store_received_payload(
     *,
     queue_id: int | None = None,
     zapi_instance_id: int | None = None,
+    meta_number_id: int | None = None,
 ) -> tuple[Conversation | None, Message | None, bool]:
     if payload.get("isGroup") or payload.get("isNewsletter") or payload.get("isStatusReply"):
         return None, None, False
@@ -788,8 +840,13 @@ def store_received_payload(
         lead=lead,
         source="WHATSAPP",
         queue_id=queue_id,
-        queue_origin="ZAPI_INSTANCE" if zapi_instance_id else "INBOUND",
+        queue_origin=(
+            "META_NUMBER"
+            if meta_number_id
+            else "ZAPI_INSTANCE" if zapi_instance_id else "INBOUND"
+        ),
         zapi_instance_id=zapi_instance_id,
+        meta_number_id=meta_number_id,
     )
 
     from_me = payload_from_me(payload)
