@@ -13,6 +13,7 @@ from app.security import get_current_user, require_roles, validate_csrf
 from app.services.ai_sdr import queue_ai_binding
 from app.services.audit import write_audit
 from app.services.queue_routing import queue_summary
+from app.services.meta_numbers import list_meta_numbers, queue_meta_number
 from app.services.zapi_instances import (
     bind_queue_instance,
     get_zapi_instance,
@@ -218,6 +219,8 @@ def queue_detail(
         ai_binding=queue_ai_binding(db, queue.id),
         zapi_instances=list_zapi_instances(db),
         selected_zapi_instance=queue_instance(db, queue.id),
+        meta_numbers=list_meta_numbers(db),
+        selected_meta_number=queue_meta_number(db, queue.id),
         routing_strategies=ROUTING_STRATEGIES,
     )
 

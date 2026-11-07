@@ -1003,3 +1003,99 @@ class AIEngineeringProposal(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp Cloud API oficial da Meta.
+#
+# Convive com a Z-API: são tabelas novas e independentes. Uma fila que tenha
+# um número Meta vinculado envia pela Meta; sem vínculo Meta, continua na Z-API
+# exatamente como antes (o vínculo Z-API da fila nunca é apagado).
+# ---------------------------------------------------------------------------
+
+
+class MetaWhatsAppNumber(Base):
+    __tablename__ = "meta_whatsapp_numbers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    phone_label: Mapped[str] = mapped_column(String(80), default="")
+    verified_name: Mapped[str] = mapped_column(String(180), default="")
+    quality_rating: Mapped[str] = mapped_column(String(30), default="")
+    phone_number_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    waba_id: Mapped[str] = mapped_column(String(64), index=True)
+    graph_version: Mapped[str] = mapped_column(String(16), default="")
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    app_secret_encrypted: Mapped[str] = mapped_column(Text)
+    verify_token_encrypted: Mapped[str] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    webhook_subscribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    templates_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+
+
+class ServiceQueueMetaNumber(Base):
+    __tablename__ = "service_queue_meta_numbers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    queue_id: Mapped[int] = mapped_column(
+        ForeignKey("service_queues.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    meta_number_id: Mapped[int] = mapped_column(
+        ForeignKey("meta_whatsapp_numbers.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    meta_number: Mapped[MetaWhatsAppNumber] = relationship()
+
+
+class ConversationMetaNumber(Base):
+    __tablename__ = "conversation_meta_numbers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    meta_number_id: Mapped[int] = mapped_column(
+        ForeignKey("meta_whatsapp_numbers.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    meta_number: Mapped[MetaWhatsAppNumber] = relationship()
+
+
+class MetaMessageTemplate(Base):
+    __tablename__ = "meta_message_templates"
+    __table_args__ = (
+        UniqueConstraint("meta_number_id", "name", "language", name="uq_meta_template_number_name_lang"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    meta_number_id: Mapped[int] = mapped_column(
+        ForeignKey("meta_whatsapp_numbers.id", ondelete="CASCADE"),
+        index=True,
+    )
+    meta_template_id: Mapped[str] = mapped_column(String(64), default="")
+    name: Mapped[str] = mapped_column(String(512), index=True)
+    language: Mapped[str] = mapped_column(String(20))
+    category: Mapped[str] = mapped_column(String(30), default="")
+    status: Mapped[str] = mapped_column(String(30), default="", index=True)
+    parameter_format: Mapped[str] = mapped_column(String(20), default="POSITIONAL")
+    header_format: Mapped[str] = mapped_column(String(20), default="")
+    body_text: Mapped[str] = mapped_column(Text, default="")
+    components_json: Mapped[str] = mapped_column(Text, default="[]")
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    meta_number: Mapped[MetaWhatsAppNumber] = relationship()

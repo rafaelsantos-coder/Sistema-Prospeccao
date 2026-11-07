@@ -74,6 +74,27 @@ def _extension_for(mime_type: str) -> str:
     return ".ogg"
 
 
+def transcribe_audio_bytes(data: bytes | None, mime_type: str | None) -> str:
+    """Transcreve um áudio já baixado (a API oficial da Meta exige token no download)."""
+    if not data or len(data) > MAX_AUDIO_BYTES or not settings.openai_api_key:
+        return ""
+    clean_mime = (mime_type or "audio/ogg").split(";")[0].strip().lower()
+    try:
+        with httpx.Client(timeout=40.0) as client:
+            response = client.post(
+                TRANSCRIPTION_URL,
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                data={"model": TRANSCRIPTION_MODEL, "language": "pt"},
+                files={"file": (f"audio{_extension_for(clean_mime)}", data, clean_mime)},
+            )
+            response.raise_for_status()
+            text = str(response.json().get("text") or "").strip()
+            return text[:MAX_TRANSCRIPT_CHARS]
+    except Exception as exc:  # não pode derrubar o recebimento da mensagem
+        LOG.warning("audio_transcription_failed error=%s", type(exc).__name__)
+        return ""
+
+
 def transcribe_audio_url(url: str | None, mime_type: str | None) -> str:
     """Baixa o áudio e devolve o texto falado. Devolve "" se não for possível transcrever."""
     if not url or not settings.openai_api_key:

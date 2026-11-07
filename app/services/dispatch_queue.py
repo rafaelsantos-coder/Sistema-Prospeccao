@@ -23,6 +23,7 @@ from app.services.campaign_queue import (
     campaign_message_template,
     campaign_quick_replies,
     personalize_message,
+    send_campaign_outreach,
 )
 from app.services.conversation_engine import (
     ensure_contact,
@@ -30,6 +31,8 @@ from app.services.conversation_engine import (
     register_message,
 )
 from app.services.media_storage import MediaStorage, MediaStorageError
+from app.services.meta_cloud import MetaTemplateRequired
+from app.services.meta_numbers import queue_meta_number
 from app.services.queue_routing import set_lead_queue_preference
 from app.services.scoring import normalize_phone
 from app.services.zapi import ZApiError
@@ -472,22 +475,22 @@ def process_dispatch_recipient(
     recipient.attempts = int(recipient.attempts or 0) + 1
     quick_replies = campaign_quick_replies(campaign)
     zapi_instance = queue_instance(db, queue.id)
+    meta_number = queue_meta_number(db, queue.id)
     zapi = service_for_queue(db, queue.id)
     try:
-        if quick_replies:
-            result = zapi.send_button_list(
-                phone=lead.phone,
-                message=body,
-                buttons=quick_replies,
-            )
-        else:
-            result = zapi.send_text(
-                phone=lead.phone,
-                message=body,
-            )
+        outreach = send_campaign_outreach(
+            db,
+            service=zapi,
+            queue_id=queue.id,
+            campaign=campaign,
+            lead=lead,
+            body=body,
+            quick_replies=quick_replies,
+        )
+        result = outreach.result
     except ZApiError as exc:
         recipient.error = str(exc)[:500]
-        if recipient.attempts >= 3:
+        if recipient.attempts >= 3 or isinstance(exc, MetaTemplateRequired):
             recipient.status = "FALHOU"
             _finish_if_done(db, dispatch)
         else:
@@ -509,7 +512,8 @@ def process_dispatch_recipient(
         queue_id=queue.id,
         queue_origin="DISPATCH",
         assign_if_unowned=False,
-        zapi_instance_id=zapi_instance.id if zapi_instance else None,
+        zapi_instance_id=zapi_instance.id if zapi_instance and not meta_number else None,
+        meta_number_id=meta_number.id if meta_number else None,
     )
     provider_id = str(
         result.get("messageId") or result.get("id") or ""
@@ -520,8 +524,8 @@ def process_dispatch_recipient(
         db,
         conversation,
         direction="OUTBOUND",
-        message_type="BUTTONS" if quick_replies else "TEXT",
-        body=body,
+        message_type=outreach.message_type,
+        body=outreach.body,
         sender_user_id=dispatch.created_by_id,
         provider_message_id=provider_id,
         provider_zaap_id=zaap_id,
@@ -530,7 +534,9 @@ def process_dispatch_recipient(
 
     media_sent = 0
     media_errors: list[str] = []
-    attachments = campaign_media_attachments(campaign)
+    # Template da Meta já leva a mídia no cabeçalho; fora da janela de 24h a
+    # Meta recusaria mídia avulsa.
+    attachments = [] if outreach.template_used else campaign_media_attachments(campaign)
     if attachments:
         storage = MediaStorage()
         for attachment in attachments:

@@ -68,6 +68,7 @@ def list_campaigns(request: Request, db: Session = Depends(get_db)):
         queue_counts=queue_counts,
         service_queues=service_queues,
         campaign_queues=campaign_queues,
+        **_meta_campaign_context(db, campaigns, campaign_queues),
         routing_strategies={
             "ROUND_ROBIN": "Carrossel / rodízio",
             "LEAST_OPEN": "Menor número de atendimentos pendentes",
@@ -358,3 +359,34 @@ def resume_campaign(
         db.commit()
         flash(request, "Campanha retomada.")
     return RedirectResponse("/campaigns", status_code=303)
+
+
+def _meta_campaign_context(db: Session, campaigns, campaign_queues) -> dict:
+    """Template da API oficial da Meta por campanha (só para filas da Meta)."""
+    from app.models import MetaMessageTemplate
+    from app.services.campaign_queue import campaign_meta_template
+    from app.services.meta_numbers import approved_templates, queue_meta_number, template_variables
+
+    meta_queue_ids = {
+        queue.id
+        for queue in campaign_queues.values()
+        if queue and queue_meta_number(db, queue.id)
+    }
+    templates = approved_templates(db) if meta_queue_ids else []
+    campaign_templates: dict[int, dict] = {}
+    for campaign in campaigns:
+        config = campaign_meta_template(campaign)
+        if not config:
+            continue
+        template = db.get(MetaMessageTemplate, config["template_id"])
+        campaign_templates[campaign.id] = {
+            "template": template,
+            "params": config["params"],
+            "approved": bool(template and template.status == "APPROVED"),
+        }
+    return {
+        "meta_queue_ids": meta_queue_ids,
+        "meta_templates": templates,
+        "meta_template_vars": {item.id: template_variables(item.body_text) for item in templates},
+        "campaign_meta_templates": campaign_templates,
+    }

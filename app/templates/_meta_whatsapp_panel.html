@@ -1,0 +1,105 @@
+{# API oficial do WhatsApp (Meta Cloud API). Convive com a Z-API acima. #}
+<article class="panel panel-span-12">
+  <div class="panel-header">
+    <div><span class="eyebrow">API OFICIAL DA META</span><h3>WhatsApp Cloud API</h3></div>
+    <span class="count-badge">{{ meta_numbers|length }}</span>
+  </div>
+  <p class="panel-note">Números da API oficial convivem com a Z-API. Cada fila escolhe por qual canal envia na página da fila. Fora da janela de 24h desde a última mensagem do cliente, a Meta só aceita templates aprovados.</p>
+
+  <div class="info-box compact top-space">
+    <strong>Webhook da Meta</strong>
+    {% if meta_webhook_url %}
+    <p>URL de callback: <code>{{ meta_webhook_url }}</code>. Ela é registrada automaticamente na conta (WABA) ao cadastrar o número. No app da Meta, assine o campo <strong>messages</strong> do webhook do WhatsApp Business Account.</p>
+    {% else %}
+    <p>Defina <code>APP_PUBLIC_URL</code> no Railway para registrar o webhook da Meta.</p>
+    {% endif %}
+  </div>
+
+  <div class="data-table-wrap top-space">
+    <table class="data-table">
+      <thead><tr><th>Nome</th><th>Número</th><th>IDs</th><th>Qualidade</th><th>Status</th><th>Filas</th><th>Ações</th></tr></thead>
+      <tbody>
+      {% for number in meta_numbers %}
+        {% set mi = meta_number_info.get(number.id, {}) %}
+        <tr>
+          <td><strong>{{ number.name }}</strong>{% if number.verified_name %}<span class="table-subline">{{ number.verified_name }}</span>{% endif %}</td>
+          <td><strong>{{ number.phone_label or 'Não identificado' }}</strong>{% if mi.get('error') %}<span class="table-subline">{{ mi.get('error') }}</span>{% endif %}</td>
+          <td><span class="table-subline">Número …{{ number.phone_number_id[-6:] }}</span><span class="table-subline">WABA …{{ number.waba_id[-6:] }}</span></td>
+          <td>{{ number.quality_rating or '—' }}</td>
+          <td><span class="connection-status {% if mi.get('ok') %}on{% endif %}">{{ 'Conectado' if mi.get('ok') else ('Inativo' if not number.active else 'Com erro') }}</span><span class="table-subline">{% if number.webhook_subscribed_at %}Webhook registrado{% else %}Webhook pendente{% endif %}</span></td>
+          <td>{{ meta_queue_counts.get(number.id, 0) }}</td>
+          <td>
+            {% if number.active %}
+            <form action="/settings/meta/numbers/{{ number.id }}/webhook" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button button-ghost" type="submit">Registrar webhook</button>
+            </form>
+            <form action="/settings/meta/numbers/{{ number.id }}/templates/sync" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="button button-ghost" type="submit">Sincronizar templates</button>
+            </form>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7"><div class="empty-state"><strong>Nenhum número da Meta cadastrado</strong><span>Cadastre abaixo o primeiro número da API oficial.</span></div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if meta_templates %}
+  <div class="panel-header top-space"><div><span class="eyebrow">TEMPLATES</span><h3>Templates sincronizados</h3></div><span class="count-badge">{{ meta_templates|length }}</span></div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Template</th><th>Idioma</th><th>Categoria</th><th>Status</th><th>Texto</th></tr></thead>
+      <tbody>
+      {% for template in meta_templates %}
+        <tr>
+          <td><strong>{{ template.name }}</strong>{% if template.header_format %}<span class="table-subline">Cabeçalho: {{ template.header_format|lower }}</span>{% endif %}</td>
+          <td>{{ template.language }}</td>
+          <td>{{ template.category|lower }}</td>
+          <td><span class="connection-status {% if template.status == 'APPROVED' %}on{% endif %}">{{ template.status|lower }}</span></td>
+          <td><span class="table-subline">{{ template.body_text[:160] }}{% if template.body_text|length > 160 %}…{% endif %}</span></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% set active_meta = meta_numbers|selectattr('active')|list %}
+  {% if active_meta %}
+  <div class="queue-create-box">
+    <div class="panel-header"><div><span class="eyebrow">HOMOLOGAÇÃO</span><h3>Testar número oficial</h3></div><span class="panel-note">Texto livre só chega se o número de teste mandou mensagem nas últimas 24h. Fora disso, use um template sem variáveis.</span></div>
+    <form action="/settings/meta/test" method="post" class="stack-form compact">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field"><span>Número da Meta</span><select name="meta_number_id" required>{% for number in active_meta %}<option value="{{ number.id }}">{{ number.name }}{% if number.phone_label %} · {{ number.phone_label }}{% endif %}</option>{% endfor %}</select></label>
+        <label class="field"><span>Número interno para teste</span><input name="phone" required placeholder="5555999999999" inputmode="numeric"></label>
+        <label class="field field-span-2"><span>Template (opcional)</span><select name="template_id"><option value="">Enviar texto livre</option>{% for template in meta_templates if template.status == 'APPROVED' %}<option value="{{ template.id }}">{{ template.name }} · {{ template.language }}</option>{% endfor %}</select></label>
+        <label class="field field-span-2"><span>Mensagem (texto livre)</span><textarea name="message" rows="3" maxlength="4096">Teste de integração do Sulnet Prospecta com a API oficial da Meta.</textarea></label>
+      </div>
+      <button class="button button-primary" type="submit">Enviar teste pela Meta</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="queue-create-box">
+    <div class="panel-header">
+      <div><span class="eyebrow">NOVO NÚMERO</span><h3>Adicionar número da API oficial</h3></div>
+      <span class="panel-note">Use um token permanente de System User com as permissões whatsapp_business_messaging e whatsapp_business_management. As credenciais ficam criptografadas e não são exibidas novamente.</span>
+    </div>
+    <form action="/settings/meta/numbers" method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field"><span>Nome</span><input name="name" required placeholder="Ex.: WhatsApp oficial B2B"></label>
+        <label class="field"><span>Phone Number ID</span><input name="phone_number_id" required inputmode="numeric" autocomplete="off"><small>WhatsApp Manager → Números de telefone, ou “API Setup” no app da Meta.</small></label>
+        <label class="field"><span>WhatsApp Business Account ID (WABA)</span><input name="waba_id" required inputmode="numeric" autocomplete="off"></label>
+        <label class="field"><span>App Secret</span><input name="app_secret" type="password" required autocomplete="new-password"><small>App da Meta → Configurações → Básico. Usado para validar a assinatura do webhook.</small></label>
+        <label class="field field-span-2"><span>Token de acesso (System User)</span><input name="access_token" type="password" required autocomplete="new-password"></label>
+      </div>
+      <button class="button button-primary" type="submit">Validar e cadastrar número</button>
+    </form>
+  </div>
+</article>

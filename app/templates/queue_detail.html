@@ -76,7 +76,27 @@
   </article>
 
   <aside class="panel panel-span-5">
-    <div class="panel-header"><div><span class="eyebrow">AUTOMAÇÃO IA</span><h3>{% if ai_binding and ai_binding.active %}{{ ai_binding.agent.name }}{% else %}Sem agente ativo{% endif %}</h3></div></div>
+    <div class="panel-header"><div><span class="eyebrow">CANAL DE ENVIO</span><h3>{% if selected_meta_number %}API oficial da Meta{% else %}Z-API{% endif %}</h3></div><span class="connection-status on">{% if selected_meta_number %}{{ selected_meta_number.name }}{% else %}{{ selected_zapi_instance.name if selected_zapi_instance else 'Sem instância' }}{% endif %}</span></div>
+    {% if selected_meta_number %}
+    <div class="info-box compact"><strong>{{ selected_meta_number.verified_name or selected_meta_number.name }}{% if selected_meta_number.phone_label %} · {{ selected_meta_number.phone_label }}{% endif %}</strong><p>Envios, respostas e disparos desta fila saem pelo número oficial. Fora da janela de 24h, campanhas usam o template aprovado escolhido na campanha. A instância Z-API acima continua salva e volta a ser usada se você escolher Z-API aqui.</p></div>
+    {% else %}
+    <div class="info-box compact"><strong>Envio pela instância Z-API</strong><p>A fila usa a instância escolhida em “Regras da fila”.</p></div>
+    {% endif %}
+    {% if current_user.role in ['ADMIN','GESTOR'] %}
+    <form action="/settings/queues/{{ queue.id }}/channel" method="post" class="stack-form compact">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Enviar por</span>
+        <select name="channel">
+          <option value="ZAPI" {% if not selected_meta_number %}selected{% endif %}>Z-API{% if selected_zapi_instance %} · {{ selected_zapi_instance.name }}{% endif %}</option>
+          {% for number in meta_numbers %}<option value="META:{{ number.id }}" {% if selected_meta_number and selected_meta_number.id == number.id %}selected{% endif %}>API oficial da Meta · {{ number.name }}{% if number.phone_label %} · {{ number.phone_label }}{% endif %}</option>{% endfor %}
+        </select>
+        {% if not meta_numbers %}<small>Cadastre um número da Meta em <a href="/settings/whatsapp">Configurações → WhatsApp</a>.</small>{% endif %}
+      </label>
+      <button class="button button-secondary full-width" type="submit">Salvar canal de envio</button>
+    </form>
+    {% endif %}
+
+    <div class="panel-header top-space"><div><span class="eyebrow">AUTOMAÇÃO IA</span><h3>{% if ai_binding and ai_binding.active %}{{ ai_binding.agent.name }}{% else %}Sem agente ativo{% endif %}</h3></div></div>
     {% if ai_binding and ai_binding.active %}
     <div class="ai-queue-summary">
       <div><span>Modo da fila</span><strong>{{ ai_binding.handling_mode|replace('_',' ') }}</strong></div>
