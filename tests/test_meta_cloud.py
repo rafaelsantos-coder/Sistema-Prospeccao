@@ -662,3 +662,50 @@ def test_queue_channel_route_switches_between_zapi_and_meta():
 def test_httpx_client_is_restored_after_fake():
     # Garante que o monkeypatch do fixture não vaza para outros testes.
     assert meta_cloud.httpx.Client is httpx.Client
+
+
+def test_migration_0009_creates_meta_tables_on_existing_database(tmp_path):
+    """Caminho de produção: banco já existente (sem as tabelas Meta) recebe só as novas."""
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, inspect
+
+    from app.database import Base
+
+    meta_tables = {
+        "meta_whatsapp_numbers",
+        "service_queue_meta_numbers",
+        "conversation_meta_numbers",
+        "meta_message_templates",
+    }
+    engine = create_engine(f"sqlite:///{tmp_path / 'upgrade.db'}")
+    existing = [table for table in Base.metadata.sorted_tables if table.name not in meta_tables]
+    Base.metadata.create_all(engine, tables=existing)
+
+    spec = importlib.util.spec_from_file_location(
+        "migration_0009",
+        str(__import__("pathlib").Path(__file__).resolve().parents[1] / "alembic/versions/0009_meta_cloud_api.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with engine.begin() as connection:
+        context = MigrationContext.configure(connection)
+        with Operations.context(context):
+            module.upgrade()
+            module.upgrade()  # idempotente
+
+    inspector = inspect(engine)
+    assert meta_tables <= set(inspector.get_table_names())
+    for table in meta_tables:
+        model_columns = {column.name for column in Base.metadata.tables[table].columns}
+        db_columns = {column["name"] for column in inspector.get_columns(table)}
+        assert model_columns == db_columns, table
+
+    with engine.begin() as connection:
+        context = MigrationContext.configure(connection)
+        with Operations.context(context):
+            module.downgrade()
+    assert not (meta_tables & set(inspect(engine).get_table_names()))
