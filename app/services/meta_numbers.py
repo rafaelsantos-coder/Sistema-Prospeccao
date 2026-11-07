@@ -439,3 +439,129 @@ def approved_templates(db: Session) -> list[MetaMessageTemplate]:
             .order_by(MetaMessageTemplate.name, MetaMessageTemplate.language)
         )
     )
+
+
+# ------------------------------------------------------- criação de templates
+
+TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9_]{1,512}$")
+TEMPLATE_LANGUAGE_RE = re.compile(r"^[a-z]{2}(_[A-Z]{2})?$")
+# AUTHENTICATION fica de fora: a Meta exige um formato próprio (OTP), não corpo livre.
+TEMPLATE_CATEGORIES = {"MARKETING", "UTILITY"}
+TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{(\d+)\}\}")
+
+
+def _plain_component_text(value: str, *, limit: int, label: str) -> str:
+    text = (value or "").strip()
+    if len(text) > limit:
+        raise MetaCloudError(f"{label} deve ter no máximo {limit} caracteres.")
+    if TEMPLATE_PLACEHOLDER_RE.search(text):
+        raise MetaCloudError(f"{label} não aceita variáveis {{{{1}}}}.")
+    return text
+
+
+def build_template_payload(
+    *,
+    name: str,
+    category: str,
+    language: str,
+    body: str,
+    header: str = "",
+    footer: str = "",
+    body_examples: list[str] | None = None,
+) -> dict[str, Any]:
+    """Monta o payload de criação de template e valida as regras da Meta antes de enviar."""
+    clean_name = (name or "").strip().lower()
+    if not TEMPLATE_NAME_RE.match(clean_name):
+        raise MetaCloudError(
+            "Nome do template: use só letras minúsculas, números e _ (ex.: aviso_pedido)."
+        )
+    clean_category = (category or "").strip().upper()
+    if clean_category not in TEMPLATE_CATEGORIES:
+        raise MetaCloudError("Categoria inválida: use MARKETING ou UTILITY.")
+    clean_language = (language or "").strip()
+    if not TEMPLATE_LANGUAGE_RE.match(clean_language):
+        raise MetaCloudError("Idioma inválido: use o código da Meta, ex.: pt_BR.")
+
+    clean_body = (body or "").strip()
+    if not clean_body:
+        raise MetaCloudError("O corpo do template não pode ficar vazio.")
+    if len(clean_body) > 1024:
+        raise MetaCloudError("O corpo do template deve ter no máximo 1.024 caracteres.")
+
+    placeholders = sorted({int(item) for item in TEMPLATE_PLACEHOLDER_RE.findall(clean_body)})
+    if placeholders and placeholders != list(range(1, len(placeholders) + 1)):
+        raise MetaCloudError("As variáveis devem ser numeradas em sequência: {{1}}, {{2}}, ...")
+    if placeholders and (
+        re.match(r"^\{\{\d+\}\}", clean_body) or re.search(r"\{\{\d+\}\}[.!?]?$", clean_body)
+    ):
+        raise MetaCloudError(
+            "A Meta não aceita template que começa ou termina com variável. "
+            "Coloque um texto antes e depois (ex.: Olá {{1}}, tudo bem?)."
+        )
+
+    components: list[dict[str, Any]] = []
+    clean_header = _plain_component_text(header, limit=60, label="Cabeçalho")
+    if clean_header:
+        components.append({"type": "HEADER", "format": "TEXT", "text": clean_header})
+
+    body_component: dict[str, Any] = {"type": "BODY", "text": clean_body}
+    if placeholders:
+        examples = [template_param_text(item) for item in (body_examples or [])]
+        examples = [item for item in examples if item]
+        if len(examples) != len(placeholders):
+            raise MetaCloudError(
+                f"Informe um exemplo para cada variável ({len(placeholders)} no total). "
+                "A Meta usa os exemplos para revisar o template."
+            )
+        body_component["example"] = {"body_text": [examples]}
+    components.append(body_component)
+
+    clean_footer = _plain_component_text(footer, limit=60, label="Rodapé")
+    if clean_footer:
+        components.append({"type": "FOOTER", "text": clean_footer})
+
+    return {
+        "name": clean_name,
+        "language": clean_language,
+        "category": clean_category,
+        "components": components,
+    }
+
+
+def submit_meta_template(
+    db: Session,
+    number: MetaWhatsAppNumber,
+    **fields: Any,
+) -> MetaMessageTemplate:
+    """Valida, envia à Meta e grava o template como PENDING no banco local."""
+    payload = build_template_payload(**fields)
+    response = service_for_meta_number(number).create_template(payload)
+    data = _template_from_api(
+        {
+            "id": response.get("id"),
+            "name": payload["name"],
+            "language": payload["language"],
+            "category": payload["category"],
+            "status": response.get("status") or "PENDING",
+            "components": payload["components"],
+        }
+    )
+    if not data["name"] or not data["language"]:
+        raise MetaCloudError("A Meta não confirmou o template enviado.")
+    now = utcnow()
+    record = db.scalar(
+        select(MetaMessageTemplate).where(
+            MetaMessageTemplate.meta_number_id == number.id,
+            MetaMessageTemplate.name == data["name"],
+            MetaMessageTemplate.language == data["language"],
+        )
+    )
+    if record is None:
+        record = MetaMessageTemplate(meta_number_id=number.id, **data, synced_at=now)
+        db.add(record)
+    else:
+        for field, value in data.items():
+            setattr(record, field, value)
+        record.synced_at = now
+    db.flush()
+    return record

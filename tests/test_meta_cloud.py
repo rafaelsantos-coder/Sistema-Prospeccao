@@ -659,6 +659,124 @@ def test_queue_channel_route_switches_between_zapi_and_meta():
             db.close()
 
 
+def test_build_template_payload_valid_and_rejections():
+    from app.services.meta_numbers import build_template_payload
+
+    payload = build_template_payload(
+        name="Oferta_Fibra",
+        category="marketing",
+        language="pt_BR",
+        body="Olá {{1}}, a fibra chegou em {{2}}!",
+        header="Sulnet",
+        footer="Responda SAIR",
+        body_examples=["Maria", "Santa Maria"],
+    )
+    assert payload["name"] == "oferta_fibra"
+    assert payload["category"] == "MARKETING"
+    assert [c["type"] for c in payload["components"]] == ["HEADER", "BODY", "FOOTER"]
+    assert payload["components"][1]["example"] == {"body_text": [["Maria", "Santa Maria"]]}
+
+    base = {"name": "t", "category": "MARKETING", "language": "pt_BR"}
+    invalid = [
+        {**base, "name": "oferta fibra", "body": "x"},
+        {**base, "category": "AUTHENTICATION", "body": "x"},
+        {**base, "language": "portugues", "body": "x"},
+        {**base, "body": "   "},
+        {**base, "body": "Oi {{1}} e {{3}} ok", "body_examples": ["a", "b"]},
+        {**base, "body": "Oi {{1}} e {{2}} ok", "body_examples": ["a"]},
+        {**base, "body": "{{1}}, temos fibra", "body_examples": ["a"]},
+        {**base, "body": "Temos fibra para {{1}}.", "body_examples": ["a"]},
+        {**base, "body": "x", "header": "Oi {{1}}"},
+        {**base, "body": "x", "footer": "y" * 61},
+    ]
+    for fields in invalid:
+        with pytest.raises(meta_cloud.MetaCloudError):
+            build_template_payload(**fields)
+
+
+def test_create_template_route_submits_to_meta_and_stores_pending(fake_meta):
+    from app.models import MetaMessageTemplate
+
+    fake_meta.responses.append(
+        FakeResponse(200, {"id": "998877", "status": "PENDING", "category": "MARKETING"})
+    )
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            number = _meta_number(db, "TPLNEW")
+            number_id, waba_id = number.id, number.waba_id
+        finally:
+            db.close()
+
+        response = client.post(
+            "/settings/meta/templates/new",
+            data={
+                "csrf_token": token,
+                "meta_number_id": str(number_id),
+                "name": "oferta_teste_rota",
+                "category": "MARKETING",
+                "language": "pt_BR",
+                "body": "Olá {{1}}, temos fibra na sua rua.",
+                "examples": "Maria",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        call = fake_meta.calls[-1]
+        assert call["method"] == "POST"
+        assert call["url"].endswith(f"{waba_id}/message_templates")
+        assert call["json"]["name"] == "oferta_teste_rota"
+        db = SessionLocal()
+        try:
+            record = db.scalar(
+                select(MetaMessageTemplate).where(
+                    MetaMessageTemplate.meta_number_id == number_id,
+                    MetaMessageTemplate.name == "oferta_teste_rota",
+                )
+            )
+            assert record is not None
+            assert record.status == "PENDING"
+            assert record.meta_template_id == "998877"
+        finally:
+            db.close()
+
+
+def test_create_template_route_invalid_does_not_call_meta(fake_meta):
+    from app.models import MetaMessageTemplate
+
+    with TestClient(app) as client:
+        token = _login_admin(client)
+        db = SessionLocal()
+        try:
+            number = _meta_number(db, "TPLBAD")
+            number_id = number.id
+        finally:
+            db.close()
+        calls_before = len(fake_meta.calls)
+        response = client.post(
+            "/settings/meta/templates/new",
+            data={
+                "csrf_token": token,
+                "meta_number_id": str(number_id),
+                "name": "Nome Inválido",
+                "category": "MARKETING",
+                "language": "pt_BR",
+                "body": "Texto",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert len(fake_meta.calls) == calls_before
+        db = SessionLocal()
+        try:
+            assert db.scalar(
+                select(MetaMessageTemplate).where(MetaMessageTemplate.meta_number_id == number_id)
+            ) is None
+        finally:
+            db.close()
+
+
 def test_httpx_client_is_restored_after_fake():
     # Garante que o monkeypatch do fixture não vaza para outros testes.
     assert meta_cloud.httpx.Client is httpx.Client

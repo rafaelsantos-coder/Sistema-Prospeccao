@@ -44,6 +44,7 @@ from app.services.meta_numbers import (
     meta_webhook_url,
     refresh_meta_number_info,
     service_for_meta_number,
+    submit_meta_template,
     sync_meta_templates,
     template_unsupported_reason,
     template_variables,
@@ -526,6 +527,54 @@ def meta_number_sync_templates_route(
         return _back()
     db.commit()
     flash(request, f"{total} template(s) sincronizado(s) da Meta.")
+    return _back()
+
+
+@router.post("/settings/meta/templates/new")
+def meta_number_create_template_route(
+    request: Request,
+    csrf_token: str = Form(...),
+    meta_number_id: int = Form(...),
+    name: str = Form(...),
+    category: str = Form(...),
+    language: str = Form("pt_BR"),
+    body: str = Form(...),
+    header: str = Form(""),
+    footer: str = Form(""),
+    examples: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR")
+    number = get_meta_number(db, meta_number_id)
+    if not number or not number.active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    body_examples = [item.strip() for item in examples.split("|") if item.strip()]
+    try:
+        record = submit_meta_template(
+            db,
+            number,
+            name=name,
+            category=category,
+            language=language,
+            body=body,
+            header=header,
+            footer=footer,
+            body_examples=body_examples,
+        )
+    except MetaCloudError as exc:
+        db.rollback()
+        flash(request, str(exc), "error")
+        return _back()
+    db.commit()
+    flash(
+        request,
+        f"Template {record.name} enviado à Meta (status: {record.status.lower()}). "
+        "Quando a Meta revisar, clique em Sincronizar templates para atualizar o status.",
+    )
     return _back()
 
 

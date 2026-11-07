@@ -447,6 +447,18 @@ class MetaCloudService:
                 break
         return items
 
+    def create_template(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Envia um template novo à Meta. Ele entra como PENDING até a revisão."""
+        if not self.waba_id:
+            raise MetaNotConfigured("Informe o ID da conta do WhatsApp Business (WABA).")
+        return self._request(
+            "POST",
+            f"{self.waba_id}/message_templates",
+            json=payload,
+            timeout=30.0,
+            action="enviar o template para aprovação na Meta",
+        )
+
     # ------------------------------------------------------------------ mídia
 
     def media_info(self, media_id: str) -> dict[str, Any]:

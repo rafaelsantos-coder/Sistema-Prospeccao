@@ -83,6 +83,24 @@
       <button class="button button-primary" type="submit">Enviar teste pela Meta</button>
     </form>
   </div>
+
+  <div class="queue-create-box">
+    <div class="panel-header"><div><span class="eyebrow">NOVO TEMPLATE</span><h3>Enviar template para aprovação da Meta</h3></div><span class="panel-note">A Meta revisa o template, normalmente entre alguns minutos e algumas horas. Ele aparece como pendente; depois da revisão, clique em Sincronizar templates para ver se foi aprovado.</span></div>
+    <form action="/settings/meta/templates/new" method="post" class="stack-form compact">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field"><span>Número da Meta</span><select name="meta_number_id" required>{% for number in active_meta %}<option value="{{ number.id }}">{{ number.name }}{% if number.phone_label %} · {{ number.phone_label }}{% endif %}</option>{% endfor %}</select></label>
+        <label class="field"><span>Nome do template</span><input name="name" required maxlength="512" pattern="[a-z0-9_]+" placeholder="oferta_fibra_novembro" autocomplete="off"><small>Só letras minúsculas, números e _.</small></label>
+        <label class="field"><span>Categoria</span><select name="category" required><option value="MARKETING">Marketing (prospecção, ofertas)</option><option value="UTILITY">Utilidade (avisos de pedido, conta)</option></select></label>
+        <label class="field"><span>Idioma</span><input name="language" required value="pt_BR" maxlength="10" autocomplete="off"></label>
+        <label class="field field-span-2"><span>Cabeçalho (opcional)</span><input name="header" maxlength="60" placeholder="Sulnet Fibra"><small>Texto de até 60 caracteres, sem variáveis.</small></label>
+        <label class="field field-span-2"><span>Corpo</span><textarea name="body" rows="5" maxlength="1024" required placeholder="Olá {{ '{{1}}' }}, a Sulnet chegou em {{ '{{2}}' }} com internet de fibra. Quer conhecer os planos?"></textarea><small>Use {{ '{{1}}' }}, {{ '{{2}}' }}... para as variáveis, em sequência.</small></label>
+        <label class="field field-span-2"><span>Exemplos das variáveis</span><input name="examples" placeholder="Maria | Santa Maria"><small>Um exemplo por variável, separados por |, na mesma ordem. A Meta usa esses exemplos na revisão.</small></label>
+        <label class="field field-span-2"><span>Rodapé (opcional)</span><input name="footer" maxlength="60" placeholder="Responda SAIR para não receber mais mensagens"><small>Até 60 caracteres, sem variáveis.</small></label>
+      </div>
+      <button class="button button-primary" type="submit">Enviar para aprovação</button>
+    </form>
+  </div>
   {% endif %}
 
   <div class="queue-create-box">
