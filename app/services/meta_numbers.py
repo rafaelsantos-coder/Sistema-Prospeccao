@@ -357,7 +357,7 @@ def build_template_message(
             item.isdigit() for item in variables
         )
         parameters: list[dict[str, Any]] = []
-        for name, value in zip(variables, clean_values):
+        for name, value in zip(variables, clean_values, strict=True):
             parameter: dict[str, Any] = {"type": "text", "text": value}
             if named:
                 parameter["parameter_name"] = name
@@ -365,7 +365,7 @@ def build_template_message(
         components.append({"type": "body", "parameters": parameters})
 
     rendered = template.body_text or template.name
-    for name, value in zip(variables, clean_values):
+    for name, value in zip(variables, clean_values, strict=True):
         rendered = re.sub(r"\{\{\s*" + re.escape(name) + r"\s*\}\}", lambda _m, v=value: v, rendered)
     return components, rendered.strip()
 

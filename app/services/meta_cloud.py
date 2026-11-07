@@ -423,7 +423,7 @@ class MetaCloudService:
             raise MetaNotConfigured("Informe o ID da conta do WhatsApp Business (WABA).")
         items: list[dict[str, Any]] = []
         params: dict[str, Any] = {
-            "fields": "id,name,language,status,category,parameter_format,components",
+            "fields": "id,name,language,status,category,components",
             "limit": 100,
         }
         after = ""

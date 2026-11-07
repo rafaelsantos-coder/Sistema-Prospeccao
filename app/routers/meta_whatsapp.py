@@ -294,6 +294,11 @@ async def meta_webhook(
             number = meta_number_by_phone_number_id(db, phone_number_id)
             if number:
                 numbers[phone_number_id] = number
+    if not numbers:
+        # Evento de número não cadastrado aqui: nada a processar. Responder 200
+        # evita a Meta reenviar e marcar o webhook como falho.
+        LOG.info("meta_callback ignored=unknown_number changes=%s", len(values))
+        return {"ok": True, "ignored": "unknown_number"}
     # O corpo só é confiável depois da assinatura: ela é feita com o App Secret
     # do app da Meta e só aceitamos o segredo de um número que está no próprio corpo.
     trusted_secret = ""

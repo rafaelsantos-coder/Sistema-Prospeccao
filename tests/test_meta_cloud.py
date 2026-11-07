@@ -382,6 +382,18 @@ def test_meta_webhook_rejects_bad_signature():
             db.close()
 
 
+def test_meta_webhook_ignores_unknown_number_with_200():
+    with TestClient(app) as client:
+        payload = _inbound_payload(
+            "999000999000",
+            wa_id="555599990009",
+            message={"id": "wamid.UNKNOWN", "type": "text", "text": {"body": "oi"}},
+        )
+        response = _signed_post(client, payload, secret="qualquer")
+        assert response.status_code == 200
+        assert response.json()["ignored"] == "unknown_number"
+
+
 def test_meta_inbound_text_creates_conversation_on_meta_queue_and_status_updates():
     with TestClient(app) as client:
         db = SessionLocal()
