@@ -744,7 +744,7 @@ _TAKEOVER_BLOCKED_STATES = {
 
 def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
     from app.models import ConversationAssignment, ConversationQueueLink
-    from app.services.queue_routing import AI_WHEN_OFFLINE
+    from app.services.queue_routing import AI_WHEN_OFFLINE_MODES
 
     db = SessionLocal()
     taken = 0
@@ -754,7 +754,7 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
             db.scalars(
                 select(AIQueueBinding).where(
                     AIQueueBinding.active.is_(True),
-                    AIQueueBinding.handling_mode == AI_WHEN_OFFLINE,
+                    AIQueueBinding.handling_mode.in_(AI_WHEN_OFFLINE_MODES),
                 )
             )
         )

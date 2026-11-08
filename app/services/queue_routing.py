@@ -393,6 +393,10 @@ def queue_summary(db: Session, queue: ServiceQueue) -> dict[str, int]:
 
 # Modo de fila: a IA atende só quando nenhum vendedor da fila está online.
 AI_WHEN_OFFLINE = "AI_WHEN_OFFLINE"
+# Fila comercial: a IA só entra sem vendedor online na fila ou depois de 10 min
+# sem o vendedor interagir com o lead. Fila da IA continua em AI_WHEN_OFFLINE.
+AI_WHEN_HUMAN_IDLE = "AI_WHEN_HUMAN_IDLE"
+AI_WHEN_OFFLINE_MODES = (AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE)
 AI_OWNED_STATES = ("AI_ACTIVE", "CLOSING")
 
 
