@@ -1047,6 +1047,8 @@ def run() -> None:
 
     missing_key_logged = False
     last_inbound_recovery = time.monotonic()
+    last_ops_alerts = time.monotonic() - 90
+    last_crm_prospect = time.monotonic() - 100
     last_stale_recovery = time.monotonic()
     while True:
         if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
@@ -1081,6 +1083,25 @@ def run() -> None:
             except Exception:
                 LOG.exception("Falha na supervisão de conversas sem resposta.")
             last_inbound_recovery = now_mono
+
+        if now_mono - last_ops_alerts >= 120:
+            last_ops_alerts = now_mono
+            try:
+                from app.services.ops_alerts import run_ops_alert_checks
+
+                with SessionLocal() as alert_db:
+                    run_ops_alert_checks(alert_db)
+            except Exception:
+                LOG.exception("Falha nos avisos operacionais.")
+        if now_mono - last_crm_prospect >= 120:
+            last_crm_prospect = now_mono
+            try:
+                from app.services.crm_prospect_sync import sync_prospects
+
+                with SessionLocal() as prospect_db:
+                    sync_prospects(prospect_db)
+            except Exception:
+                LOG.exception("Falha ao registrar prospecções no CRM.")
 
         if now_mono - last_stale_recovery >= 300:
             try:
