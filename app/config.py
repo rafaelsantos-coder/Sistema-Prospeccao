@@ -109,6 +109,9 @@ class Settings:
     )
     # Segredo do caminho do webhook da ZapSign (/webhooks/zapsign/<segredo>).
     zapsign_webhook_secret: str = os.getenv("ZAPSIGN_WEBHOOK_SECRET", "").strip()
+    # WhatsApp que recebe os avisos operacionais (instância caiu, venda finalizada).
+    # Formato internacional só com dígitos: 55 + DDD + número.
+    ops_alert_phone: str = os.getenv("OPS_ALERT_PHONE", "5555999002508").strip()
     # Segredo do diagnóstico interno somente leitura (/internal/diag/<segredo>).
     diagnostics_secret: str = os.getenv("DIAGNOSTICS_SECRET", "").strip()
     ai_supervisor_guardian_timeout_seconds: int = int(
