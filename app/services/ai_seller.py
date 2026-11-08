@@ -3724,6 +3724,20 @@ def _create_crm_if_ready(
     state.protocol = str(result.get("protocol") or "")
     if not state.opportunity_id:
         raise CRMIntegrationError("CRM não retornou o identificador da oportunidade.")
+    if result.get("created") is False:
+        # A prospecção do SDR já abriu esta oportunidade com o nome provisório
+        # do WhatsApp: atualiza para o nome completo coletado no fechamento.
+        try:
+            client.update_opportunity(
+                state.opportunity_id,
+                {"clientName": name, "clientPhone": phone},
+            )
+        except CRMIntegrationError as exc:
+            LOG.warning(
+                "crm_prospect_rename_failed opportunity=%s status=%s",
+                state.opportunity_id,
+                exc.status_code,
+            )
     if black_campaign.has_marker(state.handoff_summary):
         _apply_black_tag(client, state)
 
