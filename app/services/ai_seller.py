@@ -5997,6 +5997,63 @@ def _keep_sale_with_ai(
         LOG.exception("closer_hold_notice_failed conversation=%s", conversation.id)
 
 
+STATUS_POLL_STEPS = {"CREDIT_REVIEW", "WAITING_SIGNATURE"}
+STATUS_POLL_FAILURES_KEY = "_status_poll_failures"
+STATUS_POLL_ALERT_KEY = "_status_poll_alerted"
+
+
+def _clear_status_poll_failures(state: AIClosingState, collected: dict) -> None:
+    """Consulta ao CRM deu certo: zera a contagem de falhas da análise/assinatura."""
+    had_failures = collected.pop(STATUS_POLL_FAILURES_KEY, None) is not None
+    had_alert = collected.pop(STATUS_POLL_ALERT_KEY, None) is not None
+    if had_failures or had_alert:
+        _save_collected(state, collected)
+
+
+def _hold_status_poll_failure(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    agent: AIAgentProfile,
+    exc: Exception,
+    step: str,
+) -> bool:
+    """Limita as consultas ao CRM em CREDIT_REVIEW/WAITING_SIGNATURE.
+
+    Sem limite, um lead ou oportunidade que sumiu do CRM (404) fazia o poller
+    consultar a cada 45 s para sempre (venda 4, 06-07/11/2026). Depois de 3
+    falhas de dado ou 20 de instabilidade, a supervisão é avisada uma vez e a
+    consulta passa a cada 30 minutos. O cliente não recebe mensagem: na
+    assinatura ele já tem o link; na análise de crédito nada mudou para ele.
+    Devolve True quando a venda entrou em espera.
+    """
+    kind = _closer_failure_kind(exc)
+    collected = _load_collected(state)
+    failures = int(collected.get(STATUS_POLL_FAILURES_KEY) or 0) + 1
+    collected[STATUS_POLL_FAILURES_KEY] = failures
+    hold = kind != "ownership" and ((kind != "transient" and failures >= 3) or failures >= 20)
+    first_alert = hold and not collected.get(STATUS_POLL_ALERT_KEY)
+    if first_alert:
+        collected[STATUS_POLL_ALERT_KEY] = True
+    _save_collected(state, collected)
+    if first_alert:
+        _record_ai_block(
+            db,
+            state=state,
+            conversation=conversation,
+            agent=agent,
+            reason=(
+                f"CRM não encontrou a venda na etapa {step} ({kind}, {failures} falhas seguidas): "
+                f"{str(exc)[:300]} Confira se o lead/oportunidade foi apagado ou recriado no CRM."
+            ),
+        )
+    if hold:
+        # O poller ordena por updated_at e só pega o que tem mais de 45 s.
+        state.updated_at = utcnow() + AI_HOLD_RETRY
+    return hold
+
+
 def _retry_job_later(job: AIJob, state: AIClosingState) -> None:
     collected = _load_collected(state)
     retries = int(collected.get("_hold_retries") or 0) + 1
@@ -6241,6 +6298,7 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
         try:
             if state.step == "CREDIT_REVIEW":
                 status = client.get_status(state.opportunity_id)
+                _clear_status_poll_failures(state, collected)
                 opportunity = status.get("opportunity") or {}
                 credit_status = str(opportunity.get("creditStatus") or "")
                 state.credit_status = credit_status
@@ -6395,6 +6453,8 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 detailed = client.get_contract(state.opportunity_id)
                 if isinstance(detailed, dict) and detailed:
                     contract = {**contract, **detailed}
+            # Status e contrato responderam: zera a contagem de falhas.
+            _clear_status_poll_failures(state, collected)
 
             contract_status = _contract_status(contract)
             sign_url = _contract_sign_url(contract)
@@ -6541,5 +6601,14 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     # Próxima tentativa em 30 minutos (o poller ordena por updated_at).
                     state.updated_at = utcnow() + AI_HOLD_RETRY
                     processed += 1
+            elif step_before_poll in STATUS_POLL_STEPS:
+                _hold_status_poll_failure(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    exc=exc,
+                    step=step_before_poll,
+                )
 
     return processed
