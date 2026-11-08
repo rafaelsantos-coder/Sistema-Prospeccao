@@ -109,6 +109,8 @@ class Settings:
     )
     # Segredo do caminho do webhook da ZapSign (/webhooks/zapsign/<segredo>).
     zapsign_webhook_secret: str = os.getenv("ZAPSIGN_WEBHOOK_SECRET", "").strip()
+    # Segredo do diagnóstico interno somente leitura (/internal/diag/<segredo>).
+    diagnostics_secret: str = os.getenv("DIAGNOSTICS_SECRET", "").strip()
     ai_supervisor_guardian_timeout_seconds: int = int(
         os.getenv("AI_SUPERVISOR_GUARDIAN_TIMEOUT_SECONDS", "30")
     )
