@@ -74,6 +74,8 @@ def test_prompt_prices_exist_in_plan_table():
     known |= {_brl(plan["price"]) for plan in CORPORATE_PLANS + MOBILE_PLANS}
     known |= {_brl(plan.get("additional_router_monthly_price") or 0) for plan in FTTH_PLANS}
     known |= {"860,00"}
+    # Taxa para seguir com CPF com restrição (regra do comercial, 09/11).
+    known |= {"150,00"}
     # Benefício de mensalidades grátis (1, 2 ou 3 mensalidades) também deriva da tabela.
     known |= {
         _brl(plan["price_fidelity"] * months)
