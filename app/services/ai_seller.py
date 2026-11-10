@@ -3709,6 +3709,21 @@ def _record_activity(
     )
 
 
+def _mark_credit_rejected_lost(client: SulnetCRMClient, state: AIClosingState) -> None:
+    """Crédito reprovado: a oportunidade vai para perda com o motivo do CRM.
+
+    Falha do CRM aqui não pode travar a conversa: o cliente segue atendido pela
+    IA e o erro vai para o estado da venda e para o log.
+    """
+    if not state.opportunity_id:
+        return
+    try:
+        client.mark_lost_credit_rejected(state.opportunity_id)
+    except CRMIntegrationError as exc:
+        state.last_error = f"Perda por crédito não registrada no CRM: {str(exc)[:300]}"
+        LOG.warning("credit_lost_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
+
+
 def _create_crm_if_ready(
     db: Session,
     *,
@@ -5065,6 +5080,9 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 reply = CREDIT_PROOF_REQUEST
 
             elif normalized_text in {"encerrar", "nao", "não"} or _yes_no(text) == "NAO":
+                # Só aqui a oportunidade vai para perda: o cliente desistiu de
+                # tentar outro CPF e quer encerrar. A reprovação em si não perde.
+                _mark_credit_rejected_lost(client, state)
                 state.step = "COMPLETED"
                 state.completed_at = utcnow()
                 reply = "Certo. Encerramos esta tentativa de contratação. Se quiser tentar novamente depois, é só me chamar."

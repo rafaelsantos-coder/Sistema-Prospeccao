@@ -994,3 +994,50 @@ def test_integration_profile_is_shared_between_clients(monkeypatch):
 
     second.integration_profile(refresh=True)
     assert len(calls) == profile_calls + 2
+
+
+class LoseClient(WinFallbackClient):
+    captured = []
+
+    def request(self, method, url, **kwargs):
+        response = super().request(method, url, **kwargs)
+        if method == "GET" and url.endswith("/api/catalog/reference"):
+            response.payload = {
+                "outcomeReasons": [
+                    {"id": 7, "name": "Sem interesse", "type": "lost"},
+                    {"id": 19, "name": "Analise de Crédito Reprovada", "type": "lost"},
+                ]
+            }
+        return response
+
+
+def test_mark_lost_credit_rejected_sends_status_lost_and_outcome_id(monkeypatch):
+    LoseClient.captured = []
+    monkeypatch.setattr(crm_module.httpx, "Client", LoseClient)
+
+    client = SulnetCRMClient(base_url="https://crm.example", bearer_token="service-token-value")
+    client.mark_lost_credit_rejected(14446)
+
+    patch = next(
+        item
+        for item in LoseClient.captured
+        if item["method"] == "PATCH" and item["url"].endswith("/api/opportunities/14446")
+    )
+    assert patch["json"]["status"] == "lost"
+    assert patch["json"]["outcomeReasonId"] == 19
+    assert patch["json"]["closedAt"].endswith("-03:00")
+    assert "stageId" not in patch["json"]
+    assert "reason" not in patch["json"] and "lossReason" not in patch["json"]
+    assert "Idempotency-Key" in patch["headers"]
+
+
+def test_credit_rejected_outcome_falls_back_to_19_when_catalog_fails(monkeypatch):
+    class _Down(LoseClient):
+        def request(self, method, url, **kwargs):
+            if method == "GET" and url.endswith("/api/catalog/reference"):
+                raise crm_module.httpx.ConnectError("sem rede")
+            return super().request(method, url, **kwargs)
+
+    monkeypatch.setattr(crm_module.httpx, "Client", _Down)
+    client = SulnetCRMClient(base_url="https://crm.example", bearer_token="service-token-value")
+    assert client.credit_rejected_outcome_id() == 19

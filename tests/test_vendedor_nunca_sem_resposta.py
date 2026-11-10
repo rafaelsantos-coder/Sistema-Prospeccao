@@ -248,6 +248,28 @@ def test_fora_do_funil_sdr_ia_nada_muda():
     assert state.step == "BILLING_PAYMENT_METHOD"
 
 
+def test_perda_por_credito_so_quando_cliente_encerra():
+    class _Client:
+        def __init__(self, fail=False):
+            self.calls = []
+            self.fail = fail
+
+        def mark_lost_credit_rejected(self, opportunity_id):
+            self.calls.append(opportunity_id)
+            if self.fail:
+                raise CRMIntegrationError("CRM recusou", status_code=500)
+            return {}
+
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", opportunity_id=14446, step="CREDIT_REJECTED")
+    client = _Client()
+    ai_seller._mark_credit_rejected_lost(client, state)
+    assert client.calls == [14446]
+
+    failing = _Client(fail=True)
+    ai_seller._mark_credit_rejected_lost(failing, state)  # não derruba a conversa
+    assert "Perda por crédito" in (state.last_error or "")
+
+
 # ---- Consulta ao CRM em análise de crédito/assinatura não fica em loop (07/11) ----
 
 def _status_state(step="WAITING_SIGNATURE"):
