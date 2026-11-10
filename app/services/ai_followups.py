@@ -159,6 +159,8 @@ def schedule_followup(
 
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
     delay, theme = followup_spec(step)
+    if step <= 1 and customer_engaged(db, conversation_id):
+        delay = min(delay, ENGAGED_FOLLOWUP_DELAY)
     clean_pending = re.sub(r"\s+", " ", str(pending_action or "")).strip()
     if clean_pending:
         theme = f"{theme}. Pendência atual: {clean_pending[:500]}"
@@ -408,6 +410,28 @@ def _latest_inbound_at(db: Session, conversation_id: int):
     )
 
 
+# Cliente que respondeu nas últimas 24 h está engajado: o primeiro follow-up sai em 30 min,
+# não em 2 h (conversa Liciane, 10/11). Quem não responde segue a cadência normal.
+ENGAGED_WINDOW = timedelta(hours=24)
+ENGAGED_FOLLOWUP_DELAY = timedelta(minutes=30)
+
+
+def customer_engaged(db: Session, conversation_id: int, now: datetime | None = None) -> bool:
+    """O cliente escreveu (de verdade, não resposta automática) nas últimas 24 horas."""
+    from app.services.auto_reply import is_business_auto_reply  # noqa: PLC0415
+
+    now = now or utcnow()
+    base = select(Message).where(
+        Message.conversation_id == conversation_id, Message.direction == "INBOUND"
+    )
+    for message in db.scalars(base.order_by(Message.id.desc()).limit(5)):
+        if is_business_auto_reply(message.body):
+            continue
+        last = utc_naive(message.created_at)
+        return bool(last and now - last <= ENGAGED_WINDOW)
+    return False
+
+
 # "Não" seco logo depois de uma oferta ("Quer conhecer a Black?") também é recusa:
 # a resposta da IA a ele já foi a tentativa (conversa 651: 3 follow-ups depois do "Não").
 _BARE_NEGATIVES = {"nao", "n", "agora nao", "nao quero", "nao obrigado", "nao obrigada", "nao valeu"}
@@ -467,9 +491,10 @@ def _followup_spacing_hold(db: Session, conversation_id: int, now: datetime) -> 
         .limit(1)
     )
     last = utc_naive(last_outbound_at)
-    if not last or now - last >= FOLLOWUP_MIN_GAP:
+    gap = ENGAGED_FOLLOWUP_DELAY if customer_engaged(db, conversation_id, now) else FOLLOWUP_MIN_GAP
+    if not last or now - last >= gap:
         return None
-    return business_window_start(last + FOLLOWUP_MIN_GAP)
+    return business_window_start(last + gap)
 
 
 def _queue_ai_paused(db: Session, conversation_id: int) -> bool:
@@ -616,6 +641,7 @@ def _generate_followup(
     context = {
         "followup_step": job.step,
         "followup_theme": job.theme,
+        "customer_engaged": customer_engaged(db, job.conversation_id),
         "forbidden_previous_messages": forbidden_messages,
         "learning_experiment": learning_experiment,
         "lead": {
@@ -650,6 +676,12 @@ def _generate_followup(
         "cada tentativa deve usar um ângulo comercial diferente e sem pressão excessiva. "
         "Quando essa pergunta tiver 2 ou 3 respostas previsíveis, retorne quick_replies com botões curtos "
         "(máximo 20 caracteres). Se a resposta exigir texto livre, quick_replies pode ficar vazio. "
+        "COMO ATRAIR O CLIENTE DE VOLTA: se customer_engaged=true, ele respondeu há pouco e parou no meio; "
+        "continue exatamente de onde parou, com algo NOVO e útil (confirmar cobertura, dizer o valor em reais, "
+        "o prazo de ativação ou o próximo passo concreto), chamando pelo primeiro nome quando souber. "
+        "Faça o próximo passo parecer fácil: uma única pergunta de resposta curta, com botões quando couber. "
+        "Tom de quem está ajudando, nunca de cobrança: sem 'e aí?', sem 'ainda tem interesse?', sem pedir desculpa por insistir. "
+        "Se a última pergunta nossa ficou sem resposta, não a repita: ofereça um caminho mais simples para responder. "
         "Se a base não sustentar uma afirmação, não a use.\n\n"
         f"OBJETIVO DESTA ETAPA: {job.theme}\n\n"
         f"CONTEXTO: {json.dumps(context, ensure_ascii=False, default=str)}\n\n"

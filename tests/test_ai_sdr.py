@@ -3816,6 +3816,9 @@ def test_followup_respeita_intervalo_minimo_de_2h():
         def scalar(self, _stmt):
             return self.value
 
+        def scalars(self, _stmt):
+            return []  # cliente sem mensagem recente: cadência normal de 2 h
+
     hold = ai_followups._followup_spacing_hold(_Db(now - _td(minutes=30)), 1, now)
     assert hold is not None
     assert hold >= now - _td(minutes=30) + _td(hours=2)
