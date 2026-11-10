@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 import logging
 import re
@@ -1077,6 +1078,26 @@ class SulnetCRMClient:
                 except (TypeError, ValueError):
                     return None
         return None
+
+    def add_opportunity_note(
+        self,
+        opportunity_id: int,
+        *,
+        result: str,
+        description: str,
+        channel: str = "WhatsApp",
+    ) -> None:
+        """Anotação na linha do tempo da oportunidade (append-only, autor = usuário da IA)."""
+        self._request(
+            "POST",
+            f"/api/opportunities/{opportunity_id}/notes",
+            json_body={
+                "channel": channel,
+                "result": result[:120],
+                "description": description[:4000],
+                "contactedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     def add_opportunity_tag(self, opportunity_id: int, tag_name: str) -> bool:
         """Adiciona a tag sem apagar as outras: o PATCH de tagIds substitui a lista inteira."""

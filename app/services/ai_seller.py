@@ -33,6 +33,7 @@ from app.services.ai_guardian import GuardianBlockedError, guard_outbound_messag
 from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE
 from app.services.audit import write_audit
 from app.services import ai_campaign_black as black_campaign
+from app.services import crm_notes
 from app.services import crm_prospect_sync as prospect_sync
 from app.services.crm_sulnet import (
     CRMIntegrationError,
@@ -4768,6 +4769,12 @@ def _reopen_as_new_sale(db: Session, job: AIJob, conversation: Conversation) -> 
 
 
 def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
+    result = _process_seller_job(db, job, agent)
+    crm_notes.record_milestones_safe(db, job.conversation_id)
+    return result
+
+
+def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     conversation = db.get(Conversation, job.conversation_id)
     message = db.get(Message, job.message_id)
     state = db.scalar(
@@ -6818,4 +6825,6 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     step=step_before_poll,
                 )
 
+    for state in states:
+        crm_notes.record_milestones_safe(db, state.conversation_id)
     return processed
