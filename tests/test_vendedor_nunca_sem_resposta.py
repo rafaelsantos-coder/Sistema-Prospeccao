@@ -348,3 +348,32 @@ def test_poller_em_analise_de_credito_para_de_consultar_a_cada_45s(monkeypatch):
     assert state.step == "CREDIT_REVIEW"
     assert calls.count(("activity", "VENDEDOR_IA_BLOQUEIO")) == 1
     assert [item for item in calls if item[0] == "send"] == []
+
+
+def test_credito_reprovado_oferece_comprovante_taxa_ou_outro_cpf():
+    # Regra do comercial (09/11): restrição no CPF não encerra a venda.
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="c1", step="CREDIT_REJECTED")
+    prompt = ai_seller._prompt_for_step(state, {})
+    assert "comprovante" in prompt and "150,00" in prompt and "outro CPF" in prompt
+    buttons = ai_seller.STEP_QUICK_REPLIES["CREDIT_REJECTED"] if hasattr(ai_seller, "STEP_QUICK_REPLIES") else None
+    if buttons:
+        assert len(buttons) <= 3 and all(len(item["label"]) <= 20 for item in buttons)
+
+
+def test_escolha_da_taxa_nao_confunde_com_pergunta():
+    assert ai_seller._chose_credit_fee("Pagar taxa R$150")
+    assert ai_seller._chose_credit_fee("taxa")
+    assert ai_seller._chose_credit_fee("prefiro pagar a taxa")
+    assert not ai_seller._chose_credit_fee("que taxa é essa?")
+    assert not ai_seller._chose_credit_fee("tentar outro cpf")
+
+
+def test_avisos_de_consultor_no_credito_sao_textos_fixos():
+    state = AIClosingState(conversation_id=1, agent_id=2, external_id="c2", step="CREDIT_REJECTED")
+    for text in (
+        ai_seller.CREDIT_FEE_NOTICE,
+        ai_seller.CREDIT_PROOF_REQUEST,
+        ai_seller.CREDIT_PROOF_RECEIVED_NOTICE,
+        ai_seller.CREDIT_ALT_WAITING_NOTICE,
+    ):
+        assert ai_seller._is_fixed_closing_text(state, text)
