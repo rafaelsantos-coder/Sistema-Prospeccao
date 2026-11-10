@@ -62,8 +62,20 @@ class Settings:
     resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     ai_sdr_enabled: bool = os.getenv("AI_SDR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    # Espera para juntar mensagens seguidas do cliente numa única resposta do SDR.
+    # Mensagens curtas (Sim/Não, botão, cidade) usam o debounce curto; texto longo
+    # mantém o debounce completo para não responder no meio de uma rajada.
+    ai_sdr_debounce_seconds: int = int(os.getenv("AI_SDR_DEBOUNCE_SECONDS", "6"))
+    ai_sdr_debounce_short_seconds: int = int(os.getenv("AI_SDR_DEBOUNCE_SHORT_SECONDS", "1"))
+    # Regras fixas do SDR que só são observadas (registram o que mudariam, mas
+    # não reescrevem a resposta). As ferramentas de catálogo e manual cobrem esses fatos.
+    ai_sdr_observe_policies: str = os.getenv(
+        "AI_SDR_OBSERVE_POLICIES", "unavailable_plan,router_information"
+    )
+    ai_weekly_analyst_enabled: bool = os.getenv("AI_WEEKLY_ANALYST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    ai_sdr_tools_enabled: bool = os.getenv("AI_SDR_TOOLS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_autonomous_enabled: bool = os.getenv("AI_AUTONOMOUS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-    ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "3"))
+    ai_sdr_poll_seconds: int = int(os.getenv("AI_SDR_POLL_SECONDS", "2"))
     ai_maintenance_enabled: bool = os.getenv(
         "AI_MAINTENANCE_ENABLED",
         "true",
@@ -82,6 +94,26 @@ class Settings:
         "AI_SUPERVISOR_GUARDIAN_ENABLED",
         "false",
     ).strip().lower() in {"1", "true", "yes", "on"}
+    # Sombra: revisa e audita a saída sem bloquear/reescrever. Se o modo enforce
+    # (AI_SUPERVISOR_GUARDIAN_ENABLED) estiver ligado, a sombra é ignorada.
+    ai_supervisor_guardian_shadow_enabled: bool = os.getenv(
+        "AI_SUPERVISOR_GUARDIAN_SHADOW_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    # Telefones de teste (só dígitos, separados por vírgula): a IA atende essas
+    # conversas mesmo numa fila com a IA pausada, sem tocar nos outros clientes.
+    ai_test_phones: tuple[str, ...] = tuple(
+        "".join(ch for ch in item if ch.isdigit())
+        for item in os.getenv("AI_TEST_PHONES", "").split(",")
+        if any(ch.isdigit() for ch in item)
+    )
+    # Segredo do caminho do webhook da ZapSign (/webhooks/zapsign/<segredo>).
+    zapsign_webhook_secret: str = os.getenv("ZAPSIGN_WEBHOOK_SECRET", "").strip()
+    # WhatsApp que recebe os avisos operacionais (instância caiu, venda finalizada).
+    # Formato internacional só com dígitos: 55 + DDD + número.
+    ops_alert_phone: str = os.getenv("OPS_ALERT_PHONE", "5555999002508").strip()
+    # Segredo do diagnóstico interno somente leitura (/internal/diag/<segredo>).
+    diagnostics_secret: str = os.getenv("DIAGNOSTICS_SECRET", "").strip()
     ai_supervisor_guardian_timeout_seconds: int = int(
         os.getenv("AI_SUPERVISOR_GUARDIAN_TIMEOUT_SECONDS", "30")
     )
@@ -113,7 +145,7 @@ class Settings:
     ).strip().lower() in {"1", "true", "yes", "on"}
     ai_engineer_github_repository: str = os.getenv(
         "AI_ENGINEER_GITHUB_REPOSITORY",
-        "rafaelsantos-coder/Sistema-Integrado",
+        "rafaelsantos-coder/Sistema-Prospeccao",
     ).strip()
     ai_engineer_github_token: str = os.getenv("AI_ENGINEER_GITHUB_TOKEN", "").strip()
     sulnet_crm_base_url: str = os.getenv("SULNET_CRM_BASE_URL", "").rstrip("/")
@@ -203,6 +235,11 @@ class Settings:
                 self.ai_supervisor_guardian_enabled
                 and self.openai_api_key
             ),
+            "ai_supervisor_guardian_shadow": bool(
+                self.ai_supervisor_guardian_shadow_enabled
+                and not self.ai_supervisor_guardian_enabled
+                and self.openai_api_key
+            ),
             "ai_autocorrect": bool(self.ai_autocorrect_enabled),
             "ai_learning": bool(self.ai_learning_enabled and self.openai_api_key),
             "ai_engineer": bool(self.ai_engineer_enabled and self.openai_api_key),
@@ -247,6 +284,12 @@ def validate_production_settings() -> None:
         if len(settings.zapi_webhook_secret) < 24:
             errors.append("ZAPI_WEBHOOK_SECRET deve ter ao menos 24 caracteres")
     if settings.ai_seller_enabled:
+        if not settings.ai_autonomous_enabled:
+            errors.append(
+                "AI_SELLER_ENABLED em produção também exige AI_AUTONOMOUS_ENABLED=true"
+            )
+        if not settings.openai_api_key:
+            errors.append("AI_SELLER_ENABLED requer OPENAI_API_KEY")
         if not settings.sulnet_crm_base_url.startswith(("https://", "http://")):
             errors.append("AI_SELLER_ENABLED requer SULNET_CRM_BASE_URL válida")
         if (
@@ -256,6 +299,28 @@ def validate_production_settings() -> None:
             errors.append(
                 "AI_SELLER_ENABLED requer SULNET_AI_INTEGRATION_KEY ou "
                 "SULNET_CRM_BEARER_TOKEN com ao menos 24 caracteres"
+            )
+        if len(settings.zapsign_webhook_secret) < 24:
+            errors.append(
+                "AI_SELLER_ENABLED requer ZAPSIGN_WEBHOOK_SECRET com ao menos 24 caracteres"
+            )
+    if settings.ai_engineer_autonomous_pr_enabled:
+        if not settings.ai_engineer_enabled:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED exige AI_ENGINEER_ENABLED=true"
+            )
+        if not settings.ai_engineer_github_repository or not settings.ai_engineer_github_token:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED exige repositório e token GitHub"
+            )
+        allow_production_pr = os.getenv(
+            "AI_ENGINEER_ALLOW_PRODUCTION_PR",
+            "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not allow_production_pr:
+            errors.append(
+                "AI_ENGINEER_AUTONOMOUS_PR_ENABLED em produção exige "
+                "AI_ENGINEER_ALLOW_PRODUCTION_PR=true (revisão humana obrigatória)"
             )
     if errors:
         raise RuntimeError("Configuração de produção inválida: " + "; ".join(errors))

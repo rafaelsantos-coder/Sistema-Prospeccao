@@ -26,7 +26,8 @@ from app.models import (
     Conversation,
     Message,
 )
-from app.services.ai_sdr_policy import CORPORATE_PLANS, FTTH_PLANS, MOBILE_PLANS
+from app.services.ai_sdr_policies import _existing_customer_from_text
+from app.services.ai_sdr_policy import approved_catalog
 from app.services.audit import write_audit
 from app.timeutils import utcnow
 
@@ -46,7 +47,8 @@ cliente; OUTBOUND é fala da Sulnet. Não transforme fala da IA em fato do clien
 Regras centrais:
 1. SDR IA vende e qualifica. Não deve coletar CPF, data de nascimento, CEP de cadastro,
    e-mail contratual, dados bancários ou assinatura. Quando houver intenção clara de compra,
-   deve entregar ao Vendedor IA. Pedido explícito por pessoa deve ir para humano.
+   deve entregar ao Vendedor IA. Não existe atendimento humano: prometer consultor,
+   atendente ou transferência para pessoa é erro grave (issue HUMAN_HANDOFF_PROMISE).
 2. Vendedor IA fecha a contratação. Não deve reiniciar prospecção, perguntar novamente
    informações já confirmadas ou ignorar o nextQuestion/missing do playbook do CRM.
 3. Perguntas com opções fechadas devem usar quick replies/botões quando a plataforma suporta.
@@ -213,72 +215,22 @@ def _history_existing_customer_status(
     for item in history:
         direction = str(item.get("direction") or "").upper()
         body = str(item.get("body") or "")
-        folded = _fold(body)
         if direction == "OUTBOUND":
             previous_outbound = body
             continue
-        if direction != "INBOUND" or not folded:
+        if direction != "INBOUND" or not body.strip():
             continue
-
-        if folded in {
-            "nao sou cliente",
-            "ainda nao sou cliente",
-            "nunca fui cliente",
-            "nao sou cliente sulnet",
-            "nao sou cliente da sulnet",
-            "nao tenho sulnet",
-        }:
-            confirmed = "NAO_CLIENTE"
-            continue
-        if folded in {
-            "sou cliente",
-            "ja sou cliente",
-            "sou cliente sulnet",
-            "sou cliente da sulnet",
-            "ja sou cliente sulnet",
-            "ja sou cliente da sulnet",
-            "ja tenho sulnet",
-            "tenho sulnet",
-        }:
-            confirmed = "CLIENTE"
-            continue
-
-        if _asks_existing_customer_question(previous_outbound):
-            if folded in {"sim", "sim sou", "sou", "ja sou", "sou sim"}:
-                confirmed = "CLIENTE"
-            elif folded in {"nao", "nao sou", "ainda nao", "nao ainda"}:
-                confirmed = "NAO_CLIENTE"
+        status = _existing_customer_from_text(
+            body,
+            previous_outbound=previous_outbound,
+        )
+        if status:
+            confirmed = status
     return confirmed
 
 
 def _catalog_snapshot() -> dict[str, Any]:
-    return {
-        "residential": [
-            {
-                "code": row.get("code"),
-                "speed": row.get("download_mbps"),
-                "price": row.get("price_with_fidelity"),
-                "cities": row.get("cities"),
-            }
-            for row in FTTH_PLANS
-        ],
-        "corporate": [
-            {
-                "code": row.get("code"),
-                "speed": row.get("download_mbps"),
-                "price": row.get("price"),
-            }
-            for row in CORPORATE_PLANS
-        ],
-        "mobile": [
-            {
-                "code": row.get("code"),
-                "gb": row.get("gb"),
-                "price": row.get("price"),
-            }
-            for row in MOBILE_PLANS
-        ],
-    }
+    return approved_catalog()
 
 
 def _agent_role_for_user(db: Session, user_id: int | None) -> str:
@@ -359,6 +311,11 @@ def _closing_context(
         "contract_status": state.contract_status,
         "has_opportunity": bool(state.opportunity_id),
         "has_sign_url": bool(state.sign_url),
+        # Dados já registrados no fechamento: o resumo de aceite os repete.
+        "catalog_plan_name": collected.get("catalogPlanName"),
+        "payment_method": collected.get("paymentMethod"),
+        "due_day": collected.get("dueDay"),
+        "sale_accepted": bool(collected.get("_sale_accepted")),
         "sdr_ia_funnel": bool(
             collected.get("_sdr_ia_funnel")
             or playbook.get("sdrIaFunnel")
@@ -703,7 +660,8 @@ def run_supervisor_review(context: dict[str, Any]) -> SupervisorReview:
     if not supervisor_operational():
         raise RuntimeError("Supervisor IA sombra não está operacional.")
 
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     prompt = (
         "Audite esta ação concluída pelo SDR IA ou Vendedor IA. "
@@ -725,7 +683,7 @@ def run_supervisor_review(context: dict[str, Any]) -> SupervisorReview:
         },
         output_type=SupervisorReview,
     )
-    result = Runner.run_sync(supervisor, prompt)
+    result = run_agent_sync(supervisor, prompt)
     review = result.final_output
     if not isinstance(review, SupervisorReview):
         review = SupervisorReview.model_validate(review)

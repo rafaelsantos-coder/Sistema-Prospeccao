@@ -41,6 +41,7 @@ from app.services.ai_sdr import (
     _confirmed_customer_type_from_lead,
     _confirmed_existing_customer_from_lead,
     _confirmed_facts_from_history,
+    _existing_customer_from_text,
     _explicit_purchase_commitment,
     _is_company_context,
     _journey_integrity_issues,
@@ -55,6 +56,7 @@ from app.services.ai_sdr import (
     build_ai_context,
     claim_ai_job,
     process_ai_job,
+    sdr_debounce_seconds_for_message,
 )
 from app.services.conversation_engine import store_received_payload
 from app.services.queue_routing import queue_for_conversation
@@ -469,6 +471,291 @@ def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
             assert followup.step == 1
         finally:
             db.close()
+
+def test_pausar_ia_na_fila_para_respostas_e_followups_do_sdr(monkeypatch):
+    from app.models import LeadQueuePreference
+    from app.services.ai_followups import _followup_allowed, schedule_followup
+
+    monkeypatch.setattr("app.services.ai_sdr.settings", replace(settings, ai_autonomous_enabled=True))
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            agent, queue, _human = _create_bound_digital_queue(db, "PAUSA")
+            agent.execution_mode = "AUTO"
+            db.commit()
+            lead = Lead(
+                business_name="Cliente Fila Pausada",
+                contact_name="Cliente",
+                phone="5555988877566",
+                segment="Empresa",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_AI_PAUSE"))
+            db.commit()
+            conversation, message, created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-PAUSE-INBOUND-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "Quero saber dos planos."},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            assert created is True
+            job = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
+            assert job is not None
+
+            state = db.scalar(
+                select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+            )
+            if state is None:
+                state = AIConversationState(conversation_id=conversation.id, agent_id=agent.id, state="AI_ACTIVE")
+                db.add(state)
+            state.state = "AI_ACTIVE"
+            state.agent_id = agent.id
+            db.flush()
+            followup = schedule_followup(
+                db,
+                agent_id=agent.id,
+                queue_id=queue.id,
+                conversation_id=conversation.id,
+                source_message_id=message.id,
+            )
+            assert followup is not None
+            assert _followup_allowed(db, followup) == (True, "")
+
+            # "Pausar IA" na fila.
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
+            binding.active = False
+            db.flush()
+
+            assert _followup_allowed(db, followup) == (False, "FILA_SEM_IA")
+            # O backfill não recria a cadência enquanto a fila estiver pausada.
+            assert (
+                schedule_followup(
+                    db,
+                    agent_id=agent.id,
+                    queue_id=queue.id,
+                    conversation_id=conversation.id,
+                    source_message_id=message.id,
+                )
+                is None
+            )
+            calls = []
+            monkeypatch.setattr(
+                "app.services.ai_sdr.run_ai_decision",
+                lambda agent, context: calls.append(context),
+            )
+            assert process_ai_job(db, job) == "skipped"
+            assert job.status == "IGNORADO"
+            assert calls == []
+
+            # "Ativar IA" de novo.
+            binding.active = True
+            db.flush()
+            assert _followup_allowed(db, followup) == (True, "")
+        finally:
+            db.rollback()
+            db.close()
+
+
+def test_vendedor_ia_nao_insiste_com_quem_desistiu_nem_com_fila_pausada(monkeypatch):
+    from app.models import LeadQueuePreference
+    from app.services.ai_followups import _followup_allowed, schedule_followup
+
+    monkeypatch.setattr("app.services.ai_sdr.settings", replace(settings, ai_autonomous_enabled=True))
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            _sdr, queue, _human = _create_bound_digital_queue(db, "CLOSER-PAUSA")
+            closer = db.scalar(
+                select(AIAgentProfile).where(AIAgentProfile.slug == "sulia-vendedor-fechamento")
+            )
+            assert closer is not None
+            assert closer.role_type == "CLOSER"
+            lead = Lead(
+                business_name="Cliente Vendedor Desistiu",
+                contact_name="Cliente",
+                phone="5555988877577",
+                segment="Residencial",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_AI_CLOSER_PAUSE"))
+            db.commit()
+            conversation, message, _created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-CLOSER-PAUSE-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "Quero contratar o plano de 650 Mega."},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            state = db.scalar(
+                select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+            )
+            if state is None:
+                state = AIConversationState(conversation_id=conversation.id, agent_id=closer.id, state="CLOSING")
+                db.add(state)
+            state.state = "CLOSING"
+            state.agent_id = closer.id
+            db.flush()
+
+            followup = schedule_followup(
+                db,
+                agent_id=closer.id,
+                queue_id=queue.id,
+                conversation_id=conversation.id,
+                source_message_id=message.id,
+            )
+            assert followup is not None
+            assert _followup_allowed(db, followup) == (True, "")
+
+            # Fila pausada: o Vendedor IA também não puxa conversa.
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
+            binding.active = False
+            db.flush()
+            assert _followup_allowed(db, followup) == (False, "FILA_SEM_IA")
+            binding.active = True
+            db.flush()
+
+            # Cliente desistiu: nada de "Qual seu CPF?" depois disso.
+            _conversation, declined, _created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-CLOSER-PAUSE-2",
+                    "senderName": "Cliente",
+                    "text": {"message": "Não preciso mais"},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.flush()
+            assert _followup_allowed(db, followup) == (False, "CLIENTE_DESISTIU")
+            assert (
+                schedule_followup(
+                    db,
+                    agent_id=closer.id,
+                    queue_id=queue.id,
+                    conversation_id=conversation.id,
+                    source_message_id=declined.id,
+                )
+                is None
+            )
+        finally:
+            db.rollback()
+            db.close()
+
+
+def test_fila_ia_quando_nao_houver_vendedor_online(monkeypatch):
+    from app.models import LeadQueuePreference
+    from app.services.whatsapp_presence import leave_whatsapp
+
+    auto = replace(settings, ai_autonomous_enabled=True)
+    monkeypatch.setattr("app.services.ai_sdr.settings", auto)
+    monkeypatch.setattr("app.services.conversation_engine.settings", auto)
+
+    def _inbound(db, queue, phone, message_id, text):
+        lead = db.scalar(select(Lead).where(Lead.phone == phone))
+        if lead is None:
+            lead = Lead(
+                business_name=f"Cliente {phone}",
+                contact_name="Cliente",
+                phone=phone,
+                segment="Residencial",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_AI_OFFLINE"))
+            db.commit()
+        conversation, message, _created = store_received_payload(
+            db,
+            {
+                "phone": phone,
+                "messageId": message_id,
+                "senderName": "Cliente",
+                "text": {"message": text},
+                "fromMe": False,
+                "status": "RECEIVED",
+            },
+        )
+        db.commit()
+        job = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
+        return conversation, job
+
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            agent, queue, human = _create_bound_digital_queue(db, "OFFLINE")
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
+            binding.handling_mode = "AI_WHEN_OFFLINE"
+            db.commit()
+
+            # Fila da IA (06/11): vendedor online não tira o cliente da IA.
+            conversation, job = _inbound(db, queue, "5555988877588", "AI-OFFLINE-1", "Oi, quero internet.")
+            assert job is not None
+            assert conversation.assigned_user_id != human.id
+
+            # O que a IA já começou continua com ela, mesmo com vendedor online.
+            started, _job = _inbound(db, queue, "5555988877599", "AI-OFFLINE-2", "Oi")
+            db.add(AIConversationState(conversation_id=started.id, agent_id=agent.id, state="AI_ACTIVE"))
+            db.commit()
+            _same, job = _inbound(db, queue, "5555988877599", "AI-OFFLINE-3", "Quero o de 800 Mega")
+            assert job is not None
+
+            # Sem vendedor online: a IA assume o cliente novo e ninguém é atribuído.
+            leave_whatsapp(db, human)
+            db.commit()
+            conversation, job = _inbound(db, queue, "5555988877611", "AI-OFFLINE-4", "Boa noite, tem fibra?")
+            assert job is not None
+            assert job.agent_id == agent.id
+            assert conversation.assigned_user_id is None
+        finally:
+            db.rollback()
+            db.close()
+
 
 def test_seed_binds_sulia_to_all_active_digital_queues():
     with TestClient(app):
@@ -968,7 +1255,9 @@ def _base_rejection_decision():
     )
 
 
-def test_offer_rejection_opens_residential_diagnostic_instead_of_goodbye():
+def test_offer_rejection_opens_soft_hook_instead_of_goodbye_or_diagnostic():
+    from app.services.ai_sdr_policies import SOFT_REFUSAL_HOOK_MESSAGE
+
     decision = _base_rejection_decision()
     context = {
         "latest_customer_message": "eu não quero nada de internet",
@@ -991,17 +1280,20 @@ def test_offer_rejection_opens_residential_diagnostic_instead_of_goodbye():
 
     result = _apply_offer_rejection_diagnostic_policy(decision, context)
 
-    assert result.reply_text == (
-        "Entendi. Hoje você já possui conexão de internet?"
-    )
-    assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
-    assert result.intent == "QUALIFYING"
-    assert result.sales_state == "DISCOVERY"
+    assert result.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+    assert [item.label for item in result.quick_replies] == [
+        "Preço",
+        "Velocidade",
+        "Pode parar",
+    ]
+    assert "possui conexão" not in result.reply_text.casefold()
     assert result.handoff_recommended is False
     assert result.followup_needed is True
 
 
-def test_offer_rejection_uses_company_diagnostic_for_business_lead():
+def test_offer_rejection_soft_hook_also_for_business_lead():
+    from app.services.ai_sdr_policies import SOFT_REFUSAL_HOOK_MESSAGE
+
     decision = _base_rejection_decision()
     context = {
         "latest_customer_message": "não tenho interesse em internet",
@@ -1028,10 +1320,12 @@ def test_offer_rejection_uses_company_diagnostic_for_business_lead():
 
     result = _apply_offer_rejection_diagnostic_policy(decision, context)
 
-    assert result.reply_text == (
-        "Entendi. Hoje sua empresa já possui conexão de internet?"
-    )
-    assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+    assert result.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+    assert [item.label for item in result.quick_replies] == [
+        "Preço",
+        "Velocidade",
+        "Pode parar",
+    ]
 
 
 def test_explicit_opt_out_is_not_overridden_by_sales_reengagement():
@@ -1056,7 +1350,9 @@ def test_explicit_opt_out_is_not_overridden_by_sales_reengagement():
     )
 
 
-def test_offer_rejection_diagnostic_is_not_repeated_indefinitely():
+def test_offer_rejection_does_not_repeat_soft_hook_after_it_was_sent():
+    from app.services.ai_sdr_policies import SOFT_REFUSAL_HOOK_MESSAGE
+
     decision = _base_rejection_decision()
     context = {
         "latest_customer_message": "não quero internet",
@@ -1067,7 +1363,7 @@ def test_offer_rejection_diagnostic_is_not_repeated_indefinitely():
         "history": [
             {
                 "direction": "OUTBOUND",
-                "body": "Entendi. Hoje você já possui conexão de internet na sua casa?",
+                "body": SOFT_REFUSAL_HOOK_MESSAGE,
             },
             {
                 "direction": "INBOUND",
@@ -1078,6 +1374,7 @@ def test_offer_rejection_diagnostic_is_not_repeated_indefinitely():
 
     result = _apply_offer_rejection_diagnostic_policy(decision, context)
 
+    # Deixa a política de recusa repetida confirmar a parada.
     assert result.reply_text == (
         "Entendi, obrigado por avisar. Não vou insistir na oferta de internet."
     )
@@ -1448,8 +1745,8 @@ def test_mobile_catalog_first_page_uses_three_buttons_with_prices():
     assert result.handoff_recommended is False
     assert result.sales_state == "OFFERING"
     assert [item.label for item in result.quick_replies] == [
+        "2GB - R$ 33,90",
         "5GB - R$ 44,90",
-        "7GB - R$ 47,90",
         "Mais planos",
     ]
 
@@ -1474,9 +1771,9 @@ def test_mobile_catalog_more_plans_paginates_remaining_options():
 
     assert result.handoff_recommended is False
     assert [item.label for item in result.quick_replies] == [
+        "7GB - R$ 47,90",
         "10GB - R$ 53,90",
-        "15GB - R$ 69,80",
-        "Voltar",
+        "Mais planos",
     ]
 
 
@@ -1496,8 +1793,8 @@ def test_mobile_catalog_back_returns_to_first_mobile_page():
     result = _apply_catalog_navigation_policy(decision, context)
 
     assert [item.label for item in result.quick_replies] == [
+        "2GB - R$ 33,90",
         "5GB - R$ 44,90",
-        "7GB - R$ 47,90",
         "Mais planos",
     ]
 
@@ -1609,8 +1906,8 @@ def test_ver_outros_planos_after_mobile_selection_returns_mobile_catalog():
     result = _apply_catalog_navigation_policy(decision, context)
 
     assert [item.label for item in result.quick_replies] == [
+        "2GB - R$ 33,90",
         "5GB - R$ 44,90",
-        "7GB - R$ 47,90",
         "Mais planos",
     ]
 
@@ -1796,10 +2093,10 @@ def test_router_question_with_unsupported_explicit_speed_keeps_unavailable_plan_
 
 
 
-def test_followup_initial_cadence_is_10m_30m_2h_then_6h():
-    assert followup_spec(1)[0].total_seconds() == 10 * 60
-    assert followup_spec(2)[0].total_seconds() == 30 * 60
-    assert followup_spec(3)[0].total_seconds() == 2 * 60 * 60
+def test_followup_initial_cadence_is_2h_3h_3h_then_6h():
+    assert followup_spec(1)[0].total_seconds() == 2 * 60 * 60
+    assert followup_spec(2)[0].total_seconds() == 3 * 60 * 60
+    assert followup_spec(3)[0].total_seconds() == 3 * 60 * 60
     assert followup_spec(4)[0].total_seconds() == 6 * 60 * 60
 
 
@@ -2025,7 +2322,7 @@ def test_company_difference_question_explains_business_value_instead_of_reopenin
     result = _apply_corporate_customer_policy(decision, context)
 
     assert result.qualification.customer_type == "EMPRESA"
-    assert "SLA de atendimento de até 8 horas" in result.reply_text
+    assert "compromisso de reparo de até 8 horas" in result.reply_text
     assert "suporte nível 2" in result.reply_text
     assert "equipe especializada em empresas" in result.reply_text
     assert "não é compartilhada da mesma forma que no residencial" in result.reply_text
@@ -2052,7 +2349,7 @@ def test_corporate_sla_is_presented_as_service_sla_not_resolution_deadline():
 
     result = _apply_corporate_customer_policy(decision, context)
 
-    assert "SLA de atendimento de até 8 horas" in result.reply_text
+    assert "compromisso de reparo de até 8 horas" in result.reply_text
     assert "resolução em até 8 horas" not in result.reply_text.lower()
     assert "resolve em até 8 horas" not in result.reply_text.lower()
 
@@ -2195,7 +2492,46 @@ def test_first_prospecting_question_is_existing_customer_before_any_offer():
     assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
 
 
-def test_existing_customer_confirmation_routes_to_mobile_or_new_connection():
+def test_volunteered_assinante_is_read_before_asking_existing_customer(monkeypatch):
+    """Bug 06/11: 'Já sou assinante. Obrigado.' não pode virar 'você já é cliente?'."""
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Já sou assinante. Obrigado.",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {"direction": "INBOUND", "body": "Já sou assinante. Obrigado."},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "CLIENTE"
+    assert "já é cliente Sulnet" not in (result.reply_text or "")
+    assert "Telefonia Móvel" in result.reply_text
+    assert "outro endereço" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Telefonia Móvel",
+        "Nova conexão",
+        "Upgrade ou suporte",
+    ]
+
+
+def test_existing_customer_from_text_recognizes_assinante_variants():
+    assert _existing_customer_from_text("Já sou assinante. Obrigado.") == "CLIENTE"
+    assert _existing_customer_from_text("Sou assinante da Sulnet") == "CLIENTE"
+    assert _existing_customer_from_text("Já sou cliente, valeu") == "CLIENTE"
+    assert _existing_customer_from_text("Não sou assinante") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Não sou cliente, quero conhecer") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Sou cliente da Vivo hoje") == ""
+    assert _existing_customer_from_text("Já sou assinante da Claro") == ""
+
+
+def test_existing_customer_confirmation_routes_to_mobile_or_new_connection(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
     decision = _base_prospecting_entry_decision()
     context = {
         "latest_customer_message": "Sim",
@@ -2221,10 +2557,12 @@ def test_existing_customer_confirmation_routes_to_mobile_or_new_connection():
     assert [item.label for item in result.quick_replies] == [
         "Telefonia Móvel",
         "Nova conexão",
+        "Upgrade ou suporte",
     ]
 
 
-def test_new_customer_confirmation_routes_to_internet_or_mobile():
+def test_new_customer_confirmation_routes_to_internet_or_mobile(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
     decision = _base_prospecting_entry_decision()
     context = {
         "latest_customer_message": "Não",
@@ -2439,8 +2777,8 @@ def test_existing_customer_mobile_choice_opens_mobile_catalog():
     assert result.qualification.desired_product == "Sulmóvel"
     assert result.sales_state == "OFFERING"
     assert [item.label for item in result.quick_replies] == [
+        "2GB - R$ 33,90",
         "5GB - R$ 44,90",
-        "7GB - R$ 47,90",
         "Mais planos",
     ]
 
@@ -2655,8 +2993,12 @@ def test_model_only_purchase_intent_does_not_start_closer_without_customer_evide
     assert result.sales_state == "OFFERING"
 
 
-def test_explicit_human_request_routes_only_to_human():
+def test_explicit_human_request_stays_with_ai():
+    # Não existe atendimento humano (06/11): pedido de pessoa não vira handoff.
+    from app.services import ai_sdr
+
     decision = _base_journey_decision()
+    decision.reply_text = "Claro! Vou te transferir para um atendente."
     context = {
         "latest_customer_message": "Quero falar com uma pessoa",
         "lead": {
@@ -2669,12 +3011,14 @@ def test_explicit_human_request_routes_only_to_human():
     }
 
     result = _apply_journey_orchestration_policy(decision, context)
+    assert result.journey_state != "HUMAN_HANDOFF"
+    assert result.handoff_target != "HUMAN"
 
-    assert result.journey_state == "HUMAN_HANDOFF"
-    assert result.handoff_target == "HUMAN"
-    assert result.handoff_recommended is True
-    assert result.intent == "HUMAN_REQUEST"
-    assert result.followup_needed is False
+    result = ai_sdr._never_hand_to_human(result, context)
+    assert result.handoff_target == "NONE"
+    assert result.intent != "HUMAN_REQUEST"
+    assert result.reply_text.startswith(ai_sdr.AI_OWNS_CONVERSATION_TEXT)
+    assert not ai_sdr._reply_promises_human(result.reply_text)
 
 
 def test_model_cannot_handoff_human_without_explicit_human_request():
@@ -2926,7 +3270,7 @@ def test_existing_customer_plan_change_redirects_to_service_channel():
     assert result.followup_needed is False
     assert result.offer_plan_code is None
     assert "(55) 3520-8000" in result.reply_text
-    assert "aumentar ou trocar" in result.reply_text
+    assert "exclusivo para novas contratações" in result.reply_text
 
 
 def test_purchase_intent_tenho_interesse_em_assinar_enters_closing():
@@ -2992,3 +3336,665 @@ def test_followup_cannot_announce_internal_closer_handoff():
     assert _followup_exposes_internal_handoff(
         "Ficou alguma dúvida sobre o plano?"
     ) is False
+
+
+_AD_MESSAGE = "Olá! Tenho interesse em assinar 650mb por R$99,90 da Sulnet!"
+_FAST_CITY_QUESTION = (
+    "Ótimo! Para confirmar a disponibilidade do plano de 650 Mega por R$ 99,90, "
+    "em qual cidade será a instalação?"
+)
+
+
+def _fast_context(latest, history, city=""):
+    return {
+        "latest_customer_message": latest,
+        "history": history,
+        "lead": {"city": city},
+        "confirmed_facts": {},
+    }
+
+
+def test_fast_purchase_asks_city_when_unknown():
+    # Conversas 239, 237, 72 e 68: o anúncio chegava pronto e não ia ao fechamento.
+    from app.services.ai_sdr import _fast_purchase_decision, _fast_purchase_request
+
+    request = _fast_purchase_request(
+        _fast_context(_AD_MESSAGE, [{"direction": "INBOUND", "body": _AD_MESSAGE}])
+    )
+
+    assert request is not None
+    assert request["plan"]["download_mbps"] == 650
+    assert request["city"] == ""
+    decision = _fast_purchase_decision(request["plan"], "", handoff=False)
+    assert "em qual cidade" in decision.reply_text
+    assert decision.handoff_target == "NONE"
+
+
+def test_fast_purchase_hands_off_when_city_is_known():
+    from app.services.ai_sdr import _fast_purchase_decision, _fast_purchase_request
+
+    request = _fast_purchase_request(
+        _fast_context(_AD_MESSAGE, [{"direction": "INBOUND", "body": _AD_MESSAGE}], city="Santa Rosa")
+    )
+
+    assert request["city"] == "Santa Rosa"
+    decision = _fast_purchase_decision(request["plan"], "Santa Rosa", handoff=True)
+    assert decision.handoff_target == "CLOSER_AI"
+    assert decision.sales_state == "PURCHASE_INTENT"
+    assert decision.offer_plan_code == "Fibra 650 Mega"
+    assert decision.offer_price == 99.9
+
+
+def test_fast_purchase_uses_city_answer_after_fast_question():
+    from app.services.ai_sdr import _fast_purchase_request
+
+    history = [
+        {"direction": "INBOUND", "body": _AD_MESSAGE},
+        {"direction": "OUTBOUND", "body": _FAST_CITY_QUESTION},
+        {"direction": "INBOUND", "body": "Santo Ângelo"},
+    ]
+    request = _fast_purchase_request(_fast_context("Santo Ângelo", history))
+
+    assert request["plan"]["download_mbps"] == 650
+    assert request["city"] == "Santo Ângelo"
+
+
+def test_fast_purchase_recognizes_ad_style_interest():
+    # Conversa 63: "tenho interesse em 650mb por R$99,90" recebia oferta de 800.
+    from app.services.ai_sdr import _fast_purchase_request
+
+    message = "Olá, tenho interesse em 650mb por R$99,90."
+    request = _fast_purchase_request(
+        _fast_context(message, [{"direction": "INBOUND", "body": message}])
+    )
+
+    assert request is not None
+    assert request["plan"]["download_mbps"] == 650
+
+
+def test_fast_purchase_ignores_messages_without_explicit_plan_intent():
+    from app.services.ai_sdr import _fast_purchase_request
+
+    for latest, history in (
+        ("Quero contratar", [{"direction": "INBOUND", "body": "Quero contratar"}]),
+        ("Hoje eu tenho 500mb.", [{"direction": "INBOUND", "body": "Hoje eu tenho 500mb."}]),
+        (
+            "Santa rosa",
+            [
+                {"direction": "OUTBOUND", "body": "Em qual cidade será instalada a conexão?"},
+                {"direction": "INBOUND", "body": "Santa rosa"},
+            ],
+        ),
+    ):
+        assert _fast_purchase_request(_fast_context(latest, history)) is None
+
+
+def test_burst_of_customer_messages_gets_a_single_sdr_job():
+    """Conversa 63: cada mensagem do cliente virava uma resposta separada."""
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            _agent, queue, _human = _create_bound_digital_queue(db, "BURST")
+            from app.models import LeadQueuePreference
+
+            lead = Lead(
+                business_name="Cliente Rajada",
+                contact_name="Cliente",
+                phone="5555988877399",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_BURST"))
+            db.commit()
+
+            jobs = []
+            for index, body in enumerate(("Oi", "Quero internet", "Para minha casa")):
+                conversation, message, _created = store_received_payload(
+                    db,
+                    {
+                        "phone": lead.phone,
+                        "messageId": f"AI-BURST-{index}",
+                        "senderName": "Cliente",
+                        "text": {"message": body},
+                        "fromMe": False,
+                        "status": "RECEIVED",
+                    },
+                )
+                db.commit()
+                jobs.append(db.scalar(select(AIJob).where(AIJob.message_id == message.id)))
+
+            statuses = [db.get(AIJob, job.id).status for job in jobs if job]
+            assert len(statuses) == 3
+            assert statuses[:2] == ["IGNORADO", "IGNORADO"]
+            assert statuses[2] == "PENDENTE"
+        finally:
+            db.close()
+
+
+def _black_history(*pairs):
+    return [{"direction": d, "body": b} for d, b in pairs]
+
+
+def test_black_perguntada_logo_depois_de_ser_cliente(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    expected = {
+        "CLIENTE": (
+            "Você já está sabendo da Black da Sulnet, que beneficia os nossos clientes?",
+            ["Quero saber", "Agora não"],
+        ),
+        "NAO_CLIENTE": ("Quer conhecer nossa promoção Black da Sulnet?", ["Sim", "Não"]),
+    }
+    for answer, status in (("Sim", "CLIENTE"), ("Não", "NAO_CLIENTE")):
+        context = {
+            "latest_customer_message": answer,
+            "lead": {"city": "Santa Rosa", "confirmed_existing_customer": ""},
+            "history": _black_history(
+                ("OUTBOUND", "Antes de te mostrar as opções, você já é cliente Sulnet?"),
+                ("INBOUND", answer),
+            ),
+        }
+        result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+        assert result.qualification.existing_customer == status
+        assert result.reply_text == expected[status][0]
+        assert [item.label for item in result.quick_replies] == expected[status][1]
+
+
+def test_cliente_sem_interesse_na_black_escolhe_assunto_e_suporte_vai_para_central(monkeypatch):
+    from app.services.ai_campaign_black import CUSTOMER_OFFER_QUESTION
+
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    lead = {"city": "Santa Rosa", "confirmed_existing_customer": "CLIENTE"}
+    context = {
+        "latest_customer_message": "Agora não",
+        "lead": lead,
+        "history": _black_history(("OUTBOUND", CUSTOMER_OFFER_QUESTION), ("INBOUND", "Agora não")),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert [item.label for item in result.quick_replies] == [
+        "Telefonia Móvel",
+        "Nova conexão",
+        "Upgrade ou suporte",
+    ]
+
+    for text in ("Upgrade ou suporte", "Preciso da segunda via do boleto", "minha internet está lenta"):
+        context = {
+            "latest_customer_message": text,
+            "lead": lead,
+            "history": _black_history(("OUTBOUND", result.reply_text), ("INBOUND", text)),
+        }
+        redirect = _apply_existing_customer_plan_change_policy(_base_prospecting_entry_decision(), context)
+        assert redirect.service_redirect is True, text
+        assert "(55) 3520-8000" in redirect.reply_text
+        assert redirect.followup_needed is False
+
+    # Quem não é cliente perguntando de suporte segue na venda.
+    context = {
+        "latest_customer_message": "Como funciona o suporte técnico?",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": [],
+    }
+    assert _apply_existing_customer_plan_change_policy(
+        _base_prospecting_entry_decision(), context
+    ).service_redirect is False
+
+
+def test_central_vai_com_botao_que_abre_whatsapp(monkeypatch):
+    from app.services.zapi import ZApiService
+
+    calls = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"messageId": "X"}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            calls["url"] = url
+            calls["json"] = json
+            return _Resp()
+
+    monkeypatch.setattr("app.services.zapi.httpx.Client", _Client)
+    service = ZApiService.__new__(ZApiService)
+    monkeypatch.setattr(service, "_url", lambda path: f"https://zapi/{path}", raising=False)
+    monkeypatch.setattr(service, "_headers", lambda json_request=False: {}, raising=False)
+    monkeypatch.setattr(service, "normalize_phone", lambda phone: phone, raising=False)
+    service.send_link_button(phone="5555999", message="Oi", label="Falar com a central", url="https://wa.me/555535208000")
+    assert calls["url"].endswith("send-button-actions")
+    action = calls["json"]["buttonActions"][0]
+    assert action == {"id": "1", "type": "URL", "url": "https://wa.me/555535208000", "label": "Falar com a central"}
+
+
+def test_black_sim_apresenta_movel_e_combo(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    context = {
+        "latest_customer_message": "Sim",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": _black_history(
+            ("OUTBOUND", "Quer conhecer nossa promoção Black da Sulnet?"),
+            ("INBOUND", "Sim"),
+        ),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "10/01/2027" in result.reply_text
+    assert [item.label for item in result.quick_replies] == ["Só móvel", "Combo fibra + móvel"]
+
+
+def test_black_nao_segue_fluxo_normal(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    context = {
+        "latest_customer_message": "Não",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": _black_history(
+            ("OUTBOUND", "Quer conhecer nossa promoção Black da Sulnet?"),
+            ("INBOUND", "Não"),
+        ),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "planos de internet ou Telefonia Móvel" in result.reply_text
+
+
+def test_black_so_movel_abre_menu_de_planos(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    context = {
+        "latest_customer_message": "Só móvel",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": _black_history(
+            ("OUTBOUND", "Black da Sulnet: a Black que pula o fim de ano! Qual você prefere?"),
+            ("INBOUND", "Só móvel"),
+        ),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "Sulmóvel" in result.reply_text
+    assert [item.label for item in result.quick_replies][:2] == [
+        "2GB - R$ 33,90",
+        "5GB - R$ 44,90",
+    ]
+    assert all(len(item.label) <= 20 for item in result.quick_replies)
+
+
+def test_pedido_de_opcoes_depois_de_plano_unico_abre_menu():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Quero conhecer opçõe",
+        "lead": {"city": "Santa Rosa"},
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Para usar só móvel, o plano com mais internet é o Sulmóvel 15GB "
+                    "por R$ 69,80. Quer contratar esse plano agora?"
+                ),
+            }
+        ],
+    }
+    result = _apply_catalog_navigation_policy(decision, context)
+    assert [item.label for item in result.quick_replies][:2] == [
+        "2GB - R$ 33,90",
+        "5GB - R$ 44,90",
+    ]
+
+
+def test_black_combo_vai_para_internet(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    context = {
+        "latest_customer_message": "Combo fibra + móvel",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "NAO_CLIENTE"},
+        "history": _black_history(
+            ("OUTBOUND", "Black da Sulnet: a Black que pula o fim de ano! Qual você prefere?"),
+            ("INBOUND", "Combo fibra + móvel"),
+        ),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "casa ou empresa" in result.reply_text
+
+
+def test_estagnacao_nao_troca_pergunta_da_black():
+    from app.services.ai_sdr import _apply_stagnation_strategy
+
+    decision = _base_prospecting_entry_decision()
+    decision.reply_text = "Quer conhecer nossa promoção Black da Sulnet?"
+    decision.journey_state = "CHOOSE_PRODUCT"
+    context = {"lead": {"confirmed_existing_customer": "NAO_CLIENTE"}, "history": []}
+    result = _apply_stagnation_strategy(decision, context)
+    assert result.reply_text == "Quer conhecer nossa promoção Black da Sulnet?"
+
+
+def test_mobile_catalog_third_page_shows_15gb_and_back():
+    decision = _base_catalog_decision()
+    context = {
+        "latest_customer_message": "Mais planos",
+        "lead": {"city": "Santa Rosa"},
+        "history": [{"direction": "OUTBOUND", "body": "Mais opções do Sulmóvel:"}],
+    }
+    result = _apply_catalog_navigation_policy(decision, context)
+    assert [item.label for item in result.quick_replies] == ["15GB - R$ 69,80", "Voltar"]
+
+
+def _rejection_decision():
+    return AIDecision(
+        reply_text="Entendi! E hoje você já tem internet em casa?",
+        intent="QUALIFYING",
+        qualification_score=20,
+        temperature="FRIO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        handoff_reason="",
+        confidence=0.8,
+        summary="Cliente sem interesse.",
+        next_action="Entender a situação.",
+        qualification=QualificationData(),
+        crm_notes=[],
+    )
+
+
+def test_cliente_sem_interesse_recebe_gancho_e_depois_confirma_parada():
+    from app.services.ai_sdr_policies import (
+        REJECTION_CLOSE_MESSAGE,
+        SOFT_REFUSAL_HOOK_MESSAGE,
+        STOP_CONFIRM_MESSAGE,
+        _apply_repeated_rejection_policy,
+    )
+
+    first = {
+        "latest_customer_message": "Não tenho interesse",
+        "history": [
+            {"direction": "OUTBOUND", "body": "Quer conhecer os planos de fibra?"},
+            {"direction": "INBOUND", "body": "Não tenho interesse"},
+        ],
+    }
+    decision = _apply_repeated_rejection_policy(_rejection_decision(), first)
+    assert decision.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+    assert [item.label for item in decision.quick_replies] == [
+        "Preço",
+        "Velocidade",
+        "Pode parar",
+    ]
+
+    second = {
+        "latest_customer_message": "não quero saber",
+        "history": first["history"] + [
+            {"direction": "OUTBOUND", "body": SOFT_REFUSAL_HOOK_MESSAGE},
+            {"direction": "INBOUND", "body": "não quero saber"},
+        ],
+    }
+    decision = _apply_repeated_rejection_policy(_rejection_decision(), second)
+    assert decision.reply_text == STOP_CONFIRM_MESSAGE
+    assert [item.label for item in decision.quick_replies] == ["Sim, pare", "Não"]
+    assert decision.followup_needed is False
+
+    confirmed = {
+        "latest_customer_message": "Sim, pare",
+        "history": second["history"] + [
+            {"direction": "OUTBOUND", "body": STOP_CONFIRM_MESSAGE},
+            {"direction": "INBOUND", "body": "Sim, pare"},
+        ],
+    }
+    decision = _apply_repeated_rejection_policy(_rejection_decision(), confirmed)
+    assert decision.reply_text == REJECTION_CLOSE_MESSAGE
+    assert decision.intent == "DO_NOT_CONTACT"
+    assert decision.sales_state == "OPT_OUT"
+
+    # Voltou a se interessar no meio: a recusa antiga não conta como 2ª.
+    renewed = {
+        "latest_customer_message": "Não quero",
+        "history": first["history"] + [
+            {"direction": "OUTBOUND", "body": SOFT_REFUSAL_HOOK_MESSAGE},
+            {"direction": "INBOUND", "body": "Tenho, mas quero ver o preço do 800"},
+            {"direction": "OUTBOUND", "body": "O 800 Mega sai por R$ 119,90."},
+            {"direction": "INBOUND", "body": "Não quero"},
+        ],
+    }
+    decision = _apply_repeated_rejection_policy(_rejection_decision(), renewed)
+    assert decision.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+
+
+def test_nao_quero_mais_nao_vira_catalogo_nem_diagnostico():
+    """Caso do print 06/11: 'não quero mais' não pode virar funil/móvel."""
+    from app.services.ai_sdr_policies import (
+        SOFT_REFUSAL_HOOK_MESSAGE,
+        STOP_CONFIRM_MESSAGE,
+        _apply_offer_rejection_diagnostic_policy,
+        _apply_repeated_rejection_policy,
+    )
+
+    decision = _base_rejection_decision()
+    decision.reply_text = "Qual plano de Telefonia Móvel você quer avaliar agora?"
+    first = {
+        "latest_customer_message": "não quero mais",
+        "history": [
+            {"direction": "OUTBOUND", "body": "Antes de te mostrar as opções, você já é cliente Sulnet?"},
+            {"direction": "INBOUND", "body": "não quero mais"},
+        ],
+    }
+    result = _apply_offer_rejection_diagnostic_policy(decision, first)
+    assert result.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+    assert "Telefonia Móvel você quer avaliar" not in result.reply_text
+    assert "possui conexão" not in result.reply_text.casefold()
+
+    second = {
+        "latest_customer_message": "nao quero saber",
+        "history": first["history"] + [
+            {"direction": "OUTBOUND", "body": SOFT_REFUSAL_HOOK_MESSAGE},
+            {"direction": "INBOUND", "body": "nao quero saber"},
+        ],
+    }
+    result = _apply_repeated_rejection_policy(_rejection_decision(), second)
+    assert result.reply_text == STOP_CONFIRM_MESSAGE
+
+
+def test_followup_respeita_intervalo_minimo_de_2h():
+    from datetime import timedelta as _td
+
+    from app.services import ai_followups
+    from app.timeutils import utcnow as _now
+
+    now = _now()
+
+    class _Db:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar(self, _stmt):
+            return self.value
+
+    hold = ai_followups._followup_spacing_hold(_Db(now - _td(minutes=30)), 1, now)
+    assert hold is not None
+    assert hold >= now - _td(minutes=30) + _td(hours=2)
+    assert ai_followups._followup_spacing_hold(_Db(now - _td(hours=3)), 1, now) is None
+    assert ai_followups._followup_spacing_hold(_Db(None), 1, now) is None
+
+
+def test_followup_do_sdr_para_depois_de_sem_interesse():
+    from app.services import ai_followups
+
+    class _Msg:
+        def __init__(self, body):
+            self.body = body
+            self.id = 10
+
+    class _Db:
+        def __init__(self, body):
+            self.body = body
+            self.calls = 0
+
+        def scalar(self, _stmt):
+            self.calls += 1
+            return _Msg(self.body) if self.calls == 1 else "Qual seu CPF?"
+
+    assert ai_followups._customer_declined(_Db("Não tenho interesse"), 1) is True
+    assert ai_followups._customer_declined(_Db("Não, obrigado"), 1) is True
+    assert ai_followups._customer_declined(_Db("me remova da lista"), 1) is True
+    assert ai_followups._customer_declined(_Db("Não"), 1) is False
+    assert ai_followups._customer_declined(_Db("Qual a multa de cancelamento?"), 1) is False
+
+
+def test_ia_assume_cliente_que_o_vendedor_online_nao_respondeu_em_10_minutos(monkeypatch):
+    from datetime import timedelta as _td
+
+    from app.models import LeadQueuePreference
+    from app.timeutils import utcnow as _now
+    from app.workers.ai_sdr_worker import _takeover_unanswered_human_conversations
+
+    auto = replace(settings, ai_autonomous_enabled=True)
+    monkeypatch.setattr("app.services.ai_sdr.settings", auto)
+    monkeypatch.setattr("app.services.conversation_engine.settings", auto)
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            for stale_job in db.scalars(select(AIJob).where(AIJob.status == "PENDENTE")):
+                stale_job.status = "IGNORADO"
+            db.flush()
+            agent, queue, human = _create_bound_digital_queue(db, "TAKEOVER")
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
+            binding.handling_mode = "AI_WHEN_OFFLINE"
+            db.commit()
+            lead = Lead(
+                business_name="Cliente Sem Resposta",
+                contact_name="Cliente",
+                phone="5555988877622",
+                segment="Residencial",
+                city="Santa Rosa",
+                source="MANUAL",
+                origin_channel="WHATSAPP",
+                team="DIGITAL",
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+            )
+            db.add(lead)
+            db.flush()
+            db.add(LeadQueuePreference(lead_id=lead.id, queue_id=queue.id, source="TEST_AI_TAKEOVER"))
+            db.commit()
+            conversation, message, _created = store_received_payload(
+                db,
+                {
+                    "phone": lead.phone,
+                    "messageId": "AI-TAKEOVER-1",
+                    "senderName": "Cliente",
+                    "text": {"message": "Quero saber mais"},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+            )
+            db.commit()
+            # Fila da IA (06/11): a IA responde na hora e o vendedor não é atribuído,
+            # então não há o que "assumir" depois de 10 ou 15 minutos.
+            job = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
+            assert job is not None
+            assert job.agent_id == agent.id
+            assert conversation.assigned_user_id != human.id
+            binding.updated_at = _now() - _td(hours=1)
+            db.commit()
+            message = db.get(Message, message.id)
+            message.created_at = _now() - _td(minutes=15)
+            db.commit()
+            _takeover_unanswered_human_conversations()
+            db.expire_all()
+            assert db.get(type(conversation), conversation.id).assigned_user_id != human.id
+        finally:
+            db.rollback()
+            db.close()
+
+
+def test_nao_seco_para_a_black_depois_de_nao_obrigada_confirma_parada():
+    from app.services import ai_followups
+    from app.services.ai_sdr_policies import STOP_CONFIRM_MESSAGE, _apply_repeated_rejection_policy
+
+    history = [
+        {"direction": "OUTBOUND", "body": "Oi! A Sulnet tem novidades para você."},
+        {"direction": "INBOUND", "body": "Não obrigada"},
+        {"direction": "OUTBOUND", "body": "Antes de te mostrar as opções, você já é cliente Sulnet?"},
+        {"direction": "INBOUND", "body": "Sim"},
+        {"direction": "OUTBOUND", "body": "Quer conhecer nossa promoção Black da Sulnet?"},
+        {"direction": "INBOUND", "body": "Não"},
+    ]
+    decision = _apply_repeated_rejection_policy(
+        _rejection_decision(), {"latest_customer_message": "Não", "history": history}
+    )
+    # Após recusa prévia + tentativa, a 2ª recusa confirma se deve parar.
+    assert decision.reply_text == STOP_CONFIRM_MESSAGE
+    assert decision.followup_needed is False
+
+    class _Msg:
+        def __init__(self, body, id_=10):
+            self.body = body
+            self.id = id_
+
+    class _Db:
+        def __init__(self, inbound, outbound):
+            self.values = [_Msg(inbound), outbound]
+
+        def scalar(self, _stmt):
+            return self.values.pop(0)
+
+    assert ai_followups._customer_declined(_Db("Não", "Quer conhecer nossa promoção Black da Sulnet?"), 1) is True
+    assert ai_followups._customer_declined(_Db("Não", "A portabilidade será no seu nome? (Sim/Não)"), 1) is False
+
+
+def test_pergunta_livre_na_black_nao_repete_as_opcoes(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    from app.services.ai_campaign_black import OPTIONS_TEXT
+
+    context = {
+        "latest_customer_message": "Até quando vai a promoção ?",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "CLIENTE"},
+        "history": _black_history(("OUTBOUND", OPTIONS_TEXT), ("INBOUND", "Até quando vai a promoção ?")),
+    }
+    result = _apply_prospecting_entry_policy(_base_prospecting_entry_decision(), context)
+    assert "30/11/2026" in result.reply_text
+    assert result.reply_text != OPTIONS_TEXT
+    assert [item.label for item in result.quick_replies] == ["Só móvel", "Combo fibra + móvel"]
+
+    other = {
+        "latest_customer_message": "Funciona em qualquer celular?",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": "CLIENTE"},
+        "history": _black_history(("OUTBOUND", OPTIONS_TEXT), ("INBOUND", "Funciona em qualquer celular?")),
+    }
+    base = _base_prospecting_entry_decision()
+    original = base.reply_text
+    result = _apply_prospecting_entry_policy(base, other)
+    assert result.reply_text == original  # o modelo responde a dúvida
+
+
+def test_sdr_debounce_is_short_for_button_like_replies(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        "app.services.ai_sdr.settings",
+        replace(
+            settings,
+            ai_sdr_debounce_seconds=6,
+            ai_sdr_debounce_short_seconds=1,
+        ),
+    )
+    assert sdr_debounce_seconds_for_message("Sim") == 1
+    assert sdr_debounce_seconds_for_message("Ok") == 1
+    assert sdr_debounce_seconds_for_message("Santa Rosa") == 1
+    assert sdr_debounce_seconds_for_message(
+        "Me desculpe vc pegou o número errado"
+    ) == 1
+    assert sdr_debounce_seconds_for_message(
+        "Queria entender melhor o plano de 500 mega para a minha empresa "
+        "porque hoje pago caro e a internet cai toda hora no escritório."
+    ) == 6
+    assert sdr_debounce_seconds_for_message("linha1\nlinha2") == 6

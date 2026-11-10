@@ -25,7 +25,11 @@ from app.models import (
     ZApiInstance,
 )
 from app.security import hash_password
-from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT
+from app.services.ai_sdr_policy import (
+    SELLER_KNOWLEDGE_ITEMS,
+    SULIA_SYSTEM_PROMPT,
+    SYSTEM_KNOWLEDGE_ITEMS,
+)
 from app.services.followups import initial_next_action
 from app.services.scoring import calculate_sulnet_score
 from app.services.zapi_instances import (
@@ -118,6 +122,60 @@ def _ensure_dedicated_ai_queue(db: Session, *, admin: User) -> ServiceQueue | No
 
     bind_queue_instance(db, queue.id, instance.id)
     return queue
+
+
+def _seed_agent_knowledge(db: Session, agent: AIAgentProfile, items, *, admin: User) -> None:
+    for knowledge_data in items:
+        item = db.scalar(
+            select(AIKnowledgeItem).where(
+                AIKnowledgeItem.agent_id == agent.id,
+                AIKnowledgeItem.title == knowledge_data["title"],
+            )
+        )
+        if not item:
+            item = AIKnowledgeItem(
+                agent_id=agent.id,
+                title=knowledge_data["title"],
+                category=knowledge_data["category"],
+                tags=knowledge_data["tags"],
+                content=knowledge_data["content"],
+                source_type="SULNET_KB_V2",
+                active=True,
+                created_by_id=admin.id,
+            )
+            db.add(item)
+            db.flush()
+        elif item.source_type != "SULNET_KB_V2":
+            # Migração única V1 -> V2. Após isso, edições feitas no painel são preservadas.
+            item.category = knowledge_data["category"]
+            item.tags = knowledge_data["tags"]
+            item.content = knowledge_data["content"]
+            item.source_type = "SULNET_KB_V2"
+
+        meta = db.scalar(
+            select(AIKnowledgeMetadata).where(
+                AIKnowledgeMetadata.knowledge_item_id == item.id
+            )
+        )
+        if not meta:
+            title_lower = knowledge_data["title"].lower()
+            priority = 100 if "por que contratar" in title_lower else 90
+            if knowledge_data["category"] in {"INSTITUCIONAL", "DIFERENCIAIS", "ATENDIMENTO"}:
+                priority = 80
+            meta = AIKnowledgeMetadata(
+                knowledge_item_id=item.id,
+                subject=knowledge_data["title"][:120],
+                product_service=(
+                    "Institucional"
+                    if knowledge_data["category"] in {"INSTITUCIONAL", "DIFERENCIAIS", "ATENDIMENTO"}
+                    else "Comercial Sulnet"
+                ),
+                region="Área de atuação Sulnet",
+                source_reference="Base comercial aprovada Sulnet · V2 · 29/10/2026",
+                priority=priority,
+                approval_status="APPROVED",
+            )
+            db.add(meta)
 
 
 def seed_database(db: Session, include_demo: bool = True) -> None:
@@ -317,57 +375,10 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
     ai_agent.max_history_messages = max(int(ai_agent.max_history_messages or 24), 40)
     ai_agent.max_knowledge_chars = max(int(ai_agent.max_knowledge_chars or 12000), 20000)
 
-    for knowledge_data in SYSTEM_KNOWLEDGE_ITEMS:
-        item = db.scalar(
-            select(AIKnowledgeItem).where(
-                AIKnowledgeItem.agent_id == ai_agent.id,
-                AIKnowledgeItem.title == knowledge_data["title"],
-            )
-        )
-        if not item:
-            item = AIKnowledgeItem(
-                agent_id=ai_agent.id,
-                title=knowledge_data["title"],
-                category=knowledge_data["category"],
-                tags=knowledge_data["tags"],
-                content=knowledge_data["content"],
-                source_type="SULNET_KB_V2",
-                active=True,
-                created_by_id=admin.id,
-            )
-            db.add(item)
-            db.flush()
-        elif item.source_type != "SULNET_KB_V2":
-            # Migração única V1 -> V2. Após isso, edições feitas no painel são preservadas.
-            item.category = knowledge_data["category"]
-            item.tags = knowledge_data["tags"]
-            item.content = knowledge_data["content"]
-            item.source_type = "SULNET_KB_V2"
-
-        meta = db.scalar(
-            select(AIKnowledgeMetadata).where(
-                AIKnowledgeMetadata.knowledge_item_id == item.id
-            )
-        )
-        if not meta:
-            title_lower = knowledge_data["title"].lower()
-            priority = 100 if "por que contratar" in title_lower else 90
-            if knowledge_data["category"] in {"INSTITUCIONAL", "DIFERENCIAIS", "ATENDIMENTO"}:
-                priority = 80
-            meta = AIKnowledgeMetadata(
-                knowledge_item_id=item.id,
-                subject=knowledge_data["title"][:120],
-                product_service=(
-                    "Institucional"
-                    if knowledge_data["category"] in {"INSTITUCIONAL", "DIFERENCIAIS", "ATENDIMENTO"}
-                    else "Comercial Sulnet"
-                ),
-                region="Área de atuação Sulnet",
-                source_reference="Base comercial aprovada Sulnet · V2 · 29/10/2026",
-                priority=priority,
-                approval_status="APPROVED",
-            )
-            db.add(meta)
+    _seed_agent_knowledge(db, ai_agent, SYSTEM_KNOWLEDGE_ITEMS, admin=admin)
+    # O Vendedor IA estava sem nenhum item de conhecimento (diagnóstico 03/11):
+    # não sabia responder prazo, fidelidade, multa nem pagamento no fechamento.
+    _seed_agent_knowledge(db, seller_agent, SELLER_KNOWLEDGE_ITEMS, admin=admin)
 
     seed_default_zapi_instance(db, created_by_id=admin.id)
     rotate_zapi_secrets(db)

@@ -1,0 +1,29 @@
+{
+  "id": "conv114-multa-setimo-mes",
+  "conversation": 114,
+  "problem": 7,
+  "description": "\"Se eu cancelar no 7º mês?\" → pede os meses → \"7\": a IA calcula a multa em reais.",
+  "kind": "seller_contract_knowledge",
+  "input": {
+    "state": {
+      "plan_label": "650 Mega",
+      "offer_price": 99.9
+    },
+    "collected": {},
+    "messages": [
+      "Qual a multa se eu cancelar?",
+      "7"
+    ]
+  },
+  "expect": {
+    "replies_contain": [
+      [
+        "quantos meses"
+      ],
+      [
+        "7 meses",
+        "R$"
+      ]
+    ]
+  }
+}

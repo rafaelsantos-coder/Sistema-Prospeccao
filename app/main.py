@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings, validate_production_settings
 from app.database import Base, SessionLocal, engine
-from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, zapi
+from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, diagnostico, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, zapi, zapsign
 from app.services.seed import seed_database
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import instance_webhook_url, list_zapi_instances, service_for_instance
@@ -22,6 +23,21 @@ from app.web import render
 
 
 LOG = logging.getLogger("uvicorn.error")
+
+
+class _RedactWebhookSecretFilter(logging.Filter):
+    """Mascara o segredo que vai na URL dos webhooks (/webhooks/<tipo>/<segredo>) no log de acesso."""
+
+    _PATTERN = re.compile(r"(/webhooks/[^/\s?]+/(?:instance/)?)[^/\s?]+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str) and "/webhooks/" in args[2]:
+            record.args = (*args[:2], self._PATTERN.sub(r"\1***", args[2]), *args[3:])
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactWebhookSecretFilter())
 
 
 async def initialize_database(max_attempts: int = 12) -> None:
@@ -138,7 +154,9 @@ app.include_router(presence.router)
 app.include_router(queues.router)
 app.include_router(settings_router.router)
 app.include_router(zapi.router)
+app.include_router(zapsign.router)
 app.include_router(api.router)
+app.include_router(diagnostico.router)
 
 
 @app.exception_handler(404)

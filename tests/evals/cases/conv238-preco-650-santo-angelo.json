@@ -1,0 +1,21 @@
+{
+  "id": "conv238-preco-650-santo-angelo",
+  "conversation": 238,
+  "problem": 2,
+  "description": "O preço do 650 Mega em Santo Ângelo é oficial e deve estar no catálogo usado pela IA e pelo Guardião.",
+  "kind": "catalog",
+  "input": {
+    "city": "Santo Ângelo",
+    "segment": "RESIDENCIAL"
+  },
+  "expect": {
+    "speeds": [
+      800,
+      650
+    ],
+    "price_with_fidelity": {
+      "650": 99.9,
+      "800": 119.9
+    }
+  }
+}

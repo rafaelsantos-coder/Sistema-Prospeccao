@@ -1,0 +1,15 @@
+{
+  "id": "conv237-duvida-no-fechamento",
+  "conversation": 237,
+  "problem": 6,
+  "description": "Dúvida no meio do fechamento é tratada como dúvida, e resposta da etapa continua sendo resposta.",
+  "kind": "seller_question",
+  "input": {
+    "messages": {
+      "Quanto tempo demora a instalação?": true,
+      "posso pagar no boleto?": false,
+      "Rafael": false
+    }
+  },
+  "expect": {}
+}

@@ -53,6 +53,37 @@ _SAFE_EXPERIMENTS = (
         ),
         "metric": "CLOSING_RATE",
     },
+    {
+        "key": "sdr_alternative_close_v1",
+        "scope": "SDR_COPY",
+        "hypothesis": (
+            "Convite de fechamento com duas alternativas que avançam fecha mais do que "
+            "a pergunta de sim ou não."
+        ),
+        "control_instruction": "Mantenha o convite de fechamento atual aprovado.",
+        "variant_instruction": (
+            "Somente na redação do convite de fechamento: quando houver duas opções válidas "
+            "para o cliente (dois planos elegíveis ou dois próximos passos), ofereça as duas "
+            "em vez de perguntar 'quer contratar?'. Não altere preço, plano, condição, ordem "
+            "da jornada ou critério de handoff."
+        ),
+        "metric": "CLOSING_RATE",
+    },
+    {
+        "key": "sdr_acknowledge_before_offer_v1",
+        "scope": "SDR_COPY",
+        "hypothesis": (
+            "Retomar em poucas palavras o que o cliente disse antes da oferta aumenta a "
+            "continuidade da conversa."
+        ),
+        "control_instruction": "Mantenha a redação comercial atual aprovada.",
+        "variant_instruction": (
+            "Somente na redação: comece a resposta retomando em poucas palavras o que o "
+            "cliente acabou de dizer e só então faça a pergunta ou a oferta. Não altere "
+            "preço, plano, condição, ordem da jornada ou critério de handoff."
+        ),
+        "metric": "CLOSING_RATE",
+    },
 )
 
 

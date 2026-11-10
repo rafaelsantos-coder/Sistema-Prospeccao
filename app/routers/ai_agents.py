@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from app.config import settings
 from app.database import get_db
@@ -28,9 +29,13 @@ from app.services.zapi_instances import queue_instance
 from app.web import flash, render
 
 
+LOG = logging.getLogger("sulnet_ai_agents")
+
 router = APIRouter(prefix="/ai")
 
 HANDLING_MODES = {
+    "AI_WHEN_OFFLINE": "IA quando não houver vendedor online",
+    "AI_WHEN_HUMAN_IDLE": "IA se sem vendedor online ou 10 min sem interação",
     "AI_FIRST": "IA primeiro",
     "HYBRID": "Híbrido",
     "AI_ONLY": "IA exclusiva",
@@ -165,6 +170,201 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         ai_sdr_enabled=settings.ai_sdr_enabled,
         autonomous_enabled=settings.ai_autonomous_enabled,
     )
+
+
+@router.get("/quality")
+def ai_quality_dashboard(request: Request, days: int = 7, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    from app.services.ai_quality import conversation_quality_report
+
+    window = days if days in {1, 7, 14, 30} else 7
+    report = conversation_quality_report(db, days=window)
+    return render(
+        request,
+        "ai/quality.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="quality",
+        page_title="Qualidade das conversas",
+        report=report,
+        days=window,
+    )
+
+
+@router.get("/quality/{conversation_id}/case.json")
+def ai_quality_case(conversation_id: int, request: Request, db: Session = Depends(get_db)):
+    """Histórico anonimizado de uma conversa, no formato de caso de teste."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    from app.models import Message
+    from app.services.pii import redact_pii_text
+
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    messages = list(
+        db.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.asc(), Message.id.asc())
+        )
+    )
+    case = {
+        "id": f"conv{conversation_id}-descreva-o-caso",
+        "conversation": conversation_id,
+        "description": "Descreva o que deu errado e o comportamento esperado.",
+        "kind": "conversation_replay",
+        "input": {
+            "history": [
+                {"direction": item.direction, "body": redact_pii_text(item.body)}
+                for item in messages
+            ],
+        },
+        "expect": {"notes": "Comportamento esperado da IA neste ponto da conversa."},
+    }
+    write_audit(
+        db,
+        user=actor,
+        action="AI_TEST_CASE_EXPORTED",
+        entity_type="conversation",
+        entity_id=conversation_id,
+        payload={"messages": len(messages)},
+    )
+    db.commit()
+    return JSONResponse(
+        case,
+        headers={
+            "Content-Disposition": f'attachment; filename="conv{conversation_id}.json"'
+        },
+    )
+
+
+@router.get("/weekly")
+def ai_weekly_dashboard(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    from app.models import AIKnowledgeMetadata
+    from app.services.ai_weekly_analyst import ANALYST_SOURCE, RUN_ACTION, weekly_report
+
+    report = weekly_report(db, days=7)
+    drafts = list(
+        db.scalars(
+            select(AIKnowledgeItem)
+            .join(AIKnowledgeMetadata, AIKnowledgeMetadata.knowledge_item_id == AIKnowledgeItem.id)
+            .where(
+                AIKnowledgeMetadata.approval_status != "APPROVED",
+                AIKnowledgeMetadata.source_reference.like(f"{ANALYST_SOURCE}%"),
+            )
+            .order_by(AIKnowledgeItem.created_at.desc())
+            .limit(50)
+        )
+    )
+    from app.models import AuditLog
+
+    last_run = db.scalar(
+        select(AuditLog).where(AuditLog.action == RUN_ACTION).order_by(AuditLog.created_at.desc()).limit(1)
+    )
+    return render(
+        request,
+        "ai/weekly.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="weekly",
+        page_title="Analista semanal",
+        report=report,
+        drafts=drafts,
+        last_run=last_run,
+    )
+
+
+@router.post("/weekly/run")
+def ai_weekly_run(
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    from app.services.ai_weekly_analyst import run_weekly_analyst
+
+    result = run_weekly_analyst(db, user=actor)
+    db.commit()
+    flash(
+        request,
+        f"Analista executado: {result['drafts_created']} dúvida(s) nova(s) enviada(s) para revisão do manual.",
+        "success",
+    )
+    return RedirectResponse("/ai/weekly", status_code=303)
+
+
+@router.get("/simulator")
+def ai_simulator_page(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    return render(
+        request,
+        "ai/simulator.html",
+        user=actor,
+        active_nav="ai",
+        ai_section="simulator",
+        page_title="Simulador do SDR",
+    )
+
+
+@router.post("/simulator/turn")
+async def ai_simulator_turn(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return JSONResponse({"error": "Acesso restrito a gestores."}, status_code=403)
+    payload = await request.json()
+    validate_csrf(request, str(payload.get("csrf_token") or ""))
+    message = str(payload.get("message") or "").strip()[:2000]
+    if not message:
+        return JSONResponse({"error": "Mensagem vazia."}, status_code=400)
+    history = [
+        {"direction": str(row.get("direction") or ""), "body": str(row.get("body") or "")}
+        for row in (payload.get("history") or [])[-40:]
+        if isinstance(row, dict)
+    ]
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.ai_simulator import simulate_sdr_turn
+
+    def _run() -> dict:
+        try:
+            return simulate_sdr_turn(
+                db,
+                history=history,
+                message=message,
+                city=str(payload.get("city") or "")[:80],
+                variant=payload.get("variant") if isinstance(payload.get("variant"), dict) else None,
+            )
+        finally:
+            # Simulação nunca grava nada: descarta qualquer alteração da sessão.
+            db.rollback()
+
+    try:
+        result = await run_in_threadpool(_run)
+    except Exception:
+        LOG.exception("ai_simulator_failed")
+        return JSONResponse({"error": "Falha ao simular a resposta do SDR."}, status_code=500)
+    write_audit(
+        db,
+        user=actor,
+        action="AI_SDR_SIMULATED",
+        entity_type="ai",
+        entity_id="simulator",
+        payload={"turn": len(history) // 2 + 1, "journey_state": result.get("journey_state")},
+    )
+    db.commit()
+    return JSONResponse(result)
 
 
 @router.get("/seller")
@@ -689,3 +889,73 @@ def toggle_queue_binding(
     )
     db.commit()
     return RedirectResponse("/ai", status_code=303)
+
+
+@router.post("/test-chat/inbound")
+async def ai_test_chat_inbound(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Teste de ponta a ponta sem WhatsApp Web: a mensagem entra como se o
+    telefone de teste tivesse escrito no WhatsApp da fila (mesmo caminho do
+    webhook da Z-API). As respostas da IA saem pelo WhatsApp real para esse
+    telefone. Só administradores e só telefones de AI_TEST_PHONES.
+    """
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return JSONResponse({"error": "Acesso restrito."}, status_code=403)
+    payload = await request.json()
+    validate_csrf(request, str(payload.get("csrf_token") or ""))
+    require_roles(actor, "ADMIN")
+
+    from uuid import uuid4
+
+    from app.routers.zapi import _process_zapi_payload
+    from app.services.ai_sdr import is_ai_test_phone
+
+    phone = "".join(ch for ch in str(payload.get("phone") or "") if ch.isdigit())
+    text = str(payload.get("text") or "").strip()[:2000]
+    if not text:
+        return JSONResponse({"error": "Mensagem vazia."}, status_code=400)
+    if not is_ai_test_phone(phone):
+        return JSONResponse(
+            {"error": "Telefone fora de AI_TEST_PHONES: o teste só pode falar como um telefone de teste."},
+            status_code=400,
+        )
+    try:
+        queue_id = int(payload.get("queue_id") or 0)
+    except (TypeError, ValueError):
+        queue_id = 0
+    instance = queue_instance(db, queue_id) if queue_id else None
+    if not instance:
+        return JSONResponse({"error": "Fila sem instância de WhatsApp."}, status_code=400)
+
+    message_id = f"TESTE-{uuid4().hex}"
+    result = _process_zapi_payload(
+        {
+            "type": "ReceivedCallback",
+            "instanceId": instance.instance_id,
+            "phone": phone,
+            "fromMe": False,
+            "messageId": message_id,
+            "momment": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "senderName": "Teste IA",
+            "text": {"message": text},
+        },
+        db=db,
+        background_tasks=background_tasks,
+        expected_instance_id=instance.instance_id,
+        queue_id=queue_id,
+        zapi_instance_id=instance.id,
+    )
+    write_audit(
+        db,
+        user=actor,
+        action="AI_TEST_CHAT_INBOUND",
+        entity_type="conversation",
+        entity_id=result.get("conversation_id") or "-",
+        payload={"queue_id": queue_id, "message_id": message_id},
+    )
+    db.commit()
+    return JSONResponse(result)

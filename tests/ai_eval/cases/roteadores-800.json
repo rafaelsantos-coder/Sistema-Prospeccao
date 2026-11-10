@@ -1,0 +1,25 @@
+{
+  "id": "roteadores-800",
+  "conversation": null,
+  "description": "Pergunta sobre roteadores do 800 Mega: 1 roteador incluso, adicional R$ 29,90, sem dizer que precisa validar.",
+  "lead": {
+    "city": "Santa Rosa"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "Em Santa Rosa temos o plano de fibra óptica de 800 Mega por R$ 119,90 mensais. Quer aproveitar e contratar?"
+    }
+  ],
+  "latest": "Quantos roteadores vêm nesse plano?",
+  "expect": {
+    "reply_contains_any": [
+      "1 roteador",
+      "um roteador"
+    ],
+    "reply_not_contains": [
+      "validar",
+      "confirmar essa informa"
+    ]
+  }
+}

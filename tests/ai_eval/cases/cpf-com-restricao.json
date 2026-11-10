@@ -1,0 +1,25 @@
+{
+  "id": "cpf-com-restricao",
+  "conversation": null,
+  "description": "CPF com restrição não encerra a venda: comprovante do provedor atual ou taxa de R$ 150.",
+  "lead": {
+    "city": "Santa Rosa"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "Em Santa Rosa temos o plano de fibra óptica de 800 Mega por R$ 119,90 mensais. Quer aproveitar e contratar esse plano agora?"
+    }
+  ],
+  "latest": "Meu CPF está negativado, consigo contratar mesmo assim?",
+  "expect": {
+    "reply_contains_any": [
+      "comprovante",
+      "150"
+    ],
+    "reply_not_contains": [
+      "nao e possivel contratar",
+      "infelizmente nao"
+    ]
+  }
+}

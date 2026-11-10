@@ -11,10 +11,11 @@ from app.main import app
 from app.models import (
     AIAgentProfile,
     AIClosingState,
-    AuditLog,
     AIConversationState,
     AIJob,
     AIRun,
+    AuditLog,
+    Contact,
     Conversation,
     Message,
     ServiceQueue,
@@ -536,5 +537,68 @@ def test_supervisor_shadow_report_aggregates_airun_and_followup_reviews(monkeypa
             assert report["closer_reviews"] == 1
             assert report["top_issues"][0]["code"] == "MISSING_QUICK_REPLIES"
             assert report["recent_findings"][0]["conversation_id"] == conversation_id
+        finally:
+            db.close()
+
+
+def test_supervisor_report_counts_guardian_shadow_would_intervene():
+    with TestClient(app) as client:
+        _login(client)
+        # Conversa própria no banco — não reutiliza /leads/1 (shared com outros testes).
+        db = SessionLocal()
+        try:
+            contact = Contact(phone="5555900000888", name="Guardião Sombra")
+            db.add(contact)
+            db.flush()
+            conversation = Conversation(
+                contact_id=contact.id,
+                status="EM_FILA",
+                team="DIGITAL",
+            )
+            db.add(conversation)
+            db.flush()
+            conversation_id = conversation.id
+            db.add(
+                AuditLog(
+                    action="AI_SUPERVISOR_GUARDIAN_REVIEW",
+                    entity_type="conversation",
+                    entity_id=str(conversation_id),
+                    payload_json=json.dumps(
+                        {
+                            "conversation_id": conversation_id,
+                            "agent_role": "SDR",
+                            "verdict": "APPROVE",
+                            "observed_verdict": "BLOCK",
+                            "shadow_only": True,
+                            "would_intervene": True,
+                            "risk": "CRITICAL",
+                            "confidence": 0.9,
+                            "quality_score": 40,
+                            "issue_codes": ["WON_BEFORE_SIGNATURE"],
+                            "rationale": "[sombra] observou BLOCK",
+                            "suggested_reply": "Não confirme a venda ainda.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+
+            now = utcnow()
+            report = _build_supervisor_shadow_report(
+                db,
+                conversation_ids=[conversation_id],
+                start=now.replace(hour=0, minute=0, second=0, microsecond=0),
+                end=now.replace(hour=23, minute=59, second=59, microsecond=999999),
+            )
+
+            assert report["mode"] == "GUARDIAN_SHADOW"
+            assert report["guardian_shadow_reviews"] == 1
+            assert report["guardian_enforce_reviews"] == 0
+            assert report["block"] == 1
+            assert report["would_intervene"] == 1
+            assert report["would_intervene_rate"] == 100.0
+            assert report["recent_findings"][0]["observed_verdict"] == "BLOCK"
+            assert report["top_issues"][0]["code"] == "WON_BEFORE_SIGNATURE"
         finally:
             db.close()
