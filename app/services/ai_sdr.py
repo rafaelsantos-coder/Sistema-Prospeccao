@@ -1553,6 +1553,37 @@ def _time_greeting() -> str:
     return "Boa noite"
 
 
+_POSTPONE_RE = re.compile(
+    r"^(?:nao agora|agora nao|nao por enquanto|por enquanto nao|nao no momento|no momento nao|"
+    r"mais tarde|depois|outro dia|vou pensar|deixa pra depois|nao tenho tempo|to ocupad[oa]|estou ocupad[oa])"
+    r"(?:[\s,!.]+(?:obrigad[oa]|valeu|tudo bem))*[\s!?.,]*$"
+)
+
+
+def _is_postponement(latest: str) -> bool:
+    """"Não agora" e parecidos: o cliente adiou, não recusou. Pede quebra de objeção, não nova pergunta."""
+    return bool(_POSTPONE_RE.match(latest))
+
+
+def _objection_break_candidates() -> list[tuple[str, list[QuickReply]]]:
+    buttons = [
+        QuickReply(id="obj_valor", label="O valor"),
+        QuickReply(id="obj_momento", label="Não é o momento"),
+        QuickReply(id="obj_ja_tenho", label="Já tenho internet"),
+    ]
+    return [
+        (
+            "Sem problema, sem pressa! Só te adianto que a ativação sai em até 48h, então quando fizer sentido é rápido. "
+            "Para eu te ajudar do jeito certo: o que pesa mais agora?",
+            buttons,
+        ),
+        (
+            "Combinado! Só me conta o que pesa mais hoje, assim eu te mostro só o que vale a pena quando você quiser retomar.",
+            buttons,
+        ),
+    ]
+
+
 def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
     """Resposta segura que a própria IA envia quando a resposta gerada não passou.
 
@@ -1570,7 +1601,10 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
     greeting = _greeting_word(latest)
 
     candidates: list[tuple[str, list[QuickReply]]] = []
-    if not previous:
+    if _is_postponement(latest):
+        # "Não agora": quebra a objeção em vez de seguir a qualificação (conversa Ernani, 10/11).
+        candidates.extend(_objection_break_candidates())
+    elif not previous:
         # Abertura padrão de prospecção (comercial, 06/11): primeiro saber se já é cliente.
         candidates.append(
             (
@@ -1581,6 +1615,11 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
                 ],
             )
         )
+    if candidates and _is_postponement(latest):
+        for text, buttons in candidates:
+            if text not in previous:
+                return text, buttons
+        return candidates[-1]
     prefix = f"{greeting}! Vamos continuar de onde paramos. " if greeting_only else "Certo! "
     if not city:
         candidates.append((f"{prefix}Em qual cidade seria a instalação?", []))
