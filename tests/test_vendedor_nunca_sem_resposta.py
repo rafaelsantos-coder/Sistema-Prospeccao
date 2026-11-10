@@ -246,3 +246,105 @@ def test_fora_do_funil_sdr_ia_nada_muda():
     state = AIClosingState(conversation_id=1, agent_id=2, external_id="x", step="BILLING_PAYMENT_METHOD")
     assert ai_seller._sdr_ia_auto_advance(state, {}, "Qual a forma de pagamento?") == "Qual a forma de pagamento?"
     assert state.step == "BILLING_PAYMENT_METHOD"
+
+
+# ---- Consulta ao CRM em análise de crédito/assinatura não fica em loop (07/11) ----
+
+def _status_state(step="WAITING_SIGNATURE"):
+    return AIClosingState(
+        id=4, conversation_id=1, agent_id=2, external_id="x", opportunity_id=14370,
+        plan_label="2GB", step=step, collected_json="{}",
+    )
+
+
+def _quiet_seller(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_seller, "_record_activity", lambda db, **kw: calls.append(("activity", kw["outcome"])))
+    monkeypatch.setattr(ai_seller, "write_audit", lambda db, **kw: calls.append(("audit", kw["action"])))
+    monkeypatch.setattr(ai_seller, "_send_text", lambda db, **kw: calls.append(("send", kw["text"])))
+    monkeypatch.setattr(ai_seller, "_send_step_message", lambda db, **kw: calls.append(("send", kw["text"])))
+    return calls
+
+
+def _hold(state, exc):
+    return ai_seller._hold_status_poll_failure(
+        None,
+        state=state,
+        conversation=SimpleNamespace(id=1),
+        agent=SimpleNamespace(id=2, user=None),
+        exc=exc,
+        step=state.step,
+    )
+
+
+def test_lead_sumido_do_crm_segura_a_consulta_e_avisa_a_supervisao_uma_vez(monkeypatch):
+    from app.timeutils import utcnow
+
+    calls = _quiet_seller(monkeypatch)
+    state = _status_state()
+    not_found = _crm(404, "GET", "/api/opportunities/14370", message="Oportunidade não encontrada.")
+    assert _hold(state, not_found) is False
+    assert _hold(state, not_found) is False
+    assert _hold(state, not_found) is True
+    assert state.updated_at > utcnow() + ai_seller.AI_HOLD_RETRY / 2
+    for _ in range(5):
+        assert _hold(state, not_found) is True
+    assert calls.count(("activity", "VENDEDOR_IA_BLOQUEIO")) == 1
+    assert [item for item in calls if item[0] == "send"] == []
+    assert state.step == "WAITING_SIGNATURE"
+
+
+def test_instabilidade_do_crm_so_segura_depois_de_20_falhas(monkeypatch):
+    _quiet_seller(monkeypatch)
+    state = _status_state("CREDIT_REVIEW")
+    outage = _crm(502, "GET", "/api/opportunities/14370")
+    assert not any(_hold(state, outage) for _ in range(19))
+    assert _hold(state, outage) is True
+
+
+def test_conversa_de_humano_nao_entra_em_espera(monkeypatch):
+    _quiet_seller(monkeypatch)
+    state = _status_state()
+    owned = CRMIntegrationError("Vendedor IA tentou enviar sem propriedade exclusiva da conversa.")
+    assert not any(_hold(state, owned) for _ in range(25))
+
+
+def test_consulta_bem_sucedida_zera_a_contagem(monkeypatch):
+    _quiet_seller(monkeypatch)
+    state = _status_state()
+    not_found = _crm(404, "GET", "/api/opportunities/14370")
+    for _ in range(3):
+        _hold(state, not_found)
+    collected = ai_seller._load_collected(state)
+    ai_seller._clear_status_poll_failures(state, collected)
+    assert ai_seller.STATUS_POLL_FAILURES_KEY not in ai_seller._load_collected(state)
+    assert ai_seller.STATUS_POLL_ALERT_KEY not in ai_seller._load_collected(state)
+    assert _hold(state, not_found) is False
+
+
+def test_poller_em_analise_de_credito_para_de_consultar_a_cada_45s(monkeypatch):
+    from app.models import AIAgentProfile, Conversation
+    from app.timeutils import utcnow
+
+    calls = _quiet_seller(monkeypatch)
+    state = _status_state("CREDIT_REVIEW")
+
+    class FakeCRM:
+        def get_status(self, opportunity_id):
+            raise _crm(404, "GET", f"/api/opportunities/{opportunity_id}", message="Oportunidade não encontrada.")
+
+    agent = SimpleNamespace(id=2, user=None, active=True, execution_mode="AUTO")
+    conversation = SimpleNamespace(id=1)
+    fake_db = SimpleNamespace(
+        scalars=lambda stmt: [state],
+        get=lambda model, pk: {Conversation: conversation, AIAgentProfile: agent}.get(model),
+    )
+    monkeypatch.setattr(ai_seller, "seller_operational", lambda: True)
+    monkeypatch.setattr(ai_seller.SulnetCRMClient, "from_settings", classmethod(lambda cls: FakeCRM()))
+
+    for _ in range(3):
+        ai_seller.poll_pending_contracts(fake_db)
+    assert state.updated_at > utcnow() + ai_seller.AI_HOLD_RETRY / 2
+    assert state.step == "CREDIT_REVIEW"
+    assert calls.count(("activity", "VENDEDOR_IA_BLOQUEIO")) == 1
+    assert [item for item in calls if item[0] == "send"] == []

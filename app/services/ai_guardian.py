@@ -827,17 +827,28 @@ def guard_outbound_message(
     if shadowing:
         context = {**context, "mode": "GUARDIAN_SHADOW"}
 
+    # Catálogo/Black/entrada já vêm de regra fixa. Chamar o modelo só para
+    # aprovar o mesmo texto atrasa 10–30s sem ganho (e já houve rewrite ruim).
+    skip_model = (
+        _role(agent) == "SDR"
+        and (metadata or {}).get("authoritative_sdr_script") is True
+    )
+
     try:
-        if guardian_operational():
+        if guardian_operational() and not skip_model:
             review = _run_guardian_model(context)
         else:
-            # Sem modelo, ainda aplicamos os guardrails objetivos.
+            # Sem modelo (ou script autoritativo): só os guardrails objetivos.
             review = GuardianReview(
                 verdict="APPROVE",
                 risk="LOW",
                 confidence=1.0,
                 quality_score=100,
-                rationale="Avaliação determinística sem modelo disponível.",
+                rationale=(
+                    "Script comercial autoritativo: sem chamada ao modelo."
+                    if skip_model
+                    else "Avaliação determinística sem modelo disponível."
+                ),
             )
         result = _apply_guardrails(
             db,

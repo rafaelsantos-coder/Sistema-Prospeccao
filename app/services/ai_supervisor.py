@@ -26,6 +26,7 @@ from app.models import (
     Conversation,
     Message,
 )
+from app.services.ai_sdr_policies import _existing_customer_from_text
 from app.services.ai_sdr_policy import approved_catalog
 from app.services.audit import write_audit
 from app.timeutils import utcnow
@@ -214,41 +215,17 @@ def _history_existing_customer_status(
     for item in history:
         direction = str(item.get("direction") or "").upper()
         body = str(item.get("body") or "")
-        folded = _fold(body)
         if direction == "OUTBOUND":
             previous_outbound = body
             continue
-        if direction != "INBOUND" or not folded:
+        if direction != "INBOUND" or not body.strip():
             continue
-
-        if folded in {
-            "nao sou cliente",
-            "ainda nao sou cliente",
-            "nunca fui cliente",
-            "nao sou cliente sulnet",
-            "nao sou cliente da sulnet",
-            "nao tenho sulnet",
-        }:
-            confirmed = "NAO_CLIENTE"
-            continue
-        if folded in {
-            "sou cliente",
-            "ja sou cliente",
-            "sou cliente sulnet",
-            "sou cliente da sulnet",
-            "ja sou cliente sulnet",
-            "ja sou cliente da sulnet",
-            "ja tenho sulnet",
-            "tenho sulnet",
-        }:
-            confirmed = "CLIENTE"
-            continue
-
-        if _asks_existing_customer_question(previous_outbound):
-            if folded in {"sim", "sim sou", "sou", "ja sou", "sou sim"}:
-                confirmed = "CLIENTE"
-            elif folded in {"nao", "nao sou", "ainda nao", "nao ainda"}:
-                confirmed = "NAO_CLIENTE"
+        status = _existing_customer_from_text(
+            body,
+            previous_outbound=previous_outbound,
+        )
+        if status:
+            confirmed = status
     return confirmed
 
 
