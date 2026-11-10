@@ -25,9 +25,12 @@ from app.models import (
 )
 from app.services.queue_routing import (
     AI_OWNED_STATES,
+    AI_WHEN_HUMAN_IDLE,
     AI_WHEN_OFFLINE,
+    ai_owns_conversation,
     assign_queue_user,
     bind_conversation_queue,
+    human_online_in_queue,
     queue_for_conversation,
     resolve_queue,
 )
@@ -139,11 +142,19 @@ def _queue_reserved_for_ai(
         select(AIQueueBinding).where(
             AIQueueBinding.queue_id == queue.id,
             AIQueueBinding.active.is_(True),
-            AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY", AI_WHEN_OFFLINE}),
+            AIQueueBinding.handling_mode.in_(
+                {"AI_FIRST", "AI_ONLY", AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE}
+            ),
         )
     )
     if binding is None:
         return False
+    if binding.handling_mode == AI_WHEN_HUMAN_IDLE:
+        # Fila comercial: com vendedor online a conversa fica com ele; a IA só
+        # assume se já era dela ou após 10 min sem interação (worker).
+        return ai_owns_conversation(db, conversation_id) or not human_online_in_queue(
+            db, queue.id
+        )
     # Fila da IA: só a IA trabalha, mesmo com vendedor online (06/11/2026).
     # "IA quando não houver vendedor online" passou a funcionar como IA sempre.
     return True
@@ -506,7 +517,7 @@ def _ai_owned_offline_queue_conversation_ids():
     """Conversas que a IA já começou numa fila "IA quando não houver vendedor online"."""
     offline_queue_ids = select(AIQueueBinding.queue_id).where(
         AIQueueBinding.active.is_(True),
-        AIQueueBinding.handling_mode == AI_WHEN_OFFLINE,
+        AIQueueBinding.handling_mode.in_({AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE}),
     )
     return (
         select(ConversationQueueLink.conversation_id)

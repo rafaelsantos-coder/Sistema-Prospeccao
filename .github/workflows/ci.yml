@@ -78,7 +78,7 @@ jobs:
           APP_ENV: test
         run: |
           python -m app.migrate
-          alembic current | grep 0008_prospecting_execution
+          alembic current | grep 0009_bind_ai_queues
 
       - name: Executar testes
         run: pytest -q
