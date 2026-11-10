@@ -155,6 +155,47 @@ def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBindin
     return queue_ai_binding(db, queue.id) or _test_phone_binding(db, conversation_id, queue)
 
 
+HUMAN_STEP_IN_WINDOW = timedelta(hours=2)
+
+
+def human_stepped_in(
+    db: Session,
+    conversation: Conversation,
+    window: timedelta = HUMAN_STEP_IN_WINDOW,
+) -> bool:
+    """Uma pessoa escreveu manualmente nesta conversa há pouco: a IA se cala.
+
+    Vale mesmo quando a conversa está atribuída à IA ou numa fila só de IA.
+    Conversa Binello (10/11): o gestor negociava R$ 99,90 e a IA entrou com o
+    plano de R$ 199,90 por cima. Disparos de campanha não contam.
+    """
+    from app.models import CampaignDispatchRecipient, CampaignRecipient  # noqa: PLC0415
+
+    ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
+    messages = db.scalars(
+        select(Message).where(
+            Message.conversation_id == conversation.id,
+            Message.direction == "OUTBOUND",
+            Message.sender_user_id.is_not(None),
+            Message.message_type.in_(("TEXT", "BUTTONS")),
+            Message.created_at >= utcnow() - window,
+        )
+    )
+    manual = [
+        (m.body or "").strip()
+        for m in messages
+        if m.sender_user_id not in ai_users and (m.body or "").strip()
+    ]
+    if not manual:
+        return False
+    automated = {
+        (body or "").strip()
+        for model in (CampaignRecipient, CampaignDispatchRecipient)
+        for body in db.scalars(select(model.message_body).where(model.conversation_id == conversation.id))
+    }
+    return any(body not in automated for body in manual)
+
+
 def human_is_attending(db: Session, conversation: Conversation) -> bool:
     """Um vendedor de verdade está atendendo esta conversa: a IA não entra.
 
@@ -377,6 +418,13 @@ def enqueue_ai_job(
     ):
         LOG.info(
             "ai_job_skipped conversation=%s reason=human_online_wait queue=%s",
+            conversation.id,
+            binding.queue_id,
+        )
+        return None
+    if not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_stepped_in(db, conversation):
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=human_stepped_in queue=%s",
             conversation.id,
             binding.queue_id,
         )

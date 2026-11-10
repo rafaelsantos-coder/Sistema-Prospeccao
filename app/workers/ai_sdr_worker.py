@@ -888,7 +888,7 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
     ignorado e mensagem com mais de 10 minutos sem job. Cada mensagem é
     retomada uma única vez, para não entrar em laço.
     """
-    from app.services.ai_sdr import human_is_attending  # noqa: PLC0415
+    from app.services.ai_sdr import human_is_attending, human_stepped_in  # noqa: PLC0415
 
     db = SessionLocal()
     answered = 0
@@ -937,7 +937,7 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
             if not state or state.state in {"OPT_OUT", "COMPLETED", "SHADOW_REVIEW"}:
                 # Sem estado = a IA nunca atendeu: fica com a recuperação normal / fila.
                 continue
-            if human_is_attending(db, conversation):
+            if human_is_attending(db, conversation) or human_stepped_in(db, conversation):
                 continue
             job = db.scalar(
                 select(AIJob).where(AIJob.message_id == message.id).order_by(AIJob.id.desc()).limit(1)
