@@ -1,0 +1,20 @@
+{
+  "id": "mais-barato-responde-direto",
+  "conversation": null,
+  "description": "Pergunta pelo plano mais barato: responde direto com o 650 Mega, sem esconder a opção.",
+  "lead": {
+    "city": "Santa Rosa"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "Em Santa Rosa temos o plano de fibra óptica de 800 Mega por R$ 119,90 mensais. Quer aproveitar e contratar esse plano agora?"
+    }
+  ],
+  "latest": "Qual é o mais barato que vocês têm?",
+  "expect": {
+    "reply_contains_any": [
+      "99,90"
+    ]
+  }
+}
