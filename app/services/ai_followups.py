@@ -481,6 +481,12 @@ def _customer_declined(db: Session, conversation_id: int) -> bool:
 
 def _followup_spacing_hold(db: Session, conversation_id: int, now: datetime) -> datetime | None:
     """Nada de rajada: o follow-up só sai 2 h depois da última mensagem nossa."""
+    from app.services.ai_sdr import human_stepped_in  # noqa: PLC0415
+
+    conversation = db.get(Conversation, conversation_id)
+    if conversation is not None and human_stepped_in(db, conversation):
+        # Uma pessoa está negociando: a IA adia o follow-up em vez de atropelar.
+        return business_window_start(now + timedelta(minutes=30))
     last_outbound_at = db.scalar(
         select(Message.created_at)
         .where(
