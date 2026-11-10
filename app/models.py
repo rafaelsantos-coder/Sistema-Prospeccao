@@ -1003,3 +1003,19 @@ class AIEngineeringProposal(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+
+
+class CreditMapAggregate(Base):
+    """Apenas contagens por território, sem dados individuais."""
+    __tablename__ = 'credit_map_aggregates'
+    __table_args__ = (
+        UniqueConstraint('city', 'neighborhood', 'month', 'decision', 'signed', name='uq_credit_map_groups'),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    city: Mapped[str] = mapped_column(String(120), nullable=False)
+    neighborhood: Mapped[str] = mapped_column(String(180), nullable=False)
+    month: Mapped[str] = mapped_column(String(12), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    signed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
