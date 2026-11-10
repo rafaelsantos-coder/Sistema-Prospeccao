@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, Conversation, Message
+from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import (
@@ -25,7 +25,7 @@ from app.services.ai_learning import run_learning_loop
 from app.services.ai_engineer import run_engineer_loop
 from app.services.ai_weekly_analyst import run_weekly_analyst_loop
 from app.services.ai_sdr_policy import followup_spec, next_business_time
-from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
+from app.services.queue_routing import MANUAL_TRANSFER_ORIGIN, bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utc_naive, utcnow
 
@@ -686,7 +686,20 @@ def _recover_recent_unqueued_inbounds() -> int:
                 reasons["before_ai_enabled"] += 1
                 continue
 
-            if instance and target_queue and target_binding:
+            manual_transfer = bool(
+                current_queue
+                and db.scalar(
+                    select(ConversationQueueLink.id).where(
+                        ConversationQueueLink.conversation_id == conversation.id,
+                        ConversationQueueLink.origin == MANUAL_TRANSFER_ORIGIN,
+                    )
+                )
+            )
+            if manual_transfer:
+                # Alguém transferiu a conversa de fila na tela: a recuperação não
+                # devolve para a fila do número.
+                reasons["manual_transfer_kept"] += 1
+            elif instance and target_queue and target_binding:
                 if not current_queue or current_queue.id != target_queue.id:
                     bind_conversation_queue(
                         db,
