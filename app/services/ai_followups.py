@@ -421,16 +421,13 @@ def customer_engaged(db: Session, conversation_id: int, now: datetime | None = N
     from app.services.auto_reply import is_business_auto_reply  # noqa: PLC0415
 
     now = now or utcnow()
-    rows = db.execute(
-        select(Message.created_at, Message.body)
-        .where(Message.conversation_id == conversation_id, Message.direction == "INBOUND")
-        .order_by(Message.id.desc())
-        .limit(5)
+    base = select(Message).where(
+        Message.conversation_id == conversation_id, Message.direction == "INBOUND"
     )
-    for created_at, body in rows:
-        if is_business_auto_reply(body):
+    for message in db.scalars(base.order_by(Message.id.desc()).limit(5)):
+        if is_business_auto_reply(message.body):
             continue
-        last = utc_naive(created_at)
+        last = utc_naive(message.created_at)
         return bool(last and now - last <= ENGAGED_WINDOW)
     return False
 
