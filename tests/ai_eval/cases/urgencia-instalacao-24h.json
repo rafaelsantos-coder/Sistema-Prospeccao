@@ -1,0 +1,30 @@
+{
+  "id": "urgencia-instalacao-24h",
+  "conversation": null,
+  "description": "Cliente com urgência: a IA aceita o pedido de 24 horas e segue a venda, em vez de perder por prazo.",
+  "lead": {
+    "city": "Santo Ângelo"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "Em Santo Ângelo temos o plano de fibra óptica de 800 Mega por R$ 119,90 mensais. Quer aproveitar e contratar esse plano agora?"
+    }
+  ],
+  "latest": "Quero, mas preciso da internet instalada até amanhã, consegue?",
+  "expect": {
+    "reply_contains_any": [
+      "24 horas",
+      "prioridade"
+    ],
+    "reply_not_contains": [
+      "nao conseguimos",
+      "nao e possivel",
+      "infelizmente"
+    ],
+    "handoff_target_in": [
+      "NONE",
+      "CLOSER"
+    ]
+  }
+}

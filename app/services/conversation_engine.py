@@ -334,6 +334,7 @@ def ensure_open_conversation(
                 and _queue_reserved_for_ai(db, queue, conversation.id)
                 and not _conversation_ready_for_human(db, conversation.id)
                 and conversation.assigned_user_id
+                and not _human_is_attending(db, conversation)
             ):
                 conversation.assigned_user_id = None
                 conversation.status = "EM_FILA"
@@ -609,6 +610,13 @@ def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
     return stmt.where(Conversation.assigned_user_id == user.id)
 
 
+def _human_is_attending(db: Session, conversation: Conversation) -> bool:
+    """Vendedor de verdade escreveu nas últimas 24h: a conversa não sai da lista dele."""
+    from app.services.ai_sdr import human_is_attending  # noqa: PLC0415
+
+    return human_is_attending(db, conversation)
+
+
 def conversation_visible_to_user(conversation: Conversation, user: User) -> bool:
     if user.role in {"ADMIN", "GESTOR"}:
         return True
@@ -838,6 +846,19 @@ def store_received_payload(
             payload_json=json.dumps(payload, ensure_ascii=False, default=str),
         )
     )
+    if not from_me and message.message_type not in {"TEXT", "BUTTONS", "AUDIO"}:
+        # Anexo com o crédito reprovado é o comprovante do provedor: avisa o
+        # consultor e responde o cliente (imagem não gera job de IA).
+        try:
+            from app.services.ai_seller import handle_credit_proof_attachment
+
+            handle_credit_proof_attachment(db, conversation, message)
+        except Exception:  # noqa: BLE001 - o webhook não pode falhar por causa do aviso
+            import logging
+
+            logging.getLogger("sulnet_conversation_engine").warning(
+                "credit_proof_hook_failed conversation=%s", conversation.id
+            )
     if not from_me:
         from app.services.ai_sdr import enqueue_ai_job
         enqueue_ai_job(

@@ -38,6 +38,8 @@ from app.timeutils import utcnow
 LOG = logging.getLogger("sulnet_crm_prospect_sync")
 
 SYNC_ACTION = "CRM_PROSPECT_SYNC"
+# Etiqueta no CRM para separar no funil as oportunidades abertas pela IA.
+AI_ORIGIN_TAG = "IA"
 FAIL_ACTION = "CRM_PROSPECT_SYNC_FAILED"
 LOOKBACK = timedelta(days=7)
 RETRY_AFTER_FAILURE = timedelta(minutes=30)
@@ -58,7 +60,9 @@ def _fold(value: str) -> str:
 
 def is_automated_reply(body: str) -> bool:
     """Respostas automáticas de WhatsApp Business não contam como interação."""
-    return bool(_AUTOMATED_REPLY.search(_fold(body)))
+    from app.services.auto_reply import is_business_auto_reply  # noqa: PLC0415
+
+    return bool(_AUTOMATED_REPLY.search(_fold(body))) or is_business_auto_reply(body)
 
 
 def _digits(value: str | None) -> str:
@@ -203,6 +207,23 @@ def sync_prospects(db: Session, *, limit: int = BATCH_LIMIT) -> int:
                 break
             continue
         opportunity_id = result.get("opportunityId")
+        if opportunity_id:
+            try:
+                client.add_opportunity_tag(int(opportunity_id), AI_ORIGIN_TAG)
+            except (CRMIntegrationError, TypeError, ValueError) as exc:
+                LOG.warning("crm_ai_tag_failed opportunity=%s error=%s", opportunity_id, type(exc).__name__)
+        if opportunity_id and result.get("created", True):
+            try:
+                client.add_opportunity_note(
+                    int(opportunity_id),
+                    result="Primeiro contato",
+                    description=(
+                        "SDR IA iniciou a conversa pelo WhatsApp. Primeira resposta do cliente: "
+                        f"\"{(reply.body or '').strip()[:160]}\"."
+                    ),
+                )
+            except (CRMIntegrationError, TypeError, ValueError) as exc:
+                LOG.warning("crm_note_failed opportunity=%s error=%s", opportunity_id, type(exc).__name__)
         _mark_done(db, conversation.id, opportunity_id, "CRIADA" if result.get("created", True) else "JA_EXISTIA")
         created += 1
         LOG.info(
@@ -212,6 +233,28 @@ def sync_prospects(db: Session, *, limit: int = BATCH_LIMIT) -> int:
             result.get("created", True),
         )
     return created
+
+
+def synced_opportunity_id(db: Session, conversation_id: int) -> int | None:
+    """Oportunidade que o SDR já abriu no CRM para esta conversa, se houver."""
+    import json  # noqa: PLC0415
+
+    if db is None:
+        return None
+    rows = db.scalars(
+        select(AuditLog.payload_json)
+        .where(AuditLog.action == SYNC_ACTION, AuditLog.entity_id == str(conversation_id))
+        .order_by(AuditLog.id.desc())
+        .limit(3)
+    )
+    for raw in rows:
+        try:
+            value = json.loads(raw or "{}").get("opportunityId")
+            if value:
+                return int(value)
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return None
 
 
 def _mark_done(db: Session, conversation_id: int, opportunity_id, outcome: str) -> None:
