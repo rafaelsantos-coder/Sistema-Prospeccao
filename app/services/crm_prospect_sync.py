@@ -227,6 +227,8 @@ def synced_opportunity_id(db: Session, conversation_id: int) -> int | None:
     """Oportunidade que o SDR já abriu no CRM para esta conversa, se houver."""
     import json  # noqa: PLC0415
 
+    if db is None:
+        return None
     rows = db.scalars(
         select(AuditLog.payload_json)
         .where(AuditLog.action == SYNC_ACTION, AuditLog.entity_id == str(conversation_id))
