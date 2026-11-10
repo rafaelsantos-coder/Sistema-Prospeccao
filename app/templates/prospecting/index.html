@@ -4,26 +4,93 @@
   <div>
     <span class="eyebrow">CAPTAÇÃO ATIVA</span>
     <h2>Encontre empresas por segmento e cidade</h2>
-    <p>O Apify pesquisa no Google Maps; a Sulnet qualifica, organiza e distribui os novos leads.</p>
+    <p>O Apify pesquisa no Google Maps; a Sulnet qualifica, organiza e — se você quiser — já prepara o disparo.</p>
   </div>
   <span class="integration-banner {% if apify_configured %}connected{% else %}disconnected{% endif %}"><i></i>{% if apify_configured %}Apify conectado{% else %}Apify não configurado{% endif %}</span>
 </div>
 
 <div class="prospecting-layout">
   <section class="panel prospecting-form-card">
-    <div class="section-heading"><span>01</span><div><h3>Nova busca</h3><p>Defina o mercado e a região que deseja prospectar.</p></div></div>
-    <form action="/prospecting" method="post" class="stack-form">
+    <div class="section-heading"><span>01</span><div><h3>Nova busca</h3><p>Defina o mercado, a região e como a execução deve seguir.</p></div></div>
+    <form action="/prospecting" method="post" class="stack-form" data-prospecting-form>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label class="field"><span>Segmento ou tipo de empresa</span><input name="segment" required placeholder="Ex.: clínicas odontológicas, mercados, hotéis"></label>
       <label class="field"><span>Cidade</span><input name="city" required value="Santa Rosa" placeholder="Cidade e estado"></label>
       <div class="form-grid">
         <label class="field"><span>Quantidade</span><input type="number" name="limit" min="1" max="100" value="20"></label>
         <label class="field"><span>Equipe de destino</span><select name="team"><option value="B2B">Corporativo B2B</option><option value="PAP">Porta a porta</option><option value="DIGITAL">Digital</option><option value="LOJA">Loja / Receptivo</option></select></label>
-        <label class="field field-span-2"><span>Fila para os futuros retornos</span><select name="queue_id"><option value="">Definir depois</option>{% for queue in service_queues %}<option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select><small>Os leads encontrados ficarão associados a esta fila; quando houver disparo e resposta, o atendimento respeitará a configuração dela.</small></label>
         {% if current_user.role in ['ADMIN','GESTOR'] %}<label class="field field-span-2"><span>Unidade responsável</span><select name="branch_id"><option value="">Sem unidade definida</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>{% endif %}
       </div>
+
+      <div class="section-heading compact"><span>02</span><div><h3>Modo de execução</h3><p>Escolha se a busca só importa leads ou se já monta o disparo WhatsApp.</p></div></div>
+
+      <div class="execution-choice" role="radiogroup" aria-label="Modo de execução">
+        <label class="execution-option">
+          <input type="radio" name="execution_mode" value="SEARCH_ONLY" checked data-execution-mode>
+          <span>
+            <strong>Só buscar leads</strong>
+            <small>Como hoje: importa no CRM e você dispara depois, se quiser.</small>
+          </span>
+        </label>
+        {% if can_schedule_dispatch %}
+        <label class="execution-option">
+          <input type="radio" name="execution_mode" value="SEARCH_AND_DISPATCH" data-execution-mode>
+          <span>
+            <strong>Buscar e disparar</strong>
+            <small>Após a importação, monta o disparo com campanha, fila e intervalo.</small>
+          </span>
+        </label>
+        {% endif %}
+      </div>
+
+      <div class="form-grid" data-search-queue-block>
+        <label class="field field-span-2"><span>Fila para os futuros retornos</span><select name="queue_id" data-queue-select><option value="">Definir depois</option>{% for queue in service_queues %}<option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endfor %}</select><small>Os leads encontrados ficam associados a esta fila; quando houver disparo e resposta, o atendimento respeita a configuração dela.</small></label>
+      </div>
+
+      {% if can_schedule_dispatch %}
+      <div class="dispatch-execution-panel" data-dispatch-panel hidden>
+        <div class="form-grid">
+          <label class="field field-span-2">
+            <span>Campanha do disparo</span>
+            <select name="campaign_id" data-campaign-select>
+              <option value="">Selecione a campanha</option>
+              {% for campaign in campaigns %}
+              <option value="{{ campaign.id }}">{{ campaign.name }} · {{ campaign.status|replace('_',' ') }}</option>
+              {% endfor %}
+            </select>
+            <small>Usa a mensagem e os botões já cadastrados na campanha.</small>
+          </label>
+          <label class="field">
+            <span>Intervalo entre mensagens</span>
+            <div class="input-with-suffix">
+              <input type="number" name="interval_seconds" min="5" max="3600" value="30" data-interval-input>
+              <b>seg</b>
+            </div>
+            <small>Mínimo operacional: 5 segundos.</small>
+          </label>
+          <label class="field">
+            <span>Limite diário</span>
+            <input type="number" name="daily_limit" min="1" max="5000" value="100" data-daily-limit-input>
+            <small>Ao atingir o limite, o envio retoma no dia seguinte.</small>
+          </label>
+          <label class="field field-span-2 checkbox-field">
+            <input type="checkbox" name="auto_start_dispatch" value="1" checked>
+            <span>
+              <strong>Iniciar o disparo automaticamente</strong>
+              <small>Se desmarcar, o disparo fica pronto em Disparos para você revisar e clicar em Iniciar.</small>
+            </span>
+          </label>
+        </div>
+        {% if not campaigns %}
+        <div class="warning-box"><strong>Nenhuma campanha pronta</strong><p>Crie e aprove uma campanha WhatsApp em Campanhas antes de usar “Buscar e disparar”.</p></div>
+        {% endif %}
+      </div>
+      {% else %}
+      <p class="muted-text">Gestores podem escolher “Buscar e disparar” com campanha, fila e intervalo na mesma tela.</p>
+      {% endif %}
+
       {% if not apify_configured %}<div class="warning-box"><strong>Integração pendente</strong><p>Cadastre <code>APIFY_TOKEN</code> no ambiente antes de executar uma busca real. A solicitação poderá ser criada, mas ficará com status de falha até a configuração.</p></div>{% endif %}
-      <button type="submit" class="button button-primary button-large full-width">Iniciar busca de leads</button>
+      <button type="submit" class="button button-primary button-large full-width" data-submit-label>Iniciar busca de leads</button>
     </form>
   </section>
 
@@ -35,7 +102,7 @@
     <div class="flow-line"></div>
     <div class="flow-step"><span>3</span><div><strong>Score Sulnet</strong><p>Cobertura, contato, segmento e sinais de intenção.</p></div></div>
     <div class="flow-line"></div>
-    <div class="flow-step"><span>4</span><div><strong>Entrada no CRM</strong><p>Responsável e primeira ação programados.</p></div></div>
+    <div class="flow-step"><span>4</span><div><strong>CRM ou disparo</strong><p>Só importa leads, ou já monta o disparo na fila e campanha escolhidas.</p></div></div>
   </aside>
 </div>
 
@@ -43,12 +110,31 @@
   <div class="panel-header table-title"><div><span class="eyebrow">HISTÓRICO</span><h3>Buscas recentes</h3></div></div>
   <div class="data-table-wrap">
     <table class="data-table">
-      <thead><tr><th>Busca</th><th>Unidade / Equipe</th><th>Fila de retorno</th><th>Solicitada por</th><th>Encontrados</th><th>Importados</th><th>Status</th><th>Data</th></tr></thead>
+      <thead><tr><th>Busca</th><th>Unidade / Equipe</th><th>Execução</th><th>Fila de retorno</th><th>Solicitada por</th><th>Encontrados</th><th>Importados</th><th>Status</th><th>Data</th></tr></thead>
       <tbody>
       {% for job in jobs %}
+        {% set plan = job_plans.get(job.id) or {} %}
         <tr>
           <td><strong>{{ job.segment }}</strong><span class="table-subline">{{ job.city }} · limite {{ job.limit }}</span></td>
           <td>{{ job.branch.city if job.branch else 'Não definida' }}<span class="table-subline">{{ constants.teams.get(job.team, job.team) }}</span></td>
+          <td>
+            {% if plan.mode == 'SEARCH_AND_DISPATCH' %}
+              <strong>Busca + disparo</strong>
+              <span class="table-subline">
+                {% if plan.campaign_name %}{{ plan.campaign_name }} · {% endif %}
+                {{ plan.interval_seconds or 30 }}s
+                {% if plan.auto_start %} · auto{% else %} · revisar{% endif %}
+              </span>
+              {% if plan.dispatch_id %}
+                <span class="table-subline"><a href="/dispatches/{{ plan.dispatch_id }}">Disparo #{{ plan.dispatch_id }}</a></span>
+              {% elif plan.dispatch_error %}
+                <span class="table-subline text-danger">{{ plan.dispatch_error }}</span>
+              {% endif %}
+            {% else %}
+              <strong>Só busca</strong>
+              <span class="table-subline">Importação no CRM</span>
+            {% endif %}
+          </td>
           {% set jq = job_queues.get(job.id) %}
           <td>{% if jq %}<strong>{{ jq.name }}</strong><span class="table-subline">{{ jq.code }}</span>{% else %}<span class="muted-text">Definir depois</span>{% endif %}</td>
           <td>{{ job.created_by.name if job.created_by else 'Sistema' }}</td>
@@ -56,9 +142,43 @@
           <td><span class="job-status job-{{ job.status|lower }}">{{ job.status|replace('_',' ')|title }}</span>{% if job.error %}<span class="table-subline text-danger" title="{{ job.error }}">{{ job.error[:60] }}{% if job.error|length > 60 %}…{% endif %}</span>{% endif %}</td>
           <td>{{ job.created_at|datetime_br }}</td>
         </tr>
-      {% else %}<tr><td colspan="8"><div class="empty-state"><strong>Nenhuma busca executada</strong><span>Crie a primeira busca segmentada acima.</span></div></td></tr>{% endfor %}
+      {% else %}<tr><td colspan="9"><div class="empty-state"><strong>Nenhuma busca executada</strong><span>Crie a primeira busca segmentada acima.</span></div></td></tr>{% endfor %}
       </tbody>
     </table>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const form = document.querySelector("[data-prospecting-form]");
+  if (!form) return;
+  const panel = form.querySelector("[data-dispatch-panel]");
+  const queueSelect = form.querySelector("[data-queue-select]");
+  const campaignSelect = form.querySelector("[data-campaign-select]");
+  const submit = form.querySelector("[data-submit-label]");
+  const modes = form.querySelectorAll("[data-execution-mode]");
+
+  const sync = () => {
+    const mode = form.querySelector("[data-execution-mode]:checked")?.value || "SEARCH_ONLY";
+    const dispatch = mode === "SEARCH_AND_DISPATCH";
+    if (panel) panel.hidden = !dispatch;
+    if (queueSelect) {
+      queueSelect.required = dispatch;
+      const empty = queueSelect.querySelector('option[value=""]');
+      if (empty) empty.textContent = dispatch ? "Selecione a fila" : "Definir depois";
+    }
+    if (campaignSelect) campaignSelect.required = dispatch;
+    if (submit) {
+      submit.textContent = dispatch
+        ? "Iniciar busca e preparar disparo"
+        : "Iniciar busca de leads";
+    }
+  };
+
+  modes.forEach((input) => input.addEventListener("change", sync));
+  sync();
+})();
+</script>
 {% endblock %}

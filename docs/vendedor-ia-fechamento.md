@@ -37,3 +37,5 @@ Não persistir CPF em texto livre nem logs de IA. Proteger dados pessoais, imple
 ## Segurança de ativação
 
 Este PR **não** liga o novo agente à Z-API nem cria pedidos reais. A habilitação operacional exige implementar e testar handoff e CRM, e controlar explicitamente ações de cobrança, contrato e assinatura. Não confundir perfil de IA ativo com operação homologada.
+
+Checklist operacional atualizado: [`VENDEDOR-IA-ATIVACAO.md`](VENDEDOR-IA-ATIVACAO.md).

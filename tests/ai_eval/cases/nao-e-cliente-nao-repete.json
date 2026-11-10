@@ -1,0 +1,23 @@
+{
+  "id": "nao-e-cliente-nao-repete",
+  "conversation": 70,
+  "description": "Depois de responder 'Não' à pergunta de cliente atual, a IA não pode repetir a mesma pergunta.",
+  "lead": {},
+  "history": [
+    {
+      "direction": "INBOUND",
+      "body": "Oi, quero saber de internet"
+    },
+    {
+      "direction": "OUTBOUND",
+      "body": "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"
+    }
+  ],
+  "latest": "Não",
+  "expect": {
+    "reply_not_contains": [
+      "possui algum servico da sulnet",
+      "ja e cliente sulnet"
+    ]
+  }
+}

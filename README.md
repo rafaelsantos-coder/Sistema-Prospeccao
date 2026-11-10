@@ -84,9 +84,10 @@ Preencha no `.env` ou no Railway:
 - `ZAPI_BASE_URL`, `ZAPI_INSTANCE_ID`, `ZAPI_INSTANCE_TOKEN`
 - `ZAPI_CLIENT_TOKEN` quando o token de segurança da conta estiver ativado
 - `APP_PUBLIC_URL` e `ZAPI_WEBHOOK_SECRET` para os webhooks
+- `OPENAI_API_KEY` e flags `AI_*` para a SulIA (SDR no worker separado)
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`
 
-As chaves não são exibidas pela interface. Em produção, use PostgreSQL, HTTPS e um segredo de sessão forte.
+As chaves não são exibidas pela interface. Em produção, use PostgreSQL, HTTPS e um segredo de sessão forte. Ativação do Vendedor IA: [`docs/VENDEDOR-IA-ATIVACAO.md`](docs/VENDEDOR-IA-ATIVACAO.md).
 
 ## Fluxo da Z-API
 

@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     AIAgentProfile,
+    AIConversationState,
+    AIQueueBinding,
     CampaignQueueLink,
     Conversation,
     ConversationQueueLink,
@@ -388,3 +390,97 @@ def queue_summary(db: Session, queue: ServiceQueue) -> dict[str, int]:
         "open": open_count,
         "waiting": waiting_count,
     }
+
+
+# Modo de fila: a IA atende só quando nenhum vendedor da fila está online.
+AI_WHEN_OFFLINE = "AI_WHEN_OFFLINE"
+# Fila comercial: a IA só entra sem vendedor online na fila ou depois de 10 min
+# sem o vendedor interagir com o lead. Fila da IA continua em AI_WHEN_OFFLINE.
+AI_WHEN_HUMAN_IDLE = "AI_WHEN_HUMAN_IDLE"
+AI_WHEN_OFFLINE_MODES = (AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE)
+AI_OWNED_STATES = ("AI_ACTIVE", "CLOSING")
+
+
+def human_online_in_queue(db: Session, queue_id: int | None) -> bool:
+    """Algum vendedor de verdade (não um agente de IA) da fila está online."""
+    if not queue_id:
+        return False
+    online = set(online_user_ids(db))
+    if not online:
+        return False
+    ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
+    members = db.scalars(
+        select(ServiceQueueMember.user_id)
+        .join(User, User.id == ServiceQueueMember.user_id)
+        .where(
+            ServiceQueueMember.queue_id == queue_id,
+            ServiceQueueMember.active.is_(True),
+            User.active.is_(True),
+            ServiceQueueMember.user_id.in_(online),
+        )
+    )
+    return any(user_id not in ai_users for user_id in members)
+
+
+MANUAL_TRANSFER_ORIGIN = "MANUAL_TRANSFER"
+
+
+def usable_ai_binding(db: Session, queue_id: int | None):
+    """Vínculo de IA ativo, com agente ativo e que de fato responde (não HUMAN)."""
+    if not queue_id:
+        return None
+    binding = db.scalar(
+        select(AIQueueBinding)
+        .options(selectinload(AIQueueBinding.agent))
+        .where(
+            AIQueueBinding.queue_id == queue_id,
+            AIQueueBinding.active.is_(True),
+        )
+    )
+    if not binding or not binding.agent or not binding.agent.active:
+        return None
+    if binding.handling_mode == "HUMAN":
+        return None
+    return binding
+
+
+def ai_queue_ids(db: Session) -> set[int]:
+    """Filas ativas em que a IA responde hoje."""
+    queues = db.scalars(select(ServiceQueue.id).where(ServiceQueue.active.is_(True)))
+    return {queue_id for queue_id in queues if usable_ai_binding(db, queue_id)}
+
+
+def ai_transfer_queue(db: Session, conversation_id: int | None) -> ServiceQueue | None:
+    """Fila para onde "Passar para a IA" manda a conversa.
+
+    A própria fila, se a IA já atende nela; senão a fila da IA (IA sempre)
+    e, por último, qualquer fila ativa com IA.
+    """
+    current = queue_for_conversation(db, conversation_id) if conversation_id else None
+    if current and usable_ai_binding(db, current.id):
+        return current
+    candidates = list(
+        db.scalars(
+            select(ServiceQueue)
+            .where(ServiceQueue.active.is_(True))
+            .order_by(ServiceQueue.name, ServiceQueue.id)
+        )
+    )
+    with_ai = [(queue, usable_ai_binding(db, queue.id)) for queue in candidates]
+    with_ai = [(queue, binding) for queue, binding in with_ai if binding]
+    for queue, binding in with_ai:
+        if binding.handling_mode == AI_WHEN_OFFLINE:
+            return queue
+    return with_ai[0][0] if with_ai else None
+
+
+def ai_owns_conversation(db: Session, conversation_id: int | None) -> bool:
+    """A IA já começou este atendimento (SDR ou Vendedor IA) e segue até o fim."""
+    if not conversation_id:
+        return False
+    state = db.scalar(
+        select(AIConversationState.state).where(
+            AIConversationState.conversation_id == conversation_id
+        )
+    )
+    return state in AI_OWNED_STATES

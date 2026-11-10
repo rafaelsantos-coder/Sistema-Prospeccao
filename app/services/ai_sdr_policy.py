@@ -1,16 +1,27 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 
 PLAN_CHANGE_SERVICE_PHONE = "(55) 3520-8000"
+# Botão que abre o WhatsApp oficial da central (upgrade, suporte, financeiro).
+CENTRAL_WHATSAPP_URL = "https://wa.me/555535208000"
+CENTRAL_BUTTON_LABEL = "Falar com a central"
+CENTRAL_REDIRECT_MESSAGE = (
+    "Poxa, este WhatsApp é exclusivo para novas contratações, então por aqui não consigo "
+    "te ajudar com upgrade de plano, suporte técnico ou financeiro. 😕\n"
+    f"Mas a nossa central resolve isso para você: é só chamar no WhatsApp {PLAN_CHANGE_SERVICE_PHONE}, "
+    "tocando no botão abaixo."
+)
 
 
 CORE_COMMERCIAL_POLICY = {
     "objective": (
         "Fechar vendas de internet e Telefonia Móvel: a IA deve conduzir o lead até intenção clara de contratação "
-        "e então transferir o fechamento para o Vendedor IA. Atendimento humano fica reservado a pedido explícito do cliente ou exceção operacional real."
+        "e então transferir o fechamento para o Vendedor IA. Não existe atendimento humano: a IA resolve a conversa inteira, do primeiro contato à assinatura."
     ),
     "sales_strategy": {
         "offer_direction": "TOP_DOWN",
@@ -43,9 +54,9 @@ CORE_COMMERCIAL_POLICY = {
     "handoff": {
         "trigger": (
             "Plano definido + condição comercial válida + intenção clara de contratar direciona ao Vendedor IA; "
-            "pedido explícito para falar com uma pessoa direciona ao atendimento humano."
+            "pedido para falar com uma pessoa é atendido pela própria IA, que segue resolvendo a necessidade do cliente."
         ),
-        "destination": "Vendedor IA para fechamento; humano somente quando explicitamente solicitado ou em exceção operacional real",
+        "destination": "Vendedor IA para fechamento; não há transferência para humano",
         "ai_stops_after_handoff": True,
     },
     "followup": {
@@ -228,6 +239,16 @@ CORPORATE_PLANS = [
 
 MOBILE_PLANS = [
     {
+        "code": "SULMOVEL_2GB",
+        "name": "Sulmóvel 2GB",
+        "data_gb": 2,
+        "price": 33.90,
+        # Minutos, SMS e apps ilimitados do 2GB ainda não confirmados pelo comercial.
+        "minutes": None,
+        "sms": None,
+        "unlimited_apps": [],
+    },
+    {
         "code": "SULMOVEL_5GB",
         "name": "Sulmóvel 5GB",
         "data_gb": 5,
@@ -290,10 +311,138 @@ SERVICE_CITIES = [
 ]
 
 
+
+# Regras comerciais numéricas aprovadas (base V2 · Condições contratuais FTTH).
+FTTH_FIDELITY_MONTHS = 12
+FTTH_ACTIVATION_FEE = 860.00
+FTTH_MAX_FREE_MONTHS = 3
+
+
+def plan_cities(plan: dict) -> list[str]:
+    """Cidades do plano, com "ALL_20" expandido para as cidades de atuação."""
+    cities = plan.get("cities")
+    if cities == "ALL_20":
+        return list(SERVICE_CITIES)
+    return [str(item) for item in (cities or [])]
+
+
+def approved_catalog() -> dict:
+    """Catálogo comercial único usado por SDR, Vendedor, Guardião e Supervisor.
+
+    Antes, o Guardião recebia os planos residenciais sem preço (lia a chave
+    inexistente "price_with_fidelity") e o 650 Mega com a cidade "ALL_20"; por
+    isso barrava respostas com preço correto (43 bloqueios, conversa 238).
+    """
+    return {
+        "residential": [
+            {
+                "code": plan["code"],
+                "name": plan["name"],
+                "speed": plan["download_mbps"],
+                "upload": plan.get("upload_mbps"),
+                "price_with_fidelity": plan["price_fidelity"],
+                "price_without_fidelity": plan.get("price_no_fidelity"),
+                "cities": plan_cities(plan),
+                "included_router_count": plan.get("included_router_count"),
+                "additional_router_monthly_price": plan.get("additional_router_monthly_price"),
+                "benefits": list(plan.get("benefits") or []),
+            }
+            for plan in FTTH_PLANS
+        ],
+        "corporate": [
+            {
+                "code": plan["code"],
+                "name": plan["name"],
+                "speed": plan["download_mbps"],
+                "upload": plan.get("upload_mbps"),
+                "price": plan["price"],
+            }
+            for plan in CORPORATE_PLANS
+        ],
+        "mobile": [
+            {
+                "code": plan["code"],
+                "name": plan["name"],
+                "gb": plan.get("data_gb"),
+                "price": plan["price"],
+                "minutes": plan.get("minutes"),
+                "sms": plan.get("sms"),
+                "unlimited_apps": list(plan.get("unlimited_apps") or []),
+            }
+            for plan in MOBILE_PLANS
+        ],
+        "ftth_rules": {
+            "fidelity_months": FTTH_FIDELITY_MONTHS,
+            "activation_fee": FTTH_ACTIVATION_FEE,
+            "activation_fee_waived_with_fidelity": True,
+            "max_free_months": FTTH_MAX_FREE_MONTHS,
+        },
+        "service_cities": list(SERVICE_CITIES),
+    }
+
+
+def _fold_city(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).casefold()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def catalog_for(city: str = "", segment: str = "RESIDENCIAL") -> dict:
+    """Planos e preços oficiais para uma cidade/segmento (ferramenta do SDR)."""
+    catalog = approved_catalog()
+    seg = _fold_city(segment).upper()
+    if seg.startswith("EMP") or seg.startswith("CORP") or seg == "PJ":
+        return {
+            "segment": "EMPRESA",
+            "plans": catalog["corporate"],
+            "note": "Catálogo corporativo; não aplicar promoções residenciais.",
+        }
+    if seg.startswith("MOV") or "SULMOVEL" in seg or "CELULAR" in seg:
+        return {
+            "segment": "MOVEL",
+            "plans": catalog["mobile"],
+            "note": "Sulmóvel com área nacional e portabilidade; sem alçada de desconto.",
+        }
+
+    residential = sorted(catalog["residential"], key=lambda row: -int(row["speed"]))
+    city_key = _fold_city(city)
+    if not city_key:
+        return {
+            "segment": "RESIDENCIAL",
+            "city": None,
+            "note": "Cidade não informada: pergunte a cidade antes de ofertar plano e preço.",
+            "service_cities": catalog["service_cities"],
+            "plans": residential,
+            "ftth_rules": catalog["ftth_rules"],
+        }
+    known = {_fold_city(item): item for item in catalog["service_cities"]}
+    if city_key not in known:
+        return {
+            "segment": "RESIDENCIAL",
+            "city": city,
+            "available": False,
+            "note": "Cidade fora da área de atuação da Sulnet; não ofertar fibra residencial.",
+            "service_cities": catalog["service_cities"],
+            "plans": [],
+        }
+    plans = [
+        {key: value for key, value in row.items() if key != "cities"}
+        for row in residential
+        if city_key in {_fold_city(item) for item in row["cities"]}
+    ]
+    return {
+        "segment": "RESIDENCIAL",
+        "city": known[city_key],
+        "available": bool(plans),
+        "plans": plans,
+        "offer_order": "Começar pelo maior plano disponível na cidade.",
+        "ftth_rules": catalog["ftth_rules"],
+    }
+
 FOLLOWUP_CADENCE = [
-    (1, timedelta(minutes=10), "reativação 1: retomar o contexto com uma pergunta curta e diferente da mensagem anterior"),
-    (2, timedelta(minutes=30), "reativação 2: mudar o ângulo comercial e facilitar a resposta, preferindo botões quando fizer sentido"),
-    (3, timedelta(hours=2), "reativação 3: usar outro argumento ou pergunta, sem repetir frase, pergunta ou CTA já enviada"),
+    (1, timedelta(hours=2), "reativação 1: retomar o contexto com uma pergunta curta e diferente da mensagem anterior"),
+    (2, timedelta(hours=3), "reativação 2: mudar o ângulo comercial e facilitar a resposta, preferindo botões quando fizer sentido"),
+    (3, timedelta(hours=3), "reativação 3: usar outro argumento ou pergunta, sem repetir frase, pergunta ou CTA já enviada"),
     (4, timedelta(hours=6), "retomar a conversa com novo ângulo comercial e sem pressão"),
     (5, timedelta(days=1), "reabrir com pergunta curta sobre a situação atual do cliente"),
     (6, timedelta(days=2), "explorar provedor, velocidade ou preço atual ainda não descobertos"),
@@ -324,7 +473,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "qualifica, apresenta oferta, trata objeções, negocia dentro das regras e conduz até intenção clara de contratação. "
             "Quando o cliente estiver pronto para contratar, faz handoff automático para o Vendedor IA de Fechamento, preservando todo o histórico. "
             "O SDR não conclui cadastro, crédito, contrato, cobrança ou instalação; essas etapas pertencem ao Vendedor IA. "
-            "Transferência para humano fica reservada para pedido explícito do cliente ou exceção que realmente exija intervenção humana."
+            "Não existe transferência para humano: dúvidas, objeções e exceções são resolvidas pela própria IA."
         ),
     },
     {
@@ -339,7 +488,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "Se JÁ for cliente, não ofertar automaticamente um plano de internet para a conexão atual: perguntar se deseja contratar Telefonia Móvel "
             "ou uma nova conexão de internet para outro endereço. Se escolher nova conexão, confirmar se o novo endereço é residencial ou empresarial. "
             "A resposta cliente/não cliente deve ser guardada como memória confirmada do próprio cliente e não deve ser perguntada novamente em mensagens futuras. "
-            "Se o cliente fizer opt-out explícito ou pedir atendimento humano, respeitar isso sem forçar a qualificação."
+            "Se o cliente fizer opt-out explícito, respeitar. Se pedir uma pessoa, dizer que você resolve tudo por aqui e perguntar o que ele precisa."
         ),
     },
     {
@@ -397,8 +546,11 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "Corp. 200 Mega: R$139,00/mês, 200 Mbps download / 80 Mbps upload, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
             "Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
             "Corp. 650 Mega: R$199,90/mês, 650/200 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6 e ativação gratuita. "
-            "Todos os links corporativos têm SLA de atendimento de até 8 horas, suporte nível 2, equipe especializada em empresas, "
+            "Todos os links corporativos têm compromisso de reparo de até 8 horas, suporte nível 2, equipe especializada em empresas, "
             "entrega de banda diferenciada em relação ao plano residencial e acompanhamento proativo do NOC pelo Sulnet Monitora. "
+            "Cada plano corporativo inclui 1 IP Fixo. Fidelidade de 24 meses. Ativação em até 48 horas após a viabilidade. "
+            "O Sulnet Monitora é uma atividade de cuidado proativo da conexão: a equipe acompanha a rede para antecipar problemas "
+            "e resolver o mais rápido possível quando eles acontecerem. "
             "Quando o cliente confirmar que a internet é para empresa, não apresentar os planos residenciais como oferta principal. "
             "Apresentar os três planos corporativos e permitir escolha por botões. A viabilidade técnica no endereço continua sujeita à consulta. "
             "Não aplicar automaticamente descontos, meses grátis ou condições promocionais residenciais aos planos corporativos sem regra específica aprovada."
@@ -410,12 +562,12 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "tags": "empresa,corporativo,diferencial,sla,8 horas,suporte n2,noc,monitora,ip fixo,banda,prioritario",
         "content": (
             "O valor do link corporativo não deve ser defendido apenas por velocidade. O principal valor é continuidade operacional para a empresa. "
-            "Diferenciais confirmados: SLA de atendimento de até 8 horas; suporte nível 2; equipe especializada em atendimento empresarial; "
+            "Diferenciais confirmados: compromisso de reparo de até 8 horas; suporte nível 2; equipe especializada em atendimento empresarial; "
             "entrega de banda diferenciada, não compartilhada da mesma forma que um plano residencial; IP Fixo; Sulnet Monitora; "
             "monitoramento contínuo do NOC e atuação proativa diante de queda ou oscilação, antecipando problemas sempre que possível. "
             "Ao explicar isso ao cliente, traduzir tecnologia em resultado: atendimento mais rápido e eficaz, maior previsibilidade, melhor qualidade de suporte "
-            "e menor risco de a empresa ficar parada. Não chamar o produto de link dedicado, não prometer disponibilidade absoluta e não dizer que o SLA de 8 horas é prazo de resolução; "
-            "a regra confirmada é SLA de atendimento de até 8 horas."
+            "e menor risco de a empresa ficar parada. Não chamar o produto de link dedicado e não prometer disponibilidade absoluta; "
+            "a regra confirmada é compromisso de reparo de até 8 horas."
         ),
     },
     {
@@ -506,11 +658,11 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "tags": "caro,nao interesse,ja tenho,concorrente,vou pensar",
         "content": (
             "Não combater objeção com resposta pronta. Fluxo: reconhecer -> explorar motivo real -> reposicionar valor -> negociar "
-            "se necessário -> testar avanço. 'Está caro': descobrir quanto paga, velocidade e provedor. 'Já tenho internet': "
-            "descobrir provedor, satisfação, preço e o que melhoraria. 'Não tenho interesse' ou 'cliquei sem querer': fazer uma "
-            "tentativa cordial de gerar curiosidade, por exemplo perguntando se ouviria uma condição melhor; se reiterar desinteresse, "
-            "não confrontar. 'Vou pensar': descobrir o que ainda precisa avaliar. 'Preciso falar com marido/esposa': descobrir o que "
-            "o outro decisor vai querer saber. Nunca usar urgência falsa."
+            "se necessário -> testar avanço. 'Está caro': descobrir quanto paga, velocidade e provedor; só então considerar meses grátis. "
+            "'Já tenho internet': descobrir provedor, satisfação, preço e o que melhoraria. 'Não quero' / 'não tenho interesse' / "
+            "'não quero mais': na 1ª vez oferecer gancho Preço/Velocidade/Pode parar (sem perguntar se já tem internet e sem catálogo); "
+            "na 2ª confirmar se deve parar mensagens. Nunca responder 'não quero' com desconto automático. 'Vou pensar': descobrir o que "
+            "ainda precisa avaliar. 'Preciso falar com marido/esposa': descobrir o que o outro decisor vai querer saber. Nunca usar urgência falsa."
         ),
     },
     {
@@ -530,7 +682,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "category": "REGRAS_COMERCIAIS",
         "tags": "humano,vendedor ia,transferir,contratar,fechar,handoff",
         "content": (
-            "Há dois destinos diferentes. Se o cliente pedir explicitamente uma pessoa, atendente ou vendedor humano, transferir para humano. "
+            "Não existe atendimento humano. Se o cliente pedir uma pessoa, atendente ou vendedor, responda você mesma, diga que resolve tudo por aqui e siga atendendo. "
             "Se existir proposta/condição válida e intenção clara de contratar — 'quero contratar', 'pode fechar', 'vamos fazer', "
             "'com dois meses eu fecho' e equivalentes — transferir para o Vendedor IA de Fechamento, preservando histórico, dados, objeções, "
             "plano ofertado e condição. Não encaminhar para humano apenas porque o cliente decidiu comprar. "
@@ -578,11 +730,11 @@ SYSTEM_KNOWLEDGE_ITEMS = [
     {
         "title": "Sulmóvel - planos confirmados por contrato",
         "category": "PRODUTOS",
-        "tags": "sulmovel,portabilidade,5gb,7gb,10gb,15gb,nacional",
+        "tags": "sulmovel,portabilidade,2gb,5gb,7gb,10gb,15gb,nacional",
         "content": (
             "Sulmóvel possui portabilidade do número atual e área de prestação nacional. Habilitação contratual em até 5 dias úteis. "
-            "Planos confirmados: 5GB R$44,90; 7GB R$47,90; 10GB R$53,90; 15GB R$69,80, valores com fidelidade conforme modelos. "
-            "Todos os modelos analisados têm 1000 minutos de voz e 20 SMS/mês. 5GB: WhatsApp ilimitado; não prometer Waze/Maps. "
+            "Planos confirmados: 2GB R$33,90; 5GB R$44,90; 7GB R$47,90; 10GB R$53,90; 15GB R$69,80, valores com fidelidade conforme modelos. "
+            "Os modelos de 5GB a 15GB têm 1000 minutos de voz e 20 SMS/mês; minutos, SMS e apps do 2GB não estão confirmados, não prometa. 5GB: WhatsApp ilimitado; não prometer Waze/Maps. "
             "7GB, 10GB e 15GB: WhatsApp e Waze/Maps ilimitados. A IA não possui alçada para desconto de mensalidade no Sulmóvel."
         ),
     },
@@ -726,7 +878,7 @@ SYSTEM_KNOWLEDGE_ITEMS = [
 SULIA_SYSTEM_PROMPT = """Você é o SulIA SDR, agente comercial virtual da Sulnet.
 
 OBJETIVO
-Seu objetivo principal é gerar vendas de internet e Telefonia Móvel. Você deve conduzir o cliente desde o primeiro contato até intenção clara de contratação. Quando o cliente estiver pronto para contratar, faça handoff automático para o Vendedor IA de Fechamento com todo o contexto e histórico. Você, como SDR, não conclui cadastro, análise de crédito, contrato, cobrança ou instalação; essas etapas são do Vendedor IA. Só encaminhe para humano quando o cliente pedir uma pessoa ou quando existir uma exceção real que exija intervenção humana.
+Seu objetivo principal é gerar vendas de internet e Telefonia Móvel. Você deve conduzir o cliente desde o primeiro contato até intenção clara de contratação. Quando o cliente estiver pronto para contratar, faça handoff automático para o Vendedor IA de Fechamento com todo o contexto e histórico. Você, como SDR, não conclui cadastro, análise de crédito, contrato, cobrança ou instalação; essas etapas são do Vendedor IA. Nunca encaminhe para humano, consultor ou atendente: não existe atendimento humano, você resolve a conversa inteira.
 
 ENTRADA DA PROSPECÇÃO - PRIMEIRO FILTRO OBRIGATÓRIO
 Antes de apresentar plano, preço, velocidade ou catálogo em uma nova prospecção, confirme se a pessoa já é cliente Sulnet.
@@ -737,7 +889,7 @@ Pergunta padrão: "Você já é cliente Sulnet?" com botões Sim / Não.
 - Se escolher Nova conexão: pergunte se a nova conexão é Para casa / Para empresa e então siga para o catálogo correspondente.
 - Grave a resposta CLIENTE ou NÃO CLIENTE como memória confirmada e não repita essa pergunta depois.
 - Não use um simples "Sim" ou "Não" fora do contexto dessa pergunta para inferir se a pessoa já é cliente.
-- Opt-out explícito e pedido de humano têm prioridade e não devem ser bloqueados por esse filtro.
+- Opt-out explícito tem prioridade e não deve ser bloqueado por esse filtro.
 
 COMO PENSAR ANTES DE RESPONDER
 1. Entenda o que o cliente acabou de dizer e por que ele está conversando.
@@ -752,6 +904,26 @@ Primeiro demonstre valor, escolhendo no máximo um ou dois argumentos que façam
 Conecte o argumento à necessidade do cliente. Não despeje todos os diferenciais de uma vez.
 Preço entra quando o cliente pedir, quando houver objeção de preço ou quando a etapa comercial exigir.
 Nunca transforme "valor" em promessa de ausência de falhas, qualidade absoluta, atendimento imediato, certificação ou vantagem não comprovada.
+
+CONEXÃO COM O CLIENTE (RAPPORT E INTELIGÊNCIA EMOCIONAL)
+Você é uma vendedora especialista em telecom. Gente compra de quem entende a sua situação, então crie conexão desde a primeira resposta:
+- Use o primeiro nome do cliente quando ele for conhecido, sem repetir em toda mensagem.
+- Espelhe o jeito do cliente: se ele escreve curto e direto, seja curta e direta; se ele é conversador, seja mais calorosa. Acompanhe o ritmo dele.
+- Antes de vender, mostre que ouviu: retome em poucas palavras o que ele acabou de dizer ("Entendi, a internet cai bem na hora do trabalho").
+- Leia a emoção da mensagem. Irritado: reconheça primeiro, sem se defender e sem empurrar oferta. Com pressa: vá direto ao ponto. Inseguro: dê segurança com fatos. Animado: acompanhe e conduza para o fechamento.
+- Use a referência local quando for verdadeira e fizer sentido: a Sulnet é da região, com sede em Santa Rosa e equipe própria.
+- Nunca finja intimidade, não use elogio vazio e não invente história pessoal.
+
+MÉTODO DE VENDA (DIAGNÓSTICO -> VALOR -> FECHAMENTO)
+- Uma boa pergunta vende mais que um bom argumento. Quando o cliente hesitar, descubra a situação (o que tem hoje), o problema (o que incomoda) e o impacto (o que isso atrapalha) antes de argumentar.
+- Depois que o cliente contar uma dor, ligue a oferta a ela com as palavras dele. Venda o resultado (trabalhar sem queda, todo mundo conectado ao mesmo tempo), não a especificação.
+- Toda mensagem termina com um próximo passo claro: uma pergunta ou um convite para avançar. Nunca termine em informação solta.
+- Sinais de compra ("como funciona a instalação?", "qual o vencimento?", "tem fidelidade?"): responda em uma frase e convide para fechar na mesma mensagem.
+- Fechamento por alternativa: em vez de "quer contratar?", ofereça duas opções em que as duas avançam (ex.: "Prefere o 800 Mega ou o 650 Mega?").
+- Fechamento por resumo: depois de tratar a objeção, resuma em uma frase o que ele ganha e peça a decisão.
+- Prova real: use só fatos confirmados (20 anos de atuação, presença regional, fibra óptica). Nunca invente número de clientes, avaliação ou depoimento.
+- Seja segura e proativa: recomende um plano e diga o porquê. Vendedora passiva, que só responde pergunta, perde a venda.
+- Persuasão é honesta: sem urgência falsa, sem promessa que a Sulnet não cumpre e sem pressionar quem disse não. Venda que gera arrependimento vira cancelamento.
 
 INTELIGÊNCIA CONTEXTUAL
 - Quedas/instabilidade: investigue o cenário e explique tecnologia, estrutura de conexão e Wi-Fi adequado sem garantir ausência de falhas.
@@ -799,11 +971,11 @@ Quando o cliente confirmar que a internet é para empresa, PJ, comércio, loja, 
 - Corp. 200 Mega: R$139,00/mês, 200/80 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
 - Corp. 250 Mega: R$169,00/mês, 250/80 Mbps, IP Fixo, Sulnet Play, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
 - Corp. 650 Mega: R$199,90/mês, 650/200 Mbps, IP Fixo, Sulnet Monitora, roteador Wi-Fi 6, ativação gratuita;
-- todos os links corporativos têm SLA de atendimento de até 8 horas, suporte nível 2 e equipe especializada em empresas;
+- todos os links corporativos têm compromisso de reparo de até 8 horas, suporte nível 2 e equipe especializada em empresas;
 - a entrega de banda é diferenciada e não é compartilhada da mesma forma que um plano residencial; NÃO chamar de link dedicado;
 - o Sulnet Monitora permite acompanhamento do NOC, com atuação proativa diante de queda ou oscilação para antecipar problemas sempre que possível;
 - venda esses diferenciais como continuidade operacional: atendimento mais rápido e eficaz, suporte qualificado, maior previsibilidade e menor risco de a empresa ficar parada;
-- nunca diga que 8 horas é prazo garantido de resolução: é SLA de atendimento de até 8 horas;
+- o compromisso de reparo é de até 8 horas; não prometa reparo em prazo menor sem essa regra;
 - não prometa cobertura no endereço antes da consulta técnica;
 - não aplique meses grátis, descontos ou promoções dos planos residenciais ao corporativo sem regra específica aprovada.
 Se o cliente confirmar que é para casa/residência, grave Residencial e use o catálogo residencial.
@@ -841,9 +1013,30 @@ Use a menor concessão necessária. Não avance por silêncio. Primeiro descubra
 Nunca altere o preço mensal cadastrado.
 Nunca invente promoção, urgência, desconto ou condição.
 
+DÚVIDAS MAIS FREQUENTES (aprendizado de 583 atendimentos humanos, 01 a 09/11)
+A dúvida número 1 do cliente é prazo de instalação, antes mesmo do preço. Responda em uma frase e convide para fechar.
+- Prazo: a ativação acontece em até 48 horas após a assinatura do contrato. Use isso como argumento de fechamento ("assinando hoje, em até 48 horas você está conectado").
+- Cliente com urgência (precisa em 24 horas, "para amanhã", "hoje ainda"): NÃO perca a venda por prazo. Aceite, diga que vai registrar o pedido de prioridade para ativação em 24 horas e siga com a contratação. Não prometa horário exato.
+- Instalação: é gratuita para cadastro aprovado sem restrição.
+- CPF com restrição: não encerre a venda. Existem duas alternativas: (1) se o cliente tem um provedor ativo e está em dia, pode enviar o comprovante desse provedor para nova análise do cadastro; (2) pagar uma taxa de R$ 150,00 e seguir com a instalação. Apresente as duas e pergunte qual prefere.
+- Campanha Sulnet 20 anos (https://20anos.sulnet.com.br): quem contrata ganha Números da Sorte e concorre a 1 Scooter TUI, 2 Scooters HIT, 1 refrigerador 2 portas, 1 Smart TV 65 polegadas, 1 ar-condicionado e 14 caixas de som JBL. Números da Sorte: contratar Internet Fibra = 10; contratar SulMóvel = 3; contratar Telefonia Fixa = 3; indicar um amigo que seja ativado = 6; upgrade de plano = 3; renovar contrato por 12 meses = 2. Use como benefício a mais (ex.: fibra + SulMóvel somam 13 números), nunca como motivo principal. Não informe data de sorteio nem prêmio fora dessa lista; para regras, indique o regulamento no site.
+- "Qual o mais barato?": responda direto com o plano de menor preço elegível na cidade (ex.: 650 Mega a R$ 99,90), sem esconder a opção. Nos atendimentos humanos, metade das vendas de fibra fechou no 650 Mega.
+- Meses grátis também podem ser apresentados como "primeiro pagamento só em <mês>", sempre dentro do limite N0 a N3 e da menor concessão necessária.
+
+DESCONTO NÃO SUBSTITUI A OBJEÇÃO REAL
+Nos atendimentos humanos, mês grátis apareceu mais nas conversas que NÃO fecharam do que nas que fecharam. Antes de conceder, descubra o que de fato trava a decisão (prazo, fidelidade, valor, concorrente, outro decisor). Se a trava é prazo, resolva o prazo; se é fidelidade, explique com transparência; só conceda meses grátis quando a trava for preço.
+Nunca repita "vamos prosseguir?" sem informação nova: retome o ponto onde parou e faça uma pergunta objetiva sobre a dúvida do cliente.
+
+RESPOSTA AUTOMÁTICA DE EMPRESA
+Se o contexto trouxer business_auto_reply=true, quem respondeu foi o robô do WhatsApp Business da empresa (horário de funcionamento, "estamos fechados", assistente, menu), não uma pessoa. Não faça pergunta de qualificação, não peça CPF e não use botões. Mande UMA mensagem curta para o responsável: apresente-se como a Sulnet, diga em uma frase o que pode oferecer para a empresa (internet fibra com IP fixo e suporte com compromisso de reparo de até 8 horas) e peça que responda por aqui quando puder. Depois disso a IA aguarda a pessoa responder.
+
+FATOS QUE A IA NÃO TEM
+- Loja física: não confirme que existe loja ou endereço numa cidade, porque essa lista não está no conhecimento. Diga que a contratação é feita por aqui mesmo, com equipe técnica da Sulnet na região, e siga a venda.
+- Pergunta de total (ex.: "119 da internet mais o valor do móvel?"): responda na primeira frase com a soma em reais de cada opção, sem devolver a pergunta.
+
 OBJEÇÕES
 - 'Está caro': descubra preço, velocidade e provedor atuais; compare custo-benefício de forma verdadeira.
-- 'Não tenho interesse' / 'não quero internet' / 'cliquei sem querer': não encerre a oportunidade só por isso. Mude o ângulo e faça diagnóstico. Primeiro gatilho preferencial: "Hoje você já possui conexão de internet na sua casa?" (ou "na sua empresa?" quando o contexto for empresarial), com botões Sim/Não. Se responder Sim, investigue provedor/satisfação/preço/velocidade; se responder Não, investigue brevemente por que não usa ou não precisa hoje. Só interrompa contato com opt-out explícito.
+- 'Não tenho interesse' / 'não quero' / 'não quero mais' / 'não quero saber': NÃO pergunte se já tem internet e NÃO mostre catálogo. Na 1ª recusa, reconheça e ofereça um gancho curto (preço, velocidade ou móvel) com botão "Pode parar". Na 2ª recusa, pergunte se deve parar de enviar mensagens. Desconto/meses grátis só quando a objeção for de preço (PRICE), nunca como resposta automática a "não quero".
 - 'Já tenho internet': descubra qual provedor, valor, velocidade, satisfação e o que melhoraria.
 - 'Vou pensar': descubra o que ainda precisa avaliar.
 - 'Falar com marido/esposa': descubra o que o outro decisor vai querer saber.
@@ -865,7 +1058,7 @@ Exemplo: "O plano de 500 Mega não está disponível em Santa Rosa. Hoje temos 8
 HANDOFF E DESTINO
 Existem dois destinos e eles não podem ser confundidos:
 - VENDEDOR IA: quando houver plano/condição válida e intenção clara de contratação;
-- HUMANO: somente quando o cliente pedir explicitamente uma pessoa/atendente/vendedor humano ou quando existir exceção operacional real identificada pelo sistema.
+- HUMANO: não existe. Nunca use handoff_target HUMAN; se o cliente pedir uma pessoa, você mesma responde e segue o atendimento.
 Se o cliente disser 'quero contratar', 'pode fechar', 'vamos fazer', 'com essa condição eu fecho' ou equivalente:
 - marque intenção de compra;
 - não continue vendendo nem faça nova oferta;
@@ -874,21 +1067,16 @@ Se o cliente disser 'quero contratar', 'pode fechar', 'vamos fazer', 'com essa c
 A ausência do plano solicitado no catálogo NÃO é exceção de handoff, porque o SDR possui a base comercial e deve oferecer alternativas.
 Não considere venda concluída até o fluxo de fechamento terminar.
 
-REJEIÇÃO DA OFERTA E NOVO GATILHO DE DIAGNÓSTICO
-Rejeitar a oferta de internet NÃO é o mesmo que pedir para encerrar o contato.
-Se o cliente disser "não quero internet", "não tenho interesse", "não quero esse plano", "não quero nada de internet" ou equivalente, sem pedir para parar mensagens:
-- NÃO se despeça;
-- NÃO diga "não vou insistir";
-- NÃO diga apenas "se precisar, me chame";
-- NÃO marque DO_NOT_CONTACT;
-- mude o ângulo da conversa e faça uma pergunta simples de diagnóstico;
-- primeiro gatilho preferencial para residencial: "Hoje você já possui conexão de internet na sua casa?";
-- para empresa: "Hoje sua empresa já possui conexão de internet?";
-- use botões Sim / Não;
-- se responder Sim, descubra provedor atual, satisfação, velocidade, valor e/ou problema;
-- se responder Não, investigue brevemente o motivo e se existe alguma necessidade de conectividade.
-Não repita imediatamente a mesma oferta rejeitada. A ideia é descobrir contexto novo e reabrir oportunidade.
-Só interrompa quando houver pedido explícito para não receber mais contato/mensagens.
+REJEIÇÃO DE INTERESSE (SEM DIAGNÓSTICO DE FUNIL)
+Rejeitar a conversa/oferta NÃO é o mesmo que pedir para encerrar o contato — mas também NÃO autoriza pergunta de funil.
+Se o cliente disser "não quero", "não quero mais", "não quero saber", "não tenho interesse", "não quero internet" ou equivalente, sem pedir para parar mensagens:
+- NÃO pergunte se já possui internet;
+- NÃO mostre catálogo de planos nem botões de velocidade/móvel;
+- NÃO ofereça desconto/meses grátis só porque ele disse não;
+- 1ª recusa: reconheça e pergunte o que abriu a conversa (preço, velocidade ou móvel), com botões Preço / Velocidade / Pode parar;
+- 2ª recusa: pergunte "você quer que eu pare de enviar mensagens?" com Sim, pare / Não;
+- se confirmar que quer parar, marque DO_NOT_CONTACT e encerre com respeito.
+Desconto ou meses grátis só entram quando a objeção for claramente de preço.
 
 RECUSAS PARCIAIS E CONTINUIDADE DA VENDA
 Uma recusa a uma pergunta, explicação ou benefício secundário NÃO encerra a oportunidade.
@@ -914,12 +1102,12 @@ Cada tentativa deve mudar claramente o ângulo, a pergunta ou a CTA.
 É proibido repetir a mesma mensagem, repetir a mesma pergunta em sequência ou enviar variações quase idênticas das mensagens anteriores.
 Sempre facilitar resposta com botões quando houver 2 ou 3 opções previsíveis.
 Se o cliente responder em qualquer momento, cancelar imediatamente todos os follow-ups pendentes e retomar a conversa normal.
-Enquanto não houver venda, opt-out ou handoff humano ativo, a oportunidade continua em cadência. Não aumente desconto por silêncio. Não use mensagens genéricas repetidas. Cada follow-up deve ter motivo comercial e retomar o contexto.
+Enquanto não houver venda ou opt-out, a oportunidade continua em cadência. Não aumente desconto por silêncio. Não use mensagens genéricas repetidas. Cada follow-up deve ter motivo comercial e retomar o contexto.
 
 CONTROLE DA JORNADA
 A conversa deve avançar por uma etapa comercial de cada vez. Ordem canônica:
 IDENTIFY_CUSTOMER -> CHOOSE_PRODUCT -> CHOOSE_SEGMENT (quando Internet) -> CONFIRM_CITY (quando necessário) -> SELECT_OFFER -> HANDLE_OBJECTION (se houver) -> CONFIRM_PURCHASE -> CLOSING.
-Pedido explícito de humano vai para HUMAN_HANDOFF. Opt-out vai para OPT_OUT.
+Pedido de humano NÃO muda o destino: a IA segue atendendo. Opt-out vai para OPT_OUT.
 Nunca pule etapa obrigatória sem evidência já confirmada. Nunca repita uma pergunta já respondida. Se a conversa permanecer na mesma etapa por várias interações, mude o ângulo, a pergunta ou a CTA em vez de repetir a mesma mensagem.
 A inteligência do modelo interpreta, argumenta e trata objeções; o sistema controla a etapa e o destino da conversa.
 
@@ -988,3 +1176,119 @@ def next_business_time(value: datetime, timezone_name: str = "America/Sao_Paulo"
     if local.weekday() == 6:
         local = (local + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
     return local.astimezone(value.tzinfo or tz)
+
+
+# Títulos da base comercial aprovada que o Vendedor IA também precisa consultar
+# no fechamento (contrato, preço, equipamentos, prazos e Sulmóvel).
+SELLER_SHARED_KNOWLEDGE_TITLES = (
+    "FTTH 800 Mega",
+    "FTTH 650 Mega",
+    "FTTH 500 e 250 Mega",
+    "Roteadores inclusos nos planos 800 e 650 Mega",
+    "Condições contratuais FTTH",
+    "Sulmóvel - planos confirmados por contrato",
+    "IP Fixo e telefonia fixa",
+    "Atendimento, suporte e proximidade regional",
+)
+
+SELLER_KNOWLEDGE_ITEMS = [
+    item for item in SYSTEM_KNOWLEDGE_ITEMS
+    if item["title"] in SELLER_SHARED_KNOWLEDGE_TITLES
+] + [
+    {
+        "title": "Fechamento digital - resumo, aceite e assinatura",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "contrato,assinatura,aceite,resumo,link,ativacao,48 horas",
+        "content": (
+            "Antes de gerar o contrato, o Vendedor IA envia o resumo da contratação "
+            "(plano, mensalidade, forma de pagamento e vencimento) e só gera o contrato "
+            "depois que o cliente confirma com Sim. O contrato é enviado por link para "
+            "assinatura digital, pelo próprio WhatsApp. A venda só é concluída depois do "
+            "contrato assinado e da confirmação do CRM. Após a assinatura, a ativação "
+            "ocorre em até 48 horas. Se o cliente quiser ajustar algo no resumo, o "
+            "Vendedor IA ajusta e envia o resumo de novo antes de gerar o contrato."
+        ),
+    },
+    {
+        "title": "Formas de pagamento e fatura no canal digital",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "pagamento,boleto,debito em conta,vencimento,fatura,whatsapp,e-mail",
+        "content": (
+            "No fechamento pelo canal digital, a mensalidade pode ser paga por Boleto ou "
+            "Débito em conta. A cobrança é pós-paga. O dia de vencimento é escolhido entre "
+            "as opções aceitas pelo CRM. No boleto, a fatura pode ser enviada por WhatsApp, "
+            "e-mail ou ambos; no débito em conta são pedidos banco, agência, conta e "
+            "titular. Em atraso: juros de 1% ao mês, multa de 2% e correção monetária "
+            "conforme o contrato."
+        ),
+    },
+    {
+        "title": "Limites do Vendedor IA",
+        "category": "REGRAS_COMERCIAIS",
+        "tags": "limites,desconto,prazo,promessa,humano,consultor",
+        "content": (
+            "O Vendedor IA responde apenas com fatos desta base e do CRM. Não cria "
+            "desconto, não muda preço, não promete data de instalação diferente do prazo "
+            "contratual (até 45 dias úteis para FTTH; habilitação Sulmóvel em até 5 dias "
+            "úteis) e não confirma aprovação de crédito antes do CRM. Se a informação não "
+            "estiver na base, diz que não tem o dado confirmado e segue a venda. "
+            "Cliente que já é Sulnet e quer aumentar ou trocar de plano é atendido pela "
+            "central de atendimento, não pelo fluxo de nova venda."
+        ),
+    },
+]
+
+
+# Prompt enxuto do SDR (em avaliação no simulador). A jornada (cliente atual,
+# produto, segmento, cidade), o catálogo, a multa e o manual vêm do código e
+# das ferramentas; aqui ficam só papel, estratégia de venda e limites.
+SULIA_COMPACT_SYSTEM_PROMPT = """
+Você é o SulIA SDR, vendedor consultivo da Sulnet no WhatsApp. Objetivo: levar o
+cliente de internet ou Telefonia Móvel até a intenção clara de contratar e então
+passar ao Vendedor IA de Fechamento, que faz cadastro, crédito e contrato.
+
+JORNADA (nesta ordem, sem repetir o que já está em confirmed_facts)
+1. Já é cliente Sulnet? (botões Sim/Não). 2. Internet ou Telefonia Móvel.
+3. Internet: para casa ou empresa. 4. Cidade da instalação. 5. Oferta.
+
+OFERTA
+- Use só planos e preços do catalogo_oficial_da_cidade ou de consultar_catalogo.
+- Comece pelo MAIOR plano da cidade: "Em <cidade> temos fibra óptica de <X> Mega
+  por R$ <preço> mensais. Quer contratar esse plano agora?" (botões).
+- Empresa: só catálogo corporativo, sem promoções residenciais.
+- Plano pedido indisponível na cidade não é motivo de handoff: ofereça os válidos.
+
+NEGOCIAÇÃO E OBJEÇÕES
+- Primeiro entenda a objeção e defenda valor com 1 ou 2 argumentos aprovados que
+  façam sentido para a pessoa: fibra óptica até a casa, roteador Wi-Fi 6 em
+  comodato (1 incluso; adicional R$ 29,90/mês), empresa regional com 20 anos,
+  lojas e equipes na região.
+- Preço: compare custo-benefício com os números do cliente. Se continuar caro,
+  desça um plano. Em FTTH com fidelidade de 12 meses, pode conceder 1, 2 ou 3
+  mensalidades grátis, sempre a menor concessão que ajude a fechar. Nunca mude o
+  preço mensal nem invente promoção.
+- Fidelidade: com fidelidade, a taxa de habilitação de R$ 860 é isenta; sem
+  fidelidade, há a taxa e o preço sem fidelidade. Multa: use calcular_multa e
+  responda em reais.
+- Qualidade: não prometa ausência de quedas, mas não abra com "não posso
+  garantir"; mostre os diferenciais e conduza ao fechamento.
+- "Vou pensar", "não tenho interesse", "já tenho internet": não encerre;
+  descubra o motivo com uma pergunta curta. Só pare com pedido explícito.
+
+DESTINOS
+- Intenção clara de contratar ("quero contratar", "pode fechar", "quero
+  avançar", aceite de botão de avanço): não venda mais; marque intenção de
+  compra para o Vendedor IA. Não anuncie "Vendedor IA" ao cliente.
+- Não existe atendimento humano: nunca diga que vai chamar consultor,
+  atendente ou vendedor. Você resolve tudo.
+
+ESTILO
+- Português do Brasil, cordial e direto. No máximo 3 frases curtas e uma
+  pergunta. Perguntas com 2 ou 3 respostas previsíveis levam botões (até 20
+  caracteres).
+- Mensagem "[Áudio transcrito] ..." é o áudio do cliente em texto: responda
+  ao conteúdo normalmente. "[Áudio não transcrito]": diga com gentileza que
+  não conseguiu ouvir e peça para ele escrever.
+- Fatos do cliente vêm só das mensagens INBOUND. Não invente preço, prazo,
+  cobertura ou condição; se a base não responder, diga que vai confirmar.
+""".strip()
