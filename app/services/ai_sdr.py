@@ -87,8 +87,11 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
 from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import (
+    AI_WHEN_HUMAN_IDLE,
     AI_WHEN_OFFLINE,
+    ai_owns_conversation,
     assign_queue_user,
+    human_online_in_queue,
     queue_for_conversation,
 )
 from app.timeutils import is_past, utcnow
@@ -257,6 +260,28 @@ def reclaim_conversation_for_ai(
     return True
 
 
+def sdr_debounce_seconds_for_message(body: str) -> int:
+    """Debounce curto para Sim/Não/botão/cidade; completo para texto longo.
+
+    O debounce de 6s evita responder no meio de uma rajada. Em resposta de
+    botão ou frase curta ("número errado", "Ok", "Santa Rosa") esse atraso
+    só empilha com o poll do worker e a chamada ao modelo.
+    """
+    full = max(0, int(settings.ai_sdr_debounce_seconds or 0))
+    short = max(0, int(settings.ai_sdr_debounce_short_seconds or 0))
+    if short >= full:
+        return full
+    text = (body or "").strip()
+    if not text:
+        return full
+    if "\n" in text:
+        return full
+    words = [part for part in re.split(r"\s+", text) if part]
+    if len(text) <= 80 and len(words) <= 12:
+        return short
+    return full
+
+
 def enqueue_ai_job(
     db: Session,
     *,
@@ -341,9 +366,24 @@ def enqueue_ai_job(
             binding.queue_id,
         )
         return None
+    # Fila comercial: com vendedor online na fila a IA espera (o worker assume
+    # após 10 min sem resposta); sem vendedor online, ou se a IA já conduz, atende.
+    if (
+        binding.handling_mode == AI_WHEN_HUMAN_IDLE
+        and not takeover
+        and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
+        and not ai_owns_conversation(db, conversation.id)
+        and human_online_in_queue(db, binding.queue_id)
+    ):
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=human_online_wait queue=%s",
+            conversation.id,
+            binding.queue_id,
+        )
+        return None
     # Fila da IA (AI_WHEN_OFFLINE): somente a IA atende, sem checar vendedor online.
     if (
-        binding.handling_mode != AI_WHEN_OFFLINE
+        binding.handling_mode not in (AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE)
         and not takeover
         and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
         and human_is_attending(db, conversation)
@@ -375,23 +415,25 @@ def enqueue_ai_job(
         pending.status = "IGNORADO"
         pending.error = "AGRUPADA_COM_MENSAGEM_SEGUINTE"
 
+    debounce_seconds = sdr_debounce_seconds_for_message(message.body or "")
     job = AIJob(
         agent_id=binding.agent_id,
         queue_id=binding.queue_id,
         conversation_id=conversation.id,
         message_id=message.id,
         status="PENDENTE",
-        available_at=utcnow() + timedelta(seconds=max(0, settings.ai_sdr_debounce_seconds)),
+        available_at=utcnow() + timedelta(seconds=max(0, debounce_seconds)),
     )
     db.add(job)
     db.flush()
     LOG.info(
-        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s",
+        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s debounce=%ss",
         job.id,
         conversation.id,
         message.id,
         binding.queue_id,
         binding.agent_id,
+        debounce_seconds,
     )
     return job
 
@@ -1375,6 +1417,16 @@ def _apply_crm_decision(
     )
 
 
+def _client_asked_for_human(db: Session, conversation: Conversation) -> bool:
+    latest = db.scalar(
+        select(Message.body)
+        .where(Message.conversation_id == conversation.id, Message.direction == "INBOUND")
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return _explicit_human_request({"latest_customer_message": latest or ""})
+
+
 def _perform_handoff(
     db: Session,
     *,
@@ -1388,8 +1440,14 @@ def _perform_handoff(
     queue = queue_for_conversation(db, conversation.id)
     owner = conversation.assigned_user
     if not owner or owner.role == "AI_SDR":
-        owner = assign_queue_user(db, queue) if queue else None
-        conversation.assigned_user_id = owner.id if owner else None
+        if not _client_asked_for_human(db, conversation):
+            # A IA é o vendedor: a conversa fica com ela e nenhum vendedor vê,
+            # a não ser que o cliente peça um humano (regra de 06/11).
+            conversation.assigned_user_id = agent.user_id or None
+            owner = None
+        else:
+            owner = assign_queue_user(db, queue) if queue else None
+            conversation.assigned_user_id = owner.id if owner else None
 
     conversation.status = "EM_ATENDIMENTO" if owner else "EM_FILA"
     db.add(
@@ -2131,6 +2189,9 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
+                # Número errado / opt-out: sai da fila imediatamente (antes ficava EM FILA).
+                conversation.status = "ENCERRADO"
+                conversation.closed_at = utcnow()
             elif (
                 not closer_started
                 and sent_message is not None

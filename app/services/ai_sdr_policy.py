@@ -655,11 +655,11 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         "tags": "caro,nao interesse,ja tenho,concorrente,vou pensar",
         "content": (
             "Não combater objeção com resposta pronta. Fluxo: reconhecer -> explorar motivo real -> reposicionar valor -> negociar "
-            "se necessário -> testar avanço. 'Está caro': descobrir quanto paga, velocidade e provedor. 'Já tenho internet': "
-            "descobrir provedor, satisfação, preço e o que melhoraria. 'Não tenho interesse' ou 'cliquei sem querer': fazer uma "
-            "tentativa cordial de gerar curiosidade, por exemplo perguntando se ouviria uma condição melhor; se reiterar desinteresse, "
-            "não confrontar. 'Vou pensar': descobrir o que ainda precisa avaliar. 'Preciso falar com marido/esposa': descobrir o que "
-            "o outro decisor vai querer saber. Nunca usar urgência falsa."
+            "se necessário -> testar avanço. 'Está caro': descobrir quanto paga, velocidade e provedor; só então considerar meses grátis. "
+            "'Já tenho internet': descobrir provedor, satisfação, preço e o que melhoraria. 'Não quero' / 'não tenho interesse' / "
+            "'não quero mais': na 1ª vez oferecer gancho Preço/Velocidade/Pode parar (sem perguntar se já tem internet e sem catálogo); "
+            "na 2ª confirmar se deve parar mensagens. Nunca responder 'não quero' com desconto automático. 'Vou pensar': descobrir o que "
+            "ainda precisa avaliar. 'Preciso falar com marido/esposa': descobrir o que o outro decisor vai querer saber. Nunca usar urgência falsa."
         ),
     },
     {
@@ -992,7 +992,7 @@ Nunca invente promoção, urgência, desconto ou condição.
 
 OBJEÇÕES
 - 'Está caro': descubra preço, velocidade e provedor atuais; compare custo-benefício de forma verdadeira.
-- 'Não tenho interesse' / 'não quero internet' / 'cliquei sem querer': não encerre a oportunidade só por isso. Mude o ângulo e faça diagnóstico. Primeiro gatilho preferencial: "Hoje você já possui conexão de internet na sua casa?" (ou "na sua empresa?" quando o contexto for empresarial), com botões Sim/Não. Se responder Sim, investigue provedor/satisfação/preço/velocidade; se responder Não, investigue brevemente por que não usa ou não precisa hoje. Só interrompa contato com opt-out explícito.
+- 'Não tenho interesse' / 'não quero' / 'não quero mais' / 'não quero saber': NÃO pergunte se já tem internet e NÃO mostre catálogo. Na 1ª recusa, reconheça e ofereça um gancho curto (preço, velocidade ou móvel) com botão "Pode parar". Na 2ª recusa, pergunte se deve parar de enviar mensagens. Desconto/meses grátis só quando a objeção for de preço (PRICE), nunca como resposta automática a "não quero".
 - 'Já tenho internet': descubra qual provedor, valor, velocidade, satisfação e o que melhoraria.
 - 'Vou pensar': descubra o que ainda precisa avaliar.
 - 'Falar com marido/esposa': descubra o que o outro decisor vai querer saber.
@@ -1023,21 +1023,16 @@ Se o cliente disser 'quero contratar', 'pode fechar', 'vamos fazer', 'com essa c
 A ausência do plano solicitado no catálogo NÃO é exceção de handoff, porque o SDR possui a base comercial e deve oferecer alternativas.
 Não considere venda concluída até o fluxo de fechamento terminar.
 
-REJEIÇÃO DA OFERTA E NOVO GATILHO DE DIAGNÓSTICO
-Rejeitar a oferta de internet NÃO é o mesmo que pedir para encerrar o contato.
-Se o cliente disser "não quero internet", "não tenho interesse", "não quero esse plano", "não quero nada de internet" ou equivalente, sem pedir para parar mensagens:
-- NÃO se despeça;
-- NÃO diga "não vou insistir";
-- NÃO diga apenas "se precisar, me chame";
-- NÃO marque DO_NOT_CONTACT;
-- mude o ângulo da conversa e faça uma pergunta simples de diagnóstico;
-- primeiro gatilho preferencial para residencial: "Hoje você já possui conexão de internet na sua casa?";
-- para empresa: "Hoje sua empresa já possui conexão de internet?";
-- use botões Sim / Não;
-- se responder Sim, descubra provedor atual, satisfação, velocidade, valor e/ou problema;
-- se responder Não, investigue brevemente o motivo e se existe alguma necessidade de conectividade.
-Não repita imediatamente a mesma oferta rejeitada. A ideia é descobrir contexto novo e reabrir oportunidade.
-Só interrompa quando houver pedido explícito para não receber mais contato/mensagens.
+REJEIÇÃO DE INTERESSE (SEM DIAGNÓSTICO DE FUNIL)
+Rejeitar a conversa/oferta NÃO é o mesmo que pedir para encerrar o contato — mas também NÃO autoriza pergunta de funil.
+Se o cliente disser "não quero", "não quero mais", "não quero saber", "não tenho interesse", "não quero internet" ou equivalente, sem pedir para parar mensagens:
+- NÃO pergunte se já possui internet;
+- NÃO mostre catálogo de planos nem botões de velocidade/móvel;
+- NÃO ofereça desconto/meses grátis só porque ele disse não;
+- 1ª recusa: reconheça e pergunte o que abriu a conversa (preço, velocidade ou móvel), com botões Preço / Velocidade / Pode parar;
+- 2ª recusa: pergunte "você quer que eu pare de enviar mensagens?" com Sim, pare / Não;
+- se confirmar que quer parar, marque DO_NOT_CONTACT e encerre com respeito.
+Desconto ou meses grátis só entram quando a objeção for claramente de preço.
 
 RECUSAS PARCIAIS E CONTINUIDADE DA VENDA
 Uma recusa a uma pergunta, explicação ou benefício secundário NÃO encerra a oportunidade.

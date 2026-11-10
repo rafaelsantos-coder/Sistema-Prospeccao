@@ -35,6 +35,7 @@ router = APIRouter(prefix="/ai")
 
 HANDLING_MODES = {
     "AI_WHEN_OFFLINE": "IA quando não houver vendedor online",
+    "AI_WHEN_HUMAN_IDLE": "IA se sem vendedor online ou 10 min sem interação",
     "AI_FIRST": "IA primeiro",
     "HYBRID": "Híbrido",
     "AI_ONLY": "IA exclusiva",

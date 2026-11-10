@@ -647,6 +647,11 @@ def _generate_followup(
     return value
 
 
+def _zapi_instance_offline(exc: Exception) -> bool:
+    """Z-API recusou o envio porque o WhatsApp da instância está desconectado."""
+    return "whatsapp is disconnected" in str(exc).lower()
+
+
 def process_followup_job(db: Session, job: AIFollowupJob) -> str:
     allowed, reason = _followup_allowed(db, job)
     if not allowed:
@@ -860,6 +865,20 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         return "sent"
     except Exception as exc:
         job.error = str(exc)[:2000]
+        if _zapi_instance_offline(exc):
+            # Instância do WhatsApp desconectada: não é falha do follow-up.
+            # Não consome tentativa (senão 3 tentativas em 15 min viram FALHOU e o
+            # lead esfria); volta para a fila e tenta de novo quando reconectar.
+            job.status = "PENDENTE"
+            job.locked_at = None
+            job.attempts = max(0, int(job.attempts or 0) - 1)
+            job.due_at = utcnow() + timedelta(minutes=15)
+            LOG.warning(
+                "followup_zapi_offline_requeued job=%s conversation=%s",
+                job.id,
+                job.conversation_id,
+            )
+            return "zapi_offline"
         if int(job.attempts or 0) < 3:
             job.status = "PENDENTE"
             job.locked_at = None

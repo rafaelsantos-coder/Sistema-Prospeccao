@@ -41,6 +41,7 @@ from app.services.ai_sdr import (
     _confirmed_customer_type_from_lead,
     _confirmed_existing_customer_from_lead,
     _confirmed_facts_from_history,
+    _existing_customer_from_text,
     _explicit_purchase_commitment,
     _is_company_context,
     _journey_integrity_issues,
@@ -55,6 +56,7 @@ from app.services.ai_sdr import (
     build_ai_context,
     claim_ai_job,
     process_ai_job,
+    sdr_debounce_seconds_for_message,
 )
 from app.services.conversation_engine import store_received_payload
 from app.services.queue_routing import queue_for_conversation
@@ -1253,7 +1255,9 @@ def _base_rejection_decision():
     )
 
 
-def test_offer_rejection_opens_residential_diagnostic_instead_of_goodbye():
+def test_offer_rejection_opens_soft_hook_instead_of_goodbye_or_diagnostic():
+    from app.services.ai_sdr_policies import SOFT_REFUSAL_HOOK_MESSAGE
+
     decision = _base_rejection_decision()
     context = {
         "latest_customer_message": "eu não quero nada de internet",
@@ -1276,17 +1280,20 @@ def test_offer_rejection_opens_residential_diagnostic_instead_of_goodbye():
 
     result = _apply_offer_rejection_diagnostic_policy(decision, context)
 
-    assert result.reply_text == (
-        "Entendi. Hoje você já possui conexão de internet?"
-    )
-    assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
-    assert result.intent == "QUALIFYING"
-    assert result.sales_state == "DISCOVERY"
+    assert result.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+    assert [item.label for item in result.quick_replies] == [
+        "Preço",
+        "Velocidade",
+        "Pode parar",
+    ]
+    assert "possui conexão" not in result.reply_text.casefold()
     assert result.handoff_recommended is False
     assert result.followup_needed is True
 
 
-def test_offer_rejection_uses_company_diagnostic_for_business_lead():
+def test_offer_rejection_soft_hook_also_for_business_lead():
+    from app.services.ai_sdr_policies import SOFT_REFUSAL_HOOK_MESSAGE
+
     decision = _base_rejection_decision()
     context = {
         "latest_customer_message": "não tenho interesse em internet",
@@ -1313,10 +1320,12 @@ def test_offer_rejection_uses_company_diagnostic_for_business_lead():
 
     result = _apply_offer_rejection_diagnostic_policy(decision, context)
 
-    assert result.reply_text == (
-        "Entendi. Hoje sua empresa já possui conexão de internet?"
-    )
-    assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+    assert result.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+    assert [item.label for item in result.quick_replies] == [
+        "Preço",
+        "Velocidade",
+        "Pode parar",
+    ]
 
 
 def test_explicit_opt_out_is_not_overridden_by_sales_reengagement():
@@ -1341,7 +1350,9 @@ def test_explicit_opt_out_is_not_overridden_by_sales_reengagement():
     )
 
 
-def test_offer_rejection_diagnostic_is_not_repeated_indefinitely():
+def test_offer_rejection_does_not_repeat_soft_hook_after_it_was_sent():
+    from app.services.ai_sdr_policies import SOFT_REFUSAL_HOOK_MESSAGE
+
     decision = _base_rejection_decision()
     context = {
         "latest_customer_message": "não quero internet",
@@ -1352,7 +1363,7 @@ def test_offer_rejection_diagnostic_is_not_repeated_indefinitely():
         "history": [
             {
                 "direction": "OUTBOUND",
-                "body": "Entendi. Hoje você já possui conexão de internet na sua casa?",
+                "body": SOFT_REFUSAL_HOOK_MESSAGE,
             },
             {
                 "direction": "INBOUND",
@@ -1363,6 +1374,7 @@ def test_offer_rejection_diagnostic_is_not_repeated_indefinitely():
 
     result = _apply_offer_rejection_diagnostic_policy(decision, context)
 
+    # Deixa a política de recusa repetida confirmar a parada.
     assert result.reply_text == (
         "Entendi, obrigado por avisar. Não vou insistir na oferta de internet."
     )
@@ -2478,6 +2490,44 @@ def test_first_prospecting_question_is_existing_customer_before_any_offer():
     assert result.sales_state == "DISCOVERY"
     assert result.reply_text == "Antes de te mostrar as opções, você já é cliente Sulnet?"
     assert [item.label for item in result.quick_replies] == ["Sim", "Não"]
+
+
+def test_volunteered_assinante_is_read_before_asking_existing_customer(monkeypatch):
+    """Bug 06/11: 'Já sou assinante. Obrigado.' não pode virar 'você já é cliente?'."""
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Já sou assinante. Obrigado.",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {"direction": "INBOUND", "body": "Já sou assinante. Obrigado."},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "CLIENTE"
+    assert "já é cliente Sulnet" not in (result.reply_text or "")
+    assert "Telefonia Móvel" in result.reply_text
+    assert "outro endereço" in result.reply_text
+    assert [item.label for item in result.quick_replies] == [
+        "Telefonia Móvel",
+        "Nova conexão",
+        "Upgrade ou suporte",
+    ]
+
+
+def test_existing_customer_from_text_recognizes_assinante_variants():
+    assert _existing_customer_from_text("Já sou assinante. Obrigado.") == "CLIENTE"
+    assert _existing_customer_from_text("Sou assinante da Sulnet") == "CLIENTE"
+    assert _existing_customer_from_text("Já sou cliente, valeu") == "CLIENTE"
+    assert _existing_customer_from_text("Não sou assinante") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Não sou cliente, quero conhecer") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Sou cliente da Vivo hoje") == ""
+    assert _existing_customer_from_text("Já sou assinante da Claro") == ""
 
 
 def test_existing_customer_confirmation_routes_to_mobile_or_new_connection(monkeypatch):
@@ -3656,8 +3706,13 @@ def _rejection_decision():
     )
 
 
-def test_cliente_sem_interesse_recebe_uma_tentativa_e_depois_ia_encerra():
-    from app.services.ai_sdr_policies import REJECTION_CLOSE_MESSAGE, _apply_repeated_rejection_policy
+def test_cliente_sem_interesse_recebe_gancho_e_depois_confirma_parada():
+    from app.services.ai_sdr_policies import (
+        REJECTION_CLOSE_MESSAGE,
+        SOFT_REFUSAL_HOOK_MESSAGE,
+        STOP_CONFIRM_MESSAGE,
+        _apply_repeated_rejection_policy,
+    )
 
     first = {
         "latest_customer_message": "Não tenho interesse",
@@ -3667,32 +3722,83 @@ def test_cliente_sem_interesse_recebe_uma_tentativa_e_depois_ia_encerra():
         ],
     }
     decision = _apply_repeated_rejection_policy(_rejection_decision(), first)
-    assert decision.reply_text != REJECTION_CLOSE_MESSAGE  # 1ª recusa: uma tentativa
+    assert decision.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+    assert [item.label for item in decision.quick_replies] == [
+        "Preço",
+        "Velocidade",
+        "Pode parar",
+    ]
 
     second = {
-        "latest_customer_message": "Não, obrigado",
+        "latest_customer_message": "não quero saber",
         "history": first["history"] + [
-            {"direction": "OUTBOUND", "body": "Entendi! E hoje você já tem internet em casa?"},
-            {"direction": "INBOUND", "body": "Não, obrigado"},
+            {"direction": "OUTBOUND", "body": SOFT_REFUSAL_HOOK_MESSAGE},
+            {"direction": "INBOUND", "body": "não quero saber"},
         ],
     }
     decision = _apply_repeated_rejection_policy(_rejection_decision(), second)
-    assert decision.reply_text == REJECTION_CLOSE_MESSAGE
+    assert decision.reply_text == STOP_CONFIRM_MESSAGE
+    assert [item.label for item in decision.quick_replies] == ["Sim, pare", "Não"]
     assert decision.followup_needed is False
-    assert decision.quick_replies == []
 
-    # Voltou a se interessar no meio: a recusa antiga não conta.
+    confirmed = {
+        "latest_customer_message": "Sim, pare",
+        "history": second["history"] + [
+            {"direction": "OUTBOUND", "body": STOP_CONFIRM_MESSAGE},
+            {"direction": "INBOUND", "body": "Sim, pare"},
+        ],
+    }
+    decision = _apply_repeated_rejection_policy(_rejection_decision(), confirmed)
+    assert decision.reply_text == REJECTION_CLOSE_MESSAGE
+    assert decision.intent == "DO_NOT_CONTACT"
+    assert decision.sales_state == "OPT_OUT"
+
+    # Voltou a se interessar no meio: a recusa antiga não conta como 2ª.
     renewed = {
         "latest_customer_message": "Não quero",
         "history": first["history"] + [
-            {"direction": "OUTBOUND", "body": "Entendi! E hoje você já tem internet em casa?"},
+            {"direction": "OUTBOUND", "body": SOFT_REFUSAL_HOOK_MESSAGE},
             {"direction": "INBOUND", "body": "Tenho, mas quero ver o preço do 800"},
             {"direction": "OUTBOUND", "body": "O 800 Mega sai por R$ 119,90."},
             {"direction": "INBOUND", "body": "Não quero"},
         ],
     }
     decision = _apply_repeated_rejection_policy(_rejection_decision(), renewed)
-    assert decision.reply_text != REJECTION_CLOSE_MESSAGE
+    assert decision.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+
+
+def test_nao_quero_mais_nao_vira_catalogo_nem_diagnostico():
+    """Caso do print 06/11: 'não quero mais' não pode virar funil/móvel."""
+    from app.services.ai_sdr_policies import (
+        SOFT_REFUSAL_HOOK_MESSAGE,
+        STOP_CONFIRM_MESSAGE,
+        _apply_offer_rejection_diagnostic_policy,
+        _apply_repeated_rejection_policy,
+    )
+
+    decision = _base_rejection_decision()
+    decision.reply_text = "Qual plano de Telefonia Móvel você quer avaliar agora?"
+    first = {
+        "latest_customer_message": "não quero mais",
+        "history": [
+            {"direction": "OUTBOUND", "body": "Antes de te mostrar as opções, você já é cliente Sulnet?"},
+            {"direction": "INBOUND", "body": "não quero mais"},
+        ],
+    }
+    result = _apply_offer_rejection_diagnostic_policy(decision, first)
+    assert result.reply_text == SOFT_REFUSAL_HOOK_MESSAGE
+    assert "Telefonia Móvel você quer avaliar" not in result.reply_text
+    assert "possui conexão" not in result.reply_text.casefold()
+
+    second = {
+        "latest_customer_message": "nao quero saber",
+        "history": first["history"] + [
+            {"direction": "OUTBOUND", "body": SOFT_REFUSAL_HOOK_MESSAGE},
+            {"direction": "INBOUND", "body": "nao quero saber"},
+        ],
+    }
+    result = _apply_repeated_rejection_policy(_rejection_decision(), second)
+    assert result.reply_text == STOP_CONFIRM_MESSAGE
 
 
 def test_followup_respeita_intervalo_minimo_de_2h():
@@ -3810,9 +3916,9 @@ def test_ia_assume_cliente_que_o_vendedor_online_nao_respondeu_em_10_minutos(mon
             db.close()
 
 
-def test_nao_seco_para_a_black_depois_de_nao_obrigada_encerra_e_sem_followup():
+def test_nao_seco_para_a_black_depois_de_nao_obrigada_confirma_parada():
     from app.services import ai_followups
-    from app.services.ai_sdr_policies import REJECTION_CLOSE_MESSAGE, _apply_repeated_rejection_policy
+    from app.services.ai_sdr_policies import STOP_CONFIRM_MESSAGE, _apply_repeated_rejection_policy
 
     history = [
         {"direction": "OUTBOUND", "body": "Oi! A Sulnet tem novidades para você."},
@@ -3825,7 +3931,8 @@ def test_nao_seco_para_a_black_depois_de_nao_obrigada_encerra_e_sem_followup():
     decision = _apply_repeated_rejection_policy(
         _rejection_decision(), {"latest_customer_message": "Não", "history": history}
     )
-    assert decision.reply_text == REJECTION_CLOSE_MESSAGE
+    # Após recusa prévia + tentativa, a 2ª recusa confirma se deve parar.
+    assert decision.reply_text == STOP_CONFIRM_MESSAGE
     assert decision.followup_needed is False
 
     class _Msg:
@@ -3867,3 +3974,27 @@ def test_pergunta_livre_na_black_nao_repete_as_opcoes(monkeypatch):
     original = base.reply_text
     result = _apply_prospecting_entry_policy(base, other)
     assert result.reply_text == original  # o modelo responde a dúvida
+
+
+def test_sdr_debounce_is_short_for_button_like_replies(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        "app.services.ai_sdr.settings",
+        replace(
+            settings,
+            ai_sdr_debounce_seconds=6,
+            ai_sdr_debounce_short_seconds=1,
+        ),
+    )
+    assert sdr_debounce_seconds_for_message("Sim") == 1
+    assert sdr_debounce_seconds_for_message("Ok") == 1
+    assert sdr_debounce_seconds_for_message("Santa Rosa") == 1
+    assert sdr_debounce_seconds_for_message(
+        "Me desculpe vc pegou o número errado"
+    ) == 1
+    assert sdr_debounce_seconds_for_message(
+        "Queria entender melhor o plano de 500 mega para a minha empresa "
+        "porque hoje pago caro e a internet cai toda hora no escritório."
+    ) == 6
+    assert sdr_debounce_seconds_for_message("linha1\nlinha2") == 6
