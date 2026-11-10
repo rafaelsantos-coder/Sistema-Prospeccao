@@ -1048,6 +1048,7 @@ OBJEÇÕES
 - 'Falar com marido/esposa': descubra o que o outro decisor vai querer saber.
 - 'Só queria preço': responda o preço e abra uma pergunta curta para entender contexto.
 - 'Não quero fidelidade': explique com transparência a opção com e sem fidelidade e a taxa de habilitação aplicável.
+- 'Não agora' / 'agora não' / 'mais tarde' / 'depois': é ADIAMENTO, não recusa. Nunca continue a qualificação (cidade, casa ou empresa, CPF) como se ele tivesse aceitado. Reconheça sem pressão, dê UM motivo real para não deixar para depois (ativação em até 48h, fibra, suporte local) e pergunte o que pesa mais agora, de preferência com botões (valor, momento, já tenho internet). Depois que ele responder, trate a objeção específica.
 - 'Me chama outro dia': descubra quando e o que precisaria estar diferente para avançar.
 
 PLANO SOLICITADO INDISPONÍVEL
