@@ -395,6 +395,17 @@ _CUSTOMER_STOP_RE = re.compile(
 _CUSTOMER_STOP_EXACT = {"nao obrigado", "nao obrigada", "prefiro nao", "nao quero"}
 # Intervalo mínimo entre uma mensagem nossa e um follow-up (pedido do comercial).
 FOLLOWUP_MIN_GAP = timedelta(hours=2)
+# Conversa Leonardo (10/11): oito mensagens seguidas sem resposta do cliente.
+MAX_UNANSWERED_FOLLOWUPS = 3
+
+
+def _latest_inbound_at(db: Session, conversation_id: int):
+    return db.scalar(
+        select(Message.created_at)
+        .where(Message.conversation_id == conversation_id, Message.direction == "INBOUND")
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
 
 
 # "Não" seco logo depois de uma oferta ("Quer conhecer a Black?") também é recusa:
@@ -516,6 +527,21 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
     )
     if closing and closing.step in {"ESCALATED", "COMPLETED"}:
         return False, closing.step
+    from app.services.auto_reply import only_auto_replies  # noqa: PLC0415
+
+    if only_auto_replies(db, conversation.id):
+        return False, "RESPOSTA_AUTOMATICA"
+    sent_stmt = select(AIFollowupJob.id).where(
+        AIFollowupJob.conversation_id == conversation.id,
+        AIFollowupJob.status == "ENVIADO",
+        AIFollowupJob.sent_at.is_not(None),
+    )
+    last_inbound_at = _latest_inbound_at(db, conversation.id)
+    if last_inbound_at:
+        sent_stmt = sent_stmt.where(AIFollowupJob.sent_at > utc_naive(last_inbound_at))
+    unanswered_sent = len(list(db.scalars(sent_stmt)))
+    if unanswered_sent >= MAX_UNANSWERED_FOLLOWUPS:
+        return False, "LIMITE_SEM_RESPOSTA"
     latest_inbound = _latest_inbound_id(db, conversation.id)
     if (
         job.source_message_id
@@ -645,6 +671,11 @@ def _generate_followup(
     if not isinstance(value, FollowupDecision):
         value = FollowupDecision.model_validate(value)
     return value
+
+
+def _zapi_instance_offline(exc: Exception) -> bool:
+    """Z-API recusou o envio porque o WhatsApp da instância está desconectado."""
+    return "whatsapp is disconnected" in str(exc).lower()
 
 
 def process_followup_job(db: Session, job: AIFollowupJob) -> str:
@@ -860,6 +891,20 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         return "sent"
     except Exception as exc:
         job.error = str(exc)[:2000]
+        if _zapi_instance_offline(exc):
+            # Instância do WhatsApp desconectada: não é falha do follow-up.
+            # Não consome tentativa (senão 3 tentativas em 15 min viram FALHOU e o
+            # lead esfria); volta para a fila e tenta de novo quando reconectar.
+            job.status = "PENDENTE"
+            job.locked_at = None
+            job.attempts = max(0, int(job.attempts or 0) - 1)
+            job.due_at = utcnow() + timedelta(minutes=15)
+            LOG.warning(
+                "followup_zapi_offline_requeued job=%s conversation=%s",
+                job.id,
+                job.conversation_id,
+            )
+            return "zapi_offline"
         if int(job.attempts or 0) < 3:
             job.status = "PENDENTE"
             job.locked_at = None

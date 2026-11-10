@@ -292,25 +292,49 @@
 
     <div class="context-section conversation-transfer-section">
       <div class="context-title">Transferir atendimento</div>
+      {% if ai_transfer_queue %}
+      <form action="/conversations/{{ conversation.id }}/transfer-ai" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-primary full-width" type="submit">Passar para a IA</button>
+        <small class="transfer-help">A conversa vai para a fila {{ ai_transfer_queue.name }} e a SulIA responde a última mensagem do cliente na hora.</small>
+      </form>
+      {% endif %}
+
       {% if users %}
       <form action="/conversations/{{ conversation.id }}/assign" method="post" class="stack-form compact">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="field"><span>Novo atendente</span>
+        <label class="field"><span>Vendedor</span>
           <select name="assigned_user_id" required>
-            <option value="">Selecione um atendente online</option>
+            <option value="">Selecione um vendedor</option>
             {% for item in users %}
-            <option value="{{ item.id }}">{{ item.name }} · {{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</option>
+            <option value="{{ item.id }}">{{ item.name }} · {{ 'online' if item.id in transfer_online_ids else 'offline' }} · {{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</option>
             {% endfor %}
           </select>
         </label>
-        <button class="button button-secondary full-width conversation-transfer-button" type="submit">Transferir conversa</button>
-        <small class="transfer-help">{% if selected_queue %}Somente atendentes online da fila {{ selected_queue.name }} aparecem aqui.{% else %}Somente atendentes online compatíveis com esta conversa aparecem aqui.{% endif %}</small>
+        <button class="button button-secondary full-width conversation-transfer-button" type="submit">Transferir para vendedor</button>
+        <small class="transfer-help">{% if selected_queue %}Vendedores da fila {{ selected_queue.name }}. {% endif %}Vendedor offline recebe a conversa e vê quando entrar no WhatsApp.</small>
       </form>
       {% else %}
       <div class="info-box compact">
-        <strong>Nenhum outro atendente online</strong>
-        <p>{% if selected_queue %}Quando outro usuário da fila {{ selected_queue.name }} entrar no WhatsApp, ele aparecerá como opção para transferência.{% else %}Quando outro atendente compatível entrar no WhatsApp, ele aparecerá aqui.{% endif %}</p>
+        <strong>Nenhum vendedor nesta fila</strong>
+        <p>{% if selected_queue %}Adicione vendedores à fila {{ selected_queue.name }} ou envie a conversa para outra fila.{% else %}Envie a conversa para uma fila abaixo.{% endif %}</p>
       </div>
+      {% endif %}
+
+      {% if transfer_queues %}
+      <form action="/conversations/{{ conversation.id }}/transfer-queue" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Outra fila</span>
+          <select name="queue_id" required>
+            <option value="">Selecione uma fila</option>
+            {% for item in transfer_queues %}
+            <option value="{{ item.id }}">{{ item.name }}{% if item.ai %} · IA{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="button button-secondary full-width conversation-transfer-button" type="submit">Transferir para fila</button>
+        <small class="transfer-help">Fila com IA: a SulIA responde na hora. Sem IA: vai para um vendedor online da fila ou fica aguardando.</small>
+      </form>
       {% endif %}
     </div>
 

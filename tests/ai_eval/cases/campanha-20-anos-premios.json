@@ -1,0 +1,22 @@
+{
+  "id": "campanha-20-anos-premios",
+  "conversation": null,
+  "description": "Pergunta sobre o sorteio: cita prêmios reais da campanha 20 anos, sem inventar data.",
+  "lead": {
+    "city": "Santa Rosa"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "A internet é para sua casa ou empresa?"
+    }
+  ],
+  "latest": "Vi que tem um sorteio de 20 anos, quais são os prêmios?",
+  "expect": {
+    "reply_contains_any": [
+      "scooter",
+      "jbl",
+      "smart tv"
+    ]
+  }
+}

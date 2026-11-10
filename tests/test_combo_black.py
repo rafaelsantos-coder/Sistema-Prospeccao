@@ -85,6 +85,7 @@ class _FakeClient:
     def __init__(self, reject_extras):
         self.calls = []
         self.reject_extras = reject_extras
+        self.tags = []
 
     def create_opportunity(self, payload):
         self.calls.append(payload)
@@ -93,7 +94,7 @@ class _FakeClient:
         return {"opportunityId": 99, "protocol": "X"}
 
     def add_opportunity_tag(self, opportunity_id, tag_name):
-        self.tagged = (opportunity_id, tag_name)
+        self.tags.append((opportunity_id, tag_name))
         return True
 
 
@@ -112,7 +113,8 @@ def test_venda_black_envia_tag_e_data(monkeypatch):
     assert fake.calls[0]["tags"] == ["Promoção Black 2027"]
     assert fake.calls[0]["firstDueDate"] == "2027-01-10"
     assert state.opportunity_id == 99
-    assert fake.tagged == (99, "Promoção Black 2027")
+    assert (99, "Promoção Black 2027") in fake.tags
+    assert (99, "IA") in fake.tags
 
 
 def test_crm_que_recusa_campos_extras_nao_trava_a_venda(monkeypatch):
