@@ -2014,6 +2014,9 @@ _FIRM_REJECTION_CUES = _OFFER_REJECTION_CUES + _EXPLICIT_CONTACT_STOP_CUES + (
     "nao quero mais",
     "nao vou querer",
     "sem interesse",
+    "nao temos interesse",
+    "nao tenho interesse",
+    "nao tem interesse",
     "desisti",
     "desisto",
 )

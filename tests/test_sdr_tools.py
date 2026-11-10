@@ -335,3 +335,14 @@ def test_relato_de_problema_na_internet_vai_para_a_central_sem_venda():
     result = ai_sdr_policies._apply_existing_customer_plan_change_policy(decision, context)
     assert result.reply_text == ai_sdr_policies.CENTRAL_REDIRECT_MESSAGE
     assert result.offer_plan_code is None
+
+
+def test_nao_temos_interesse_e_recusa_firme():
+    # Conversa Dona Ella (06/11): "não temos interesse no momento" não era recusa
+    # e a palavra "interesse" zerava a contagem.
+    from app.services import ai_sdr_policies
+
+    context = {"latest_customer_message": "nao temos interesse no momento!!", "history": []}
+    decision = _decision("Certo! Seria para sua casa ou para uma empresa?")
+    result = ai_sdr_policies._apply_repeated_rejection_policy(decision, context)
+    assert result.reply_text == ai_sdr_policies.SOFT_REFUSAL_HOOK_MESSAGE
