@@ -15,13 +15,15 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
 from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import AIClosingState, AuditLog, ZApiInstance
+from app.models import AIClosingState, AuditLog, Message, ZApiInstance
 from app.services.audit import write_audit
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import list_zapi_instances, service_for_instance
@@ -53,6 +55,31 @@ def _connected(instance: ZApiInstance) -> bool:
         return bool(service_for_instance(instance).status().get("connected"))
     except Exception:  # noqa: BLE001 - instância fora do ar conta como desconectada
         return False
+
+
+_URGENT_INSTALL = re.compile(
+    r"24 ?h(oras)?\b|para amanha|pra amanha|ate amanha|hoje ainda|ainda hoje|urgente|urgencia|"
+    r"o quanto antes|o mais rapido|mais rapido possivel"
+)
+
+
+def _asked_urgent_install(db: Session, conversation_id: int | None) -> bool:
+    """O cliente pediu ativação com urgência em alguma mensagem da conversa."""
+    if not conversation_id:
+        return False
+    bodies = db.scalars(
+        select(Message.body).where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "INBOUND",
+        )
+    )
+    for body in bodies:
+        folded = (
+            unicodedata.normalize("NFKD", str(body or "")).encode("ascii", "ignore").decode().lower()
+        )
+        if _URGENT_INSTALL.search(folded):
+            return True
+    return False
 
 
 def send_ops_alert(
@@ -170,6 +197,8 @@ def check_sales_and_escalations(db: Session) -> int:
         text = (
             f"🎉 Venda finalizada pela IA! Conversa {state.conversation_id}: {plan}{price}{protocol}."
         )
+        if _asked_urgent_install(db, state.conversation_id):
+            text += " ⚡ Cliente pediu ativação em 24 horas: priorizar a agenda."
         if send_ops_alert(db, key=f"sale:{state.id}", text=text):
             sent += 1
 
