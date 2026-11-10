@@ -3724,6 +3724,23 @@ def _mark_credit_rejected_lost(client: SulnetCRMClient, state: AIClosingState) -
         LOG.warning("credit_lost_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
 
 
+def _resid_black_offer(state: AIClosingState, collected: dict[str, Any]) -> bool:
+    """Fibra residencial 650/800 Mega com 1ª mensalidade grátis = contrato Black do CRM.
+
+    O CRM só escolhe o PDF "Black 1 mensalidade" se a oportunidade tiver a tag
+    "Promoção Black 2027"; priceFreeMonths sozinho não seleciona o contrato.
+    """
+    if not black_campaign.black_active():
+        return False
+    label = _norm(str(state.plan_label or ""))
+    if "fibra" not in label or not any(speed in label for speed in ("650", "800")):
+        return False
+    try:
+        return int(collected.get("freeMonths") or 0) >= 1
+    except (TypeError, ValueError):
+        return False
+
+
 def _create_crm_if_ready(
     db: Session,
     *,
@@ -3748,7 +3765,7 @@ def _create_crm_if_ready(
             client.update_opportunity(synced_id, {"clientName": name, "clientPhone": phone})
         except CRMIntegrationError as exc:
             LOG.warning("crm_prospect_rename_failed opportunity=%s status=%s", synced_id, exc.status_code)
-        if black_campaign.has_marker(state.handoff_summary):
+        if black_campaign.has_marker(state.handoff_summary) or _resid_black_offer(state, collected):
             _apply_black_tag(client, state)
         return
     payload: dict[str, Any] = {
@@ -3798,7 +3815,7 @@ def _create_crm_if_ready(
                 state.opportunity_id,
                 exc.status_code,
             )
-    if black_campaign.has_marker(state.handoff_summary):
+    if black_campaign.has_marker(state.handoff_summary) or _resid_black_offer(state, collected):
         _apply_black_tag(client, state)
     try:
         client.add_opportunity_tag(state.opportunity_id, "IA")
