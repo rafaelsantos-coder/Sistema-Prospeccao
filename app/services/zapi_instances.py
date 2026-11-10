@@ -33,13 +33,17 @@ def get_zapi_instance(db: Session, instance_id: int | None) -> ZApiInstance | No
     return db.get(ZApiInstance, instance_id)
 
 
+MIN_WEBHOOK_KEY_LENGTH = 32
+
+
 def instance_by_webhook_key(db: Session, webhook_key: str) -> ZApiInstance | None:
-    return db.scalar(
-        select(ZApiInstance).where(
-            ZApiInstance.webhook_key == webhook_key,
-            ZApiInstance.active.is_(True),
-        )
-    )
+    if not webhook_key or len(webhook_key) < MIN_WEBHOOK_KEY_LENGTH:
+        return None
+    # Comparação em tempo constante: não revela a chave por diferença de tempo de resposta.
+    for instance in db.scalars(select(ZApiInstance).where(ZApiInstance.active.is_(True))):
+        if secrets.compare_digest(instance.webhook_key or "", webhook_key):
+            return instance
+    return None
 
 
 def service_for_instance(instance: ZApiInstance) -> ZApiService:

@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-import unicodedata
-from datetime import timedelta
-from difflib import SequenceMatcher
-from typing import Literal
+import time
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
 
-from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -29,9 +28,72 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
-from app.services.ai_sdr_policy import CORPORATE_PLANS, FTTH_PLANS, MOBILE_PLANS, PLAN_CHANGE_SERVICE_PHONE, SERVICE_CITIES, SULIA_SYSTEM_PROMPT
+from app.services.ai_sdr_models import AIConfigurationError, AIDecision, QualificationData
+from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para testes e runtime
+    _JOURNEY_PENDING_ACTIONS,
+    _ad_style_plan_interest,
+    _apply_catalog_navigation_policy,
+    _apply_corporate_customer_policy,
+    _apply_existing_customer_plan_change_policy,
+    _apply_journey_orchestration_policy,
+    _apply_offer_rejection_diagnostic_policy,
+    _apply_prospecting_entry_policy,
+    _apply_router_information_policy,
+    _apply_secondary_decline_reengagement_policy,
+    _apply_repeated_rejection_policy,
+    _apply_stagnation_strategy,
+    _apply_unavailable_plan_policy,
+    _asks_existing_customer,
+    _city_from_sales_context,
+    _confirmed_facts_from_history,
+    _customer_asked_direct_question,
+    _customer_inbound_text,
+    _customer_type_from_context,
+    _customer_type_from_text,
+    _eligible_plans_for_city,
+    _existing_customer_from_context,
+    _existing_customer_from_text,
+    _existing_customer_plan_change_requested,
+    _explicit_human_request,
+    _explicit_purchase_commitment,
+    _fast_purchase_decision,
+    _fast_purchase_request,
+    _fold_sales_text,
+    _ftth_plan_by_speed,
+    _is_closer_handoff,
+    _is_company_context,
+    _is_residential_context,
+    _journey_integrity_issues,
+    _journey_memory_from_context,
+    _journey_product_kind,
+    _known_city_for_fast_path,
+    _last_outbound_text,
+    _looks_like_catalog_request,
+    _normalized_city,
+    _plan_available_in_city,
+    _plan_from_sales_context,
+    _product_kind_from_text,
+    _promote_clear_purchase_to_closing,
+    _recent_outbound_messages_for_repetition,
+    _requested_plan_speed,
+    _sanitize_unconfirmed_customer_facts,
+    _sdr_exposes_internal_handoff,
+    _sdr_reply_is_stale_repetition,
+    _sdr_reply_nearly_identical,
+    _sdr_reply_repeats_recent_outbound,
+    _service_city_in_text,
+    _show_corporate_differentials,
+)
+from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
-from app.services.queue_routing import assign_queue_user, queue_for_conversation
+from app.services.queue_routing import (
+    AI_WHEN_HUMAN_IDLE,
+    AI_WHEN_OFFLINE,
+    ai_owns_conversation,
+    assign_queue_user,
+    human_online_in_queue,
+    queue_for_conversation,
+)
 from app.timeutils import is_past, utcnow
 
 
@@ -39,113 +101,6 @@ LOG = logging.getLogger("sulnet_ai_sdr")
 
 
 DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
-
-
-class QualificationData(BaseModel):
-    current_provider: str | None = None
-    current_speed: str | None = None
-    current_price: str | None = None
-    pain_points: list[str] = Field(default_factory=list)
-    desired_product: str | None = None
-    customer_type: Literal["RESIDENCIAL", "EMPRESA", "NAO_INFORMADO"] = "NAO_INFORMADO"
-    existing_customer: Literal["CLIENTE", "NAO_CLIENTE", "NAO_INFORMADO"] = "NAO_INFORMADO"
-    decision_maker: Literal["SIM", "NAO", "NAO_INFORMADO"] = "NAO_INFORMADO"
-    timeframe: str | None = None
-    city: str | None = None
-    address: str | None = None
-
-
-class AIDecision(BaseModel):
-    reply_text: str = Field(min_length=1, max_length=1800)
-    quick_replies: list[QuickReply] = Field(default_factory=list, max_length=3)
-    intent: Literal[
-        "INFORMATION",
-        "QUALIFYING",
-        "INTEREST",
-        "HIGH_INTENT",
-        "PROPOSAL_REQUEST",
-        "OBJECTION_PRICE",
-        "OBJECTION_QUALITY",
-        "OBJECTION_SUPPORT",
-        "HUMAN_REQUEST",
-        "NOT_INTERESTED",
-        "DO_NOT_CONTACT",
-        "UNKNOWN",
-    ] = "UNKNOWN"
-    qualification_score: int = Field(ge=0, le=100)
-    temperature: Literal["FRIO", "MORNO", "QUENTE"]
-    recommended_stage: Literal[
-        "NOVO",
-        "TENTATIVA_CONTATO",
-        "CONTATO_REALIZADO",
-        "QUALIFICADO",
-        "PROPOSTA",
-        "NEGOCIACAO",
-        "NAO_CONTATAR",
-    ]
-    handoff_recommended: bool
-    handoff_reason: str = Field(default="", max_length=600)
-    confidence: float = Field(ge=0.0, le=1.0)
-    summary: str = Field(max_length=1800)
-    next_action: str = Field(max_length=600)
-    qualification: QualificationData = Field(default_factory=QualificationData)
-    crm_notes: list[str] = Field(default_factory=list)
-    objection: Literal[
-        "NONE",
-        "PRICE",
-        "NO_INTEREST",
-        "CURRENT_PROVIDER",
-        "FIDELITY",
-        "TIMING",
-        "DECISION_MAKER",
-        "TRUST",
-        "INSTALLATION",
-        "MONEY_NOW",
-        "OTHER",
-    ] = "NONE"
-    sales_state: Literal[
-        "NEW_LEAD",
-        "DISCOVERY",
-        "QUALIFIED",
-        "OFFERING",
-        "NEGOTIATING",
-        "WAITING_CUSTOMER",
-        "PURCHASE_INTENT",
-        "READY_FOR_HUMAN_SALES",
-        "OPT_OUT",
-    ] = "DISCOVERY"
-    offer_plan_code: str | None = None
-    offer_price: float | None = None
-    concession_level: int = Field(default=0, ge=0, le=3)
-    free_months: int = Field(default=0, ge=0, le=3)
-    customer_commitment: bool = False
-    followup_needed: bool = True
-    customer_needs: list[str] = Field(default_factory=list)
-    benefits_valued: list[str] = Field(default_factory=list)
-    commercial_arguments_used: list[str] = Field(default_factory=list)
-    proposal_summary: str = Field(default="", max_length=800)
-    unanswered_question: str | None = Field(default=None, max_length=500)
-    journey_state: Literal[
-        "IDENTIFY_CUSTOMER",
-        "CHOOSE_PRODUCT",
-        "CHOOSE_SEGMENT",
-        "CONFIRM_CITY",
-        "SELECT_OFFER",
-        "HANDLE_OBJECTION",
-        "CONFIRM_PURCHASE",
-        "CLOSING",
-        "HUMAN_HANDOFF",
-        "OPT_OUT",
-        "DISCOVERY",
-    ] = "DISCOVERY"
-    journey_pending_action: str = Field(default="", max_length=600)
-    handoff_target: Literal["NONE", "CLOSER_AI", "HUMAN"] = "NONE"
-    stagnation_count: int = Field(default=0, ge=0, le=20)
-    service_redirect: bool = False
-
-
-class AIConfigurationError(RuntimeError):
-    pass
 
 
 def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None:
@@ -164,11 +119,167 @@ def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None
     )
 
 
+def is_ai_test_phone(phone: str | None) -> bool:
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return bool(digits) and any(
+        len(test) >= 8 and digits.endswith(test[-11:]) for test in settings.ai_test_phones
+    )
+
+
+def _test_phone_binding(db: Session, conversation_id: int, queue) -> Any | None:
+    """Vínculo temporário (não gravado) para o telefone de teste numa fila sem IA."""
+    conversation = db.get(Conversation, conversation_id)
+    contact = getattr(conversation, "contact", None) if conversation else None
+    if not contact or not is_ai_test_phone(contact.phone):
+        return None
+    agent = db.scalar(
+        select(AIAgentProfile).where(AIAgentProfile.slug == "sulia-sdr-digital")
+    ) or db.scalar(
+        select(AIAgentProfile)
+        .where(AIAgentProfile.role_type == "SDR", AIAgentProfile.active.is_(True))
+        .limit(1)
+    )
+    if not agent:
+        return None
+    LOG.info("ai_test_phone_binding conversation=%s queue=%s", conversation_id, queue.id)
+    return SimpleNamespace(
+        queue_id=queue.id, agent_id=agent.id, agent=agent, queue=queue,
+        handling_mode="AI_FIRST", active=True, fallback_to_human=True,
+    )
+
+
 def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBinding | None:
     queue = queue_for_conversation(db, conversation_id)
     if not queue:
         return None
-    return queue_ai_binding(db, queue.id)
+    return queue_ai_binding(db, queue.id) or _test_phone_binding(db, conversation_id, queue)
+
+
+def human_is_attending(db: Session, conversation: Conversation) -> bool:
+    """Um vendedor de verdade está atendendo esta conversa: a IA não entra.
+
+    Exige as duas coisas, para não travar a Fila IA: a conversa está atribuída
+    a uma pessoa (não a um agente de IA) e essa pessoa escreveu manualmente nas
+    últimas 24 horas. Disparos de campanha não contam como atendimento.
+    Em 04/11, ao ligar a IA na fila Comercial, a SulIA respondeu dois clientes
+    que estavam com o Fabiano e a Claudia (conversas 449 e 422).
+    """
+    from app.models import CampaignDispatchRecipient, CampaignRecipient  # noqa: PLC0415
+
+    assigned = conversation.assigned_user_id
+    if not assigned:
+        return False
+    ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
+    if assigned in ai_users:
+        return False
+    bodies = [
+        (body or "").strip()
+        for body in db.scalars(
+            select(Message.body).where(
+                Message.conversation_id == conversation.id,
+                Message.direction == "OUTBOUND",
+                Message.sender_user_id == assigned,
+                Message.message_type.in_(("TEXT", "BUTTONS")),
+                Message.created_at >= utcnow() - timedelta(hours=24),
+            )
+        )
+    ]
+    bodies = [body for body in bodies if body]
+    if not bodies:
+        return False
+    automated = {
+        (body or "").strip()
+        for model in (CampaignRecipient, CampaignDispatchRecipient)
+        for body in db.scalars(
+            select(model.message_body).where(model.conversation_id == conversation.id)
+        )
+    }
+    return any(body not in automated for body in bodies)
+
+
+HUMAN_HANDOFF_STATES = {"HANDOFF", "HANDOFF_HUMAN", "HUMAN_ACTIVE", "ESCALATED"}
+
+
+def reclaim_conversation_for_ai(
+    db: Session,
+    conversation: Conversation,
+    ai_state: AIConversationState | None,
+) -> bool:
+    """Conversa que tinha sido passada a um humano volta para a IA.
+
+    Não existe mais atendimento humano: estados antigos de handoff (e vendas
+    ESCALATED) deixavam o cliente sem resposta ("Bom dia" de 06/11). Só fica
+    de fora quem um vendedor de verdade está atendendo (escreveu nas últimas
+    24 horas), para a IA não atropelar a pessoa.
+    """
+    from app.models import AIClosingState  # noqa: PLC0415
+
+    if not ai_state or ai_state.state not in HUMAN_HANDOFF_STATES:
+        return False
+    if not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_is_attending(db, conversation):
+        return False
+    previous = ai_state.state
+    closing = db.scalar(
+        select(AIClosingState).where(AIClosingState.conversation_id == conversation.id)
+    )
+    if closing and closing.step not in {"COMPLETED", "PLAN_CHANGE"}:
+        from app.services.ai_seller import active_closer, resume_closer  # noqa: PLC0415
+
+        if closing.step == "ESCALATED" and resume_closer(db, conversation, None):
+            reclaimed = "CLOSING"
+        else:
+            closer = active_closer(db)
+            if closer:
+                ai_state.state = "CLOSING"
+                ai_state.agent_id = closer.id
+                conversation.assigned_user_id = closer.user_id
+                reclaimed = "CLOSING"
+            else:
+                reclaimed = ""
+        if reclaimed:
+            LOG.warning(
+                "ai_conversation_reclaimed conversation=%s from=%s to=CLOSING",
+                conversation.id,
+                previous,
+            )
+            return True
+    binding = binding_for_conversation(db, conversation.id)
+    if not binding or not binding.agent or not binding.agent.active:
+        return False
+    ai_state.state = "AI_ACTIVE"
+    ai_state.agent_id = binding.agent_id
+    if binding.agent.user_id:
+        conversation.assigned_user_id = binding.agent.user_id
+    conversation.status = "EM_ATENDIMENTO"
+    db.flush()
+    LOG.warning(
+        "ai_conversation_reclaimed conversation=%s from=%s to=AI_ACTIVE",
+        conversation.id,
+        previous,
+    )
+    return True
+
+
+def sdr_debounce_seconds_for_message(body: str) -> int:
+    """Debounce curto para Sim/Não/botão/cidade; completo para texto longo.
+
+    O debounce de 6s evita responder no meio de uma rajada. Em resposta de
+    botão ou frase curta ("número errado", "Ok", "Santa Rosa") esse atraso
+    só empilha com o poll do worker e a chamada ao modelo.
+    """
+    full = max(0, int(settings.ai_sdr_debounce_seconds or 0))
+    short = max(0, int(settings.ai_sdr_debounce_short_seconds or 0))
+    if short >= full:
+        return full
+    text = (body or "").strip()
+    if not text:
+        return full
+    if "\n" in text:
+        return full
+    words = [part for part in re.split(r"\s+", text) if part]
+    if len(text) <= 80 and len(words) <= 12:
+        return short
+    return full
 
 
 def enqueue_ai_job(
@@ -176,6 +287,7 @@ def enqueue_ai_job(
     *,
     conversation: Conversation,
     message: Message,
+    takeover: bool = False,
 ) -> AIJob | None:
     if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
         return None
@@ -192,6 +304,7 @@ def enqueue_ai_job(
             AIConversationState.conversation_id == conversation.id
         )
     )
+    reclaim_conversation_for_ai(db, conversation, ai_state)
     if ai_state and ai_state.state == "CLOSING" and settings.ai_seller_enabled:
         closer = db.get(AIAgentProfile, ai_state.agent_id)
         queue = queue_for_conversation(db, conversation.id)
@@ -218,14 +331,7 @@ def enqueue_ai_job(
             )
             return job
 
-    if ai_state and ai_state.state in {
-        "HANDOFF",
-        "HANDOFF_HUMAN",
-        "HUMAN_ACTIVE",
-        "OPT_OUT",
-        "ESCALATED",
-        "COMPLETED",
-    }:
+    if ai_state and ai_state.state in {"OPT_OUT", "COMPLETED"} | HUMAN_HANDOFF_STATES:
         LOG.info(
             "ai_job_skipped conversation=%s reason=terminal_state state=%s",
             conversation.id,
@@ -260,6 +366,34 @@ def enqueue_ai_job(
             binding.queue_id,
         )
         return None
+    # Fila comercial: com vendedor online na fila a IA espera (o worker assume
+    # após 10 min sem resposta); sem vendedor online, ou se a IA já conduz, atende.
+    if (
+        binding.handling_mode == AI_WHEN_HUMAN_IDLE
+        and not takeover
+        and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
+        and not ai_owns_conversation(db, conversation.id)
+        and human_online_in_queue(db, binding.queue_id)
+    ):
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=human_online_wait queue=%s",
+            conversation.id,
+            binding.queue_id,
+        )
+        return None
+    # Fila da IA (AI_WHEN_OFFLINE): somente a IA atende, sem checar vendedor online.
+    if (
+        binding.handling_mode not in (AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE)
+        and not takeover
+        and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
+        and human_is_attending(db, conversation)
+    ):
+        LOG.info(
+            "ai_job_skipped conversation=%s reason=human_attending queue=%s",
+            conversation.id,
+            binding.queue_id,
+        )
+        return None
 
     from app.services.ai_followups import cancel_pending_followups
     cancel_pending_followups(
@@ -268,23 +402,38 @@ def enqueue_ai_job(
         reason="CLIENTE_RESPONDEU",
     )
 
+    # Uma resposta por rajada de mensagens: o SDR lê o histórico inteiro, então
+    # o job da mensagem mais nova responde também às anteriores ainda na fila
+    # (conversa 63: 4 mensagens da IA em 4 minutos).
+    for pending in db.scalars(
+        select(AIJob).where(
+            AIJob.conversation_id == conversation.id,
+            AIJob.agent_id == binding.agent_id,
+            AIJob.status == "PENDENTE",
+        )
+    ):
+        pending.status = "IGNORADO"
+        pending.error = "AGRUPADA_COM_MENSAGEM_SEGUINTE"
+
+    debounce_seconds = sdr_debounce_seconds_for_message(message.body or "")
     job = AIJob(
         agent_id=binding.agent_id,
         queue_id=binding.queue_id,
         conversation_id=conversation.id,
         message_id=message.id,
         status="PENDENTE",
-        available_at=utcnow(),
+        available_at=utcnow() + timedelta(seconds=max(0, debounce_seconds)),
     )
     db.add(job)
     db.flush()
     LOG.info(
-        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s",
+        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s debounce=%ss",
         job.id,
         conversation.id,
         message.id,
         binding.queue_id,
         binding.agent_id,
+        debounce_seconds,
     )
     return job
 
@@ -454,7 +603,16 @@ def _persist_confirmed_customer_type(
     lead.segment = "Empresa" if value == "EMPRESA" else "Residencial"
 
 
-def _confirmed_existing_customer_from_lead(lead: Lead | None) -> str:
+def _confirmed_existing_customer_from_lead(
+    lead: Lead | None,
+    *,
+    conversation_id: int | None = None,
+) -> str:
+    """Resposta "já é cliente?" guardada no lead.
+
+    Com conversation_id, só vale a resposta dada nesta mesma conversa: numa
+    conversa nova a SulIA pergunta de novo em vez de presumir.
+    """
     if not lead:
         return ""
     try:
@@ -467,6 +625,8 @@ def _confirmed_existing_customer_from_lead(lead: Lead | None) -> str:
     if not isinstance(marker, dict):
         return ""
     if str(marker.get("source") or "").upper() != "INBOUND_CUSTOMER_CONFIRMED":
+        return ""
+    if conversation_id is not None and marker.get("conversation_id") != conversation_id:
         return ""
     value = str(marker.get("value") or "").upper()
     return value if value in {"CLIENTE", "NAO_CLIENTE"} else ""
@@ -632,7 +792,7 @@ def build_ai_context(
                     | set(previous_facts.get("answered_questions") or [])
                 )
 
-    lead_existing = _confirmed_existing_customer_from_lead(lead)
+    lead_existing = _confirmed_existing_customer_from_lead(lead, conversation_id=conversation.id)
     if (
         not confirmed_facts.get("existing_customer")
         and lead_existing in {"CLIENTE", "NAO_CLIENTE"}
@@ -694,7 +854,9 @@ def build_ai_context(
             "score": lead.score if lead else 0,
             "temperature": lead.temperature if lead else "FRIO",
             "confirmed_customer_type": _confirmed_customer_type_from_lead(lead),
-            "confirmed_existing_customer": _confirmed_existing_customer_from_lead(lead),
+            "confirmed_existing_customer": _confirmed_existing_customer_from_lead(
+                lead, conversation_id=conversation.id
+            ),
             "journey": _journey_memory_from_lead(
                 lead,
                 conversation_id=conversation.id,
@@ -751,2210 +913,51 @@ def _effective_execution_mode(agent: AIAgentProfile) -> str:
     return agent.execution_mode
 
 
-def _fold_sales_text(value: str | None) -> str:
-    text = unicodedata.normalize("NFKD", value or "")
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = text.casefold()
-    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+def _official_catalog_for_context(context: dict) -> dict | None:
+    """Catálogo da cidade já no contexto, para o modelo não gastar uma ida e volta
+    com a ferramenta consultar_catalogo em todo turno (latência de 25-45 s)."""
+    from app.services.ai_sdr_policy import catalog_for
 
-
-_EXISTING_CUSTOMER_QUESTION_CUES = (
-    "voce ja e cliente sulnet",
-    "ja e cliente sulnet",
-    "voce ja e nosso cliente",
-    "voce ja possui algum servico da sulnet",
-    "ja possui algum servico da sulnet",
-    "possui algum servico da sulnet",
-    "voce tem algum servico da sulnet",
-    "tem algum servico da sulnet",
-)
-
-
-def _asks_existing_customer(value: str | None) -> bool:
-    folded = _fold_sales_text(value)
-    return bool(folded) and any(
-        cue in folded for cue in _EXISTING_CUSTOMER_QUESTION_CUES
-    )
-
-
-def _product_kind_from_text(
-    value: str | None,
-    *,
-    previous_outbound: str | None = None,
-) -> str:
-    folded = _fold_sales_text(value)
-    previous = _fold_sales_text(previous_outbound)
-    if not folded:
-        return ""
-
-    mobile = {
-        "movel",
-        "telefonia movel",
-        "plano movel",
-        "planos moveis",
-        "sulmovel",
-        "celular",
-    }
-    internet = {
-        "internet",
-        "fibra",
-        "fibra optica",
-        "plano de internet",
-        "planos de internet",
-    }
-    if folded in mobile:
-        return "MOBILE"
-    if folded in internet:
-        return "INTERNET"
-
-    product_question = (
-        "internet" in previous
-        and any(token in previous for token in ("telefonia movel", "movel"))
-    )
-    if product_question:
-        if folded in {"internet", "fibra", "fibra optica"}:
-            return "INTERNET"
-        if folded in {"movel", "telefonia movel", "sulmovel", "celular"}:
-            return "MOBILE"
-    return ""
-
-
-def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
-    facts: dict[str, object] = {
-        "existing_customer": "",
-        "customer_type": "",
-        "product_kind": "",
-        "desired_product": "",
-        "city": "",
-        "answered_questions": [],
-    }
-    answered: set[str] = set()
-    previous_outbound = ""
-
-    for row in rows:
-        if isinstance(row, dict):
-            direction = str(row.get("direction") or "").upper()
-            body = str(row.get("body") or "")
-        else:
-            direction = str(row.direction or "").upper()
-            body = str(row.body or "")
-
-        if direction == "OUTBOUND":
-            previous_outbound = body
-            continue
-        if direction != "INBOUND":
-            continue
-
-        existing = _existing_customer_from_text(
-            body,
-            previous_outbound=previous_outbound,
-        )
-        if existing:
-            facts["existing_customer"] = existing
-            answered.add("EXISTING_CUSTOMER")
-
-        customer_type = _customer_type_from_text(body)
-        if customer_type:
-            facts["customer_type"] = customer_type
-            answered.add("CUSTOMER_TYPE")
-
-        product_kind = _product_kind_from_text(
-            body,
-            previous_outbound=previous_outbound,
-        )
-        if product_kind:
-            facts["product_kind"] = product_kind
-            facts["desired_product"] = (
-                "Internet" if product_kind == "INTERNET" else "Telefonia Móvel"
-            )
-            answered.add("PRODUCT")
-
-        folded = _fold_sales_text(body)
-        previous_folded = _fold_sales_text(previous_outbound)
-        asks_city = any(
-            cue in previous_folded
-            for cue in (
-                "qual e a sua cidade",
-                "qual sua cidade",
-                "em qual cidade",
-                "qual cidade",
-            )
-        )
-        for service_city in SERVICE_CITIES:
-            city_key = _fold_sales_text(service_city)
-            if folded == city_key or (asks_city and city_key in folded):
-                facts["city"] = service_city
-                answered.add("CITY")
-                break
-
-    facts["answered_questions"] = sorted(answered)
-    return facts
-
-
-def _existing_customer_from_text(
-    value: str | None,
-    *,
-    previous_outbound: str | None = None,
-) -> str:
-    folded = _fold_sales_text(value)
-    previous = _fold_sales_text(previous_outbound)
-    if not folded:
-        return ""
-
-    negative_exact = {
-        "nao sou cliente",
-        "ainda nao sou cliente",
-        "nunca fui cliente",
-    }
-    negative_sulnet_cues = (
-        "nao sou cliente sulnet",
-        "nao sou cliente da sulnet",
-        "nao tenho sulnet",
-        "nao sou da sulnet",
-    )
-    positive_exact = {
-        "sou cliente",
-        "ja sou cliente",
-    }
-    positive_sulnet_cues = (
-        "sou cliente sulnet",
-        "sou cliente da sulnet",
-        "ja sou cliente sulnet",
-        "ja sou cliente da sulnet",
-        "ja tenho sulnet",
-        "tenho sulnet",
-    )
-    if folded in negative_exact or any(cue in folded for cue in negative_sulnet_cues):
-        return "NAO_CLIENTE"
-    if folded in positive_exact or any(cue in folded for cue in positive_sulnet_cues):
-        return "CLIENTE"
-
-    status_question = _asks_existing_customer(previous_outbound)
-    if status_question:
-        if folded in {"sim", "sim sou", "sou", "ja sou", "sou sim"}:
-            return "CLIENTE"
-        if folded in {"nao", "nao sou", "ainda nao", "nao ainda"}:
-            return "NAO_CLIENTE"
-    return ""
-
-
-def _existing_customer_from_context(context: dict) -> str:
     facts = context.get("confirmed_facts") or {}
-    fact_value = str(facts.get("existing_customer") or "").upper()
-    if fact_value in {"CLIENTE", "NAO_CLIENTE"}:
-        return fact_value
-
-    previous = _last_outbound_text(context)
-    latest = _existing_customer_from_text(
-        str(context.get("latest_customer_message") or ""),
-        previous_outbound=previous,
-    )
-    if latest:
-        return latest
-
-    confirmed = str(
-        (context.get("lead") or {}).get("confirmed_existing_customer") or ""
-    ).upper()
-    if confirmed in {"CLIENTE", "NAO_CLIENTE"}:
-        return confirmed
-
-    journey_value = str(
-        _journey_memory_from_context(context).get("existing_customer") or ""
-    ).upper()
-    if journey_value in {"CLIENTE", "NAO_CLIENTE"}:
-        return journey_value
-
-    previous_outbound = ""
-    reconstructed = ""
-    for row in context.get("history") or []:
-        direction = str(row.get("direction") or "").upper()
-        body = str(row.get("body") or "")
-        if direction == "OUTBOUND":
-            previous_outbound = body
-            continue
-        if direction != "INBOUND":
-            continue
-        value = _existing_customer_from_text(
-            body,
-            previous_outbound=previous_outbound,
-        )
-        if value:
-            reconstructed = value
-    return reconstructed
-
-
-def _customer_type_from_text(value: str | None) -> str:
-    folded = _fold_sales_text(value)
-    if not folded:
-        return ""
-
-    company_exact = {
-        "empresa",
-        "para empresa",
-        "plano empresa",
-        "plano empresarial",
-        "plano para empresa",
-        "corporativo",
-        "pj",
-        "pessoa juridica",
-    }
-    company_cues = (
-        "minha empresa",
-        "nossa empresa",
-        "meu negocio",
-        "meu comercio",
-        "minha loja",
-        "meu escritorio",
-        "quero para empresa",
-        "preciso para empresa",
-        "internet para empresa",
-        "plano corporativo",
-        "agora e para empresa",
-    )
-    residential_exact = {
-        "casa",
-        "para casa",
-        "residencial",
-        "plano residencial",
-        "internet residencial",
-    }
-    residential_cues = (
-        "minha casa",
-        "minha residencia",
-        "meu apartamento",
-        "quero para casa",
-        "preciso para casa",
-        "internet para casa",
-        "agora e para casa",
-    )
-
-    if folded in company_exact or any(cue in folded for cue in company_cues):
-        return "EMPRESA"
-    if folded in residential_exact or any(cue in folded for cue in residential_cues):
-        return "RESIDENCIAL"
-    return ""
-
-
-def _customer_type_from_context(context: dict) -> str:
-    facts = context.get("confirmed_facts") or {}
-    fact_value = str(facts.get("customer_type") or "").upper()
-    if fact_value in {"EMPRESA", "RESIDENCIAL"}:
-        return fact_value
-
-    latest_type = _customer_type_from_text(
-        str(context.get("latest_customer_message") or "")
-    )
-    if latest_type:
-        return latest_type
-
-    for row in reversed(context.get("history") or []):
-        if str(row.get("direction") or "").upper() != "INBOUND":
-            continue
-        value = _customer_type_from_text(str(row.get("body") or ""))
-        if value:
-            return value
-
-    confirmed = str(
-        (context.get("lead") or {}).get("confirmed_customer_type") or ""
-    ).upper()
-    return confirmed if confirmed in {"EMPRESA", "RESIDENCIAL"} else ""
-
-
-def _customer_inbound_text(context: dict) -> str:
-    parts = []
-    for row in context.get("history") or []:
-        if str(row.get("direction") or "").upper() != "INBOUND":
-            continue
-        parts.append(_fold_sales_text(str(row.get("body") or "")))
-    return " ".join(part for part in parts if part).strip()
-
-
-def _numbers_in_text(value: str | None) -> set[str]:
-    return set(re.findall(r"\d+", _fold_sales_text(value)))
-
-
-def _sanitize_unconfirmed_customer_facts(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    inbound = _customer_inbound_text(context)
-    qualification = decision.qualification
-    confirmed_customer_type = _customer_type_from_context(context)
-    qualification.customer_type = (
-        confirmed_customer_type if confirmed_customer_type else "NAO_INFORMADO"
-    )
-    confirmed_existing_customer = _existing_customer_from_context(context)
-    qualification.existing_customer = (
-        confirmed_existing_customer if confirmed_existing_customer else "NAO_INFORMADO"
-    )
-
-    provider = _fold_sales_text(qualification.current_provider)
-    if provider and provider not in inbound:
-        original_provider = qualification.current_provider or ""
-        qualification.current_provider = None
-        for field_name in ("reply_text", "summary", "next_action", "proposal_summary"):
-            value = getattr(decision, field_name, "") or ""
-            if original_provider and original_provider.casefold() in value.casefold():
-                value = re.sub(
-                    re.escape(original_provider),
-                    "seu provedor atual",
-                    value,
-                    flags=re.IGNORECASE,
-                )
-                setattr(decision, field_name, value)
-
-    speed_numbers = _numbers_in_text(qualification.current_speed)
-    inbound_numbers = _numbers_in_text(inbound)
-    if qualification.current_speed and speed_numbers and speed_numbers.isdisjoint(inbound_numbers):
-        qualification.current_speed = None
-
-    price_numbers = _numbers_in_text(qualification.current_price)
-    if qualification.current_price and price_numbers and price_numbers.isdisjoint(inbound_numbers):
-        qualification.current_price = None
-
-    return decision
-
-
-_SECONDARY_DECLINES = {
-    "nao",
-    "nao obrigado",
-    "nao obrigada",
-    "agora nao",
-    "prefiro nao",
-    "dispenso",
-}
-
-_AUXILIARY_QUESTION_CUES = (
-    "quer que eu confira",
-    "quer que eu verifique",
-    "quer que eu explique",
-    "quer que eu tambem",
-    "quer saber como",
-    "posso conferir",
-    "posso verificar",
-    "posso explicar",
-    "como funciona",
-    "como acessar",
-    "sulnet play",
-    "beneficio",
-    "beneficios",
-    "conteudo",
-    "acesso",
-)
-
-
-def _plan_from_sales_context(decision: AIDecision, context: dict):
-    code = (decision.offer_plan_code or "").upper()
-    if code:
-        plan = next(
-            (
-                item
-                for item in FTTH_PLANS
-                if code == item["code"] or str(item["download_mbps"]) in code
-            ),
-            None,
-        )
-        if plan:
-            return plan
-
-    for row in reversed(context.get("history") or []):
-        body = str(row.get("body") or "")
-        match = re.search(r"\b(250|500|650|800)\s*mega\b", body, re.I)
-        if not match:
-            continue
-        speed = int(match.group(1))
-        plan = next(
-            (item for item in FTTH_PLANS if item["download_mbps"] == speed),
-            None,
-        )
-        if plan:
-            return plan
-    return None
-
-
-def _normalized_city(value: str | None) -> str:
-    return _fold_sales_text(value)
-
-
-def _city_from_sales_context(decision: AIDecision, context: dict) -> str:
-    fact_city = str((context.get("confirmed_facts") or {}).get("city") or "").strip()
-    if fact_city:
-        return fact_city
-
-    lead_city = str((context.get("lead") or {}).get("city") or "").strip()
-    if lead_city:
-        return lead_city
-
-    qualification_city = str(decision.qualification.city or "").strip()
-    if qualification_city:
-        return qualification_city
-
-    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
-    for service_city in SERVICE_CITIES:
-        city_key = _normalized_city(service_city)
-        if latest == city_key or city_key in latest:
-            return service_city
-    return ""
-
-
-def _plan_available_in_city(plan: dict, city: str) -> bool:
-    city_key = _normalized_city(city)
-    if not city_key:
-        return False
-
-    service_city_keys = {_normalized_city(item) for item in SERVICE_CITIES}
-    if city_key not in service_city_keys:
-        return False
-
-    cities = plan.get("cities")
-    if cities == "ALL_20":
-        return True
-    return city_key in {_normalized_city(str(item)) for item in (cities or [])}
-
-
-def _eligible_plans_for_city(city: str) -> list[dict]:
-    plans = [plan for plan in FTTH_PLANS if _plan_available_in_city(plan, city)]
-    return sorted(plans, key=lambda item: int(item["download_mbps"]), reverse=True)
-
-
-def _requested_plan_speed(value: str | None) -> int | None:
-    folded = _fold_sales_text(value)
-    if not folded:
-        return None
-
-    match = re.search(r"\b(\d{2,4})\s*(?:mega|mb|mbps)\b", folded)
-    if not match:
-        return None
-
-    speed = int(match.group(1))
-    request_cues = (
-        "quero",
-        "queria",
-        "gostaria",
-        "interesse",
-        "preciso",
-        "tem ",
-        "voces tem",
-        "plano",
-        "contratar",
-        "oferece",
-        "disponivel",
-        "trabalham com",
-    )
-    current_plan_cues = (
-        "eu tenho",
-        "tenho hoje",
-        "uso ",
-        "meu plano",
-        "minha internet",
-        "atualmente",
-        "hoje tenho",
-    )
-
-    if any(cue in folded for cue in current_plan_cues) and not any(
-        cue in folded for cue in request_cues
-    ):
-        return None
-
-    compact = folded in {
-        f"{speed} mega",
-        f"{speed} mb",
-        f"{speed} mbps",
-    }
-    if compact or any(cue in folded for cue in request_cues):
-        return speed
-    return None
-
-
-def _format_brl(value: float) -> str:
-    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def _last_outbound_text(context: dict) -> str:
-    for row in reversed(context.get("history") or []):
-        if str(row.get("direction") or "").upper() == "OUTBOUND":
-            return str(row.get("body") or "")
-    return ""
-
-
-def _looks_like_catalog_request(value: str | None) -> bool:
-    folded = _fold_sales_text(value)
-    if not folded:
-        return False
-    cues = (
-        "todos os planos",
-        "todos planos",
-        "quais planos",
-        "lista de planos",
-        "catalogo",
-        "planos disponiveis",
-        "opcoes de planos",
-        "planos da sulnet",
-        "planos voces tem",
-        "planos que voces tem",
-    )
-    if any(cue in folded for cue in cues):
-        return True
-    return (
-        "planos" in folded
-        and ("precos" in folded or "preco" in folded)
-        and ("velocidades" in folded or "velocidade" in folded or "promocoes" in folded)
-    )
-
-
-def _reset_catalog_handoff(decision: AIDecision) -> None:
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.offer_plan_code = None
-    decision.offer_price = None
-    decision.concession_level = 0
-    decision.free_months = 0
-    decision.followup_needed = True
-
-
-def _show_catalog_root(decision: AIDecision) -> AIDecision:
-    decision.reply_text = (
-        "Claro! Tenho o catálogo comercial vigente da Sulnet com os valores confirmados. "
-        "O que você quer consultar primeiro?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="catalogo_fibra", label="Fibra óptica"),
-        QuickReply(id="catalogo_sulmovel", label="Móvel"),
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "DISCOVERY"
-    decision.recommended_stage = "CONTATO_REALIZADO"
-    decision.summary = "Cliente solicitou o catálogo de planos da Sulnet."
-    decision.next_action = "Cliente escolher entre Fibra óptica e Sulmóvel."
-    _reset_catalog_handoff(decision)
-    return decision
-
-
-def _show_mobile_catalog_page(
-    decision: AIDecision,
-    *,
-    page: int,
-) -> AIDecision:
-    decision.qualification.desired_product = "Sulmóvel"
-    if page <= 1:
-        plans = MOBILE_PLANS[:2]
-        decision.reply_text = (
-            "No Sulmóvel temos planos nacionais com valores confirmados. "
-            "Escolha uma opção para continuar:"
-        )
-        decision.quick_replies = [
-            QuickReply(
-                id=f"mobile_{int(plan['data_gb'])}gb",
-                label=f"{int(plan['data_gb'])}GB - R$ {_format_brl(float(plan['price']))}",
-            )
-            for plan in plans
-        ] + [QuickReply(id="mobile_mais", label="Mais planos")]
-        decision.next_action = "Cliente escolher 5GB, 7GB ou abrir mais planos móveis."
-    else:
-        plans = MOBILE_PLANS[2:4]
-        decision.reply_text = "Mais opções do Sulmóvel:"
-        decision.quick_replies = [
-            QuickReply(
-                id=f"mobile_{int(plan['data_gb'])}gb",
-                label=f"{int(plan['data_gb'])}GB - R$ {_format_brl(float(plan['price']))}",
-            )
-            for plan in plans
-        ] + [QuickReply(id="mobile_voltar", label="Voltar")]
-        decision.next_action = "Cliente escolher 10GB, 15GB ou voltar aos primeiros planos."
-
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.recommended_stage = "PROPOSTA"
-    decision.summary = "Cliente está consultando o catálogo Sulmóvel."
-    _reset_catalog_handoff(decision)
-    return decision
-
-
-def _show_fiber_catalog(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    city = _city_from_sales_context(decision, context)
-    decision.qualification.desired_product = "Fibra óptica"
+    city = str(facts.get("city") or (context.get("lead") or {}).get("city") or "").strip()
+    customer_type = str(facts.get("customer_type") or "").upper()
+    if customer_type == "EMPRESA":
+        return catalog_for("", "EMPRESA")
     if not city:
-        decision.reply_text = (
-            "Claro! Para eu mostrar somente os planos de fibra óptica disponíveis, "
-            "qual é a sua cidade?"
-        )
-        decision.quick_replies = []
-        decision.intent = "QUALIFYING"
-        decision.sales_state = "DISCOVERY"
-        decision.recommended_stage = "CONTATO_REALIZADO"
-        decision.summary = "Cliente escolheu consultar os planos de fibra óptica."
-        decision.next_action = "Confirmar a cidade para listar os planos de fibra válidos."
-        _reset_catalog_handoff(decision)
-        return decision
-
-    eligible = _eligible_plans_for_city(city)
-    if not eligible:
-        return decision
-
-    decision.qualification.city = city
-    option_parts = [
-        f"{int(plan['download_mbps'])} Mega por R$ {_format_brl(float(plan['price_fidelity']))}"
-        for plan in eligible
-    ]
-    if len(option_parts) == 1:
-        options_text = option_parts[0]
-    else:
-        options_text = ", ".join(option_parts[:-1]) + f" e {option_parts[-1]}"
-    decision.reply_text = (
-        f"Em {city}, os planos de fibra óptica disponíveis são {options_text} mensais. "
-        "Qual você quer conhecer?"
-    )
-    decision.quick_replies = [
-        QuickReply(
-            id=f"plano_{int(plan['download_mbps'])}",
-            label=f"{int(plan['download_mbps'])} Mega",
-        )
-        for plan in eligible[:3]
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.recommended_stage = "PROPOSTA"
-    decision.summary = f"Cliente está consultando os planos de fibra disponíveis em {city}."
-    decision.next_action = "Cliente escolher um plano de fibra válido para avançar."
-    decision.proposal_summary = (
-        f"Planos de fibra válidos em {city}: " + "; ".join(option_parts) + "."
-    )
-    _reset_catalog_handoff(decision)
-    return decision
-
-
-def _selected_fiber_plan(value: str | None, city: str) -> dict | None:
-    folded = _fold_sales_text(value)
-    match = re.search(r"\b(\d{2,4})\s*(?:mega|mb|mbps)\b", folded)
-    if not match:
         return None
-    speed = int(match.group(1))
-    return next(
-        (
-            plan
-            for plan in _eligible_plans_for_city(city)
-            if int(plan["download_mbps"]) == speed
-        ),
-        None,
-    )
+    return catalog_for(city, "RESIDENCIAL")
 
 
-def _selected_mobile_plan(value: str | None) -> dict | None:
-    folded = _fold_sales_text(value)
-    match = re.search(r"\b(5|7|10|15)\s*gb\b", folded)
-    if not match:
-        return None
-    data_gb = int(match.group(1))
-    return next(
-        (plan for plan in MOBILE_PLANS if int(plan["data_gb"]) == data_gb),
-        None,
-    )
+_PENALTY_CUES = ("multa", "cancel", "fidelidade", "quebrar", "rescis", "sair antes")
 
 
-def _show_selected_fiber_plan(
-    decision: AIDecision,
-    context: dict,
-    plan: dict,
-) -> AIDecision:
-    city = _city_from_sales_context(decision, context)
-    price = float(plan["price_fidelity"])
-    speed = int(plan["download_mbps"])
-    decision.reply_text = (
-        f"Legal! Em {city} temos o plano de fibra óptica de {speed} Mega "
-        f"por R$ {_format_brl(price)} mensais. Quer aproveitar e contratar esse plano agora?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="quero_contratar", label="Quero contratar"),
-        QuickReply(id="ver_outros_fibra", label="Ver outros planos"),
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.recommended_stage = "PROPOSTA"
-    decision.offer_plan_code = str(plan["code"])
-    decision.offer_price = price
-    decision.qualification.city = city
-    decision.qualification.desired_product = f"Fibra {speed} Mega"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.followup_needed = True
-    decision.summary = f"Cliente escolheu o plano de fibra de {speed} Mega em {city}."
-    decision.next_action = "Confirmar se o cliente quer contratar o plano escolhido."
-    decision.proposal_summary = (
-        f"Fibra {speed} Mega em {city} por R$ {_format_brl(price)} mensais."
-    )
-    return decision
+def _tools_needed_for_turn(tools: list[Any], context: dict) -> list[Any]:
+    """Só oferece ao modelo as ferramentas que o turno pode precisar.
 
-
-def _show_selected_mobile_plan(
-    decision: AIDecision,
-    plan: dict,
-) -> AIDecision:
-    data_gb = int(plan["data_gb"])
-    price = float(plan["price"])
-    apps = ", ".join(plan.get("unlimited_apps") or [])
-    details = f" com {apps} ilimitado" if apps else ""
-    decision.reply_text = (
-        f"Legal! O Sulmóvel {data_gb}GB custa R$ {_format_brl(price)} mensais, "
-        f"com {int(plan['minutes'])} minutos e {int(plan['sms'])} SMS{details}. "
-        "Quer contratar esse plano?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="quero_contratar", label="Quero contratar"),
-        QuickReply(id="ver_outros_movel", label="Ver outros planos"),
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.recommended_stage = "PROPOSTA"
-    decision.offer_plan_code = str(plan["code"])
-    decision.offer_price = price
-    decision.qualification.desired_product = f"Sulmóvel {data_gb}GB"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.followup_needed = True
-    decision.summary = f"Cliente escolheu o plano Sulmóvel {data_gb}GB."
-    decision.next_action = "Confirmar se o cliente quer contratar o plano móvel escolhido."
-    decision.proposal_summary = (
-        f"Sulmóvel {data_gb}GB por R$ {_format_brl(price)} mensais."
-    )
-    return decision
-
-
-def _looks_like_corporate_differential_question(value: str | None) -> bool:
-    folded = _fold_sales_text(value)
-    if not folded:
-        return False
-    cues = (
-        "qual a diferenca",
-        "qual diferenca",
-        "diferencial",
-        "vantagem",
-        "porque e mais caro",
-        "por que e mais caro",
-        "pq e mais caro",
-        "sla",
-        "8 horas",
-        "oito horas",
-        "suporte nivel 2",
-        "suporte n2",
-        "nivel 2",
-        "n2",
-        "banda compartilhada",
-        "compartilhada",
-        "link dedicado",
-        "ip fixo",
-        "sulnet monitora",
-        "monitora",
-        "noc",
-        "monitoramento",
-        "queda",
-        "oscilacao",
-        "empresa ficar parada",
-        "atendimento prioritario",
-        "atendimento empresarial",
-    )
-    return any(cue in folded for cue in cues)
-
-
-def _show_corporate_differentials(decision: AIDecision) -> AIDecision:
-    decision.reply_text = (
-        "O link corporativo é pensado para manter sua empresa operando: tem SLA de atendimento de até 8 horas, "
-        "suporte nível 2 e equipe especializada em empresas. A entrega da banda é diferenciada e não é compartilhada "
-        "da mesma forma que no residencial; além disso, os planos têm IP fixo e Sulnet Monitora, com o NOC acompanhando "
-        "quedas ou oscilações e atuando de forma proativa sempre que possível. Quer ver as opções corporativas?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="ver_planos_corp", label="Ver planos"),
-        QuickReply(id="outra_duvida_corp", label="Outra dúvida"),
-    ]
-    decision.intent = "INFORMATION"
-    decision.sales_state = "DISCOVERY"
-    decision.recommended_stage = "CONTATO_REALIZADO"
-    decision.qualification.customer_type = "EMPRESA"
-    decision.qualification.desired_product = "Internet corporativa"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.concession_level = 0
-    decision.free_months = 0
-    decision.followup_needed = True
-    decision.summary = (
-        "Cliente recebeu os diferenciais do link corporativo: SLA de atendimento até 8h, suporte N2, "
-        "equipe empresarial, banda diferenciada, IP fixo e monitoramento proativo do NOC."
-    )
-    decision.next_action = "Oferecer o catálogo corporativo após esclarecer os diferenciais."
-    decision.proposal_summary = (
-        "Diferenciais corporativos: SLA de atendimento até 8h; suporte N2; equipe especializada; "
-        "entrega de banda diferenciada; IP fixo; Sulnet Monitora/NOC."
-    )
-    return decision
-
-
-def _show_corporate_catalog(decision: AIDecision) -> AIDecision:
-    option_parts = [
-        f"{int(plan['download_mbps'])} Mega por R$ {_format_brl(float(plan['price']))}"
-        for plan in CORPORATE_PLANS
-    ]
-    decision.reply_text = (
-        "Perfeito. Para empresa temos planos corporativos de fibra óptica com atendimento prioritário: "
-        + ", ".join(option_parts[:-1])
-        + f" e {option_parts[-1]} mensais. Qual você quer conhecer?"
-    )
-    decision.quick_replies = [
-        QuickReply(
-            id=f"corp_{int(plan['download_mbps'])}",
-            label=f"Corp. {int(plan['download_mbps'])} Mega",
-        )
-        for plan in CORPORATE_PLANS
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.recommended_stage = "PROPOSTA"
-    decision.qualification.customer_type = "EMPRESA"
-    decision.qualification.desired_product = "Internet corporativa"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.offer_plan_code = None
-    decision.offer_price = None
-    decision.concession_level = 0
-    decision.free_months = 0
-    decision.followup_needed = True
-    decision.summary = "Cliente confirmou atendimento para empresa e recebeu o catálogo corporativo."
-    decision.next_action = "Cliente escolher entre Corp. 200, Corp. 250 e Corp. 650."
-    decision.proposal_summary = "Planos corporativos: " + "; ".join(option_parts) + "."
-    return decision
-
-
-def _selected_corporate_plan(value: str | None) -> dict | None:
-    folded = _fold_sales_text(value)
-    match = re.search(r"\b(200|250|650)\s*(?:mega|mb|mbps)?\b", folded)
-    if not match:
-        return None
-    speed = int(match.group(1))
-    return next(
-        (
-            plan
-            for plan in CORPORATE_PLANS
-            if int(plan["download_mbps"]) == speed
-        ),
-        None,
-    )
-
-
-def _show_selected_corporate_plan(
-    decision: AIDecision,
-    plan: dict,
-) -> AIDecision:
-    speed = int(plan["download_mbps"])
-    upload = int(plan["upload_mbps"])
-    price = float(plan["price"])
-    benefits = ", ".join(plan.get("benefits") or [])
-    decision.reply_text = (
-        f"O Corp. {speed} Mega custa R$ {_format_brl(price)} mensais, com {speed}/{upload} Mbps, "
-        f"{benefits} e atendimento prioritário. Quer contratar esse plano?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="quero_contratar", label="Quero contratar"),
-        QuickReply(id="ver_outros_corp", label="Ver outros planos"),
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.recommended_stage = "PROPOSTA"
-    decision.qualification.customer_type = "EMPRESA"
-    decision.qualification.desired_product = f"Corporativo {speed} Mega"
-    decision.offer_plan_code = str(plan["code"])
-    decision.offer_price = price
-    decision.concession_level = 0
-    decision.free_months = 0
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.followup_needed = True
-    decision.summary = f"Cliente escolheu o plano corporativo de {speed} Mega."
-    decision.next_action = "Confirmar se o cliente quer contratar o plano corporativo escolhido."
-    decision.proposal_summary = (
-        f"Corp. {speed} Mega por R$ {_format_brl(price)} mensais; {speed}/{upload} Mbps; {benefits}."
-    )
-    return decision
-
-
-def _apply_corporate_customer_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    customer_type = _customer_type_from_context(context)
-    if customer_type == "RESIDENCIAL":
-        decision.qualification.customer_type = "RESIDENCIAL"
-        return decision
-    if customer_type != "EMPRESA":
-        return decision
-
-    decision.qualification.customer_type = "EMPRESA"
-    latest_raw = str(context.get("latest_customer_message") or "")
-    latest = _fold_sales_text(latest_raw)
-    previous = _fold_sales_text(_last_outbound_text(context))
-
-    if _looks_like_corporate_differential_question(latest_raw):
-        return _show_corporate_differentials(decision)
-
-    if latest in {"ver planos", "ver planos corporativos", "planos corporativos"}:
-        return _show_corporate_catalog(decision)
-
-    if _customer_type_from_text(latest_raw) == "EMPRESA":
-        return _show_corporate_catalog(decision)
-
-    if _looks_like_catalog_request(latest_raw):
-        return _show_corporate_catalog(decision)
-
-    if latest == "ver outros planos" and (
-        "corp " in previous
-        or "corporativo" in previous
-        or "empresa temos planos" in previous
-    ):
-        return _show_corporate_catalog(decision)
-
-    selected = _selected_corporate_plan(latest_raw)
-    if selected and (
-        "corp" in latest
-        or "corporativo" in previous
-        or "empresa temos planos" in previous
-        or str((context.get("lead") or {}).get("confirmed_customer_type") or "").upper() == "EMPRESA"
-    ):
-        return _show_selected_corporate_plan(decision, selected)
-
-    offer_code = str(decision.offer_plan_code or "").upper()
-    residential_offer = offer_code.startswith("FTTH_")
-    residential_reply = any(
-        cue in _fold_sales_text(decision.reply_text)
-        for cue in (
-            "800 mega por r 119 90",
-            "650 mega por r 99 90",
-            "250 mega por r 89 90",
-            "500 mega por r 119 90",
-        )
-    )
-    if residential_offer or residential_reply:
-        return _show_corporate_catalog(decision)
-
-    concession_in_reply = any(
-        cue in _fold_sales_text(decision.reply_text)
-        for cue in (
-            "mes gratis",
-            "meses gratis",
-            "mensalidade gratis",
-            "mensalidades gratis",
-        )
-    )
-    if decision.free_months > 0 or decision.concession_level > 0 or concession_in_reply:
-        decision = _show_corporate_catalog(decision)
-        decision.reply_text = (
-            "Para os planos corporativos, não tenho desconto ou mensalidade grátis confirmados na base vigente. "
-            "Posso te apresentar as opções oficiais: 200 Mega por R$ 139,00, 250 Mega por R$ 169,00 "
-            "ou 650 Mega por R$ 199,90 mensais. Qual você quer conhecer?"
-        )
-        return decision
-
-    decision.concession_level = 0
-    decision.free_months = 0
-    return decision
-
-
-def _reset_entry_offer(decision: AIDecision) -> None:
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.offer_plan_code = None
-    decision.offer_price = None
-    decision.concession_level = 0
-    decision.free_months = 0
-    decision.followup_needed = True
-
-
-def _existing_customer_plan_change_requested(context: dict) -> bool:
-    latest_raw = str(context.get("latest_customer_message") or "")
-    latest = _fold_sales_text(latest_raw)
-    recent_inbound = [
-        _fold_sales_text(str(item.get("body") or ""))
-        for item in (context.get("history") or [])[-12:]
-        if str(item.get("direction") or "").upper() == "INBOUND"
-    ]
-    combined = " | ".join([*recent_inbound, latest])
-
-    change_cues = (
-        "aumentar",
-        "aumentar meu plano",
-        "aumentar o plano",
-        "mais velocidade",
-        "mais mega",
-        "subir meu plano",
-        "subir o plano",
-        "trocar meu plano",
-        "trocar o plano",
-        "mudar meu plano",
-        "mudar o plano",
-        "alterar meu plano",
-        "alterar o plano",
-        "upgrade",
-        "melhorar meu plano",
-    )
-    existing_service_cues = (
-        "ja tenho um plano",
-        "tenho um plano",
-        "ja tenho plano",
-        "meu plano",
-        "sou cliente sulnet",
-        "ja sou cliente sulnet",
-        "tenho internet da sulnet",
-        "ja tenho internet da sulnet",
-        "minha internet sulnet",
-        "minha conexao sulnet",
-    )
-
-    wants_change = any(cue in latest for cue in change_cues)
-    if not wants_change:
-        return False
-
-    confirmed_existing = _existing_customer_from_context(context) == "CLIENTE"
-    mentions_existing_service = any(cue in combined for cue in existing_service_cues)
-    return confirmed_existing or mentions_existing_service
-
-
-def _apply_existing_customer_plan_change_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    if not _existing_customer_plan_change_requested(context):
-        return decision
-
-    decision.reply_text = (
-        "Entendi! Como você já é cliente e quer aumentar ou trocar o seu plano atual, "
-        f"essa alteração é feita pelo nosso atendimento. Entre em contato pelo {PLAN_CHANGE_SERVICE_PHONE} "
-        "que a equipe consegue verificar as opções para sua conexão."
-    )
-    decision.quick_replies = []
-    decision.intent = "INFORMATION"
-    decision.sales_state = "WAITING_CUSTOMER"
-    decision.recommended_stage = "CONTATO_REALIZADO"
-    decision.qualification.existing_customer = "CLIENTE"
-    decision.handoff_target = "NONE"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.followup_needed = False
-    decision.offer_plan_code = None
-    decision.offer_price = None
-    decision.concession_level = 0
-    decision.free_months = 0
-    decision.summary = (
-        "Cliente atual pediu aumento/troca do plano existente e foi direcionado ao canal "
-        f"{PLAN_CHANGE_SERVICE_PHONE}."
-    )
-    decision.next_action = "Tratativa comercial encerrada; alteração de plano segue pelo atendimento."
-    decision.journey_state = "DISCOVERY"
-    decision.journey_pending_action = "Nenhuma ação comercial pendente."
-    decision.service_redirect = True
-    return decision
-
-
-def _show_existing_customer_question(decision: AIDecision) -> AIDecision:
-    decision.reply_text = "Antes de te mostrar as opções, você já é cliente Sulnet?"
-    decision.quick_replies = [
-        QuickReply(id="cliente_sulnet_sim", label="Sim"),
-        QuickReply(id="cliente_sulnet_nao", label="Não"),
-    ]
-    decision.intent = "QUALIFYING"
-    decision.sales_state = "DISCOVERY"
-    decision.recommended_stage = "CONTATO_REALIZADO"
-    decision.qualification.existing_customer = "NAO_INFORMADO"
-    decision.summary = "SulIA iniciou a qualificação perguntando se a pessoa já é cliente Sulnet."
-    decision.next_action = "Confirmar se já é cliente Sulnet."
-    _reset_entry_offer(decision)
-    return decision
-
-
-def _show_new_customer_product_question(decision: AIDecision) -> AIDecision:
-    decision.reply_text = (
-        "Perfeito! O que você quer conhecer: planos de internet ou Telefonia Móvel?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="prospeccao_internet", label="Internet"),
-        QuickReply(id="prospeccao_movel", label="Telefonia Móvel"),
-    ]
-    decision.intent = "QUALIFYING"
-    decision.sales_state = "DISCOVERY"
-    decision.recommended_stage = "CONTATO_REALIZADO"
-    decision.qualification.existing_customer = "NAO_CLIENTE"
-    decision.qualification.desired_product = None
-    decision.summary = "Pessoa confirmou que ainda não é cliente Sulnet."
-    decision.next_action = "Cliente escolher entre Internet e Telefonia Móvel."
-    _reset_entry_offer(decision)
-    return decision
-
-
-def _show_existing_customer_product_question(decision: AIDecision) -> AIDecision:
-    decision.reply_text = (
-        "Legal! Para uma nova contratação, você quer Telefonia Móvel ou uma nova conexão "
-        "de internet para outro endereço?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="cliente_movel", label="Telefonia Móvel"),
-        QuickReply(id="cliente_nova_conexao", label="Nova conexão"),
-    ]
-    decision.intent = "QUALIFYING"
-    decision.sales_state = "DISCOVERY"
-    decision.recommended_stage = "CONTATO_REALIZADO"
-    decision.qualification.existing_customer = "CLIENTE"
-    decision.qualification.desired_product = None
-    decision.summary = "Pessoa confirmou que já é cliente Sulnet e busca uma nova contratação."
-    decision.next_action = "Cliente escolher Telefonia Móvel ou nova conexão para outro endereço."
-    _reset_entry_offer(decision)
-    return decision
-
-
-def _show_internet_segment_question(
-    decision: AIDecision,
-    *,
-    existing_customer: bool,
-) -> AIDecision:
-    decision.reply_text = (
-        "Essa nova conexão para outro endereço é para sua casa ou empresa?"
-        if existing_customer
-        else "A internet é para sua casa ou empresa?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="internet_casa", label="Para casa"),
-        QuickReply(id="internet_empresa", label="Para empresa"),
-    ]
-    decision.intent = "QUALIFYING"
-    decision.sales_state = "DISCOVERY"
-    decision.recommended_stage = "CONTATO_REALIZADO"
-    decision.qualification.existing_customer = (
-        "CLIENTE" if existing_customer else "NAO_CLIENTE"
-    )
-    decision.qualification.desired_product = (
-        "Nova conexão de internet" if existing_customer else "Internet"
-    )
-    decision.summary = (
-        "Cliente Sulnet escolheu contratar uma nova conexão para outro endereço."
-        if existing_customer
-        else "Novo cliente escolheu conhecer planos de internet."
-    )
-    decision.next_action = "Confirmar se a conexão é residencial ou empresarial."
-    _reset_entry_offer(decision)
-    return decision
-
-
-def _apply_prospecting_entry_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    if decision.intent in {"DO_NOT_CONTACT", "HUMAN_REQUEST"} or decision.sales_state == "OPT_OUT":
-        return decision
-
-    latest_raw = str(context.get("latest_customer_message") or "")
-    latest = _fold_sales_text(latest_raw)
-    previous = _last_outbound_text(context)
-    current_confirmation = _existing_customer_from_text(
-        latest_raw,
-        previous_outbound=previous,
-    )
-    status = _existing_customer_from_context(context)
-
-    if not status:
-        return _show_existing_customer_question(decision)
-
-    decision.qualification.existing_customer = status
-
-    if current_confirmation == "CLIENTE":
-        return _show_existing_customer_product_question(decision)
-    if current_confirmation == "NAO_CLIENTE":
-        return _show_new_customer_product_question(decision)
-
-    mobile_choices = {
-        "movel",
-        "telefonia movel",
-        "plano movel",
-        "planos moveis",
-        "sulmovel",
-        "celular",
-    }
-    internet_choices = {
-        "internet",
-        "planos de internet",
-        "plano de internet",
-        "fibra",
-        "fibra optica",
-    }
-    new_connection_choices = {
-        "nova conexao",
-        "outra conexao",
-        "nova internet",
-        "novo endereco",
-        "outro endereco",
-        "internet para outro endereco",
-    }
-
-    if status == "CLIENTE":
-        if latest in mobile_choices:
-            result = _show_mobile_catalog_page(decision, page=1)
-            result.qualification.existing_customer = "CLIENTE"
-            return result
-        if latest in new_connection_choices or latest in internet_choices:
-            return _show_internet_segment_question(
-                decision,
-                existing_customer=True,
-            )
-        return decision
-
-    if latest in mobile_choices:
-        result = _show_mobile_catalog_page(decision, page=1)
-        result.qualification.existing_customer = "NAO_CLIENTE"
-        return result
-
-    if latest in internet_choices:
-        customer_type = _customer_type_from_context(context)
-        if customer_type == "EMPRESA":
-            result = _show_corporate_catalog(decision)
-            result.qualification.existing_customer = "NAO_CLIENTE"
-            return result
-        if customer_type == "RESIDENCIAL":
-            result = _show_fiber_catalog(decision, context)
-            result.qualification.existing_customer = "NAO_CLIENTE"
-            return result
-        return _show_internet_segment_question(
-            decision,
-            existing_customer=False,
-        )
-
-    return decision
-
-
-def _apply_catalog_navigation_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    latest_raw = str(context.get("latest_customer_message") or "")
-    latest = _fold_sales_text(latest_raw)
-    previous = _fold_sales_text(_last_outbound_text(context))
-
-    if _looks_like_catalog_request(latest_raw):
-        return _show_catalog_root(decision)
-
-    if latest in {
-        "fibra",
-        "fibra optica",
-        "planos de fibra",
-        "internet fibra",
-        "internet de fibra",
-    }:
-        return _show_fiber_catalog(decision, context)
-
-    if latest in {
-        "movel",
-        "sulmovel",
-        "planos moveis",
-        "plano movel",
-        "celular",
-    }:
-        return _show_mobile_catalog_page(decision, page=1)
-
-    if latest in {"mais planos", "ver mais", "mais opcoes"}:
-        return _show_mobile_catalog_page(decision, page=2)
-
-    if latest == "voltar" and "sulmovel" in previous:
-        return _show_mobile_catalog_page(decision, page=1)
-
-    if latest == "ver outros planos":
-        if "sulmovel" in previous:
-            return _show_mobile_catalog_page(decision, page=1)
-        if "fibra optica" in previous:
-            return _show_fiber_catalog(decision, context)
-
-    if (
-        "qual e a sua cidade" in previous
-        and "planos de fibra" in previous
-        and _city_from_sales_context(decision, context)
-    ):
-        return _show_fiber_catalog(decision, context)
-
-    mobile_plan = _selected_mobile_plan(latest_raw)
-    if mobile_plan:
-        mobile_gb = int(mobile_plan["data_gb"])
-        mobile_compact = latest in {f"{mobile_gb}gb", f"{mobile_gb} gb"}
-        mobile_button_label = (
-            latest.startswith(f"{mobile_gb}gb r ")
-            or latest.startswith(f"{mobile_gb} gb r ")
-        )
-        if "sulmovel" in previous or mobile_compact or mobile_button_label:
-            return _show_selected_mobile_plan(decision, mobile_plan)
-
-    city = _city_from_sales_context(decision, context)
-    if city:
-        fiber_plan = _selected_fiber_plan(latest_raw, city)
-        if fiber_plan and (
-            "planos de fibra" in previous
-            or "fibra optica" in previous
-            or latest in {
-                f"{int(fiber_plan['download_mbps'])} mega",
-                f"{int(fiber_plan['download_mbps'])} mb",
-                f"{int(fiber_plan['download_mbps'])} mbps",
-            }
-        ):
-            return _show_selected_fiber_plan(decision, context, fiber_plan)
-
-    return decision
-
-
-def _apply_unavailable_plan_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    if _customer_type_from_context(context) == "EMPRESA":
-        return decision
-
-    requested_speed = _requested_plan_speed(
-        str(context.get("latest_customer_message") or "")
-    )
-    if requested_speed is None:
-        return decision
-
-    city = _city_from_sales_context(decision, context)
-    if not city:
-        decision.reply_text = (
-            f"A disponibilidade do plano de {requested_speed} Mega varia por cidade. "
-            "Qual é a sua cidade? Aí te passo as opções corretas e seguimos."
-        )
-        decision.quick_replies = []
-        decision.intent = "QUALIFYING"
-        decision.sales_state = "DISCOVERY"
-        decision.handoff_recommended = False
-        decision.handoff_reason = ""
-        decision.customer_commitment = False
-        decision.offer_plan_code = None
-        decision.offer_price = None
-        decision.followup_needed = True
-        decision.next_action = "Confirmar a cidade para apresentar somente planos válidos."
-        return decision
-
-    eligible = _eligible_plans_for_city(city)
-    if not eligible:
-        return decision
-
-    if any(
-        int(plan["download_mbps"]) == requested_speed
-        for plan in eligible
-    ):
-        return decision
-
-    option_parts = [
-        f"{plan['download_mbps']} Mega por R$ {_format_brl(float(plan['price_fidelity']))}"
-        for plan in eligible
-    ]
-    if len(option_parts) == 1:
-        options_text = option_parts[0]
-    else:
-        options_text = ", ".join(option_parts[:-1]) + f" ou {option_parts[-1]}"
-
-    decision.reply_text = (
-        f"O plano de {requested_speed} Mega não está disponível em {city}. "
-        f"Hoje temos {options_text} mensais. Qual opção você prefere?"
-    )
-    decision.quick_replies = [
-        QuickReply(
-            id=f"plano_{int(plan['download_mbps'])}",
-            label=f"{int(plan['download_mbps'])} Mega",
-        )
-        for plan in eligible[:3]
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.offer_plan_code = None
-    decision.offer_price = None
-    decision.concession_level = 0
-    decision.free_months = 0
-    decision.followup_needed = True
-    decision.next_action = "Cliente escolher uma das opções comerciais válidas para a cidade."
-    decision.proposal_summary = (
-        f"Alternativas válidas em {city}: " + "; ".join(option_parts) + "."
-    )
-    return decision
-
-
-def _apply_router_information_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    if _customer_type_from_context(context) == "EMPRESA":
-        return decision
-
+    Cada chamada de ferramenta é uma ida e volta inteira ao modelo. No
+    simulador, o modelo chamava calcular_multa e buscar_manual até em
+    "Quero avançar", somando ~10 s por chamada.
+    """
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
-    router_cues = (
-        "roteador",
-        "roteadores",
-        "wifi",
-        "wi fi",
-        "segundo roteador",
-        "outro roteador",
-        "mais um roteador",
-    )
-    if not any(cue in latest for cue in router_cues):
-        return decision
-
-    explicit_speed = re.search(r"\b(\d{2,4})\s*(?:mega|mb|mbps)\b", latest)
-    if explicit_speed and int(explicit_speed.group(1)) not in {650, 800}:
-        return decision
-
-    plan = _plan_from_sales_context(decision, context)
-    if not plan:
-        speed_match = re.search(r"\b(650|800)\s*mega\b", latest)
-        if speed_match:
-            speed = int(speed_match.group(1))
-            plan = next(
-                (item for item in FTTH_PLANS if int(item["download_mbps"]) == speed),
-                None,
-            )
-    if not plan:
-        return decision
-
-    speed = int(plan["download_mbps"])
-    if speed not in {650, 800}:
-        return decision
-
-    included = int(plan.get("included_router_count") or 1)
-    additional_price = float(plan.get("additional_router_monthly_price") or 29.90)
-    plan_price = float(plan["price_fidelity"])
-    asks_fiber = any(
-        cue in latest
-        for cue in (
-            "e fibra",
-            "é fibra",
-            "internet e fibra",
-            "internet é fibra",
-            "fibra optica",
-            "fibra óptica",
-        )
-    )
-
-    if asks_fiber:
-        opening = (
-            f"Sim, o plano de {speed} Mega é de fibra óptica e inclui "
-            f"{included} roteador em comodato."
-        )
-    else:
-        opening = (
-            f"O plano de {speed} Mega inclui {included} roteador em comodato."
-        )
-
-    decision.reply_text = (
-        f"{opening} Se precisar de outro, cada roteador adicional é locado por "
-        f"R$ {_format_brl(additional_price)} por mês. "
-        f"Quer seguir com o plano de {speed} Mega por R$ {_format_brl(plan_price)} mensais?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="quero_contratar", label="Quero contratar"),
-        QuickReply(id="tenho_duvida", label="Tenho outra dúvida"),
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.recommended_stage = "PROPOSTA"
-    decision.offer_plan_code = str(plan["code"])
-    decision.offer_price = plan_price
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.customer_commitment = False
-    decision.followup_needed = True
-    decision.objection = "NONE"
-    decision.unanswered_question = None
-    decision.summary = (
-        f"Cliente perguntou sobre roteadores do plano de {speed} Mega; "
-        f"informado {included} incluso e adicional por R$ {_format_brl(additional_price)}/mês."
-    )
-    decision.next_action = "Retomar o fechamento do plano após esclarecer os roteadores."
-    decision.proposal_summary = (
-        f"Fibra {speed} Mega por R$ {_format_brl(plan_price)} mensais; "
-        f"{included} roteador incluso; adicional por R$ {_format_brl(additional_price)}/mês."
-    )
-    return decision
-
-
-def _apply_secondary_decline_reengagement_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    if _customer_type_from_context(context) == "EMPRESA":
-        return decision
-
-    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
-    if latest not in _SECONDARY_DECLINES:
-        return decision
-
-    previous_outbound = None
-    for row in reversed(context.get("history") or []):
-        if str(row.get("direction") or "").upper() == "OUTBOUND":
-            previous_outbound = str(row.get("body") or "")
-            break
-    if not previous_outbound:
-        return decision
-
-    previous_folded = _fold_sales_text(previous_outbound)
-    # Se a pergunta anterior era diretamente sobre contratar/fechar, a recusa
-    # pode ser da oferta principal e não deve ser reinterpretada.
-    if "contratar" in previous_folded or "fechar" in previous_folded:
-        return decision
-
-    is_auxiliary = any(cue in previous_folded for cue in _AUXILIARY_QUESTION_CUES)
-    if not is_auxiliary:
-        return decision
-
-    plan = _plan_from_sales_context(decision, context)
-    if not plan:
-        return decision
-
-    price = float(plan["price_fidelity"])
-    price_text = f"{price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    decision.reply_text = (
-        "Sem problema! Podemos dar andamento à contratação do plano de fibra óptica de "
-        f"{plan['download_mbps']} Mega por R$ {price_text} mensais?"
-    )
-    decision.quick_replies = [
-        QuickReply(id="quero_contratar", label="Quero contratar"),
-        QuickReply(id="outra_duvida", label="Tenho outra dúvida"),
-    ]
-    decision.intent = "INTEREST"
-    decision.sales_state = "OFFERING"
-    decision.objection = "NONE"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.followup_needed = True
-    decision.next_action = "Retomar o fechamento do plano já apresentado."
-    return decision
-
-
-_OFFER_REJECTION_CUES = (
-    "nao quero nada de internet",
-    "nao quero internet",
-    "nao tenho interesse em internet",
-    "nao quero esse plano",
-    "nao quero o plano",
-    "nao quero contratar",
-    "nao tenho interesse",
-    "nao quero nada",
-)
-
-_EXPLICIT_CONTACT_STOP_CUES = (
-    "nao quero mais mensagens",
-    "nao quero mais contato",
-    "nao me contate",
-    "nao entre em contato",
-    "nao me chame",
-    "pare de me chamar",
-    "pare de mandar",
-    "me remova",
-    "remover meu numero",
-    "sair da lista",
-    "descadastrar",
-)
-
-
-def _is_company_context(context: dict) -> bool:
-    if _customer_type_from_context(context) == "EMPRESA":
-        return True
-    company_terms = (
-        "minha empresa",
-        "nossa empresa",
-        "para empresa",
-        "empresa",
-        "cnpj",
-        "meu negocio",
-        "meu comercio",
-        "minha loja",
-        "meu escritorio",
-    )
-    for row in reversed(context.get("history") or []):
-        if str(row.get("direction") or "").upper() != "INBOUND":
-            continue
-        body = _fold_sales_text(str(row.get("body") or ""))
-        if any(term in body for term in company_terms):
-            return True
-    return False
-
-
-def _is_residential_context(context: dict) -> bool:
-    if _customer_type_from_context(context) == "RESIDENCIAL":
-        return True
-    residential_terms = (
-        "minha casa",
-        "para casa",
-        "em casa",
-        "residencial",
-        "minha residencia",
-        "meu apartamento",
-    )
-    for row in reversed(context.get("history") or []):
-        if str(row.get("direction") or "").upper() != "INBOUND":
-            continue
-        body = _fold_sales_text(str(row.get("body") or ""))
-        if any(term in body for term in residential_terms):
-            return True
-    return False
-
-
-def _apply_offer_rejection_diagnostic_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
-    if not latest:
-        return decision
-    if any(cue in latest for cue in _EXPLICIT_CONTACT_STOP_CUES):
-        return decision
-    if not any(cue in latest for cue in _OFFER_REJECTION_CUES):
-        return decision
-
-    # Não repetir esse mesmo gatilho indefinidamente.
-    for row in context.get("history") or []:
-        if str(row.get("direction") or "").upper() != "OUTBOUND":
-            continue
-        body = _fold_sales_text(str(row.get("body") or ""))
-        if (
-            "possui conexao de internet na sua casa" in body
-            or "sua empresa ja possui conexao de internet" in body
-        ):
-            return decision
-
-    if _is_company_context(context):
-        question = "Entendi. Hoje sua empresa já possui conexão de internet?"
-    elif _is_residential_context(context):
-        question = "Entendi. Hoje você já possui conexão de internet na sua casa?"
-    else:
-        question = "Entendi. Hoje você já possui conexão de internet?"
-
-    decision.reply_text = question
-    decision.quick_replies = [
-        QuickReply(id="possui_internet_sim", label="Sim"),
-        QuickReply(id="possui_internet_nao", label="Não"),
-    ]
-    decision.intent = "QUALIFYING"
-    decision.sales_state = "DISCOVERY"
-    decision.objection = "NO_INTEREST"
-    decision.handoff_recommended = False
-    decision.handoff_reason = ""
-    decision.followup_needed = True
-    decision.next_action = (
-        "Descobrir a situação atual da conexão antes de retomar uma oferta."
-    )
-    return decision
-
-
-def _recent_outbound_messages_for_repetition(
-    context: dict,
-    *,
-    limit: int = 6,
-) -> list[str]:
-    rows = [
-        str(item.get("body") or "").strip()
-        for item in context.get("history", [])
-        if str(item.get("direction") or "").upper() == "OUTBOUND"
-        and str(item.get("body") or "").strip()
-    ]
-    return rows[-limit:]
-
-
-def _sdr_reply_repeats_recent_outbound(decision: AIDecision, context: dict) -> bool:
-    candidate = _fold_sales_text(decision.reply_text)
-    if not candidate:
-        return False
-    candidate_tokens = set(candidate.split())
-    for previous in _recent_outbound_messages_for_repetition(context):
-        other = _fold_sales_text(previous)
-        if not other:
-            continue
-        if candidate == other:
-            return True
-        if SequenceMatcher(None, candidate, other).ratio() >= 0.80:
-            return True
-        other_tokens = set(other.split())
-        if candidate_tokens and other_tokens:
-            containment = len(candidate_tokens & other_tokens) / min(
-                len(candidate_tokens),
-                len(other_tokens),
-            )
-            if containment >= 0.76:
-                return True
-    return False
-
-
-_JOURNEY_PENDING_ACTIONS = {
-    "IDENTIFY_CUSTOMER": "Confirmar se a pessoa já é cliente Sulnet.",
-    "CHOOSE_PRODUCT": "Confirmar se deseja Internet, Telefonia Móvel ou nova conexão, conforme o perfil.",
-    "CHOOSE_SEGMENT": "Confirmar se a conexão de internet é para casa ou empresa.",
-    "CONFIRM_CITY": "Confirmar a cidade para validar os planos de internet disponíveis.",
-    "SELECT_OFFER": "Apresentar opções válidas e obter a escolha de um plano.",
-    "HANDLE_OBJECTION": "Resolver a objeção atual com um ângulo novo e avançar a decisão.",
-    "CONFIRM_PURCHASE": "Obter aceite explícito para contratar a oferta escolhida.",
-    "CLOSING": "Iniciar o Vendedor IA de Fechamento com todo o contexto coletado.",
-    "HUMAN_HANDOFF": "Transferir para atendimento humano porque o cliente pediu uma pessoa.",
-    "OPT_OUT": "Encerrar contato e cancelar follow-ups.",
-    "DISCOVERY": "Descobrir a próxima informação comercial necessária sem repetir perguntas.",
-}
-
-
-def _journey_memory_from_context(context: dict) -> dict:
-    value = (context.get("lead") or {}).get("journey")
-    return dict(value) if isinstance(value, dict) else {}
-
-
-def _explicit_human_request(context: dict) -> bool:
-    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
-    cues = (
-        "quero falar com atendente",
-        "quero falar com um atendente",
-        "falar com atendente",
-        "falar com uma pessoa",
-        "falar com pessoa",
-        "quero falar com uma pessoa",
-        "quero falar com humano",
-        "atendimento humano",
-        "falar com vendedor",
-        "quero um vendedor",
-        "quero falar com vendedor",
-    )
-    return any(cue in latest for cue in cues)
-
-
-def _explicit_purchase_commitment(context: dict) -> bool:
-    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
-    if any(
-        cue in latest
-        for cue in (
-            "nao quero contratar",
-            "nao quero assinar",
-            "nao vou contratar",
-            "nao vou assinar",
-            "nao tenho interesse em assinar",
-            "sem interesse em contratar",
-        )
-    ):
-        return False
-
-    cues = (
-        "quero contratar",
-        "quero assinar",
-        "tenho interesse em assinar",
-        "interesse em assinar",
-        "gostaria de assinar",
-        "quero aderir",
-        "quero fechar",
-        "pode fechar",
-        "pode fazer",
-        "vamos fechar",
-        "vamos fazer",
-        "vamos assinar",
-        "quero esse plano",
-        "quero esse pacote",
-        "vou contratar",
-        "vou assinar",
-        "pode contratar",
-        "pode assinar",
-        "com essa condicao eu fecho",
-        "fechado",
-        "pode dar andamento",
-        "vamos dar andamento",
-        "pode seguir",
-        "pode prosseguir",
-        "eu aceito",
-        "aceito",
-    )
-    if any(cue in latest for cue in cues):
-        return True
-
-    if re.search(
-        r"\b(?:quero|gostaria|pretendo|vou|tenho interesse em)\s+"
-        r"(?:contratar|assinar|fechar|aderir)\b",
-        latest,
-    ):
-        return True
-
-    previous = _fold_sales_text(_last_outbound_text(context))
-    purchase_question = any(
-        cue in previous
-        for cue in (
-            "quer contratar",
-            "contratar esse plano",
-            "quer seguir com o plano",
-            "quer aproveitar e contratar",
-            "contratar agora",
-        )
-    )
-    return purchase_question and latest in {
-        "sim",
-        "sim quero",
-        "quero",
-        "pode",
-        "vamos",
-        "confirmo",
-    }
-
-
-def _journey_product_kind(decision: AIDecision, context: dict) -> str:
-    facts = context.get("confirmed_facts") or {}
-    fact_kind = str(facts.get("product_kind") or "").upper()
-    if fact_kind in {"INTERNET", "MOBILE"}:
-        return fact_kind
-
-    latest_kind = _product_kind_from_text(
-        str(context.get("latest_customer_message") or ""),
-        previous_outbound=_last_outbound_text(context),
-    )
-    if latest_kind:
-        return latest_kind
-
-    memory = _journey_memory_from_context(context)
-    combined = _fold_sales_text(
-        " ".join(
-            [
-                str(decision.qualification.desired_product or ""),
-                str(decision.offer_plan_code or ""),
-                str(memory.get("desired_product") or ""),
-                str(memory.get("offer_plan_code") or ""),
-            ]
-        )
-    )
-    if any(token in combined for token in ("sulmovel", "telefonia movel", "mobile", "movel")):
-        return "MOBILE"
-    if any(token in combined for token in ("internet", "fibra", "ftth", "corp", "corporativo", "conexao")):
-        return "INTERNET"
-    return ""
-
-
-def _derive_journey_state(decision: AIDecision, context: dict) -> str:
-    if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
-        return "OPT_OUT"
-    if _explicit_human_request(context):
-        return "HUMAN_HANDOFF"
-    if _explicit_purchase_commitment(context):
-        return "CLOSING"
-
-    existing_customer = _existing_customer_from_context(context)
-    if existing_customer not in {"CLIENTE", "NAO_CLIENTE"}:
-        return "IDENTIFY_CUSTOMER"
-
-    product_kind = _journey_product_kind(decision, context)
-    if not product_kind:
-        return "CHOOSE_PRODUCT"
-
-    if product_kind == "MOBILE":
-        if decision.offer_plan_code:
-            return "HANDLE_OBJECTION" if decision.objection != "NONE" else "CONFIRM_PURCHASE"
-        return "SELECT_OFFER"
-
-    customer_type = _customer_type_from_context(context)
-    if customer_type not in {"EMPRESA", "RESIDENCIAL"}:
-        return "CHOOSE_SEGMENT"
-
-    city = _city_from_sales_context(decision, context)
-    if customer_type == "RESIDENCIAL" and not city:
-        return "CONFIRM_CITY"
-
-    if not decision.offer_plan_code:
-        return "SELECT_OFFER"
-    if decision.objection != "NONE":
-        return "HANDLE_OBJECTION"
-    return "CONFIRM_PURCHASE"
-
-
-def _sdr_exposes_internal_handoff(text: str | None) -> bool:
-    folded = _fold_sales_text(text)
-    if not folded:
-        return False
-    internal_cues = (
-        "vendedor ia",
-        "vendedor de fechamento",
-        "ia de fechamento",
-        "o vendedor vai continuar",
-        "o vendedor dara continuidade",
-        "o vendedor seguira",
-        "encaminhar seu interesse",
-    )
-    return any(cue in folded for cue in internal_cues)
-
-
-def _journey_integrity_issues(
-    decision: AIDecision,
-    context: dict,
-) -> list[str]:
-    issues: list[str] = []
-    state = str(decision.journey_state or "").upper()
-    existing_customer = _existing_customer_from_context(context)
-    product_kind = _journey_product_kind(decision, context)
-    customer_type = _customer_type_from_context(context)
-    city = _city_from_sales_context(decision, context)
-
-    if existing_customer in {"CLIENTE", "NAO_CLIENTE"}:
-        if state == "IDENTIFY_CUSTOMER":
-            issues.append("STATE_REGRESSION_EXISTING_CUSTOMER")
-        if _asks_existing_customer(decision.reply_text):
-            issues.append("IGNORED_CONFIRMED_EXISTING_CUSTOMER")
-
-    if product_kind in {"INTERNET", "MOBILE"} and state == "CHOOSE_PRODUCT":
-        issues.append("STATE_REGRESSION_PRODUCT")
-
-    if (
-        product_kind == "INTERNET"
-        and customer_type in {"EMPRESA", "RESIDENCIAL"}
-        and state == "CHOOSE_SEGMENT"
-    ):
-        issues.append("STATE_REGRESSION_CUSTOMER_TYPE")
-
-    if (
-        product_kind == "INTERNET"
-        and customer_type == "RESIDENCIAL"
-        and city
-        and state == "CONFIRM_CITY"
-    ):
-        issues.append("STATE_REGRESSION_CITY")
-
-    if _sdr_reply_repeats_recent_outbound(decision, context):
-        issues.append("REPEATED_QUESTION")
-
-    if (
-        _sdr_exposes_internal_handoff(decision.reply_text)
-        and not (
-            decision.handoff_target == "CLOSER_AI"
-            and decision.customer_commitment
-            and decision.journey_state == "CLOSING"
-        )
-    ):
-        issues.append("SDR_EXPOSED_INTERNAL_HANDOFF")
-
-    return list(dict.fromkeys(issues))
-
-
-def _apply_stagnation_strategy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    state = decision.journey_state
-    existing = _existing_customer_from_context(context)
-    customer_type = _customer_type_from_context(context)
-    previous_outbound = _recent_outbound_messages_for_repetition(context)
-
-    if state == "IDENTIFY_CUSTOMER":
-        decision = _show_existing_customer_question(decision)
-        if previous_outbound:
-            decision.reply_text = "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"
-        return decision
-
-    if state == "CHOOSE_PRODUCT":
-        if existing == "CLIENTE":
-            decision = _show_existing_customer_product_question(decision)
-            if previous_outbound:
-                decision.reply_text = "Para sua próxima contratação, prefere Telefonia Móvel ou internet em outro endereço?"
-            return decision
-        if existing == "NAO_CLIENTE":
-            decision = _show_new_customer_product_question(decision)
-            if previous_outbound:
-                decision.reply_text = "Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?"
-            return decision
-
-    if state == "CHOOSE_SEGMENT":
-        decision = _show_internet_segment_question(
-            decision,
-            existing_customer=existing == "CLIENTE",
-        )
-        if previous_outbound:
-            decision.reply_text = (
-                "E essa nova conexão será residencial ou empresarial?"
-                if existing == "CLIENTE"
-                else "Essa conexão será residencial ou empresarial?"
-            )
-        return decision
-
-    if state == "CONFIRM_CITY":
-        decision.reply_text = (
-            "Em qual cidade será instalada a conexão?"
-            if previous_outbound
-            else "Para eu te mostrar somente os planos disponíveis, qual é a sua cidade?"
-        )
-        decision.quick_replies = []
-        decision.intent = "QUALIFYING"
-        decision.sales_state = "DISCOVERY"
-        decision.handoff_recommended = False
-        decision.handoff_reason = ""
-        decision.next_action = _JOURNEY_PENDING_ACTIONS[state]
-        return decision
-
-    if state == "SELECT_OFFER":
-        if customer_type == "EMPRESA":
-            decision = _show_corporate_catalog(decision)
-            if previous_outbound:
-                decision.reply_text = "Qual das opções corporativas você prefere avaliar agora?"
-            return decision
-        if _journey_product_kind(decision, context) == "MOBILE":
-            decision = _show_mobile_catalog_page(decision, page=1)
-            if previous_outbound:
-                decision.reply_text = "Qual plano de Telefonia Móvel você quer avaliar agora?"
-            return decision
-        city = _city_from_sales_context(decision, context)
-        if city:
-            decision = _show_fiber_catalog(decision, context)
-            if previous_outbound:
-                decision.reply_text = f"Entre as opções disponíveis em {city}, qual velocidade você quer avaliar?"
-            return decision
-
-    if state == "HANDLE_OBJECTION":
-        if decision.objection == "PRICE":
-            decision.reply_text = "Para eu comparar de forma justa, quanto você paga hoje pela sua conexão?"
-            decision.quick_replies = []
-        else:
-            decision.reply_text = "Para eu te ajudar por outro ângulo, o que mais pesa na sua decisão hoje?"
-            decision.quick_replies = [
-                QuickReply(id="prioridade_preco", label="Preço"),
-                QuickReply(id="prioridade_qualidade", label="Qualidade"),
-                QuickReply(id="prioridade_momento", label="Momento"),
-            ]
-        decision.intent = "QUALIFYING"
-        decision.sales_state = "NEGOTIATING"
-        decision.handoff_recommended = False
-        decision.handoff_reason = ""
-        decision.next_action = _JOURNEY_PENDING_ACTIONS[state]
-        return decision
-
-    if state == "CONFIRM_PURCHASE":
-        decision.reply_text = "Para seguirmos daqui, você prefere contratar agora ou ver outra opção?"
-        decision.quick_replies = [
-            QuickReply(id="contratar_agora", label="Contratar agora"),
-            QuickReply(id="ver_outra_opcao", label="Ver outra opção"),
-        ]
-        decision.intent = "INTEREST"
-        decision.sales_state = "OFFERING"
-        decision.handoff_recommended = False
-        decision.handoff_reason = ""
-        decision.next_action = _JOURNEY_PENDING_ACTIONS[state]
-        return decision
-
-    return decision
-
-
-def _apply_journey_orchestration_policy(
-    decision: AIDecision,
-    context: dict,
-) -> AIDecision:
-    state = _derive_journey_state(decision, context)
-    decision.journey_state = state
-    decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS.get(
-        state,
-        _JOURNEY_PENDING_ACTIONS["DISCOVERY"],
-    )
-
-    if state == "OPT_OUT":
-        decision.handoff_target = "NONE"
-        decision.handoff_recommended = False
-        decision.followup_needed = False
-    elif state == "HUMAN_HANDOFF":
-        decision.handoff_target = "HUMAN"
-        decision.handoff_recommended = True
-        decision.intent = "HUMAN_REQUEST"
-        decision.sales_state = "READY_FOR_HUMAN_SALES"
-        decision.handoff_reason = (
-            decision.handoff_reason
-            or "Cliente pediu explicitamente atendimento humano."
-        )
-        decision.followup_needed = False
-    elif state == "CLOSING":
-        decision.handoff_target = "CLOSER_AI"
-        decision.handoff_recommended = False
-        decision.handoff_reason = ""
-        decision.customer_commitment = True
-        decision.sales_state = "PURCHASE_INTENT"
-        if decision.intent in {"HUMAN_REQUEST", "UNKNOWN"}:
-            decision.intent = "HIGH_INTENT"
-        decision.next_action = _JOURNEY_PENDING_ACTIONS["CLOSING"]
-        decision.followup_needed = False
-    else:
-        decision.handoff_target = "NONE"
-        decision.handoff_recommended = False
-        decision.handoff_reason = ""
-        if decision.intent == "HUMAN_REQUEST":
-            decision.intent = (
-                "QUALIFYING"
-                if state in {"IDENTIFY_CUSTOMER", "CHOOSE_PRODUCT", "CHOOSE_SEGMENT", "CONFIRM_CITY"}
-                else "INTEREST"
-            )
-        decision.customer_commitment = False
-        if decision.sales_state in {"READY_FOR_HUMAN_SALES", "PURCHASE_INTENT"}:
-            decision.sales_state = "NEGOTIATING" if decision.objection != "NONE" else "OFFERING"
-
-    mandatory_gate_states = {
-        "IDENTIFY_CUSTOMER",
-        "CHOOSE_PRODUCT",
-        "CHOOSE_SEGMENT",
-        "CONFIRM_CITY",
-    }
-    if state in mandatory_gate_states:
-        decision = _apply_stagnation_strategy(decision, context)
-        decision.journey_state = state
-        decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS[state]
-        decision.handoff_target = "NONE"
-        decision.handoff_recommended = False
-        decision.handoff_reason = ""
-
-    previous = _journey_memory_from_context(context)
-    previous_state = str(previous.get("state") or "")
-    previous_pending = str(previous.get("pending_action") or "")
-    previous_count = int(previous.get("stagnation_count") or 0)
-    same_position = (
-        previous_state == state
-        and previous_pending == decision.journey_pending_action
-        and state not in {"CLOSING", "HUMAN_HANDOFF", "OPT_OUT"}
-    )
-    decision.stagnation_count = min(20, previous_count + 1) if same_position else 0
-
-    repetitive = _sdr_reply_repeats_recent_outbound(decision, context)
-    if repetitive or decision.stagnation_count >= 3:
-        decision = _apply_stagnation_strategy(decision, context)
-        decision.journey_state = state
-        decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS.get(
-            state,
-            _JOURNEY_PENDING_ACTIONS["DISCOVERY"],
-        )
-        decision.stagnation_count = 0 if repetitive else decision.stagnation_count
-
-    if not decision.next_action.strip():
-        decision.next_action = decision.journey_pending_action
-
-    experiment = context.get("learning_experiment") or {}
-    instruction = " ".join(
-        str(experiment.get(key) or "")
-        for key in ("baseline_instruction", "experiment_instruction")
-    ).casefold()
-    if (
-        decision.journey_state == "CHOOSE_SEGMENT"
-        and "casa ou empresa" in instruction
-    ):
-        decision.reply_text = "A internet é para sua casa ou empresa?"
-        decision.quick_replies = [
-            QuickReply(id="internet_casa", label="Para casa"),
-            QuickReply(id="internet_empresa", label="Para empresa"),
-        ]
-
-    return decision
+    needed: set[str] = set()
+    if not context.get("catalogo_oficial_da_cidade"):
+        needed.add("consultar_catalogo")
+    if any(cue in latest for cue in _PENALTY_CUES):
+        needed.add("calcular_multa")
+    if _customer_asked_direct_question(context):
+        needed.add("buscar_manual")
+    return [tool for tool in tools if getattr(tool, "name", "") in needed]
 
 
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
+    official_catalog = _official_catalog_for_context(context)
+    if official_catalog:
+        context = {**context, "catalogo_oficial_da_cidade": official_catalog}
 
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     instructions = (agent.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
     effective_mode = _effective_execution_mode(agent)
@@ -2997,8 +1000,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
         "Quando o cliente confirmar que é para empresa/PJ, preserve esse segmento como memória confirmada e use apenas o catálogo corporativo: "
         "Corp. 200 Mega R$ 139,00; Corp. 250 Mega R$ 169,00; Corp. 650 Mega R$ 199,90, todos com IP Fixo, Sulnet Monitora, Wi-Fi 6, ativação gratuita e atendimento prioritário; "
-        "250 inclui também Sulnet Play. O diferencial corporativo inclui SLA de atendimento de até 8 horas, suporte nível 2, equipe especializada em empresas, "
-        "entrega de banda diferenciada em relação ao residencial e monitoramento proativo do NOC. Não chame de link dedicado e não trate 8 horas como prazo de resolução. "
+        "250 inclui também Sulnet Play. O diferencial corporativo inclui compromisso de reparo de até 8 horas, suporte nível 2, equipe especializada em empresas, "
+        "entrega de banda diferenciada em relação ao residencial e monitoramento proativo do NOC. Não chame de link dedicado. "
         "Não aplique promoções residenciais ao corporativo sem regra aprovada. "
         "Quando o cliente pedir todos os planos, catálogo, preços ou velocidades de forma ampla, nunca diga que não possui a lista e nunca estime valores: "
         "se o segmento confirmado for Empresa, liste os corporativos; caso contrário, ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
@@ -3009,6 +1012,31 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         + json.dumps(context, ensure_ascii=False, default=str)
     )
 
+    tools: list[Any] = []
+    if settings.ai_sdr_tools_enabled:
+        from app.services.ai_sdr_tools import build_sdr_tools
+
+        tools = _tools_needed_for_turn(build_sdr_tools(agent), context)
+        prompt = (
+            "MULTA: para qualquer pergunta de multa ou cancelamento antecipado, chame "
+            "calcular_multa e responda com o valor em reais; nunca mostre fórmula, siglas "
+            "como VTB ou MR, nem diga que não consegue calcular. "
+            "OBJEÇÃO DE QUALIDADE OU ESTABILIDADE: não prometa ausência de quedas, mas "
+            "também não desvenda. Use os diferenciais aprovados do manual (fibra óptica até "
+            "a casa, roteador Wi-Fi 6 em comodato, suporte e lojas regionais da Sulnet) e "
+            "conduza ao fechamento. Nunca pergunte se o cliente quer contratar 'mesmo sem "
+            "garantia'. Quando o cliente disser que topa ou aceita a condição, trate como "
+            "intenção de compra.\n"
+            "FIDELIDADE: ao tratar objeção de fidelidade, destaque que com fidelidade a taxa de "
+            "habilitação de R$ 860 é isenta. "
+            "TAMANHO: no WhatsApp, responda em no máximo 3 frases curtas e uma pergunta. "
+            "FERRAMENTAS: se catalogo_oficial_da_cidade estiver no contexto, use-o como fonte "
+            "oficial de planos e preços e não chame consultar_catalogo; caso contrário, antes de "
+            "citar plano, velocidade ou preço, chame consultar_catalogo(cidade, segmento). Use "
+            "buscar_manual(pergunta) só quando a resposta não estiver em knowledge. Se a "
+            "ferramenta não trouxer a resposta, não invente.\n\n" + prompt
+        )
+
     sdr = Agent(
         name=agent.name,
         instructions=instructions,
@@ -3018,23 +1046,130 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
             "verbosity": "low",
             "timeout": 45.0,
         },
+        tools=tools,
         output_type=AIDecision,
     )
-    result = Runner.run_sync(sdr, prompt)
+    model_started = time.monotonic()
+    result = run_agent_sync(sdr, prompt)
+    model_ms = int((time.monotonic() - model_started) * 1000)
     decision = result.final_output
     if not isinstance(decision, AIDecision):
         decision = AIDecision.model_validate(decision)
+    tool_calls: list[str] = []
+    tool_facts: list[dict[str, str]] = []
+    for item in getattr(result, "new_items", None) or []:
+        item_type = getattr(item, "type", "")
+        if item_type == "tool_call_item":
+            tool_calls.append(str(getattr(getattr(item, "raw_item", None), "name", "") or "?"))
+        elif item_type == "tool_call_output_item":
+            tool_facts.append(
+                {
+                    "tool": tool_calls[-1] if tool_calls else "?",
+                    "result": str(getattr(item, "output", "") or "")[:3000],
+                }
+            )
+    decision._timing = {
+        "model_ms": model_ms,
+        "tool_calls": tool_calls,
+        "tool_facts": tool_facts,
+        "prompt_chars": len(prompt),
+        "catalog_in_context": bool(official_catalog),
+    }
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
-    decision = _apply_catalog_navigation_policy(decision, context)
-    decision = _apply_unavailable_plan_policy(decision, context)
-    decision = _apply_router_information_policy(decision, context)
-    decision = _apply_corporate_customer_policy(decision, context)
-    decision = _apply_secondary_decline_reengagement_policy(decision, context)
-    decision = _apply_offer_rejection_diagnostic_policy(decision, context)
-    decision = _apply_prospecting_entry_policy(decision, context)
+    decision, observations = _apply_rewrite_policies(decision, context)
     decision = _apply_journey_orchestration_policy(decision, context)
     decision = _apply_existing_customer_plan_change_policy(decision, context)
-    return _sanitize_unconfirmed_customer_facts(decision, context)
+    decision = _promote_clear_purchase_to_closing(decision, context)
+    decision = _sanitize_unconfirmed_customer_facts(decision, context)
+    decision = _one_question_per_message(decision)
+    decision = _never_hand_to_human(decision, context)
+    decision._policy_observations = observations
+    LOG.info("sdr_decision_timing %s", json.dumps(decision._timing, ensure_ascii=False))
+    return decision
+
+
+_SENTENCE = re.compile(r"[^?.!\n]*[?.!]+|[^?.!\n]+$")
+
+
+def _one_question_per_message(decision: AIDecision) -> AIDecision:
+    """Uma pergunta por mensagem.
+
+    Em 04/11 a SulIA perguntou "Em qual cidade...? E seria para sua casa ou
+    para uma empresa?" com botões Casa/Empresa: quem toca no botão deixa a
+    cidade sem resposta. Mantém o texto até a primeira pergunta; os botões
+    são refeitos para a pergunta que ficou.
+    """
+    if _is_closer_handoff(decision):
+        return decision
+    text = decision.reply_text or ""
+    sentences = [item for item in _SENTENCE.findall(text) if item.strip()]
+    questions = [index for index, item in enumerate(sentences) if item.rstrip().endswith("?")]
+    if len(questions) < 2:
+        return decision
+    kept = "".join(sentences[: questions[0] + 1]).strip()
+    if not kept:
+        return decision
+    decision.reply_text = kept
+    labels = " ".join(item.label for item in decision.quick_replies).lower()
+    kept_folded = kept.lower()
+    if not any(word in kept_folded for word in labels.split() if len(word) > 3):
+        decision.quick_replies = []
+    return decision
+
+
+SDR_REWRITE_POLICIES = (
+    ("catalog_navigation", _apply_catalog_navigation_policy),
+    ("unavailable_plan", _apply_unavailable_plan_policy),
+    ("router_information", _apply_router_information_policy),
+    ("corporate_customer", _apply_corporate_customer_policy),
+    ("secondary_decline", _apply_secondary_decline_reengagement_policy),
+    ("offer_rejection", _apply_offer_rejection_diagnostic_policy),
+    ("prospecting_entry", _apply_prospecting_entry_policy),
+    ("repeated_rejection", _apply_repeated_rejection_policy),
+)
+
+
+def _observed_policy_names() -> set[str]:
+    from app.services.ai_sdr_rewrite import observed_policy_names
+
+    return observed_policy_names(settings.ai_sdr_observe_policies)
+
+
+def _sdr_script_is_authoritative(decision: AIDecision) -> bool:
+    """Resposta já reescrita por regra fixa (catálogo, Black, entrada).
+
+    O Guardião não pode trocar esse texto por um plano único nem cortar o botão.
+    """
+    return any(
+        item.get("mode") == "rewrite" and "reply_text" in (item.get("changed") or [])
+        for item in getattr(decision, "_policy_observations", []) or []
+    )
+
+
+def _decision_signature(decision: AIDecision) -> dict[str, Any]:
+    from app.services.ai_sdr_rewrite import decision_signature
+
+    return decision_signature(decision)
+
+
+def _apply_rewrite_policies(
+    decision: AIDecision,
+    context: dict,
+) -> tuple[AIDecision, list[dict[str, Any]]]:
+    """Aplica as regras fixas que reescrevem a resposta, medindo cada uma.
+
+    Regras listadas em AI_SDR_OBSERVE_POLICIES só registram o que mudariam; as
+    demais continuam aplicadas. O registro vai para o AIRun e permite desligar
+    cada regra com base em dados, sem novo deploy.
+    """
+    from app.services.ai_sdr_rewrite import apply_rewrite_policies
+
+    return apply_rewrite_policies(
+        decision,
+        context,
+        SDR_REWRITE_POLICIES,
+        observe=_observed_policy_names(),
+    )
 
 
 def _send_autonomous_reply(
@@ -3090,7 +1225,27 @@ def _send_autonomous_reply(
         decision.reply_text,
         decision.quick_replies,
     )
-    if quick_replies:
+    if decision.service_redirect:
+        # Upgrade, suporte e financeiro: botão que abre o WhatsApp da central.
+        from app.services.ai_sdr_policy import CENTRAL_BUTTON_LABEL, CENTRAL_WHATSAPP_URL
+        from app.services.zapi import ZApiError
+
+        try:
+            result = zapi.send_link_button(
+                phone=phone,
+                message=decision.reply_text,
+                label=CENTRAL_BUTTON_LABEL,
+                url=CENTRAL_WHATSAPP_URL,
+            )
+            message_type = "BUTTONS"
+        except ZApiError:
+            LOG.warning("central_link_button_failed conversation=%s", conversation.id)
+            result = zapi.send_text(
+                phone=phone,
+                message=f"{decision.reply_text}\n{CENTRAL_WHATSAPP_URL}",
+            )
+            message_type = "TEXT"
+    elif quick_replies:
         result = zapi.send_button_list(
             phone=phone,
             message=decision.reply_text,
@@ -3262,6 +1417,16 @@ def _apply_crm_decision(
     )
 
 
+def _client_asked_for_human(db: Session, conversation: Conversation) -> bool:
+    latest = db.scalar(
+        select(Message.body)
+        .where(Message.conversation_id == conversation.id, Message.direction == "INBOUND")
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return _explicit_human_request({"latest_customer_message": latest or ""})
+
+
 def _perform_handoff(
     db: Session,
     *,
@@ -3275,8 +1440,14 @@ def _perform_handoff(
     queue = queue_for_conversation(db, conversation.id)
     owner = conversation.assigned_user
     if not owner or owner.role == "AI_SDR":
-        owner = assign_queue_user(db, queue) if queue else None
-        conversation.assigned_user_id = owner.id if owner else None
+        if not _client_asked_for_human(db, conversation):
+            # A IA é o vendedor: a conversa fica com ela e nenhum vendedor vê,
+            # a não ser que o cliente peça um humano (regra de 06/11).
+            conversation.assigned_user_id = agent.user_id or None
+            owner = None
+        else:
+            owner = assign_queue_user(db, queue) if queue else None
+            conversation.assigned_user_id = owner.id if owner else None
 
     conversation.status = "EM_ATENDIMENTO" if owner else "EM_FILA"
     db.add(
@@ -3351,6 +1522,301 @@ def _perform_handoff(
     )
 
 
+CLOSER_PREPARING_TEXT = (
+    "Perfeito! Já estou preparando a sua contratação e te chamo por aqui "
+    "com o próximo passo em instantes."
+)
+CLOSER_START_MAX_ATTEMPTS = 6
+
+_GREETING_ONLY = re.compile(
+    r"^(?:oi+e?|ola|opa|e ai|eai|bom dia|boa tarde|boa noite|alo|hello)"
+    r"(?:[\s,!.]+(?:tudo bem|td bem|tudo bom|tudo certo|sulnet|pessoal))*[\s!?.,]*$"
+)
+
+
+def _greeting_word(folded: str) -> str:
+    for cue, word in (("bom dia", "Bom dia"), ("boa tarde", "Boa tarde"), ("boa noite", "Boa noite")):
+        if cue in folded:
+            return word
+    return "Olá"
+
+
+def _time_greeting() -> str:
+    """Cumprimento pela hora de Santa Rosa/RS (horário de Brasília)."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    hour = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
+    if hour < 12:
+        return "Bom dia"
+    if hour < 18:
+        return "Boa tarde"
+    return "Boa noite"
+
+
+def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
+    """Resposta segura que a própria IA envia quando a resposta gerada não passou.
+
+    Não existe atendimento humano: em vez de chamar um consultor (ou ficar em
+    silêncio), a IA responde o cumprimento e puxa a próxima informação que
+    ainda falta para vender, sem repetir a última mensagem enviada.
+    """
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    facts = context.get("confirmed_facts") or {}
+    lead = context.get("lead") or {}
+    city = str(facts.get("city") or lead.get("city") or "").strip()
+    segment = str(facts.get("customer_type") or lead.get("confirmed_customer_type") or "").strip()
+    previous = set(_recent_outbound_messages_for_repetition(context))
+    greeting_only = bool(_GREETING_ONLY.match(latest))
+    greeting = _greeting_word(latest)
+
+    candidates: list[tuple[str, list[QuickReply]]] = []
+    if not previous:
+        # Abertura padrão de prospecção (comercial, 06/11): primeiro saber se já é cliente.
+        candidates.append(
+            (
+                f"{_time_greeting()}, você já é cliente da Sulnet?",
+                [
+                    QuickReply(id="cliente_sulnet_sim", label="Sim"),
+                    QuickReply(id="cliente_sulnet_nao", label="Não"),
+                ],
+            )
+        )
+    prefix = f"{greeting}! Vamos continuar de onde paramos. " if greeting_only else "Certo! "
+    if not city:
+        candidates.append((f"{prefix}Em qual cidade seria a instalação?", []))
+    if not segment:
+        candidates.append(
+            (
+                f"{prefix}Seria para sua casa ou para uma empresa?",
+                [QuickReply(id="casa", label="Casa"), QuickReply(id="empresa", label="Empresa")],
+            )
+        )
+    if city:
+        candidates.append(
+            (
+                f"{prefix}Posso te mostrar os planos disponíveis em {city} e já seguir "
+                "com a contratação por aqui. Quer ver as opções?",
+                [QuickReply(id="ver_planos", label="Ver planos"), QuickReply(id="duvida", label="Tenho uma dúvida")],
+            )
+        )
+    candidates.append(
+        (
+            f"{prefix}Me conta com suas palavras o que você precisa que eu resolvo por aqui.",
+            [],
+        )
+    )
+    for text, buttons in candidates:
+        if text not in previous:
+            return text, buttons
+    return candidates[-1]
+
+
+def _send_ai_recovery(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    run: AIRun,
+    decision: AIDecision,
+    context: dict,
+    reason: str,
+) -> str:
+    """A resposta gerada não passou na revisão: a IA mesma responde e segue.
+
+    Substitui a antiga passagem para consultor (HUMAN_FALLBACK). O cliente
+    nunca fica sem resposta e a conversa continua com a IA (AI_ACTIVE). O
+    motivo vai para a auditoria, que alimenta a supervisão e o analista.
+    """
+    recovery = decision.model_copy(deep=True)
+    recovery.reply_text, recovery.quick_replies = _ai_recovery_reply(context)
+    _keep_decision_with_ai(recovery)
+    recovery.customer_commitment = False
+    recovery.followup_needed = True
+
+    state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == job.conversation_id
+        )
+    )
+    if not state:
+        state = AIConversationState(conversation_id=job.conversation_id, agent_id=agent.id)
+        db.add(state)
+    state.state = "AI_ACTIVE"
+    state.agent_id = agent.id
+    state.last_run_id = run.id
+    db.flush()
+
+    _apply_crm_decision(db, agent=agent, job=job, decision=recovery)
+    message = _send_autonomous_reply(db, agent=agent, job=job, decision=recovery)
+    if message is not None:
+        from app.services.ai_followups import schedule_followup
+
+        schedule_followup(
+            db,
+            agent_id=agent.id,
+            queue_id=job.queue_id,
+            conversation_id=job.conversation_id,
+            source_message_id=job.message_id,
+            step=1,
+            pending_action=recovery.journey_pending_action or recovery.next_action,
+        )
+
+    output = recovery.model_dump()
+    output["ai_recovery_reason"] = reason
+    run.status = "CONCLUIDO"
+    run.error = reason[:2000]
+    run.reply_text = recovery.reply_text
+    run.output_json = json.dumps(output, ensure_ascii=False, default=str)
+    run.finished_at = utcnow()
+    job.status = "CONCLUIDO"
+    job.error = reason[:2000]
+    write_audit(
+        db,
+        user=agent.user,
+        action="AI_SDR_RECOVERY",
+        entity_type="conversation",
+        entity_id=job.conversation_id,
+        payload={
+            "ai_run_id": run.id,
+            "reason": reason[:500],
+            "message_id": message.id if message else None,
+        },
+    )
+    LOG.warning(
+        "ai_sdr_recovery job=%s conversation=%s reason=%s",
+        job.id,
+        job.conversation_id,
+        reason[:300],
+    )
+    return "ai_recovery"
+
+
+_HUMAN_PROMISE = re.compile(
+    r"(chamar|encaminh|transferi|direcion|passar (?:o seu|seu|a sua|sua|voce|o)|acionar|"
+    r"vai (?:te )?(?:ligar|chamar|retornar|entrar em contato)|entrara em contato|retornara)"
+    r"[^.?!]{0,60}(consultor|atendente|vendedor|especialista|humano)"
+    r"|(consultor|atendente|vendedor|especialista)[^.?!]{0,40}"
+    r"(vai|ira|vao)[^.?!]{0,20}(continuar|concluir|seguir|te (?:chamar|ligar|atender|responder)|entrar em contato|retornar)"
+)
+
+
+def _reply_promises_human(text: str | None) -> bool:
+    folded = _fold_sales_text(text or "")
+    if "vendedor ia" in folded:
+        folded = folded.replace("vendedor ia", "")
+    return bool(_HUMAN_PROMISE.search(folded))
+
+
+def _keep_decision_with_ai(decision: AIDecision) -> AIDecision:
+    """Não existe atendimento humano: nenhuma decisão sai como handoff para pessoa."""
+    if decision.handoff_target == "HUMAN":
+        decision.handoff_target = "NONE"
+        decision.handoff_recommended = False
+        decision.handoff_reason = ""
+    if decision.journey_state == "HUMAN_HANDOFF":
+        decision.journey_state = "DISCOVERY"
+    if decision.sales_state == "READY_FOR_HUMAN_SALES":
+        decision.sales_state = "OFFERING"
+    if decision.intent == "HUMAN_REQUEST":
+        decision.intent = "INTEREST"
+    return decision
+
+
+AI_OWNS_CONVERSATION_TEXT = (
+    "Aqui na Sulnet eu mesma resolvo tudo com você, inclusive a contratação, "
+    "sem precisar esperar ninguém."
+)
+
+
+def _never_hand_to_human(decision: AIDecision, context: dict) -> AIDecision:
+    decision = _keep_decision_with_ai(decision)
+    if _reply_promises_human(decision.reply_text):
+        LOG.warning("ai_sdr_reply_promised_human replaced=true")
+        text, buttons = _ai_recovery_reply(context)
+        if _explicit_human_request(context):
+            text = f"{AI_OWNS_CONVERSATION_TEXT} {text.removeprefix('Certo! ')}"
+        decision.reply_text, decision.quick_replies = text, buttons
+    return decision
+
+
+def _try_fast_purchase_path(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    run: AIRun,
+    context: dict,
+) -> str | None:
+    request = _fast_purchase_request(context)
+    if not request:
+        return None
+    plan, city = request["plan"], request["city"]
+    if city and not _plan_available_in_city(plan, city):
+        # Cidade fora da cobertura deste plano: o fluxo normal apresenta as opções.
+        return None
+
+    from app.services.ai_seller import start_closing_from_sdr
+
+    handoff = bool(city)
+    decision = _fast_purchase_decision(plan, city, handoff=handoff)
+    try:
+        with db.begin_nested():
+            if handoff:
+                if not start_closing_from_sdr(db, sdr_agent=agent, job=job, decision=decision):
+                    raise AIConfigurationError("Vendedor IA indisponível para o caminho rápido.")
+            else:
+                _apply_crm_decision(db, agent=agent, job=job, decision=decision)
+                _send_autonomous_reply(db, agent=agent, job=job, decision=decision)
+                from app.services.ai_followups import schedule_followup
+
+                schedule_followup(
+                    db,
+                    agent_id=agent.id,
+                    queue_id=job.queue_id,
+                    conversation_id=job.conversation_id,
+                    source_message_id=job.message_id,
+                    step=1,
+                    pending_action=decision.journey_pending_action,
+                )
+    except Exception as exc:
+        # Qualquer falha devolve a mensagem ao fluxo normal, sem estado parcial.
+        LOG.warning(
+            "ai_sdr_fast_purchase_fallback job=%s conversation=%s error=%s",
+            job.id,
+            job.conversation_id,
+            exc,
+        )
+        return None
+
+    run.status = "CONCLUIDO"
+    run.intent = decision.intent
+    run.qualification_score = decision.qualification_score
+    run.temperature = decision.temperature
+    run.confidence = decision.confidence
+    run.handoff_recommended = decision.handoff_recommended
+    run.handoff_reason = decision.handoff_reason
+    run.reply_text = "" if handoff else decision.reply_text
+    run.summary = decision.summary
+    run.output_json = json.dumps(
+        {**decision.model_dump(), "fast_path": "HANDOFF" if handoff else "ASK_CITY"},
+        ensure_ascii=False,
+        default=str,
+    )
+    run.finished_at = utcnow()
+    job.status = "CONCLUIDO"
+    job.error = None
+    LOG.info(
+        "ai_sdr_fast_purchase job=%s conversation=%s plan=%s city=%s handoff=%s",
+        job.id,
+        job.conversation_id,
+        plan.get("code"),
+        city or "-",
+        handoff,
+    )
+    return "fast_handoff" if handoff else "fast_ask_city"
+
+
+
 def process_ai_job(db: Session, job: AIJob) -> str:
     agent = db.get(AIAgentProfile, job.agent_id)
     if not agent or not agent.active:
@@ -3358,23 +1824,39 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         job.error = "Agente inexistente ou inativo."
         return "skipped"
 
+    from app.services.auto_reply import (  # noqa: PLC0415
+        ai_already_spoke_after_auto_reply,
+        only_auto_replies,
+    )
+
+    auto_reply_only = only_auto_replies(db, job.conversation_id)
+    if auto_reply_only and (
+        agent.role_type == "CLOSER" or ai_already_spoke_after_auto_reply(db, job.conversation_id)
+    ):
+        job.status = "IGNORADO"
+        job.error = "Só resposta automática de empresa; a IA já deixou recado ao responsável."
+        LOG.info("ai_job_skipped conversation=%s reason=auto_reply", job.conversation_id)
+        return "skipped"
+
     current_state = db.scalar(
         select(AIConversationState).where(
             AIConversationState.conversation_id == job.conversation_id
         )
     )
+    if current_state and current_state.state in HUMAN_HANDOFF_STATES:
+        job_conversation = db.get(Conversation, job.conversation_id)
+        if job_conversation and reclaim_conversation_for_ai(db, job_conversation, current_state):
+            closer = db.get(AIAgentProfile, current_state.agent_id)
+            if current_state.state == "CLOSING" and closer and closer.role_type == "CLOSER":
+                # Venda retomada pelo Vendedor IA: este job passa a ser dele.
+                job.agent_id = closer.id
+                from app.services.ai_seller import process_seller_job
+
+                return process_seller_job(db, job, closer)
     if (
         agent.role_type != "CLOSER"
         and current_state
-        and current_state.state in {
-            "CLOSING",
-            "HANDOFF",
-            "HANDOFF_HUMAN",
-            "HUMAN_ACTIVE",
-            "OPT_OUT",
-            "ESCALATED",
-            "COMPLETED",
-        }
+        and current_state.state in {"CLOSING", "OPT_OUT", "COMPLETED"} | HUMAN_HANDOFF_STATES
     ):
         job.status = "IGNORADO"
         job.error = f"Conversa já saiu do SDR: {current_state.state}"
@@ -3390,7 +1872,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         from app.services.ai_seller import process_seller_job
         return process_seller_job(db, job, agent)
 
+    # Mensagem que entrou antes de "Pausar IA" na fila não recebe resposta do SDR.
+    if binding_for_conversation(db, job.conversation_id) is None:
+        job.status = "IGNORADO"
+        job.error = "IA pausada na fila da conversa."
+        LOG.info(
+            "ai_sdr_job_ignored_queue_paused job=%s conversation=%s",
+            job.id,
+            job.conversation_id,
+        )
+        return "skipped"
+
     context = build_ai_context(db, job=job, agent=agent)
+    if auto_reply_only:
+        context["business_auto_reply"] = True
     effective_mode = _effective_execution_mode(agent)
     run = AIRun(
         job_id=job.id,
@@ -3405,6 +1900,17 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     )
     db.add(run)
     db.flush()
+
+    if effective_mode == "AUTO":
+        fast_outcome = _try_fast_purchase_path(
+            db,
+            agent=agent,
+            job=job,
+            run=run,
+            context=context,
+        )
+        if fast_outcome:
+            return fast_outcome
 
     try:
         decision = run_ai_decision(agent, context)
@@ -3436,6 +1942,19 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             )
             decision = run_ai_decision(agent, retry_context)
             integrity_issues = _journey_integrity_issues(decision, context)
+
+        if integrity_issues and effective_mode == "AUTO":
+            # Já houve uma regeneração: a IA responde agora com a recuperação
+            # segura em vez de deixar o cliente esperando novas tentativas.
+            return _send_ai_recovery(
+                db,
+                agent=agent,
+                job=job,
+                run=run,
+                decision=decision,
+                context=context,
+                reason="Integridade da jornada bloqueou as respostas: " + ", ".join(integrity_issues),
+            )
 
         if integrity_issues:
             run.status = "FALHOU"
@@ -3477,7 +1996,10 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "failed"
 
     output = decision.model_dump()
+    output["policy_observations"] = list(decision._policy_observations)
+    output["timing"] = dict(decision._timing)
     closer_started = False
+    retry_closer_job = False
 
     if effective_mode == "AUTO":
         try:
@@ -3487,20 +2009,39 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
             from app.services.ai_guardian import guard_outbound_message
 
-            guardian = guard_outbound_message(
-                db,
-                agent=agent,
-                conversation=conversation,
-                reply_text=decision.reply_text,
-                buttons=[item.model_dump() for item in decision.quick_replies],
-                source="SDR_DECISION",
-                proposed_state=decision.journey_state or decision.sales_state,
-                metadata={
-                    "intent": decision.intent,
-                    "handoff_target": decision.handoff_target,
-                    "customer_commitment": decision.customer_commitment,
-                },
-            )
+            if _is_closer_handoff(decision):
+                # A mensagem do SDR não chega ao cliente quando o Vendedor IA
+                # assume: revisá-la só atrasava e bloqueava o fechamento
+                # (conversa 239 em 04/11 e simulações).
+                from app.services.ai_guardian import GuardianResult
+
+                guardian = GuardianResult(
+                    verdict="APPROVE",
+                    risk="LOW",
+                    confidence=1.0,
+                    quality_score=100,
+                    rationale="Handoff ao Vendedor IA: a mensagem do SDR não é enviada.",
+                    reply_text=decision.reply_text,
+                    buttons=[],
+                    should_send=True,
+                )
+            else:
+                guardian = guard_outbound_message(
+                    db,
+                    agent=agent,
+                    conversation=conversation,
+                    reply_text=decision.reply_text,
+                    buttons=[item.model_dump() for item in decision.quick_replies],
+                    source="SDR_DECISION",
+                    proposed_state=decision.journey_state or decision.sales_state,
+                    metadata={
+                        "intent": decision.intent,
+                        "handoff_target": decision.handoff_target,
+                        "customer_commitment": decision.customer_commitment,
+                        "tool_facts": list(decision._timing.get("tool_facts") or []),
+                        "authoritative_sdr_script": _sdr_script_is_authoritative(decision),
+                    },
+                )
             if not guardian.should_send:
                 retry_context = dict(context)
                 retry_context["guardian_feedback"] = {
@@ -3525,7 +2066,23 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                         "intent": decision.intent,
                         "handoff_target": decision.handoff_target,
                         "customer_commitment": decision.customer_commitment,
+                        "tool_facts": list(decision._timing.get("tool_facts") or []),
+                        "authoritative_sdr_script": _sdr_script_is_authoritative(decision),
                     },
+                )
+
+            if not guardian.should_send:
+                return _send_ai_recovery(
+                    db,
+                    agent=agent,
+                    job=job,
+                    run=run,
+                    decision=decision,
+                    context=context,
+                    reason=(
+                        "Guardião bloqueou as respostas geradas: "
+                        + (", ".join(guardian.issue_codes) or guardian.rationale)
+                    ),
                 )
 
             if not guardian.should_send:
@@ -3550,6 +2107,16 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
             post_guard_issues = _journey_integrity_issues(decision, context)
             if post_guard_issues:
+                return _send_ai_recovery(
+                    db,
+                    agent=agent,
+                    job=job,
+                    run=run,
+                    decision=decision,
+                    context=context,
+                    reason="Integridade bloqueou a saída do Guardião: " + ", ".join(post_guard_issues),
+                )
+            if post_guard_issues:
                 run.status = "FALHOU"
                 run.error = (
                     "Integridade da jornada bloqueou a saída final do Guardião: "
@@ -3572,6 +2139,8 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 return "integrity_blocked"
 
             output = decision.model_dump()
+            output["policy_observations"] = list(decision._policy_observations)
+            output["timing"] = dict(decision._timing)
 
             _apply_crm_decision(
                 db,
@@ -3580,6 +2149,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 decision=decision,
             )
             sent_message = None
+            skip_reply = False
             wants_closer = (
                 decision.handoff_target == "CLOSER_AI"
                 or (
@@ -3600,21 +2170,28 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     decision=decision,
                 )
                 if not closer_started:
-                    decision.handoff_target = "HUMAN"
-                    decision.handoff_recommended = True
-                    decision.handoff_reason = (
-                        "Vendedor IA de Fechamento indisponível no momento."
-                    )
-                    decision.journey_state = "HUMAN_HANDOFF"
+                    # Sem humano: o SDR segura a conversa, avisa o cliente uma
+                    # vez e o mesmo job tenta abrir o fechamento de novo em 2 min.
+                    decision.handoff_target = "NONE"
+                    decision.handoff_recommended = False
+                    decision.handoff_reason = ""
+                    decision.customer_commitment = False
                     decision.journey_pending_action = (
-                        "Transferir para atendimento humano por indisponibilidade operacional do Vendedor IA."
+                        "Abrir o fechamento com o Vendedor IA assim que ele estiver disponível."
                     )
-                    decision.reply_text = (
-                        "Perfeito! Vou encaminhar seu atendimento para um vendedor "
-                        "concluir a contratação com você."
-                    )
+                    decision.reply_text = CLOSER_PREPARING_TEXT
                     decision.quick_replies = []
                     decision.followup_needed = False
+                    retry_closer_job = int(job.attempts or 0) < CLOSER_START_MAX_ATTEMPTS
+                    skip_reply = CLOSER_PREPARING_TEXT in _recent_outbound_messages_for_repetition(context)
+                    write_audit(
+                        db,
+                        user=agent.user,
+                        action="AI_SDR_CLOSER_UNAVAILABLE",
+                        entity_type="conversation",
+                        entity_id=job.conversation_id,
+                        payload={"ai_run_id": run.id},
+                    )
                     fallback_conversation = db.get(Conversation, job.conversation_id)
                     if fallback_conversation and fallback_conversation.lead:
                         _persist_journey_memory(
@@ -3623,7 +2200,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                             conversation_id=fallback_conversation.id,
                         )
 
-            if not closer_started:
+            if not closer_started and not skip_reply:
                 sent_message = _send_autonomous_reply(
                     db,
                     agent=agent,
@@ -3639,13 +2216,9 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
-            elif not closer_started and decision.handoff_target == "HUMAN":
-                _perform_handoff(
-                    db,
-                    agent=agent,
-                    job=job,
-                    decision=decision,
-                )
+                # Número errado / opt-out: sai da fila imediatamente (antes ficava EM FILA).
+                conversation.status = "ENCERRADO"
+                conversation.closed_at = utcnow()
             elif (
                 not closer_started
                 and sent_message is not None
@@ -3682,6 +2255,8 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             return "send_failed"
 
     output = decision.model_dump()
+    output["policy_observations"] = list(decision._policy_observations)
+    output["timing"] = dict(decision._timing)
     run.status = "CONCLUIDO"
     run.intent = decision.intent
     run.qualification_score = decision.qualification_score
@@ -3715,9 +2290,6 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             state.state = "SHADOW_REVIEW"
         elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
             state.state = "OPT_OUT"
-        elif decision.handoff_target == "HUMAN":
-            state.state = "HANDOFF"
-            state.handoff_at = utcnow()
         elif decision.service_redirect:
             state.state = "COMPLETED"
         else:
@@ -3730,6 +2302,11 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     job.status = "CONCLUIDO"
     job.error = None
+    if retry_closer_job:
+        job.status = "PENDENTE"
+        job.error = "Vendedor IA indisponível: nova tentativa de abrir o fechamento."
+        job.available_at = utcnow() + timedelta(minutes=2)
+        job.locked_at = None
 
     write_audit(
         db,

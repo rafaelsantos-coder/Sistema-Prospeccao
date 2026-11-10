@@ -1,0 +1,27 @@
+{
+  "id": "pedido-de-atendente",
+  "conversation": null,
+  "description": "Pedido de pessoa: não existe atendimento humano, a IA responde e segue a venda.",
+  "lead": {
+    "city": "Santa Rosa"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "A internet é para sua casa ou empresa?"
+    }
+  ],
+  "latest": "Quero falar com um atendente, por favor",
+  "expect": {
+    "handoff_target_in": [
+      "NONE"
+    ],
+    "reply_not_contains": [
+      "vou chamar",
+      "vou te transferir",
+      "vou encaminhar",
+      "um consultor vai",
+      "um atendente vai"
+    ]
+  }
+}

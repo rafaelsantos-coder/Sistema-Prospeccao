@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import (
+    AIAgentProfile,
     AIConversationState,
     AIQueueBinding,
     Contact,
@@ -23,8 +24,13 @@ from app.models import (
     User,
 )
 from app.services.queue_routing import (
+    AI_OWNED_STATES,
+    AI_WHEN_HUMAN_IDLE,
+    AI_WHEN_OFFLINE,
+    ai_owns_conversation,
     assign_queue_user,
     bind_conversation_queue,
+    human_online_in_queue,
     queue_for_conversation,
     resolve_queue,
 )
@@ -125,17 +131,33 @@ def _presence_timestamp(value) -> float:
     return value.timestamp()
 
 
-def _queue_reserved_for_ai(db: Session, queue: ServiceQueue | None) -> bool:
+def _queue_reserved_for_ai(
+    db: Session,
+    queue: ServiceQueue | None,
+    conversation_id: int | None = None,
+) -> bool:
     if not queue or not settings.ai_sdr_enabled or not settings.ai_autonomous_enabled:
         return False
     binding = db.scalar(
         select(AIQueueBinding).where(
             AIQueueBinding.queue_id == queue.id,
             AIQueueBinding.active.is_(True),
-            AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY"}),
+            AIQueueBinding.handling_mode.in_(
+                {"AI_FIRST", "AI_ONLY", AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE}
+            ),
         )
     )
-    return binding is not None
+    if binding is None:
+        return False
+    if binding.handling_mode == AI_WHEN_HUMAN_IDLE:
+        # Fila comercial: com vendedor online a conversa fica com ele; a IA só
+        # assume se já era dela ou após 10 min sem interação (worker).
+        return ai_owns_conversation(db, conversation_id) or not human_online_in_queue(
+            db, queue.id
+        )
+    # Fila da IA: só a IA trabalha, mesmo com vendedor online (06/11/2026).
+    # "IA quando não houver vendedor online" passou a funcionar como IA sempre.
+    return True
 
 
 def _conversation_ready_for_human(db: Session, conversation_id: int) -> bool:
@@ -309,9 +331,10 @@ def ensure_open_conversation(
             # permanecem humanos.
             if (
                 queue_changed
-                and _queue_reserved_for_ai(db, queue)
+                and _queue_reserved_for_ai(db, queue, conversation.id)
                 and not _conversation_ready_for_human(db, conversation.id)
                 and conversation.assigned_user_id
+                and not _human_is_attending(db, conversation)
             ):
                 conversation.assigned_user_id = None
                 conversation.status = "EM_FILA"
@@ -327,7 +350,10 @@ def ensure_open_conversation(
         if (
             assign_if_unowned
             and not conversation.assigned_user_id
-            and (not _queue_reserved_for_ai(db, queue) or _conversation_ready_for_human(db, conversation.id))
+            and (
+                not _queue_reserved_for_ai(db, queue, conversation.id)
+                or _conversation_ready_for_human(db, conversation.id)
+            )
         ):
             owner = choose_assignee(db, contact, lead, queue=queue)
             if owner:
@@ -451,7 +477,9 @@ def distribute_waiting_conversations(
                     queue.id,
                     origin="AUTO_QUEUE",
                 )
-        if _queue_reserved_for_ai(db, queue) and not _conversation_ready_for_human(db, conversation.id):
+        if _queue_reserved_for_ai(db, queue, conversation.id) and not _conversation_ready_for_human(
+            db, conversation.id
+        ):
             continue
         owner = choose_assignee(db, contact, lead, queue=queue)
         if not owner:
@@ -476,37 +504,125 @@ def distribute_waiting_conversations(
     return assigned_count
 
 
-def apply_conversation_scope(stmt, user: User):
+HUMAN_REQUESTED_AI_STATES = {"HANDOFF", "HUMAN_ACTIVE"}
+
+
+def _ai_reserved_queue_ids():
+    return select(AIQueueBinding.queue_id).where(
+        AIQueueBinding.active.is_(True),
+        AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY"}),
+    )
+
+
+def _ai_owned_offline_queue_conversation_ids():
+    """Conversas que a IA já começou numa fila "IA quando não houver vendedor online"."""
+    offline_queue_ids = select(AIQueueBinding.queue_id).where(
+        AIQueueBinding.active.is_(True),
+        AIQueueBinding.handling_mode.in_({AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE}),
+    )
+    return (
+        select(ConversationQueueLink.conversation_id)
+        .join(
+            AIConversationState,
+            AIConversationState.conversation_id == ConversationQueueLink.conversation_id,
+        )
+        .where(
+            ConversationQueueLink.queue_id.in_(offline_queue_ids),
+            AIConversationState.state.in_(AI_OWNED_STATES),
+        )
+    )
+
+
+def _consultant_manual_queue_waiting(user: User):
+    """Conversas sem dono que o vendedor pode pegar numa fila MANUAL.
+
+    Disparos e campanhas nunca entram aqui: só o que pediu atendimento humano
+    (handoff da IA) ou recebeu resposta do cliente numa fila sem IA.
+    """
+    manual_queue_ids = (
+        select(ServiceQueueMember.queue_id)
+        .join(ServiceQueue, ServiceQueue.id == ServiceQueueMember.queue_id)
+        .where(
+            ServiceQueueMember.user_id == user.id,
+            ServiceQueueMember.active.is_(True),
+            ServiceQueue.active.is_(True),
+            ServiceQueue.routing_strategy == "MANUAL",
+        )
+    )
+    manual_conversation_ids = select(ConversationQueueLink.conversation_id).where(
+        ConversationQueueLink.queue_id.in_(manual_queue_ids)
+    )
+    human_requested_ids = select(AIConversationState.conversation_id).where(
+        AIConversationState.state.in_(HUMAN_REQUESTED_AI_STATES)
+    )
+    waiting_for_human = Conversation.id.in_(human_requested_ids)
+    if settings.ai_sdr_enabled and settings.ai_autonomous_enabled:
+        human_queue_conversation_ids = select(ConversationQueueLink.conversation_id).where(
+            ConversationQueueLink.queue_id.in_(manual_queue_ids),
+            ConversationQueueLink.queue_id.not_in(_ai_reserved_queue_ids()),
+            ConversationQueueLink.conversation_id.not_in(_ai_owned_offline_queue_conversation_ids()),
+        )
+    else:
+        human_queue_conversation_ids = manual_conversation_ids
+    customer_replied_in_human_queue = (Conversation.unread_count > 0) & Conversation.id.in_(
+        human_queue_conversation_ids
+    )
+    return (
+        Conversation.assigned_user_id.is_(None)
+        & Conversation.status.in_(OPEN_CONVERSATION_STATUSES)
+        & Conversation.id.in_(manual_conversation_ids)
+        & or_(waiting_for_human, customer_replied_in_human_queue)
+    )
+
+
+def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
+    """Restringe as conversas que cada perfil enxerga.
+
+    - ADMIN/GESTOR: tudo, inclusive disparos e conversas com a IA.
+    - SUPERVISOR: a própria filial/equipe; na caixa de entrada (inbox=True),
+      somente o que já está com algum vendedor.
+    - CONSULTOR: somente as conversas atribuídas a ele. A exceção são filas
+      MANUAL, em que ele vê o que pediu atendimento humano para poder pegar.
+    """
     if user.role in {"ADMIN", "GESTOR"}:
         return stmt
     if user.role == "SUPERVISOR":
         if user.branch_id:
-            return stmt.where(Conversation.branch_id == user.branch_id)
-        return stmt.where(Conversation.team == user.team)
+            stmt = stmt.where(Conversation.branch_id == user.branch_id)
+        else:
+            stmt = stmt.where(Conversation.team == user.team)
+        if inbox:
+            stmt = stmt.where(Conversation.assigned_user_id.is_not(None))
+            # Conversa da IA não aparece para vendedores/supervisores na caixa.
+            stmt = stmt.where(
+                Conversation.assigned_user_id.not_in(
+                    select(AIAgentProfile.user_id).where(AIAgentProfile.user_id.is_not(None))
+                )
+            )
+        return stmt
     if user.role == "CONSULTOR":
-        member_queue_ids = select(ServiceQueueMember.queue_id).where(
-            ServiceQueueMember.user_id == user.id,
-            ServiceQueueMember.active.is_(True),
-        )
-        visible_unassigned_ids = select(ConversationQueueLink.conversation_id).where(
-            ConversationQueueLink.queue_id.in_(member_queue_ids)
-        )
         return stmt.where(
             or_(
                 Conversation.assigned_user_id == user.id,
-                (
-                    Conversation.assigned_user_id.is_(None)
-                    & Conversation.id.in_(visible_unassigned_ids)
-                ),
+                _consultant_manual_queue_waiting(user),
             )
         )
     return stmt.where(Conversation.assigned_user_id == user.id)
+
+
+def _human_is_attending(db: Session, conversation: Conversation) -> bool:
+    """Vendedor de verdade escreveu nas últimas 24h: a conversa não sai da lista dele."""
+    from app.services.ai_sdr import human_is_attending  # noqa: PLC0415
+
+    return human_is_attending(db, conversation)
 
 
 def conversation_visible_to_user(conversation: Conversation, user: User) -> bool:
     if user.role in {"ADMIN", "GESTOR"}:
         return True
     if user.role == "SUPERVISOR":
+        if conversation.assigned_user_id is None:
+            return False
         if user.branch_id:
             return conversation.branch_id == user.branch_id
         return conversation.team == user.team
@@ -696,6 +812,17 @@ def store_received_payload(
     )
 
     from_me = payload_from_me(payload)
+    if message_type == "AUDIO" and not from_me:
+        # Áudio do cliente vira texto para a IA conseguir entender e responder.
+        from app.services.audio_transcription import transcribe_audio_url
+
+        from app.services.audio_transcription import TRANSCRIBED_PREFIX, UNREADABLE_BODY
+
+        transcript = transcribe_audio_url(media_url, mime_type)
+        # Mesmo sem transcrição o áudio vira texto: a IA responde pedindo para
+        # o cliente escrever, em vez de deixar a mensagem sem resposta.
+        message_type = "TEXT"
+        body = f"{TRANSCRIBED_PREFIX} {transcript}" if transcript else UNREADABLE_BODY
     direction = "OUTBOUND" if from_me else "INBOUND"
     message = register_message(
         db,
@@ -719,6 +846,19 @@ def store_received_payload(
             payload_json=json.dumps(payload, ensure_ascii=False, default=str),
         )
     )
+    if not from_me and message.message_type not in {"TEXT", "BUTTONS", "AUDIO"}:
+        # Anexo com o crédito reprovado é o comprovante do provedor: avisa o
+        # consultor e responde o cliente (imagem não gera job de IA).
+        try:
+            from app.services.ai_seller import handle_credit_proof_attachment
+
+            handle_credit_proof_attachment(db, conversation, message)
+        except Exception:  # noqa: BLE001 - o webhook não pode falhar por causa do aviso
+            import logging
+
+            logging.getLogger("sulnet_conversation_engine").warning(
+                "credit_proof_hook_failed conversation=%s", conversation.id
+            )
     if not from_me:
         from app.services.ai_sdr import enqueue_ai_job
         enqueue_ai_job(

@@ -1,0 +1,17 @@
+{
+  "id": "conv62-pagamento-e-vencimento",
+  "conversation": 62,
+  "problem": 5,
+  "description": "Forma de pagamento e depois o dia (\"Boleto\" → \"10\") ficam gravados, sem voltar a perguntar a forma (na conversa 62 o ciclo foi \"10\" → \"Boleto\" → \"10\").",
+  "kind": "seller_billing",
+  "input": {
+    "answers": [
+      "Boleto",
+      "10"
+    ]
+  },
+  "expect": {
+    "paymentMethod": "Boleto",
+    "dueDay": 10
+  }
+}

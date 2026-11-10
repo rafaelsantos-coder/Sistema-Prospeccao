@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import timedelta
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
 from pydantic import BaseModel, Field
@@ -24,7 +24,7 @@ from app.models import (
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT, followup_spec, next_business_time
 from app.services.audit import write_audit
-from app.timeutils import utcnow
+from app.timeutils import UTC, utc_naive, utc_to_local, utcnow
 
 
 LOG = logging.getLogger("sulnet_ai_followups")
@@ -56,6 +56,54 @@ def cancel_pending_followups(
     if jobs:
         db.flush()
     return len(jobs)
+
+
+def business_window_start(now: datetime) -> datetime:
+    """Primeiro instante (UTC sem fuso) em que a IA pode puxar conversa.
+
+    Usa o horário comercial já definido em next_business_time: dias úteis das
+    9h às 18h30 e sábado até 13h, no fuso configurado.
+    """
+    aware = now.replace(tzinfo=UTC) if now.tzinfo is None else now
+    return utc_naive(next_business_time(aware, settings.default_timezone))
+
+
+def _limit_one_unanswered_per_day(
+    db: Session,
+    conversation_id: int,
+    due: datetime,
+) -> datetime:
+    """No máximo um follow-up sem resposta do cliente por dia.
+
+    Antes, a cadência 10 min → 30 min → 2 h → 6 h mandava até 4 mensagens no
+    mesmo dia para quem não respondeu.
+    """
+    last_inbound_at = db.scalar(
+        select(Message.created_at)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "INBOUND",
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    sent_stmt = select(AIFollowupJob.sent_at).where(
+        AIFollowupJob.conversation_id == conversation_id,
+        AIFollowupJob.status == "ENVIADO",
+        AIFollowupJob.sent_at.is_not(None),
+    )
+    if last_inbound_at:
+        sent_stmt = sent_stmt.where(AIFollowupJob.sent_at > utc_naive(last_inbound_at))
+    last_sent = db.scalar(sent_stmt.order_by(AIFollowupJob.sent_at.desc()).limit(1))
+    if not last_sent:
+        return due
+    last_local = utc_to_local(utc_naive(last_sent))
+    if utc_to_local(due).date() > last_local.date():
+        return due
+    next_day = (last_local + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return business_window_start(next_day.astimezone(UTC).replace(tzinfo=None))
 
 
 def schedule_followup(
@@ -103,13 +151,19 @@ def schedule_followup(
     )
     if closing and closing.step in {"ESCALATED", "COMPLETED"}:
         return None
+    if agent and _customer_declined(db, conversation_id):
+        return None
+    # Fila pausada: o backfill recriava a cadência a cada ciclo só para ser cancelada.
+    if agent and _queue_ai_paused(db, conversation_id):
+        return None
 
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
     delay, theme = followup_spec(step)
     clean_pending = re.sub(r"\s+", " ", str(pending_action or "")).strip()
     if clean_pending:
         theme = f"{theme}. Pendência atual: {clean_pending[:500]}"
-    due = next_business_time(utcnow() + delay, settings.default_timezone)
+    due = business_window_start(utcnow() + delay)
+    due = _limit_one_unanswered_per_day(db, conversation_id, due)
     job = AIFollowupJob(
         agent_id=agent_id,
         queue_id=queue_id,
@@ -324,6 +378,107 @@ def _latest_inbound_id(db: Session, conversation_id: int) -> int | None:
     )
 
 
+# Desistência explícita do cliente. Só frases inequívocas: "não" sozinho pode ser
+# resposta a uma pergunta de sim/não da contratação.
+_CUSTOMER_STOP_RE = re.compile(
+    r"\b("
+    r"nao preciso mais|nao quero mais|nao vou querer|nao vou mais|"
+    r"nao (tenho|tem) (mais )?interesse|sem interesse|"
+    r"nao quero (nada|internet|esse plano|o plano|contratar)|"
+    r"desisti|desisto|desistir|dispenso|"
+    r"cancel(a|ar|em|ei|e|ado|ada)|"
+    r"par(a|e|em) de (mandar|enviar|me)|nao me (mande|manda|envie|chame|contate)|"
+    r"nao entre em contato|me remova|remover meu numero|sair da lista|descadastrar"
+    r")\b"
+)
+# Mensagem inteira (não trecho): "não, obrigado" depois de uma oferta.
+_CUSTOMER_STOP_EXACT = {"nao obrigado", "nao obrigada", "prefiro nao", "nao quero"}
+# Intervalo mínimo entre uma mensagem nossa e um follow-up (pedido do comercial).
+FOLLOWUP_MIN_GAP = timedelta(hours=2)
+# Conversa Leonardo (10/11): oito mensagens seguidas sem resposta do cliente.
+MAX_UNANSWERED_FOLLOWUPS = 3
+
+
+def _latest_inbound_at(db: Session, conversation_id: int):
+    return db.scalar(
+        select(Message.created_at)
+        .where(Message.conversation_id == conversation_id, Message.direction == "INBOUND")
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+
+
+# "Não" seco logo depois de uma oferta ("Quer conhecer a Black?") também é recusa:
+# a resposta da IA a ele já foi a tentativa (conversa 651: 3 follow-ups depois do "Não").
+_BARE_NEGATIVES = {"nao", "n", "agora nao", "nao quero", "nao obrigado", "nao obrigada", "nao valeu"}
+_OFFER_QUESTION_CUES = (
+    "quer conhecer",
+    "promocao",
+    "black",
+    "tem interesse",
+    "quer contratar",
+    "posso te mostrar",
+    "quer ver",
+    "gostaria de conhecer",
+)
+
+
+def _customer_declined(db: Session, conversation_id: int) -> bool:
+    """O cliente recusou: desistência explícita, ou "não" seco a uma oferta."""
+    latest_inbound = db.scalar(
+        select(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "INBOUND",
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    if latest_inbound is None:
+        return False
+    text = _normalize_followup_text(latest_inbound.body)
+    if text in _CUSTOMER_STOP_EXACT or _CUSTOMER_STOP_RE.search(text):
+        return True
+    if text not in _BARE_NEGATIVES:
+        return False
+    offer = db.scalar(
+        select(Message.body)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "OUTBOUND",
+            Message.id < latest_inbound.id,
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    offer_text = _normalize_followup_text(offer)
+    return any(cue in offer_text for cue in _OFFER_QUESTION_CUES)
+
+
+def _followup_spacing_hold(db: Session, conversation_id: int, now: datetime) -> datetime | None:
+    """Nada de rajada: o follow-up só sai 2 h depois da última mensagem nossa."""
+    last_outbound_at = db.scalar(
+        select(Message.created_at)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "OUTBOUND",
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    last = utc_naive(last_outbound_at)
+    if not last or now - last >= FOLLOWUP_MIN_GAP:
+        return None
+    return business_window_start(last + FOLLOWUP_MIN_GAP)
+
+
+def _queue_ai_paused(db: Session, conversation_id: int) -> bool:
+    """A fila da conversa está sem IA ativa (o telefone de teste continua liberado)."""
+    from app.services.ai_sdr import binding_for_conversation  # ai_sdr importa este módulo
+
+    return binding_for_conversation(db, conversation_id) is None
+
+
 def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
     conversation = db.get(Conversation, job.conversation_id)
     if not conversation:
@@ -357,6 +512,14 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
             or int(state.agent_id or 0) != int(job.agent_id)
         ):
             return False, "OWNER_SDR_AI"
+    # "Pausar IA" na fila: a IA não puxa conversa (nem SDR nem Vendedor IA).
+    # O Vendedor IA ainda responde quem escrever e entrega contrato/assinatura.
+    if agent is not None and _queue_ai_paused(db, conversation.id):
+        return False, "FILA_SEM_IA"
+    # Cliente disse que não tem interesse: a resposta da IA a essa mensagem já foi
+    # a única tentativa; follow-up não sai (conversa 237: "Qual seu CPF?" 3 vezes).
+    if agent is not None and _customer_declined(db, conversation.id):
+        return False, "CLIENTE_DESISTIU"
     closing = db.scalar(
         select(AIClosingState).where(
             AIClosingState.conversation_id == conversation.id
@@ -364,6 +527,21 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
     )
     if closing and closing.step in {"ESCALATED", "COMPLETED"}:
         return False, closing.step
+    from app.services.auto_reply import only_auto_replies  # noqa: PLC0415
+
+    if only_auto_replies(db, conversation.id):
+        return False, "RESPOSTA_AUTOMATICA"
+    sent_stmt = select(AIFollowupJob.id).where(
+        AIFollowupJob.conversation_id == conversation.id,
+        AIFollowupJob.status == "ENVIADO",
+        AIFollowupJob.sent_at.is_not(None),
+    )
+    last_inbound_at = _latest_inbound_at(db, conversation.id)
+    if last_inbound_at:
+        sent_stmt = sent_stmt.where(AIFollowupJob.sent_at > utc_naive(last_inbound_at))
+    unanswered_sent = len(list(db.scalars(sent_stmt)))
+    if unanswered_sent >= MAX_UNANSWERED_FOLLOWUPS:
+        return False, "LIMITE_SEM_RESPOSTA"
     latest_inbound = _latest_inbound_id(db, conversation.id)
     if (
         job.source_message_id
@@ -384,7 +562,8 @@ def _generate_followup(
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY não configurada.")
 
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     conversation = db.get(Conversation, job.conversation_id)
     lead = db.get(Lead, conversation.lead_id) if conversation and conversation.lead_id else None
@@ -487,11 +666,16 @@ def _generate_followup(
         },
         output_type=FollowupDecision,
     )
-    result = Runner.run_sync(followup_agent, prompt)
+    result = run_agent_sync(followup_agent, prompt)
     value = result.final_output
     if not isinstance(value, FollowupDecision):
         value = FollowupDecision.model_validate(value)
     return value
+
+
+def _zapi_instance_offline(exc: Exception) -> bool:
+    """Z-API recusou o envio porque o WhatsApp da instância está desconectado."""
+    return "whatsapp is disconnected" in str(exc).lower()
 
 
 def process_followup_job(db: Session, job: AIFollowupJob) -> str:
@@ -500,6 +684,26 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         job.status = "CANCELADO"
         job.error = reason
         return "cancelled"
+
+    # Reagendamentos internos (+5, +15, +30 min) não podiam sair de madrugada:
+    # houve mensagens às 00:12 e 23:40. Fora do horário, o job volta para a fila
+    # no início da próxima janela, sem contar como tentativa.
+    now = utcnow()
+    window_start = business_window_start(now)
+    if window_start > now:
+        job.status = "PENDENTE"
+        job.due_at = window_start
+        job.locked_at = None
+        job.attempts = max(0, int(job.attempts or 0) - 1)
+        return "outside_business_hours"
+
+    hold_until = _followup_spacing_hold(db, job.conversation_id, now)
+    if hold_until and hold_until > now:
+        job.status = "PENDENTE"
+        job.due_at = hold_until
+        job.locked_at = None
+        job.attempts = max(0, int(job.attempts or 0) - 1)
+        return "spacing"
 
     if not settings.ai_autonomous_enabled:
         job.status = "PENDENTE"
@@ -687,6 +891,20 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         return "sent"
     except Exception as exc:
         job.error = str(exc)[:2000]
+        if _zapi_instance_offline(exc):
+            # Instância do WhatsApp desconectada: não é falha do follow-up.
+            # Não consome tentativa (senão 3 tentativas em 15 min viram FALHOU e o
+            # lead esfria); volta para a fila e tenta de novo quando reconectar.
+            job.status = "PENDENTE"
+            job.locked_at = None
+            job.attempts = max(0, int(job.attempts or 0) - 1)
+            job.due_at = utcnow() + timedelta(minutes=15)
+            LOG.warning(
+                "followup_zapi_offline_requeued job=%s conversation=%s",
+                job.id,
+                job.conversation_id,
+            )
+            return "zapi_offline"
         if int(job.attempts or 0) < 3:
             job.status = "PENDENTE"
             job.locked_at = None

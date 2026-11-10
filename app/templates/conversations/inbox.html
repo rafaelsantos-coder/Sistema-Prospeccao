@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block page_content_class %}conversation-page-content{% endblock %}
 {% block content %}
-<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
+<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" data-assignee="{{ assignee_id or '' }}" data-queue="{{ queue_id or '' }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
   <aside class="inbox-list-panel">
     <div class="inbox-list-head">
       <div>
@@ -20,11 +20,50 @@
     <div class="inbox-tabs">
       <a href="/conversations?view=active" class="{% if view == 'active' %}active{% endif %}">Ativas <b id="count-active">{{ counts.active }}</b></a>
       <a href="/conversations?view=unread" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
-      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+      {% if current_user.role in ['ADMIN','GESTOR'] %}
       <a href="/conversations?view=queue" class="{% if view == 'queue' %}active{% endif %}">Fila <b id="count-queue">{{ counts.queue }}</b></a>
       {% endif %}
       <a href="/conversations?view=closed" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
     </div>
+
+    {% if queues %}
+    <div class="seller-panel">
+      <div class="seller-panel-title">Filas ativas</div>
+      {% for item in queues %}
+      <a href="/conversations?view=active&amp;queue={{ item.id }}" class="seller-row {% if queue_id == item.id %}active{% endif %}">
+        <span>{{ item.name }}</span>
+        <b>{{ item.open }}</b>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if sellers %}
+    <div class="seller-panel">
+      <div class="seller-panel-title">Vendedores</div>
+      <a href="/conversations?view=active" class="seller-row {% if not assignee_id %}active{% endif %}">
+        <span>Todos</span><b>{{ counts.active }}</b>
+      </a>
+      {% for seller in sellers %}
+      <a href="/conversations?view=active&amp;assignee={{ seller.id }}" class="seller-row {% if assignee_id == seller.id %}active{% endif %}">
+        <span><i class="seller-dot {% if seller.online %}on{% endif %}"></i>{{ seller.name }}</span>
+        <small>{{ 'online' if seller.online else 'offline' }}</small>
+        <b>{{ seller.open }}</b>
+      </a>
+      {% endfor %}
+    </div>
+    <style>
+      .seller-panel{flex:none;margin:8px 12px 4px;border:1px solid var(--line,#e5e7eb);border-radius:10px;padding:6px;max-height:210px;overflow:auto;font-size:13px}
+      .seller-panel-title{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.6;padding:4px 6px}
+      .seller-row{display:flex;align-items:center;gap:6px;padding:6px;border-radius:8px;color:inherit;text-decoration:none}
+      .seller-row span{flex:1;display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .seller-row small{opacity:.6;font-size:11px}
+      .seller-row b{min-width:22px;text-align:center;border-radius:999px;background:rgba(127,127,127,.15);padding:1px 6px}
+      .seller-row.active{background:rgba(255,122,36,.14);font-weight:600}
+      .seller-dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block;flex:none}
+      .seller-dot.on{background:#16a34a}
+    </style>
+    {% endif %}
 
     <div class="conversation-list" id="conversation-list">
       {% for item in conversations %}
@@ -64,6 +103,12 @@
       </div>
       <div class="chat-header-actions">
         <span class="conversation-status status-{{ conversation.status|lower }}">{{ conversation.status.replace('_',' ') }}</span>
+        {% if closer_escalated %}
+        <form action="/conversations/{{ conversation.id }}/ai/resume" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit" title="Retoma a venda de onde parou">Devolver para o Vendedor IA</button>
+        </form>
+        {% endif %}
         <form action="/conversations/{{ conversation.id }}/status" method="post">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           {% if conversation.status in closed_statuses %}
@@ -247,25 +292,49 @@
 
     <div class="context-section conversation-transfer-section">
       <div class="context-title">Transferir atendimento</div>
+      {% if ai_transfer_queue %}
+      <form action="/conversations/{{ conversation.id }}/transfer-ai" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-primary full-width" type="submit">Passar para a IA</button>
+        <small class="transfer-help">A conversa vai para a fila {{ ai_transfer_queue.name }} e a SulIA responde a última mensagem do cliente na hora.</small>
+      </form>
+      {% endif %}
+
       {% if users %}
       <form action="/conversations/{{ conversation.id }}/assign" method="post" class="stack-form compact">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="field"><span>Novo atendente</span>
+        <label class="field"><span>Vendedor</span>
           <select name="assigned_user_id" required>
-            <option value="">Selecione um atendente online</option>
+            <option value="">Selecione um vendedor</option>
             {% for item in users %}
-            <option value="{{ item.id }}">{{ item.name }} · {{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</option>
+            <option value="{{ item.id }}">{{ item.name }} · {{ 'online' if item.id in transfer_online_ids else 'offline' }} · {{ constants.teams.get(item.team, item.team) }}{% if item.branch %} · {{ item.branch.city }}{% endif %}</option>
             {% endfor %}
           </select>
         </label>
-        <button class="button button-secondary full-width conversation-transfer-button" type="submit">Transferir conversa</button>
-        <small class="transfer-help">{% if selected_queue %}Somente atendentes online da fila {{ selected_queue.name }} aparecem aqui.{% else %}Somente atendentes online compatíveis com esta conversa aparecem aqui.{% endif %}</small>
+        <button class="button button-secondary full-width conversation-transfer-button" type="submit">Transferir para vendedor</button>
+        <small class="transfer-help">{% if selected_queue %}Vendedores da fila {{ selected_queue.name }}. {% endif %}Vendedor offline recebe a conversa e vê quando entrar no WhatsApp.</small>
       </form>
       {% else %}
       <div class="info-box compact">
-        <strong>Nenhum outro atendente online</strong>
-        <p>{% if selected_queue %}Quando outro usuário da fila {{ selected_queue.name }} entrar no WhatsApp, ele aparecerá como opção para transferência.{% else %}Quando outro atendente compatível entrar no WhatsApp, ele aparecerá aqui.{% endif %}</p>
+        <strong>Nenhum vendedor nesta fila</strong>
+        <p>{% if selected_queue %}Adicione vendedores à fila {{ selected_queue.name }} ou envie a conversa para outra fila.{% else %}Envie a conversa para uma fila abaixo.{% endif %}</p>
       </div>
+      {% endif %}
+
+      {% if transfer_queues %}
+      <form action="/conversations/{{ conversation.id }}/transfer-queue" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Outra fila</span>
+          <select name="queue_id" required>
+            <option value="">Selecione uma fila</option>
+            {% for item in transfer_queues %}
+            <option value="{{ item.id }}">{{ item.name }}{% if item.ai %} · IA{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="button button-secondary full-width conversation-transfer-button" type="submit">Transferir para fila</button>
+        <small class="transfer-help">Fila com IA: a SulIA responde na hora. Sem IA: vai para um vendedor online da fila ou fica aguardando.</small>
+      </form>
       {% endif %}
     </div>
 
@@ -311,6 +380,8 @@
   const conversationId = Number(root.dataset.conversationId || 0);
   const view = root.dataset.view || 'active';
   const query = root.dataset.query || '';
+  const assignee = root.dataset.assignee || '';
+  const queue = root.dataset.queue || '';
   let inboxSignature = '';
 
   const statusLabel = value => (value || '').replaceAll('_', ' ');
@@ -354,7 +425,7 @@
     for (const item of items) {
       const row = document.createElement('a');
       row.className = 'conversation-row' + (Number(item.id) === conversationId ? ' selected' : '');
-      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '');
+      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '') + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '') + (queue ? '&queue=' + encodeURIComponent(queue) : '');
 
       const avatar = document.createElement('div');
       avatar.className = 'conversation-avatar';
@@ -399,7 +470,7 @@
 
   const pollInbox = async () => {
     try {
-      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query);
+      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query) + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '') + (queue ? '&queue=' + encodeURIComponent(queue) : '');
       const response = await fetch(url, {headers:{'Accept':'application/json'}, credentials:'same-origin'});
       if (!response.ok) return;
       const data = await response.json();

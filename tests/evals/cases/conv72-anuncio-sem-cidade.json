@@ -1,0 +1,17 @@
+{
+  "id": "conv72-anuncio-sem-cidade",
+  "conversation": 72,
+  "problem": 1,
+  "description": "Mesmo anúncio sem cidade conhecida: intenção reconhecida, cidade pendente.",
+  "kind": "sdr_fast_purchase",
+  "input": {
+    "latest_customer_message": "Tenho interesse em assinar 650mb por R$ 99,90",
+    "history": [],
+    "lead": {},
+    "confirmed_facts": {}
+  },
+  "expect": {
+    "plan_speed": 650,
+    "city": ""
+  }
+}

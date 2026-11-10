@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div><span class="eyebrow">IA · APRENDIZADO</span>
+    <h2>Analista semanal</h2>
+    <p>Resumo dos últimos 7 dias: falhas por causa, efeito das regras fixas, dúvidas que a base não respondeu e versão do manual em uso. Roda sozinho toda segunda-feira às 8h; as dúvidas sem resposta viram rascunhos do manual para você completar e aprovar.</p>
+  </div>
+  <form action="/ai/weekly/run" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button button-primary" type="submit">Rodar agora</button>
+    {% if last_run %}<small class="table-subline">Última execução: {{ last_run.created_at|datetime_br }}</small>{% endif %}
+  </form>
+</div>
+{% set q = report.quality.summary %}
+<section class="ai-agent-hero panel">
+  <div class="ai-agent-kpis">
+    <div><span>Execuções da IA</span><strong>{{ report.runs }}</strong></div>
+    <div><span>Com falha</span><strong>{{ report.failure_rate }}%</strong></div>
+    <div><span>Respostas recuperadas pela IA</span><strong>{{ report.human_fallbacks }}</strong></div>
+    <div><span>Conversas</span><strong>{{ q.conversations }}</strong></div>
+    <div><span>Nota média</span><strong>{{ q.average_score }}</strong></div>
+    <div><span>Contratos enviados</span><strong>{{ q.contracts_sent }}</strong></div>
+    <div><span>Vendas ganhas</span><strong>{{ q.won }}</strong></div>
+  </div>
+</section>
+<div class="settings-grid top-space">
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">FALHAS</span><h3>Causas das falhas</h3></div></div>
+    <div class="data-table-wrap"><table class="data-table">
+      <thead><tr><th>Causa</th><th>Vezes</th></tr></thead>
+      <tbody>
+        {% for cause, count in report.causes %}<tr><td>{{ cause }}</td><td>{{ count }}</td></tr>
+        {% else %}<tr><td colspan="2">Nenhuma falha na semana.</td></tr>{% endfor %}
+      </tbody>
+    </table></div>
+  </article>
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">REGRAS FIXAS DO SDR</span><h3>Quando cada regra agiu</h3></div></div>
+    <div class="data-table-wrap"><table class="data-table">
+      <thead><tr><th>Regra (modo)</th><th>Vezes</th></tr></thead>
+      <tbody>
+        {% for policy, count in report.policy_effects %}<tr><td>{{ policy }}</td><td>{{ count }}</td></tr>
+        {% else %}<tr><td colspan="2">Nenhuma regra mudou respostas na semana.</td></tr>{% endfor %}
+      </tbody>
+    </table></div>
+    <p class="table-subline">"rewrite" = a regra trocou a resposta da IA; "observe" = só registrou o que trocaria. Regras que quase nunca agem em "observe" podem ser desligadas pela variável AI_SDR_OBSERVE_POLICIES.</p>
+  </article>
+</div>
+<div class="settings-grid top-space">
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">MANUAL</span><h3>Dúvidas sem resposta aprovada</h3></div></div>
+    <div class="data-table-wrap"><table class="data-table">
+      <thead><tr><th>Pergunta do cliente</th><th>Vezes</th></tr></thead>
+      <tbody>
+        {% for question, count in report.unanswered %}<tr><td>{{ question }}</td><td>{{ count }}</td></tr>
+        {% else %}<tr><td colspan="2">Nenhuma dúvida sem resposta na semana.</td></tr>{% endfor %}
+      </tbody>
+    </table></div>
+    {% if drafts %}
+    <h4 class="top-space">Rascunhos aguardando sua resposta ({{ drafts|length }})</h4>
+    <ul>{% for item in drafts %}<li>{{ item.title }}</li>{% endfor %}</ul>
+    <a class="button" href="/ai/knowledge">Responder e aprovar na base de conhecimento</a>
+    {% endif %}
+  </article>
+  <article class="panel panel-span-6">
+    <div class="panel-header"><div><span class="eyebrow">VERSÃO EM USO</span><h3>Manual de cada agente</h3></div></div>
+    <div class="data-table-wrap"><table class="data-table">
+      <thead><tr><th>Agente</th><th>Versão</th><th>Itens aprovados</th><th>Em revisão</th></tr></thead>
+      <tbody>
+        {% for row in report.manual_versions %}
+        <tr><td>{{ row.agent }}</td><td><strong>{{ row.version }}</strong>{% if row.updated_at %}<span class="table-subline">alterado em {{ row.updated_at.strftime('%d/%m/%Y %H:%M') }}</span>{% endif %}</td><td>{{ row.items }}</td><td>{{ row.review }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </article>
+</div>
+<section class="panel top-space">
+  <div class="panel-header"><div><span class="eyebrow">PIORES CONVERSAS</span><h3>Candidatas a caso de teste</h3></div><a href="/ai/quality">Ver todas</a></div>
+  <div class="data-table-wrap"><table class="data-table">
+    <thead><tr><th>Nota</th><th>Conversa</th><th>Sinais</th></tr></thead>
+    <tbody>
+      {% for row in report.worst %}
+      <tr><td><strong>{{ row.score }}</strong></td><td><a href="/conversations/{{ row.conversation_id }}">{{ row.name }}</a><span class="table-subline">{{ row.outcome_label }}</span></td><td>{{ row.flags|join(' · ') if row.flags else 'Sem alertas' }}<span class="table-subline"><a href="/ai/quality/{{ row.conversation_id }}/case.json">Gerar caso de teste</a></span></td></tr>
+      {% else %}<tr><td colspan="3">Nenhuma conversa na semana.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endblock %}

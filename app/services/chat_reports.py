@@ -1140,6 +1140,10 @@ def _build_supervisor_shadow_report(
         "top_issues": [],
         "recent_findings": [],
         "guardian_reviews": 0,
+        "guardian_shadow_reviews": 0,
+        "guardian_enforce_reviews": 0,
+        "would_intervene": 0,
+        "would_intervene_rate": 0.0,
     }
     if not conversation_ids:
         return empty
@@ -1175,19 +1179,35 @@ def _build_supervisor_shadow_report(
             continue
         if conversation_id not in selected:
             continue
+        is_guardian = row.action == "AI_SUPERVISOR_GUARDIAN_REVIEW"
+        shadow_only = bool(payload.get("shadow_only")) if is_guardian else False
+        delivered = str(payload.get("verdict") or "APPROVE").upper()
+        observed = str(
+            payload.get("observed_verdict") or delivered
+        ).upper()
+        effective = observed if (is_guardian and shadow_only) else delivered
+        would_intervene = bool(payload.get("would_intervene")) if is_guardian else (
+            effective != "APPROVE"
+        )
+        if is_guardian and shadow_only:
+            would_intervene = effective != "APPROVE"
         reviews.append(
             {
                 "id": row.id,
                 "created_at": row.created_at,
                 "review_mode": (
-                    "GUARDIAN"
-                    if row.action == "AI_SUPERVISOR_GUARDIAN_REVIEW"
-                    else "SHADOW"
+                    "GUARDIAN_SHADOW"
+                    if is_guardian and shadow_only
+                    else ("GUARDIAN" if is_guardian else "SHADOW")
                 ),
+                "shadow_only": shadow_only,
                 "conversation_id": conversation_id,
                 "ai_run_id": payload.get("ai_run_id"),
                 "agent_role": str(payload.get("agent_role") or ""),
-                "verdict": str(payload.get("verdict") or "APPROVE").upper(),
+                "verdict": effective,
+                "delivered_verdict": delivered,
+                "observed_verdict": observed,
+                "would_intervene": would_intervene,
                 "risk": str(payload.get("risk") or "LOW").upper(),
                 "confidence": float(payload.get("confidence") or 0.0),
                 "quality_score": int(payload.get("quality_score") or 0),
@@ -1223,16 +1243,29 @@ def _build_supervisor_shadow_report(
 
     total = len(reviews)
     guardian_reviews = sum(
+        1 for item in reviews if item.get("review_mode") in {"GUARDIAN", "GUARDIAN_SHADOW"}
+    )
+    guardian_shadow_reviews = sum(
+        1 for item in reviews if item.get("review_mode") == "GUARDIAN_SHADOW"
+    )
+    guardian_enforce_reviews = sum(
         1 for item in reviews if item.get("review_mode") == "GUARDIAN"
     )
+    would_intervene = sum(1 for item in reviews if item.get("would_intervene"))
     non_approved = (
         verdicts["CORRECT"]
         + verdicts["REWRITE"]
         + verdicts["CORRECT_STATE"]
         + verdicts["BLOCK"]
     )
+    if guardian_enforce_reviews:
+        mode = "GUARDIAN"
+    elif guardian_shadow_reviews:
+        mode = "GUARDIAN_SHADOW"
+    else:
+        mode = "SHADOW"
     return {
-        "mode": "GUARDIAN" if guardian_reviews else "SHADOW",
+        "mode": mode,
         "reviews": total,
         "approve": verdicts["APPROVE"],
         "correct": (
@@ -1257,6 +1290,10 @@ def _build_supervisor_shadow_report(
             item for item in reviews if item["verdict"] != "APPROVE"
         ][:20],
         "guardian_reviews": guardian_reviews,
+        "guardian_shadow_reviews": guardian_shadow_reviews,
+        "guardian_enforce_reviews": guardian_enforce_reviews,
+        "would_intervene": would_intervene,
+        "would_intervene_rate": (would_intervene / total * 100) if total else 0.0,
     }
 
 
