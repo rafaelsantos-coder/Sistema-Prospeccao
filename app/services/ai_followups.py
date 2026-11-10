@@ -395,6 +395,17 @@ _CUSTOMER_STOP_RE = re.compile(
 _CUSTOMER_STOP_EXACT = {"nao obrigado", "nao obrigada", "prefiro nao", "nao quero"}
 # Intervalo mínimo entre uma mensagem nossa e um follow-up (pedido do comercial).
 FOLLOWUP_MIN_GAP = timedelta(hours=2)
+# Conversa Leonardo (10/11): oito mensagens seguidas sem resposta do cliente.
+MAX_UNANSWERED_FOLLOWUPS = 3
+
+
+def _latest_inbound_at(db: Session, conversation_id: int):
+    return db.scalar(
+        select(Message.created_at)
+        .where(Message.conversation_id == conversation_id, Message.direction == "INBOUND")
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
 
 
 # "Não" seco logo depois de uma oferta ("Quer conhecer a Black?") também é recusa:
@@ -516,6 +527,21 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
     )
     if closing and closing.step in {"ESCALATED", "COMPLETED"}:
         return False, closing.step
+    from app.services.auto_reply import only_auto_replies  # noqa: PLC0415
+
+    if only_auto_replies(db, conversation.id):
+        return False, "RESPOSTA_AUTOMATICA"
+    sent_stmt = select(AIFollowupJob.id).where(
+        AIFollowupJob.conversation_id == conversation.id,
+        AIFollowupJob.status == "ENVIADO",
+        AIFollowupJob.sent_at.is_not(None),
+    )
+    last_inbound_at = _latest_inbound_at(db, conversation.id)
+    if last_inbound_at:
+        sent_stmt = sent_stmt.where(AIFollowupJob.sent_at > utc_naive(last_inbound_at))
+    unanswered_sent = len(list(db.scalars(sent_stmt)))
+    if unanswered_sent >= MAX_UNANSWERED_FOLLOWUPS:
+        return False, "LIMITE_SEM_RESPOSTA"
     latest_inbound = _latest_inbound_id(db, conversation.id)
     if (
         job.source_message_id

@@ -1824,6 +1824,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         job.error = "Agente inexistente ou inativo."
         return "skipped"
 
+    from app.services.auto_reply import (  # noqa: PLC0415
+        ai_already_spoke_after_auto_reply,
+        only_auto_replies,
+    )
+
+    auto_reply_only = only_auto_replies(db, job.conversation_id)
+    if auto_reply_only and (
+        agent.role_type == "CLOSER" or ai_already_spoke_after_auto_reply(db, job.conversation_id)
+    ):
+        job.status = "IGNORADO"
+        job.error = "Só resposta automática de empresa; a IA já deixou recado ao responsável."
+        LOG.info("ai_job_skipped conversation=%s reason=auto_reply", job.conversation_id)
+        return "skipped"
+
     current_state = db.scalar(
         select(AIConversationState).where(
             AIConversationState.conversation_id == job.conversation_id
@@ -1870,6 +1884,8 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "skipped"
 
     context = build_ai_context(db, job=job, agent=agent)
+    if auto_reply_only:
+        context["business_auto_reply"] = True
     effective_mode = _effective_execution_mode(agent)
     run = AIRun(
         job_id=job.id,
