@@ -19,7 +19,7 @@ from app.models import Message
 _STRONG_CUES = re.compile(
     r"estamos fechad|fora do (nosso )?horario|horarios? de (funcionamento|atendimento)"
     r"|no momento,? nao (estamos|podemos|conseguimos)|nao estamos disponiveis"
-    r"|(agradece|agradecemos) (o |pelo |seu |o seu )*contato|retornaremos (o |seu |o seu )*contato"
+    r"|(agradece|agradecemos) (o |pelo |seu )?contato|retornaremos (o |seu )?contato"
     r"|em breve (retornaremos|responderemos|entraremos|daremos)|assim que possivel,? (retornaremos|responderemos)"
     r"|mensagem automatica|resposta automatica|seja bem[- ]?vind|que bom receber (voce|vc)"
     r"|aqui e (o|a) [a-z]+,? (assistente|atendente virtual)|assistente virtual"
