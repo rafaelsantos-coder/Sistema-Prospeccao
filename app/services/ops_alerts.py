@@ -296,6 +296,13 @@ def check_unanswered_customers(db: Session) -> int:
     waiting = unanswered_customers(db)
     if not waiting:
         return 0
+    for item in waiting:
+        LOG.info(
+            "ops_unanswered conversation=%s queue=%s ai_bound=%s",
+            item["conversation_id"],
+            item["queue_id"],
+            item["ai_bound"],
+        )
     unbound = sorted(
         {f"{item['queue_name'] or 'sem fila'} (id {item['queue_id']})" for item in waiting if not item["ai_bound"]}
     )
