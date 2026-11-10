@@ -334,6 +334,7 @@ def ensure_open_conversation(
                 and _queue_reserved_for_ai(db, queue, conversation.id)
                 and not _conversation_ready_for_human(db, conversation.id)
                 and conversation.assigned_user_id
+                and not _human_is_attending(db, conversation)
             ):
                 conversation.assigned_user_id = None
                 conversation.status = "EM_FILA"
@@ -607,6 +608,13 @@ def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
             )
         )
     return stmt.where(Conversation.assigned_user_id == user.id)
+
+
+def _human_is_attending(db: Session, conversation: Conversation) -> bool:
+    """Vendedor de verdade escreveu nas últimas 24h: a conversa não sai da lista dele."""
+    from app.services.ai_sdr import human_is_attending  # noqa: PLC0415
+
+    return human_is_attending(db, conversation)
 
 
 def conversation_visible_to_user(conversation: Conversation, user: User) -> bool:
