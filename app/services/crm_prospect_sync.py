@@ -212,6 +212,18 @@ def sync_prospects(db: Session, *, limit: int = BATCH_LIMIT) -> int:
                 client.add_opportunity_tag(int(opportunity_id), AI_ORIGIN_TAG)
             except (CRMIntegrationError, TypeError, ValueError) as exc:
                 LOG.warning("crm_ai_tag_failed opportunity=%s error=%s", opportunity_id, type(exc).__name__)
+        if opportunity_id and result.get("created", True):
+            try:
+                client.add_opportunity_note(
+                    int(opportunity_id),
+                    result="Primeiro contato",
+                    description=(
+                        "SDR IA iniciou a conversa pelo WhatsApp. Primeira resposta do cliente: "
+                        f"\"{(reply.body or '').strip()[:160]}\"."
+                    ),
+                )
+            except (CRMIntegrationError, TypeError, ValueError) as exc:
+                LOG.warning("crm_note_failed opportunity=%s error=%s", opportunity_id, type(exc).__name__)
         _mark_done(db, conversation.id, opportunity_id, "CRIADA" if result.get("created", True) else "JA_EXISTIA")
         created += 1
         LOG.info(
