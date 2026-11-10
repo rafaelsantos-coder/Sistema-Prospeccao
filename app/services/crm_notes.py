@@ -158,7 +158,7 @@ def record_sdr_note(db: Session, conversation_id: int, decision) -> None:
         if not opportunity_id:
             return
         result, text = built
-        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         seen = db.scalar(
             _select(AuditLog.id)
             .where(
