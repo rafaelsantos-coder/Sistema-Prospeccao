@@ -422,7 +422,11 @@ def enqueue_ai_job(
             binding.queue_id,
         )
         return None
-    if not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_stepped_in(db, conversation):
+    if (
+        not takeover
+        and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
+        and human_stepped_in(db, conversation)
+    ):
         LOG.info(
             "ai_job_skipped conversation=%s reason=human_stepped_in queue=%s",
             conversation.id,
@@ -1463,6 +1467,9 @@ def _apply_crm_decision(
             completed_at=utcnow(),
         )
     )
+    from app.services import crm_notes  # noqa: PLC0415
+
+    crm_notes.record_sdr_note(db, conversation.id, decision)
 
 
 def _client_asked_for_human(db: Session, conversation: Conversation) -> bool:

@@ -813,7 +813,14 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                     continue
                 if enabled_at and received_at < enabled_at:
                     continue
-                if db.scalar(select(AIJob.id).where(AIJob.message_id == latest.id).limit(1)):
+                # Job ignorado (ex.: "humano atendendo") não conta como resposta: se a
+                # pessoa não respondeu em 10 min, a IA assume (conversa Claudia, 10/11:
+                # cliente ficou 2h19 sem resposta).
+                if db.scalar(
+                    select(AIJob.id)
+                    .where(AIJob.message_id == latest.id, AIJob.status.not_in(["IGNORADO", "CANCELADO"]))
+                    .limit(1)
+                ):
                     continue
                 previous_owner = conversation.assigned_user_id
                 if previous_owner and previous_owner not in ai_users:
