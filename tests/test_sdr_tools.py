@@ -166,7 +166,7 @@ def test_ai_recovery_answers_and_keeps_the_conversation_with_ai(monkeypatch):
 
     assert outcome == "ai_recovery"
     sent = [item[1] for item in calls if item[0] == "send"][0]
-    assert sent.startswith("Bom dia! Aqui é da Sulnet")
+    assert sent.endswith("você já é cliente da Sulnet?")
     assert ("crm", "NONE") in calls
     assert ("audit", "AI_SDR_RECOVERY") in calls
     assert ("followup", 1) in calls

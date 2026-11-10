@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -1000,8 +1000,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
         "Quando o cliente confirmar que é para empresa/PJ, preserve esse segmento como memória confirmada e use apenas o catálogo corporativo: "
         "Corp. 200 Mega R$ 139,00; Corp. 250 Mega R$ 169,00; Corp. 650 Mega R$ 199,90, todos com IP Fixo, Sulnet Monitora, Wi-Fi 6, ativação gratuita e atendimento prioritário; "
-        "250 inclui também Sulnet Play. O diferencial corporativo inclui SLA de atendimento de até 8 horas, suporte nível 2, equipe especializada em empresas, "
-        "entrega de banda diferenciada em relação ao residencial e monitoramento proativo do NOC. Não chame de link dedicado e não trate 8 horas como prazo de resolução. "
+        "250 inclui também Sulnet Play. O diferencial corporativo inclui compromisso de reparo de até 8 horas, suporte nível 2, equipe especializada em empresas, "
+        "entrega de banda diferenciada em relação ao residencial e monitoramento proativo do NOC. Não chame de link dedicado. "
         "Não aplique promoções residenciais ao corporativo sem regra aprovada. "
         "Quando o cliente pedir todos os planos, catálogo, preços ou velocidades de forma ampla, nunca diga que não possui a lista e nunca estime valores: "
         "se o segmento confirmado for Empresa, liste os corporativos; caso contrário, ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
@@ -1541,6 +1541,18 @@ def _greeting_word(folded: str) -> str:
     return "Olá"
 
 
+def _time_greeting() -> str:
+    """Cumprimento pela hora de Santa Rosa/RS (horário de Brasília)."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    hour = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
+    if hour < 12:
+        return "Bom dia"
+    if hour < 18:
+        return "Boa tarde"
+    return "Boa noite"
+
+
 def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
     """Resposta segura que a própria IA envia quando a resposta gerada não passou.
 
@@ -1559,14 +1571,13 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
 
     candidates: list[tuple[str, list[QuickReply]]] = []
     if not previous:
+        # Abertura padrão de prospecção (comercial, 06/11): primeiro saber se já é cliente.
         candidates.append(
             (
-                f"{greeting}! Aqui é da Sulnet 😊 Você procura internet para casa, "
-                "para empresa ou um plano de celular?",
+                f"{_time_greeting()}, você já é cliente da Sulnet?",
                 [
-                    QuickReply(id="casa", label="Casa"),
-                    QuickReply(id="empresa", label="Empresa"),
-                    QuickReply(id="celular", label="Celular"),
+                    QuickReply(id="cliente_sulnet_sim", label="Sim"),
+                    QuickReply(id="cliente_sulnet_nao", label="Não"),
                 ],
             )
         )
