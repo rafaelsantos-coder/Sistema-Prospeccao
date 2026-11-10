@@ -25,7 +25,7 @@ jobs:
             --generate-hashes \
             --output-file requirements.lock.generated
       - name: Publicar lock gerado
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: requirements-lock
           path: requirements.lock.generated
