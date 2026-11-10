@@ -33,6 +33,7 @@ from app.services.ai_guardian import GuardianBlockedError, guard_outbound_messag
 from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE
 from app.services.audit import write_audit
 from app.services import ai_campaign_black as black_campaign
+from app.services import crm_prospect_sync as prospect_sync
 from app.services.crm_sulnet import (
     CRMIntegrationError,
     CRMPlaybookMissingItem,
@@ -2797,6 +2798,26 @@ def _backoffice_id(payload: dict[str, Any] | None) -> Any:
     return None
 
 
+def _payload_shows_signed(payload: dict[str, Any] | None) -> bool:
+    """Assinatura confirmada pelo CRM: contractSignatureStatus "assinado" ou contractSignedAt."""
+    if not isinstance(payload, dict):
+        return False
+    layers = [payload]
+    for key in ("opportunity", "data", "contract"):
+        inner = payload.get(key)
+        if isinstance(inner, dict):
+            layers.append(inner)
+    for layer in layers:
+        if layer.get("contractSignedAt") or layer.get("signedAt"):
+            return True
+        for key in ("contractSignatureStatus", "signatureStatus", "contractStatus"):
+            if _contract_is_signed(str(layer.get(key) or "")):
+                return True
+        if layer is not payload and _contract_is_signed(str(layer.get("status") or "")) and layer is payload.get("contract"):
+            return True
+    return False
+
+
 def _complete_if_crm_already_won(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -2817,6 +2838,16 @@ def _complete_if_crm_already_won(
             status = {}
     if _opportunity_status(status) != "won":
         return None
+    # No CRM "won" (venda ganha) não prova assinatura: só vale
+    # contractSignatureStatus == "assinado" ou contractSignedAt preenchido.
+    if not (_contract_is_signed(state.contract_status) or _payload_shows_signed(status)):
+        try:
+            record = client.get_opportunity(state.opportunity_id)
+        except CRMIntegrationError:
+            record = {}
+        if not _payload_shows_signed(record):
+            LOG.info("crm_won_without_signature opportunity=%s", state.opportunity_id)
+            return None
 
     collected["_won_after_signature"] = True
     collected["_won_confirmed_by_crm"] = True
@@ -3692,6 +3723,18 @@ def _create_crm_if_ready(
         return
 
     client = SulnetCRMClient.from_settings()
+    synced_id = prospect_sync.synced_opportunity_id(db, conversation.id)
+    if synced_id:
+        # O CRM não deduplica por externalId: reaproveita a oportunidade que o
+        # SDR já abriu em vez de criar uma segunda.
+        state.opportunity_id = synced_id
+        try:
+            client.update_opportunity(synced_id, {"clientName": name, "clientPhone": phone})
+        except CRMIntegrationError as exc:
+            LOG.warning("crm_prospect_rename_failed opportunity=%s status=%s", synced_id, exc.status_code)
+        if black_campaign.has_marker(state.handoff_summary):
+            _apply_black_tag(client, state)
+        return
     payload: dict[str, Any] = {
         "externalId": state.external_id,
         "conversationId": conversation.id,

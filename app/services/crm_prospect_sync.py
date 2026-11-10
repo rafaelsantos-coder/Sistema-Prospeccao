@@ -223,6 +223,26 @@ def sync_prospects(db: Session, *, limit: int = BATCH_LIMIT) -> int:
     return created
 
 
+def synced_opportunity_id(db: Session, conversation_id: int) -> int | None:
+    """Oportunidade que o SDR já abriu no CRM para esta conversa, se houver."""
+    import json  # noqa: PLC0415
+
+    rows = db.scalars(
+        select(AuditLog.payload_json)
+        .where(AuditLog.action == SYNC_ACTION, AuditLog.entity_id == str(conversation_id))
+        .order_by(AuditLog.id.desc())
+        .limit(3)
+    )
+    for raw in rows:
+        try:
+            value = json.loads(raw or "{}").get("opportunityId")
+            if value:
+                return int(value)
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return None
+
+
 def _mark_done(db: Session, conversation_id: int, opportunity_id, outcome: str) -> None:
     write_audit(
         db,
