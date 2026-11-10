@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import (
     AIAgentProfile,
     AIConversationState,
+    AIQueueBinding,
     CampaignQueueLink,
     Conversation,
     ConversationQueueLink,
@@ -419,6 +420,58 @@ def human_online_in_queue(db: Session, queue_id: int | None) -> bool:
         )
     )
     return any(user_id not in ai_users for user_id in members)
+
+
+MANUAL_TRANSFER_ORIGIN = "MANUAL_TRANSFER"
+
+
+def usable_ai_binding(db: Session, queue_id: int | None):
+    """Vínculo de IA ativo, com agente ativo e que de fato responde (não HUMAN)."""
+    if not queue_id:
+        return None
+    binding = db.scalar(
+        select(AIQueueBinding)
+        .options(selectinload(AIQueueBinding.agent))
+        .where(
+            AIQueueBinding.queue_id == queue_id,
+            AIQueueBinding.active.is_(True),
+        )
+    )
+    if not binding or not binding.agent or not binding.agent.active:
+        return None
+    if binding.handling_mode == "HUMAN":
+        return None
+    return binding
+
+
+def ai_queue_ids(db: Session) -> set[int]:
+    """Filas ativas em que a IA responde hoje."""
+    queues = db.scalars(select(ServiceQueue.id).where(ServiceQueue.active.is_(True)))
+    return {queue_id for queue_id in queues if usable_ai_binding(db, queue_id)}
+
+
+def ai_transfer_queue(db: Session, conversation_id: int | None) -> ServiceQueue | None:
+    """Fila para onde "Passar para a IA" manda a conversa.
+
+    A própria fila, se a IA já atende nela; senão a fila da IA (IA sempre)
+    e, por último, qualquer fila ativa com IA.
+    """
+    current = queue_for_conversation(db, conversation_id) if conversation_id else None
+    if current and usable_ai_binding(db, current.id):
+        return current
+    candidates = list(
+        db.scalars(
+            select(ServiceQueue)
+            .where(ServiceQueue.active.is_(True))
+            .order_by(ServiceQueue.name, ServiceQueue.id)
+        )
+    )
+    with_ai = [(queue, usable_ai_binding(db, queue.id)) for queue in candidates]
+    with_ai = [(queue, binding) for queue, binding in with_ai if binding]
+    for queue, binding in with_ai:
+        if binding.handling_mode == AI_WHEN_OFFLINE:
+            return queue
+    return with_ai[0][0] if with_ai else None
 
 
 def ai_owns_conversation(db: Session, conversation_id: int | None) -> bool:
