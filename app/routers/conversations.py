@@ -87,6 +87,17 @@ def _conversation_stmt(user: User):
     )
 
 
+def _conversation_unavailable(request: Request) -> RedirectResponse:
+    """Conversa que saiu da lista do usuário (reatribuída, IA assumiu): volta à lista, sem tela de erro."""
+    flash(
+        request,
+        "Esta conversa não está mais com você (foi reatribuída ou a IA assumiu). "
+        "Se o cliente pedir, ela volta para a sua lista.",
+        "warning",
+    )
+    return RedirectResponse("/conversations", status_code=303)
+
+
 def _get_conversation(db: Session, user: User, conversation_id: int) -> Conversation | None:
     return db.scalar(_conversation_stmt(user).where(Conversation.id == conversation_id))
 
@@ -414,7 +425,7 @@ def _render_inbox(
     if conversation_id is not None:
         selected = _get_conversation(db, user, conversation_id)
         if not selected:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+            return _conversation_unavailable(request)
     elif conversations:
         selected = conversations[0]
 
@@ -580,7 +591,7 @@ def send_message(
     validate_csrf(request, csrf_token)
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        return _conversation_unavailable(request)
     if conversation.lead and (conversation.lead.do_not_contact or conversation.lead.stage == "NAO_CONTATAR"):
         flash(request, "Este contato esta bloqueado para novas mensagens.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
@@ -666,7 +677,7 @@ async def send_media(
     validate_csrf(request, csrf_token)
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        return _conversation_unavailable(request)
     if conversation.lead and (
         conversation.lead.do_not_contact
         or conversation.lead.stage == "NAO_CONTATAR"
