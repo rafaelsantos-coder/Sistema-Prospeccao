@@ -219,6 +219,123 @@ def estimated_duration_seconds(total: int, interval_seconds: int) -> int:
     return max(0, int(total) - 1) * max(1, int(interval_seconds))
 
 
+def create_dispatch_from_leads(
+    db: Session,
+    *,
+    campaign: Campaign,
+    queue: ServiceQueue,
+    leads: list[Lead],
+    created_by_id: int | None,
+    interval_seconds: int = 30,
+    daily_limit: int = 100,
+    auto_start: bool = False,
+    source: str = "PROSPECTING",
+) -> tuple[CampaignDispatch | None, dict[str, Any]]:
+    """Monta um disparo a partir de leads já importados (ex.: busca Apify)."""
+    template = campaign_message_template(campaign)
+    if not template:
+        raise ValueError("A campanha selecionada não possui mensagem válida.")
+
+    interval = max(5, min(int(interval_seconds or 30), 3600))
+    limit = max(1, min(int(daily_limit or campaign.daily_limit or 100), 5000))
+
+    dispatch = CampaignDispatch(
+        campaign_id=campaign.id,
+        queue_id=queue.id,
+        status="RASCUNHO",
+        interval_seconds=interval,
+        daily_limit=limit,
+        created_by_id=created_by_id,
+    )
+    db.add(dispatch)
+    db.flush()
+
+    created = 0
+    skipped_no_phone = 0
+    skipped_blocked = 0
+    skipped_no_message = 0
+    seen_phones: set[str] = set()
+
+    for lead in leads:
+        phone = normalize_phone(lead.phone)
+        if not phone:
+            skipped_no_phone += 1
+            continue
+        if phone in seen_phones:
+            continue
+        seen_phones.add(phone)
+        if lead.do_not_contact or lead.stage in {"NAO_CONTATAR", "PERDIDO", "GANHO"}:
+            skipped_blocked += 1
+            continue
+        message = personalize_message(template, lead)
+        if not message:
+            skipped_no_message += 1
+            continue
+        set_lead_queue_preference(
+            db,
+            lead.id,
+            queue.id,
+            source=source,
+        )
+        db.add(
+            CampaignDispatchRecipient(
+                dispatch_id=dispatch.id,
+                lead_id=lead.id,
+                name=(lead.business_name or lead.contact_name or "").strip()[:180],
+                phone=phone,
+                message_body=message,
+                status="PENDENTE",
+            )
+        )
+        created += 1
+
+    summary: dict[str, Any] = {
+        "source": source,
+        "imported": created,
+        "blocked": skipped_blocked,
+        "no_phone": skipped_no_phone,
+        "no_message": skipped_no_message,
+        "estimated_duration_seconds": estimated_duration_seconds(created, interval),
+        "interval_seconds": interval,
+        "daily_limit": limit,
+        "auto_start": bool(auto_start),
+    }
+    dispatch.import_summary_json = json.dumps(summary, ensure_ascii=False)
+
+    if created == 0:
+        db.delete(dispatch)
+        db.flush()
+        return None, summary
+
+    if auto_start:
+        dispatch.status = "ATIVO"
+        dispatch.started_at = utcnow()
+        dispatch.next_send_at = utcnow()
+
+    write_audit(
+        db,
+        user=None,
+        action=(
+            "CAMPAIGN_DISPATCH_STARTED"
+            if auto_start
+            else "CAMPAIGN_DISPATCH_CREATED"
+        ),
+        entity_type="campaign_dispatch",
+        entity_id=dispatch.id,
+        payload={
+            "campaign_id": campaign.id,
+            "queue_id": queue.id,
+            "interval_seconds": interval,
+            "daily_limit": limit,
+            "source": source,
+            "summary": summary,
+            "auto_start": bool(auto_start),
+            "created_by_id": created_by_id,
+        },
+    )
+    return dispatch, summary
+
+
 def _sent_today(db: Session, dispatch_id: int) -> int:
     return int(
         db.scalar(

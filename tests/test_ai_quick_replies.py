@@ -92,6 +92,12 @@ def test_infers_yes_no_buttons_from_explicit_closed_question():
     ]
 
 
+def test_portability_number_question_does_not_get_yes_no_buttons():
+    # Bug ao vivo 04/11: "deseja portar" virava Sim/Não em vez de pedir o telefone.
+    assert infer_quick_replies("Qual número você deseja portar?") == []
+    assert quick_replies_for_message("Qual número você deseja portar?", None) == []
+
+
 def test_infers_buttons_for_core_prospecting_questions():
     assert infer_quick_replies("Você já é cliente Sulnet?") == [
         {"id": "sim", "label": "Sim"},

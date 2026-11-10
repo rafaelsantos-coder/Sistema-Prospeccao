@@ -200,6 +200,44 @@ class ZApiService:
             raise ZApiError("A Z-API retornou uma resposta inesperada.")
         return payload
 
+    def send_link_button(
+        self,
+        *,
+        phone: str,
+        message: str,
+        label: str,
+        url: str,
+    ) -> dict[str, Any]:
+        """Mensagem com botão que abre um link (ex.: wa.me da central)."""
+        normalized_phone = self.normalize_phone(phone)
+        clean_message = message.strip()
+        if not clean_message:
+            raise ZApiError("A mensagem nao pode ficar vazia.")
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    self._url("send-button-actions"),
+                    headers=self._headers(json_request=True),
+                    json={
+                        "phone": normalized_phone,
+                        "message": clean_message,
+                        "buttonActions": [
+                            {"id": "1", "type": "URL", "url": url, "label": label[:20]},
+                        ],
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise ZApiError("Nao foi possivel enviar o botao de link pela Z-API.") from exc
+        if response.status_code >= 400:
+            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ZApiError("A Z-API retornou uma resposta inesperada.") from exc
+        if not isinstance(payload, dict):
+            raise ZApiError("A Z-API retornou uma resposta inesperada.")
+        return payload
+
     def _send_media(
         self,
         *,

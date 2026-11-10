@@ -1,0 +1,26 @@
+{
+  "id": "conv72-cidade-depois-da-pergunta",
+  "conversation": 72,
+  "problem": 1,
+  "description": "Cliente responde só a cidade depois da pergunta do caminho rápido: retoma a intenção anterior.",
+  "kind": "sdr_fast_purchase",
+  "input": {
+    "latest_customer_message": "Santa Rosa",
+    "history": [
+      {
+        "direction": "INBOUND",
+        "body": "Tenho interesse em assinar 650mb por R$ 99,90"
+      },
+      {
+        "direction": "OUTBOUND",
+        "body": "Ótimo! Para confirmar a disponibilidade do plano de 650 Mega por R$ 99,90, em qual cidade será a instalação?"
+      }
+    ],
+    "lead": {},
+    "confirmed_facts": {}
+  },
+  "expect": {
+    "plan_speed": 650,
+    "city": "Santa Rosa"
+  }
+}

@@ -230,12 +230,14 @@
   <section class="report-panel">
     <header class="report-panel-header">
       <div>
-        <span class="eyebrow">SUPERVISOR IA · {{ 'GUARDIÃO ATIVO' if supervisor.mode == 'GUARDIAN' else 'MODO SOMBRA' }}</span>
-        <h3>{{ 'Intervenção em tempo real no SDR e no Vendedor IA' if supervisor.mode == 'GUARDIAN' else 'Auditoria independente do SDR e do Vendedor IA' }}</h3>
+        <span class="eyebrow">SUPERVISOR IA · {% if supervisor.mode == 'GUARDIAN' %}GUARDIÃO ATIVO{% elif supervisor.mode == 'GUARDIAN_SHADOW' %}GUARDIÃO SOMBRA{% else %}MODO SOMBRA{% endif %}</span>
+        <h3>{% if supervisor.mode == 'GUARDIAN' %}Intervenção em tempo real no SDR e no Vendedor IA{% elif supervisor.mode == 'GUARDIAN_SHADOW' %}Observação pré-envio sem alterar o WhatsApp{% else %}Auditoria independente do SDR e do Vendedor IA{% endif %}</h3>
       </div>
       <span class="report-caption">
         {% if supervisor.mode == 'GUARDIAN' %}
         Valida antes do envio e pode aprovar, reescrever, bloquear ou corrigir estado seguro.
+        {% elif supervisor.mode == 'GUARDIAN_SHADOW' %}
+        Revisa a saída e registra o que bloquearia/reescreveria; o cliente recebe a mensagem original.
         {% else %}
         Observa e recomenda; nesta fase não altera mensagens, estado, CRM ou follow-up.
         {% endif %}
@@ -246,7 +248,7 @@
       <article class="report-kpi emphasis">
         <span>Ações auditadas</span>
         <strong>{{ supervisor.reviews }}</strong>
-        <small>{{ supervisor.sdr_reviews }} SDR · {{ supervisor.closer_reviews }} Vendedor IA</small>
+        <small>{{ supervisor.sdr_reviews }} SDR · {{ supervisor.closer_reviews }} Vendedor IA{% if supervisor.guardian_shadow_reviews %} · {{ supervisor.guardian_shadow_reviews }} guardião sombra{% endif %}</small>
       </article>
       <article class="report-kpi">
         <span>Aprovaria</span>
@@ -261,11 +263,11 @@
       <article class="report-kpi">
         <span>{{ 'Bloqueou' if supervisor.mode == 'GUARDIAN' else 'Bloquearia' }}</span>
         <strong>{{ supervisor.block }}</strong>
-        <small>{{ 'Ação impedida antes de chegar ao cliente' if supervisor.mode == 'GUARDIAN' else 'Erro objetivo que o futuro Guardião deveria impedir' }}</small>
+        <small>{{ 'Ação impedida antes de chegar ao cliente' if supervisor.mode == 'GUARDIAN' else 'Erro objetivo que o Guardião deveria impedir' }}</small>
       </article>
       <article class="report-kpi">
-        <span>Intervenção sugerida</span>
-        <strong>{{ '%.1f'|format(supervisor.intervention_rate) }}%</strong>
+        <span>{{ 'Interveio' if supervisor.mode == 'GUARDIAN' else 'Interviria' }}</span>
+        <strong>{{ '%.1f'|format(supervisor.would_intervene_rate if supervisor.mode == 'GUARDIAN_SHADOW' else supervisor.intervention_rate) }}%</strong>
         <small>{{ supervisor.high_risk }} caso(s) de risco alto/crítico</small>
       </article>
       <article class="report-kpi">

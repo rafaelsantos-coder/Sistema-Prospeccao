@@ -22,6 +22,7 @@ from app.models import (
     AIFollowupJob,
     AIJob,
     AIKnowledgeItem,
+    AIKnowledgeMetadata,
     AIRun,
     Conversation,
     ConversationAssignment,
@@ -31,6 +32,9 @@ from app.models import (
 from app.services.ai_guardian import GuardianBlockedError, guard_outbound_message
 from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE
 from app.services.audit import write_audit
+from app.services import ai_campaign_black as black_campaign
+from app.services import crm_notes
+from app.services import crm_prospect_sync as prospect_sync
 from app.services.crm_sulnet import (
     CRMIntegrationError,
     CRMPlaybookMissingItem,
@@ -39,7 +43,7 @@ from app.services.crm_sulnet import (
 )
 from app.services.queue_routing import assign_queue_user, queue_for_conversation
 from app.services.zapi import ZApiError
-from app.timeutils import utcnow
+from app.timeutils import LOCAL_TZ, utcnow
 
 
 LOG = logging.getLogger("sulnet_ai_seller")
@@ -161,7 +165,7 @@ def _seller_ftth_plan(state: AIClosingState, collected: dict[str, Any]) -> dict[
             collected.get("offerPlanCode"),
         )
     )
-    numbers = {int(value) for value in re.findall(r"(?<!\\d)(250|500|650|800)(?!\\d)", haystack)}
+    numbers = {int(value) for value in re.findall(r"(?<!\d)(250|500|650|800)(?!\d)", haystack)}
     for plan in FTTH_PLANS:
         if int(plan.get("download_mbps") or 0) in numbers:
             return plan
@@ -172,14 +176,42 @@ def _seller_brl(value: float | int | Decimal) -> str:
     return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+_SELLER_ORDINAL_MONTHS = {
+    "primeiro": 1,
+    "segundo": 2,
+    "terceiro": 3,
+    "quarto": 4,
+    "quinto": 5,
+    "sexto": 6,
+    "setimo": 7,
+    "oitavo": 8,
+    "nono": 9,
+    "decimo": 10,
+    "decimo primeiro": 11,
+    "decimo segundo": 12,
+}
+
+
 def _seller_contract_months_used(text: str) -> int | None:
     key = _norm(text)
-    matches = re.findall(r"(?<!\\d)(\\d{1,2})\\s*mes(?:es)?\\b", key)
+    matches = re.findall(r"(?<!\d)(\d{1,2})\s*[ºªo]?\s*mes(?:es)?\b", key)
     for raw in matches:
         months = int(raw)
         if 0 <= months <= 12:
             return months
+    for word, months in sorted(_SELLER_ORDINAL_MONTHS.items(), key=lambda item: -len(item[0])):
+        if re.search(rf"\b{word}\s+mes\b", key):
+            return months
     return None
+
+
+def _seller_bare_months_answer(text: str) -> int | None:
+    """Resposta curta ao "com quantos meses?", como "7" ou "7 meses"."""
+    match = re.fullmatch(r"\s*(\d{1,2})\s*(?:[ºªo]\s*)?(?:mes(?:es)?)?\s*[.!]?\s*", _norm(text))
+    if not match:
+        return None
+    months = int(match.group(1))
+    return months if 0 <= months <= 12 else None
 
 
 def _seller_free_months(state: AIClosingState, collected: dict[str, Any]) -> int:
@@ -191,7 +223,7 @@ def _seller_free_months(state: AIClosingState, collected: dict[str, Any]) -> int
                 pass
 
     summary = _norm(str(getattr(state, "handoff_summary", "") or ""))
-    match = re.search(r"meses? gratis\\s*[=:]?\\s*([0-3])", summary)
+    match = re.search(r"meses? gratis\s*[=:]?\s*([0-3])", summary)
     if match:
         return int(match.group(1))
     return 0
@@ -228,6 +260,10 @@ def _seller_contract_knowledge_reply(
         return None
 
     key = _norm(text)
+    # Resposta curta ("7") à pergunta "com quantos meses pretende cancelar?".
+    pending_months: int | None = None
+    if collected.pop("_pending_penalty_months", None):
+        pending_months = _seller_bare_months_answer(text)
     asks_fidelity = any(term in key for term in (
         "fidelidade",
         "fidelizacao",
@@ -324,8 +360,10 @@ def _seller_contract_knowledge_reply(
             "Em caso de atraso, o contrato prevê juros de 1% ao mês, multa de 2% e correção monetária conforme o índice previsto no contrato."
         )
 
-    if asks_cancel_penalty:
+    if asks_cancel_penalty or pending_months is not None:
         months_used = _seller_contract_months_used(text)
+        if months_used is None:
+            months_used = pending_months
         if months_used is not None:
             if months_used >= 12:
                 return (
@@ -368,6 +406,7 @@ def _seller_contract_knowledge_reply(
                 f"fica em R$ {_seller_brl(penalty)}."
             )
 
+        collected["_pending_penalty_months"] = True
         return (
             "A multa de cancelamento é proporcional aos benefícios da contratação e aos meses que faltarem "
             "para completar os 12 meses. Se você me disser com quantos meses pretende cancelar, eu calculo "
@@ -535,6 +574,28 @@ def _yes_no(text: str) -> str:
     return "NAO_INFORMADO"
 
 
+def _billing_merge(collected: dict[str, Any], text: str) -> dict[str, Any]:
+    """Faturamento a partir do que o cliente já respondeu + a mensagem atual.
+
+    A etapa BILLING é respondida em mais de uma mensagem ("10", depois
+    "Boleto"). Ler só a mensagem atual fazia o Vendedor esquecer a resposta
+    anterior e repetir a pergunta em ciclo (conversa 62).
+    """
+    billing: dict[str, Any] = {
+        key: collected[key]
+        for key in ("paymentMethod", "dueDay", "invoiceDelivery")
+        if collected.get(key) not in (None, "")
+    }
+    current = _billing_local(text)
+    if billing.get("paymentMethod") and not current.get("dueDay"):
+        # Forma de pagamento já respondida: um número sozinho é o dia.
+        bare_day = re.fullmatch(r"\s*(\d{1,2})\s*[.!]?\s*", text or "")
+        if bare_day and 1 <= int(bare_day.group(1)) <= 31:
+            current["dueDay"] = int(bare_day.group(1))
+    billing.update(current)
+    return billing
+
+
 def _billing_local(text: str) -> dict[str, Any]:
     n = _norm(text)
     result: dict[str, Any] = {}
@@ -615,9 +676,19 @@ MOBILE_CONTRACT_BUTTONS_SDR_IA = [
 ]
 
 SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
+    "COMBO_MOBILE_PLAN": [
+        {"id": "movel_2", "label": "2GB"},
+        {"id": "movel_5", "label": "5GB"},
+        {"id": "movel_10", "label": "10GB"},
+    ],
+    "CONFIRM_SALE": [
+        {"id": "confirmo", "label": "Confirmo"},
+        {"id": "ajustar", "label": "Quero ajustar"},
+    ],
     "CREDIT_REJECTED": [
+        {"id": "comprovante", "label": "Enviar comprovante"},
+        {"id": "taxa", "label": "Pagar taxa R$150"},
         {"id": "outro_cpf", "label": "Tentar outro CPF"},
-        {"id": "encerrar", "label": "Encerrar"},
     ],
     "PLAN_CONFIRM": [
         {"id": "sim", "label": "Sim"},
@@ -734,7 +805,55 @@ def _extract_iccids(text: str) -> list[str]:
 
 def _extract_mobile_number(text: str) -> str | None:
     digits = _digits(text)
+    # Telefone BR: 10–11 (com DDD) ou 12–13 com 55. ICCID (18+) não entra aqui.
     return digits if 10 <= len(digits) <= 13 else None
+
+
+def _looks_like_phone_answer(text: str) -> bool:
+    """Resposta que é só (ou quase só) um telefone — não confunde com ICCID."""
+    digits = _digits(text)
+    if not (10 <= len(digits) <= 13):
+        return False
+    leftover = re.sub(r"[\d\s\-\(\)\.+]+", "", text or "").strip()
+    return len(leftover) <= 3
+
+
+def _recover_mobile_step_for_text(
+    step: str,
+    text: str,
+    values: dict[str, Any],
+    *,
+    sdr_ia_funnel: bool = False,
+) -> str:
+    """Se o CRM rebobinou a etapa, interpreta a mensagem na etapa correta.
+
+    Ex.: step=MOBILE_CONTRACT_TYPE com tipo já = Portabilidade e o cliente
+    manda o número → trata como MOBILE_PORT_NUMBER.
+    """
+    contract_type = str(values.get("tipo_contratacao") or "")
+    if (
+        contract_type == "Número Portabilidade"
+        and not values.get("numero_portado")
+        and _looks_like_phone_answer(text)
+        and step
+        in {
+            "MOBILE_CONTRACT_TYPE",
+            "MOBILE_PORT_TITULAR",
+            "MOBILE_PORT_ICCID",
+            "MOBILE_PORT_NUMBER",
+        }
+    ):
+        return "MOBILE_PORT_NUMBER"
+
+    if (
+        step == "MOBILE_CONTRACT_TYPE"
+        and contract_type in {"Número novo", "Número Portabilidade", "M2M"}
+        and not _extract_mobile_contract_type(text)
+    ):
+        nxt = _mobile_next_step(values, sdr_ia_funnel=sdr_ia_funnel)
+        if nxt and nxt != "MOBILE_CONTRACT_TYPE":
+            return nxt
+    return step
 
 
 def _extract_positive_int(text: str) -> int | None:
@@ -970,6 +1089,26 @@ def _playbook_disable_for_closing(
     _playbook_clear_question(collected)
 
 
+def _crm_form_value(field: str, value: Any) -> Any:
+    """Valor como o formulário do CRM aceita: "Número novo", "Número Portabilidade" ou "M2M"."""
+    if field == "tipo_contratacao" and _norm(str(value or "")) in {"portabilidade", "numero portabilidade"}:
+        return "Número Portabilidade"
+    return value
+
+
+def _find_nested(payload: Any, key: str, depth: int = 0) -> Any:
+    if depth > 6:
+        return None
+    if isinstance(payload, dict):
+        if payload.get(key) not in (None, ""):
+            return payload[key]
+        for item in payload.values():
+            found = _find_nested(item, key, depth + 1)
+            if found not in (None, ""):
+                return found
+    return None
+
+
 def _playbook_known_value(
     item: CRMPlaybookMissingItem,
     state: AIClosingState,
@@ -995,6 +1134,8 @@ def _playbook_known_value(
             return field, value
         return None
 
+    if key == "monthlyvalue" and state.offer_price is not None:
+        return "monthlyValue", _money_for_api(state.offer_price)
     if key in {"productid", "planid"}:
         plan_id = collected.get("planId")
         if plan_id not in (None, "", 0, "0"):
@@ -1007,9 +1148,15 @@ def _playbook_known_value(
     category_field = PLAYBOOK_CATEGORY_FIELD_BY_CODE.get(key)
     if category_field:
         values = _category_values(collected)
+        # Portabilidade no nome do próprio cliente: titular e documento são os
+        # dados dele (já consultados), não se pergunta de novo.
+        if key in {"portnometitular", "portcpfcnpj"} and _norm(str(values.get("port_titular") or "")) == "sim":
+            own = collected.get("name") if key == "portnometitular" else collected.get("cpf")
+            if own not in (None, "", []):
+                return f"category:{category_field}", own
         value = values.get(category_field)
         if value not in (None, "", []):
-            return f"category:{category_field}", value
+            return f"category:{category_field}", _crm_form_value(category_field, value)
 
     return None
 
@@ -1157,6 +1304,24 @@ def _sync_known_playbook_missing(
 ) -> bool:
     if not state.opportunity_id:
         return False
+    if _playbook_code_key(item.code) == "portcpfcnpj" and not collected.get("cpf"):
+        try:
+            cpf_from_crm = _digits(str(_find_nested(client.get_opportunity(state.opportunity_id), "clientCpf") or ""))
+        except CRMIntegrationError:
+            cpf_from_crm = ""
+        if len(cpf_from_crm) == 11:
+            collected["cpf"] = cpf_from_crm
+    if (
+        _playbook_code_key(item.code) in {"monthlyvalue", "productid", "planid"}
+        and not collected.get("planId")
+        and state.plan_label
+    ):
+        # 2ª venda do combo: o plano veio da escolha no WhatsApp, não do
+        # PLAN_CONFIRM; resolve o produto do catálogo antes de perguntar.
+        try:
+            _sync_plan_context(client, state, collected)
+        except CRMIntegrationError:
+            pass
     known = _playbook_known_value(item, state, collected)
     if not known:
         return False
@@ -1201,8 +1366,12 @@ def _sync_known_playbook_missing(
         }
         client.update_opportunity(state.opportunity_id, payload)
     elif field == "categoryId":
-        # categoryId acompanha o produto; sozinho não deve forçar uma troca de plano.
-        return False
+        # categoryId acompanha o produto: grava junto com o plano já resolvido
+        # no catálogo, nunca sozinho (o que poderia trocar o plano).
+        try:
+            _persist_category_form(client, state, collected)
+        except CRMIntegrationError:
+            return False
     elif field.startswith("category:"):
         category_field = field.split(":", 1)[1]
         values = _category_values(collected)
@@ -1379,23 +1548,56 @@ def _query_playbook_guidance(
                 return fallback_step, None
             return "WAITING_CRM_READY", None
 
-        first = actionable[0]
-        first_key = _playbook_code_key(first.code)
-        if (
-            first_key not in synced_codes
-            and _sync_known_playbook_missing(
-                client,
-                state,
-                collected,
-                first,
-            )
-        ):
-            # Sincroniza no máximo uma vez por campo nesta consulta. Se o CRM
-            # continuar dizendo que falta, perguntamos/seguimos pelo playbook em
-            # vez de entrar em loop de PATCH.
-            synced_codes.add(first_key)
+        # Pode pular vários missing já coletados sem novo GET /playbook.
+        selected = None
+        while actionable:
+            first = actionable[0]
+            first_key = _playbook_code_key(first.code)
+            known_locally = _playbook_known_value(first, state, collected)
+            if known_locally and first_key not in synced_codes:
+                synced = _sync_known_playbook_missing(
+                    client,
+                    state,
+                    collected,
+                    first,
+                )
+                synced_codes.add(first_key)
+                if synced:
+                    # Sincroniza no máximo uma vez por campo; reconsulta o CRM.
+                    selected = None
+                    break
+                # Sync falhou (ex.: opções do CRM não batem) → pergunta ao cliente.
+                selected = first
+                break
+            if known_locally and first_key in synced_codes:
+                # CRM ainda lista o campo depois do PATCH. Não repergunta
+                # Portabilidade/número: segue para o próximo missing sem valor local.
+                # Bug ao vivo 04/11: após informar o número a portar, o playbook
+                # voltava para tipo_contratacao e gerava looping Sim/Não.
+                actionable = [
+                    item
+                    for item in actionable
+                    if not (
+                        _playbook_code_key(item.code) in synced_codes
+                        and _playbook_known_value(item, state, collected)
+                    )
+                ]
+                continue
+            selected = first
+            break
+
+        if selected is None:
+            if not actionable:
+                LOG.warning(
+                    "seller_playbook_skip_known_exhausted opportunity=%s",
+                    state.opportunity_id,
+                )
+                _playbook_clear_question(collected)
+                return fallback_step, None
+            # Sync bem-sucedido: novo GET /playbook.
             continue
 
+        first = selected
         next_step = _playbook_step_for_item(first, state, collected)
         if not next_step:
             question = (
@@ -1450,11 +1652,63 @@ def _query_playbook_guidance(
         return next_step, question
 
     LOG.warning(
-        "seller_playbook_sync_limit opportunity=%s fallback=%s",
+        "seller_playbook_sync_limit opportunity=%s",
         state.opportunity_id,
-        fallback_step,
     )
     return fallback_step, None
+
+
+_MOBILE_STEP_ORDER = (
+    "MOBILE_CONTRACT_TYPE",
+    "MOBILE_NEW_ICCID",
+    "MOBILE_NEW_NUMBER",
+    "MOBILE_PORT_ICCID",
+    "MOBILE_PORT_NUMBER",
+    "MOBILE_PORT_TITULAR",
+    "MOBILE_PORT_NAME",
+    "MOBILE_PORT_DOC",
+    "MOBILE_PORT_DATE",
+    "MOBILE_M2M_QTY",
+    "MOBILE_M2M_ICCIDS",
+    "MOBILE_PAYMENT_METHOD",
+    "MOBILE_INVOICE_DELIVERY",
+    "MOBILE_DEBIT_BANK",
+    "MOBILE_DEBIT_AGENCY",
+    "MOBILE_DEBIT_ACCOUNT",
+    "MOBILE_DEBIT_HOLDER",
+    "MOBILE_DUE_DAY",
+    "MOBILE_ACTIVATION_FEE",
+    "MOBILE_ACTIVATION_VALUE",
+    "MOBILE_UNIFY",
+    "MOBILE_UNIFY_REASON",
+)
+
+
+def _mobile_step_rank(step: str) -> int:
+    try:
+        return _MOBILE_STEP_ORDER.index(step)
+    except ValueError:
+        return -1
+
+
+def _playbook_should_keep_local_mobile_progress(
+    *,
+    playbook_step: str,
+    fallback_step: str,
+    collected: dict[str, Any],
+) -> bool:
+    """Evita o CRM rebobinar a conversa para uma etapa móvel já respondida."""
+    if not fallback_step.startswith("MOBILE_") or not playbook_step.startswith("MOBILE_"):
+        return False
+    if playbook_step == fallback_step:
+        return False
+    values = _mobile_values(collected)
+    local_next = _mobile_next_step(values, sdr_ia_funnel=_sdr_ia_mode(collected))
+    if local_next == fallback_step:
+        return _mobile_step_rank(playbook_step) < _mobile_step_rank(fallback_step)
+    if local_next and _mobile_step_rank(playbook_step) < _mobile_step_rank(local_next):
+        return True
+    return False
 
 
 def _advance_with_playbook(
@@ -1470,10 +1724,52 @@ def _advance_with_playbook(
         collected,
         fallback_step=fallback_step,
     )
+    if _playbook_should_keep_local_mobile_progress(
+        playbook_step=next_step,
+        fallback_step=fallback_step,
+        collected=collected,
+    ):
+        LOG.warning(
+            "seller_playbook_rewind_blocked opportunity=%s",
+            state.opportunity_id,
+        )
+        next_step = fallback_step
+        question = None
+        collected["_playbook_step"] = fallback_step
+        collected.pop("_playbook_question", None)
+        collected.pop("_playbook_options", None)
     state.step = next_step
     if question:
         return question
     return _prompt_for_step(state, collected)
+
+
+def _plan_matches_label(product: dict[str, Any], label: str) -> bool:
+    """O produto do CRM corresponde ao plano escolhido na conversa?
+
+    Em 05/11 (conversa 546) a 2ª venda do combo herdou o produto da fibra da
+    1ª venda e o resumo do móvel saiu como "Internet Fibra 800 Mega". Um
+    produto de outra categoria ou de outra franquia/velocidade nunca vale.
+    """
+    wanted = _norm(label).replace(" ", "")
+    if not wanted:
+        return True
+    name = _norm(str(product.get("name") or "")).replace(" ", "")
+    category = _norm(str(product.get("categoryName") or "")).replace(" ", "")
+    product_is_mobile = "movel" in category or "movel" in name or bool(re.search(r"\d+gb", name))
+    capacity = re.search(r"(\d{1,3})gb", wanted)
+    wanted_is_mobile = "movel" in wanted or bool(capacity)
+    wanted_is_fiber = ("fibra" in wanted or "mega" in wanted or bool(re.search(r"\d{3,4}mb", wanted))) and not wanted_is_mobile
+    if wanted_is_mobile and not product_is_mobile:
+        return False
+    if wanted_is_fiber and product_is_mobile:
+        return False
+    if capacity and f"{capacity.group(1)}gb" not in name:
+        return False
+    speed = re.search(r"(\d{3,4})(?:mega|mb)", wanted)
+    if wanted_is_fiber and speed and speed.group(1) not in name:
+        return False
+    return True
 
 
 def _sync_plan_context(
@@ -1500,11 +1796,23 @@ def _sync_plan_context(
         (item for item in products if int(item.get("id") or 0) == plan_id),
         None,
     )
+    plan_corrected = False
+    if selected and state.plan_label and not _plan_matches_label(selected, state.plan_label):
+        LOG.warning(
+            "seller_plan_mismatch opportunity=%s crm_plan_id=%s",
+            state.opportunity_id,
+            plan_id,
+        )
+        selected = None
+        plan_corrected = True
 
     # O nome comercial usado no WhatsApp pode não ser o nome interno do ERP.
     # Ex.: "Sulmóvel 15GB" -> "Meu Trabalho Comigo 15GB".
     if not selected and state.plan_label:
-        query = client.products(state.plan_label)
+        query = [
+            item for item in client.products(state.plan_label)
+            if _plan_matches_label(item, state.plan_label)
+        ]
         exact = [
             item for item in query
             if _norm(str(item.get("name") or "")) == _norm(state.plan_label)
@@ -1581,6 +1889,9 @@ def _sync_plan_context(
             "planId": resolved_plan_id,
             "planLabel": collected["catalogPlanName"],
         }
+        if plan_corrected and resolved_category_id:
+            # O produto errado veio de outra categoria (fibra no lugar do móvel).
+            payload["categoryId"] = resolved_category_id
         if catalog_value not in (None, ""):
             payload["catalogMonthlyValue"] = catalog_value
             if state.offer_price is None:
@@ -2059,6 +2370,63 @@ def _contract_sign_url(payload: dict[str, Any] | None) -> str:
     return ""
 
 
+_SIGNED_VALUE = re.compile(
+    r"(?<![a-z])(?:signed|assinad[oa]|contrato_assinado|assinatura_concluida|signature_completed)(?![a-z])"
+)
+_SIGNED_KEY = re.compile(r"(?:signed_?at|assinad[oa]_?em|signature_?completed_?at|data_?assinatura)$")
+
+
+def _signed_paths(payload: Any, path: str = "", depth: int = 0) -> list[str]:
+    """Caminhos do payload do CRM que indicam contrato assinado.
+
+    Só olha campos de contrato/assinatura (status ou data de assinatura), sem
+    registrar valores pessoais.
+    """
+    found: list[str] = []
+    if depth > 5:
+        return found
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_text = re.sub(r"[^a-z0-9]+", "_", _norm(str(key))).strip("_")
+            here = f"{path}.{key_text}" if path else key_text
+            contract_scope = any(word in here for word in ("contr", "sign", "assin", "zapsign", "document"))
+            if isinstance(value, (dict, list)):
+                found.extend(_signed_paths(value, here, depth + 1))
+            elif contract_scope and _SIGNED_KEY.search(key_text) and value:
+                found.append(here)
+            elif (
+                contract_scope
+                and key_text.endswith("status")
+                and isinstance(value, str)
+                and _SIGNED_VALUE.search(re.sub(r"[^a-z0-9]+", "_", _norm(value)))
+                and not re.search(r"(?:un|not_|nao_)signed|nao_assinad", _norm(value).replace(" ", "_"))
+            ):
+                found.append(here)
+    elif isinstance(payload, list):
+        for index, item in enumerate(payload[:20]):
+            found.extend(_signed_paths(item, f"{path}[{index}]", depth + 1))
+    return found
+
+
+def _payload_shape(payload: Any, depth: int = 0) -> str:
+    """Estrutura (chaves e status) do payload, sem valores pessoais, para diagnóstico."""
+    if depth > 3:
+        return "…"
+    if isinstance(payload, dict):
+        parts = []
+        for key, value in list(payload.items())[:25]:
+            if isinstance(value, (dict, list)):
+                parts.append(f"{key}{{{_payload_shape(value, depth + 1)}}}")
+            elif "status" in str(key).lower() or "signed" in str(key).lower():
+                parts.append(f"{key}={str(value)[:25]}")
+            else:
+                parts.append(str(key))
+        return ",".join(parts)
+    if isinstance(payload, list):
+        return f"[{len(payload)}]" + (_payload_shape(payload[0], depth + 1) if payload else "")
+    return ""
+
+
 def _contract_status(payload: dict[str, Any] | None) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -2088,6 +2456,52 @@ def _contract_pending_message(exc: CRMIntegrationError) -> str:
     return _norm(" ".join(parts))
 
 
+def _infer_mobile_contract_type(collected: dict[str, Any]) -> str | None:
+    """Recupera tipo de contratação a partir do que já foi coletado na conversa."""
+    values = _mobile_values(collected)
+    current = _crm_form_value("tipo_contratacao", values.get("tipo_contratacao"))
+    if current in {"Número novo", "Número Portabilidade", "M2M"}:
+        return str(current)
+    if values.get("numero_portado") or values.get("port_titular"):
+        return "Número Portabilidade"
+    if values.get("numero_novo"):
+        return "Número novo"
+    return None
+
+
+PORT_DATE_PATCH_KEY = "productInfo.categoryForm.values.port_data"
+
+
+def _ensure_port_date(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> bool:
+    """Portabilidade sem data: usa a data da venda.
+
+    No fluxo da IA a data não é perguntada ao cliente (ele não sabe a janela
+    da operadora), mas o contract/generate do CRM passou a exigir "Data
+    portabilidade" (conversa 546, 05/11). O BKO agenda a janela real.
+    """
+    if not state.opportunity_id:
+        return False
+    values = _mobile_values(collected)
+    if "port" not in _norm(str(values.get("tipo_contratacao") or "")):
+        return False
+    if values.get("port_data"):
+        return False
+    today = utcnow().astimezone(LOCAL_TZ).strftime("%Y-%m-%d")
+    values["port_data"] = today
+    _store_category_values(collected, values, mobile=True)
+    client.update_playbook_field(
+        state.opportunity_id,
+        patch_key=PORT_DATE_PATCH_KEY,
+        value=today,
+    )
+    LOG.info("seller_port_date_default opportunity=%s", state.opportunity_id)
+    return True
+
+
 def _recover_contract_pending_field(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -2096,12 +2510,26 @@ def _recover_contract_pending_field(
 ) -> str | None:
     """Converte pendência do contract/generate em etapa conversacional segura.
 
-    O CRM é a fonte de verdade. Quando o gerador de contrato rejeita um campo
-    que o playbook havia aceitado, não insistimos em PATCH/retry automático:
-    pedimos novamente a escolha usando as opções publicadas pelo próprio CRM.
+    O CRM é a fonte de verdade. Quando o gerador de contrato rejeita
+    tipocontratacao, primeiro tentamos regravar o valor já conhecido
+    (Portabilidade/Número novo) sem rebobinar a conversa. Só perguntamos de
+    novo se não houver evidência local confiável.
     """
     pending = _contract_pending_message(exc)
     if exc.status_code != 400:
+        return None
+
+    if "data portabilidade" in pending and not collected.get("_port_date_synced"):
+        values = _mobile_values(collected)
+        values.pop("port_data", None)
+        _store_category_values(collected, values, mobile=True)
+        try:
+            if _ensure_port_date(client, state, collected):
+                # Mesmo caminho do tipo de contratação: gerar de novo uma vez.
+                collected["_contract_recovery_reason"] = "mobile_contract_type_synced"
+                collected["_port_date_synced"] = True
+        except CRMIntegrationError:
+            LOG.warning("seller_port_date_recovery_failed opportunity=%s", state.opportunity_id)
         return None
 
     if "tipo de contratacao movel" not in pending:
@@ -2109,6 +2537,44 @@ def _recover_contract_pending_field(
 
     if not state.opportunity_id:
         return None
+
+    inferred = _infer_mobile_contract_type(collected)
+    patch_key = "productInfo.categoryForm.values.tipo_contratacao"
+    already_synced = (
+        collected.get("_contract_recovery_reason") == "mobile_contract_type_synced"
+    )
+    if inferred and not already_synced:
+        values = _mobile_values(collected)
+        values["tipo_contratacao"] = inferred
+        _store_category_values(collected, values, mobile=True)
+        try:
+            client.update_playbook_field(
+                state.opportunity_id,
+                patch_key=patch_key,
+                value=inferred,
+            )
+            _persist_mobile_category_form(client, state, collected)
+        except CRMIntegrationError as sync_exc:
+            LOG.warning(
+                "seller_contract_pending_tipo_sync_failed opportunity=%s error=%s",
+                state.opportunity_id,
+                str(sync_exc)[:200],
+            )
+        else:
+            collected["_contract_generation_requested"] = False
+            collected.pop("_contract_generation_response", None)
+            collected["_contract_generation_allowed"] = True
+            collected["_contract_recovery_reason"] = "mobile_contract_type_synced"
+            collected["_playbook_code"] = "cf_tipo_contratacao"
+            collected["_playbook_patch_key"] = patch_key
+            LOG.warning(
+                "seller_contract_pending_tipo_resynced opportunity=%s tipo=%s",
+                state.opportunity_id,
+                inferred,
+            )
+            # Retorna None para o chamador tentar gerar o contrato de novo com o
+            # campo já sincronizado, em vez de reperguntar Portabilidade.
+            return None
 
     result = client.playbook(
         state.opportunity_id,
@@ -2138,7 +2604,7 @@ def _recover_contract_pending_field(
     collected["_playbook_patch_key"] = (
         item.patch_key
         if item and item.patch_key
-        else "productInfo.categoryForm.values.tipo_contratacao"
+        else patch_key
     )
     collected["_playbook_question"] = question
     collected["_playbook_options"] = [
@@ -2146,10 +2612,8 @@ def _recover_contract_pending_field(
         for option in (item.options if item else [])
     ]
 
-    values = _mobile_values(collected)
-    values.pop("tipo_contratacao", None)
-    _store_category_values(collected, values, mobile=True)
-
+    # Não apagar evidência local de portabilidade/número novo — só pedimos a
+    # confirmação do tipo quando realmente não há valor para sincronizar.
     state.step = "MOBILE_CONTRACT_TYPE"
     state.contract_status = "aguardando_tipo_contratacao"
 
@@ -2196,6 +2660,10 @@ def _prepare_contract_before_win(
 
     if not collected.get("_contract_generation_requested"):
         try:
+            _ensure_port_date(client, state, collected)
+        except CRMIntegrationError:
+            LOG.warning("seller_port_date_default_failed opportunity=%s", state.opportunity_id)
+        try:
             generated = client.generate_agent_contract(
                 state.opportunity_id,
                 send_signature=True,
@@ -2210,10 +2678,45 @@ def _prepare_contract_before_win(
             )
             if recovered is not None:
                 return recovered
-            if exc.status_code not in {404, 405, 501}:
+            # Recovery sincronizou tipocontratacao no CRM: tenta gerar de novo
+            # uma única vez sem reperguntar Portabilidade ao cliente.
+            if collected.get("_contract_recovery_reason") == "mobile_contract_type_synced":
+                try:
+                    generated = client.generate_agent_contract(
+                        state.opportunity_id,
+                        send_signature=True,
+                        require_ready_for_win=True,
+                    )
+                except CRMIntegrationError as retry_exc:
+                    recovered_retry = _recover_contract_pending_field(
+                        client,
+                        state,
+                        collected,
+                        retry_exc,
+                    )
+                    if recovered_retry is not None:
+                        return recovered_retry
+                    if retry_exc.status_code not in {404, 405, 501}:
+                        raise
+                    generated = {}
+                    collected["_contract_generation_endpoint_unavailable"] = True
+                else:
+                    collected["_contract_generation_requested"] = True
+                    collected["_contract_generation_response"] = {
+                        key: generated.get(key)
+                        for key in (
+                            "protocol",
+                            "templateId",
+                            "status",
+                            "signatureReused",
+                        )
+                        if generated.get(key) not in (None, "")
+                    }
+            elif exc.status_code not in {404, 405, 501}:
                 raise
-            generated = {}
-            collected["_contract_generation_endpoint_unavailable"] = True
+            else:
+                generated = {}
+                collected["_contract_generation_endpoint_unavailable"] = True
         else:
             collected["_contract_generation_requested"] = True
             collected["_contract_generation_response"] = {
@@ -2296,6 +2799,26 @@ def _backoffice_id(payload: dict[str, Any] | None) -> Any:
     return None
 
 
+def _payload_shows_signed(payload: dict[str, Any] | None) -> bool:
+    """Assinatura confirmada pelo CRM: contractSignatureStatus "assinado" ou contractSignedAt."""
+    if not isinstance(payload, dict):
+        return False
+    layers = [payload]
+    for key in ("opportunity", "data", "contract"):
+        inner = payload.get(key)
+        if isinstance(inner, dict):
+            layers.append(inner)
+    for layer in layers:
+        if layer.get("contractSignedAt") or layer.get("signedAt"):
+            return True
+        for key in ("contractSignatureStatus", "signatureStatus", "contractStatus"):
+            if _contract_is_signed(str(layer.get(key) or "")):
+                return True
+        if layer is not payload and _contract_is_signed(str(layer.get("status") or "")) and layer is payload.get("contract"):
+            return True
+    return False
+
+
 def _complete_if_crm_already_won(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -2305,13 +2828,27 @@ def _complete_if_crm_already_won(
 ) -> dict[str, Any] | None:
     if not state.opportunity_id:
         return None
-    status = (
-        status_payload
-        if isinstance(status_payload, dict)
-        else client.get_status(state.opportunity_id)
-    )
+    if isinstance(status_payload, dict):
+        status = status_payload
+    else:
+        try:
+            status = client.get_status(state.opportunity_id)
+        except CRMIntegrationError as exc:
+            if exc.status_code != 404:
+                raise
+            status = {}
     if _opportunity_status(status) != "won":
         return None
+    # No CRM "won" (venda ganha) não prova assinatura: só vale
+    # contractSignatureStatus == "assinado" ou contractSignedAt preenchido.
+    if not (_contract_is_signed(state.contract_status) or _payload_shows_signed(status)):
+        try:
+            record = client.get_opportunity(state.opportunity_id)
+        except CRMIntegrationError:
+            record = {}
+        if not _payload_shows_signed(record):
+            LOG.info("crm_won_without_signature opportunity=%s", state.opportunity_id)
+            return None
 
     collected["_won_after_signature"] = True
     collected["_won_confirmed_by_crm"] = True
@@ -2387,26 +2924,304 @@ def _finalize_signed_sale(
     return won
 
 
+SALE_ACCEPTANCE_STEP = "CONFIRM_SALE"
+SIGNED_FINAL_MESSAGE = (
+    "Contrato assinado com sucesso! ✅ Sua contratação está concluída. "
+    "Agora é só aguardar: nossa equipe vai entrar em contato para agendar a "
+    "ativação do seu serviço. Obrigado por escolher a Sulnet!"
+)
+
+
+def _friendly_plan_name(raw: str) -> str:
+    """Nome do plano para o cliente, sem o código interno do CRM.
+
+    "Sulnet RESID FIBRA - 800MB - 2-25" vira "Internet Fibra 800 Mega".
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    folded = _norm(text)
+    speed = re.search(r"(\d{2,4})\s*(?:mb|mega)", folded)
+    if speed and ("fibra" in folded or "ftth" in folded or "internet" in folded):
+        return f"Internet Fibra {speed.group(1)} Mega"
+    data = re.search(r"(\d{1,3})\s*gb", folded)
+    if data and ("movel" in folded or "sulmovel" in folded):
+        return f"Sulmóvel {data.group(1)}GB"
+    return text
+
+
+def _mask_cpf(value: str) -> str:
+    digits = _digits(value)
+    if len(digits) != 11:
+        return value
+    return f"{digits[:3]}.***.***-{digits[-2:]}"
+
+
+def _acceptance_customer_lines(collected: dict[str, Any], form: dict[str, Any]) -> list[str]:
+    """Dados do cliente, endereço e linha móvel no resumo para o aceite."""
+    lines: list[str] = []
+    data: list[str] = []
+    if collected.get("name"):
+        data.append(f"• Nome: {collected['name']}")
+    if collected.get("cpf"):
+        data.append(f"• CPF: {_mask_cpf(str(collected['cpf']))}")
+    if collected.get("phone"):
+        data.append(f"• Telefone: {collected['phone']}")
+    if collected.get("email"):
+        data.append(f"• E-mail: {collected['email']}")
+    street = " ".join(
+        part for part in (str(collected.get("street") or "").strip(), str(collected.get("number") or "").strip()) if part
+    )
+    if collected.get("complement"):
+        street = f"{street}, {collected['complement']}".strip(", ")
+    place = "/".join(part for part in (str(collected.get("city") or "").strip(), str(collected.get("uf") or "").strip()) if part)
+    address = " - ".join(
+        part for part in (street, str(collected.get("neighborhood") or "").strip(), place, str(collected.get("cep") or "").strip()) if part
+    )
+    if address:
+        data.append(f"• Endereço: {address}")
+    if data:
+        lines += ["", "Seus dados:"] + data
+
+    kind = str(form.get("tipo_contratacao") or "").strip()
+    if kind:
+        mobile = [f"• Tipo: {'Portabilidade' if 'port' in _norm(kind) else kind}"]
+        if form.get("numero_portado"):
+            mobile.append(f"• Número a portar: {form['numero_portado']}")
+        if form.get("numero_novo"):
+            mobile.append(f"• Número novo: {form['numero_novo']}")
+        if "port" in _norm(kind):
+            if _norm(str(form.get("port_titular") or "")) == "sim":
+                mobile.append("• Titular da linha: você mesmo")
+            elif form.get("port_nome_titular"):
+                holder = str(form["port_nome_titular"])
+                if form.get("port_cpf_cnpj"):
+                    holder += f" ({_mask_cpf(str(form['port_cpf_cnpj']))})"
+                mobile.append(f"• Titular da linha: {holder}")
+        lines += ["", "Linha móvel:"] + mobile
+    return lines
+
+
+def _sale_acceptance_prompt(
+    state: AIClosingState,
+    collected: dict[str, Any],
+    *,
+    reminder: bool = False,
+) -> str:
+    plan = _friendly_plan_name(
+        str(collected.get("catalogPlanName") or "").strip()
+        or str(state.plan_label or "").strip()
+    ) or "plano escolhido"
+    price = _money(state.offer_price)
+    if price is None:
+        price = _money(collected.get("catalogMonthlyValue"))
+    price_text = f" por R$ {_seller_brl(price)}/mês" if price is not None else ""
+    if reminder:
+        return (
+            f"Só preciso da sua confirmação para gerar o contrato: confirma a "
+            f"contratação do {plan}{price_text}? Responda Sim ou Quero ajustar."
+        )
+    lines = [
+        "Antes de gerar o contrato, confira o resumo da sua contratação:",
+        f"• Plano: {plan}",
+    ]
+    if price is not None:
+        lines.append(f"• Mensalidade: R$ {_seller_brl(price)}")
+    form = _category_values(collected)
+    payment = collected.get("paymentMethod") or form.get("forma_pagamento")
+    due_day = collected.get("dueDay") or form.get("vencimento")
+    if black_campaign.has_marker(getattr(state, "handoff_summary", "")):
+        lines.append(f"• Promoção Black: 1ª mensalidade em {black_campaign.FIRST_DUE_DATE}")
+    if payment:
+        lines.append(f"• Pagamento: {payment}")
+    if due_day:
+        lines.append(f"• Vencimento: dia {due_day}")
+    lines.extend(_acceptance_customer_lines(collected, form))
+    lines.append("")
+    lines.append(
+        "Você confirma a contratação? Com o seu Sim, eu gero o contrato para "
+        "assinatura digital."
+    )
+    return "\n".join(lines)
+
+
+def _sale_acceptance_answer(text: str) -> str:
+    n = _norm(text)
+    if re.search(r"\b(ajust\w*|alterar|corrigir|desist\w*|cancel\w*|pensar)\b", n):
+        return "NAO"
+    if re.search(r"\b(confirmo|aceito|pode gerar|pode mandar|pode enviar|quero contratar)\b", n):
+        return "SIM"
+    return _yes_no(text)
+
+
 def _finish_sale_contract(
     client: SulnetCRMClient,
     state: AIClosingState,
     collected: dict[str, Any],
 ) -> str:
+    # O contrato só é gerado depois de um aceite explícito do resumo
+    # (conversa 114: o cliente recebeu o link e respondeu "eu nem contratei nada").
+    if not collected.get("_sale_accepted"):
+        if state.opportunity_id:
+            # O resumo mostra o produto que o CRM vai usar no contrato.
+            try:
+                _sync_plan_context(client, state, collected)
+            except Exception:
+                LOG.warning("seller_summary_plan_sync_failed opportunity=%s", state.opportunity_id)
+        state.step = SALE_ACCEPTANCE_STEP
+        return _sale_acceptance_prompt(state, collected)
+    if state.opportunity_id:
+        # O cliente só aceita o plano que viu no resumo: se o produto do CRM
+        # foi corrigido depois (conversa 546), mostra o resumo certo de novo.
+        shown = str(collected.get("catalogPlanName") or "").strip()
+        _sync_plan_context(client, state, collected)
+        current = str(collected.get("catalogPlanName") or "").strip()
+        if shown and current and shown != current:
+            collected["_sale_accepted"] = False
+            state.step = SALE_ACCEPTANCE_STEP
+            return _sale_acceptance_prompt(state, collected)
     return _prepare_contract_before_win(client, state, collected)
 
 
 
-def _seller_knowledge(db: Session, agent: AIAgentProfile) -> str:
+def _seller_knowledge(db: Session, agent: AIAgentProfile, query: str = "") -> str:
     items = list(
         db.scalars(
             select(AIKnowledgeItem).where(
                 AIKnowledgeItem.agent_id == agent.id,
                 AIKnowledgeItem.active.is_(True),
-            ).order_by(AIKnowledgeItem.updated_at.desc()).limit(20)
+            ).order_by(AIKnowledgeItem.updated_at.desc()).limit(80)
         )
     )
-    text = "\n".join(f"- {item.title}: {item.content}" for item in items)
+    # Rascunhos (REVIEW/DRAFT) só valem depois de aprovados pelo gestor.
+    pending_ids = set(
+        db.scalars(
+            select(AIKnowledgeMetadata.knowledge_item_id).where(
+                AIKnowledgeMetadata.knowledge_item_id.in_([item.id for item in items] or [0]),
+                AIKnowledgeMetadata.approval_status != "APPROVED",
+            )
+        )
+    )
+    items = [item for item in items if item.id not in pending_ids]
+    terms = {
+        token for token in re.findall(r"[a-z0-9]{3,}", _norm(query))
+        if token not in _SELLER_KB_STOPWORDS
+    }
+    if terms:
+        def score(item: AIKnowledgeItem) -> int:
+            haystack = _norm(f"{item.title} {item.tags or ''} {item.content}")
+            title = _norm(f"{item.title} {item.tags or ''}")
+            return sum(3 if term in title else 1 for term in terms if term in haystack)
+
+        items.sort(key=score, reverse=True)
+    text = "\n".join(f"- {item.title}: {item.content}" for item in items[:12])
     return text[:6000]
+
+
+_SELLER_KB_STOPWORDS = {
+    "que", "qual", "quais", "como", "quanto", "quantos", "quantas", "quando", "onde",
+    "para", "pra", "com", "sem", "uma", "um", "por", "mais", "tem", "ter", "voce",
+    "voces", "isso", "esse", "essa", "meu", "minha", "sulnet", "plano", "fica",
+}
+
+_SELLER_QUESTION_START = re.compile(
+    r"^(e\s+)?(qual|quais|quanto|quantos|quantas|quando|como|onde|por que|porque|pq|"
+    r"tem|terei|vou ter|posso|preciso|precisa|e se|o que|oque|existe|da pra|aceita|"
+    r"inclui|funciona)\b"
+)
+
+
+class SellerKnowledgeAnswer(BaseModel):
+    answered: bool = False
+    answer: str = Field(default="", max_length=700)
+    human_requested: bool = False
+
+
+def _seller_is_question(text: str) -> bool:
+    n = _norm(text)
+    if len(n) < 6:
+        return False
+    starts_as_question = bool(_SELLER_QUESTION_START.match(n))
+    if "?" not in (text or "") and not starts_as_question:
+        return False
+    # Respostas da etapa escritas como pergunta ("posso pagar no boleto?",
+    # "sim, pode seguir?") continuam sendo respostas, não dúvidas.
+    if _billing_local(text):
+        return False
+    return starts_as_question or _yes_no(text) == "NAO_INFORMADO"
+
+
+def _seller_question_reply(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    text: str,
+) -> str | None:
+    """Responde dúvidas do cliente no meio do fechamento usando a base aprovada.
+
+    Antes, uma pergunta ("quanto tempo para instalar?") era lida como resposta da
+    etapa e a IA repetia a pergunta anterior. Agora ela responde pela base de
+    conhecimento do Vendedor e retoma a etapa em que parou.
+    """
+    if state.step not in SELLER_CUSTOMER_INPUT_STEPS or not _seller_is_question(text):
+        return None
+    if not settings.openai_api_key:
+        return None
+    knowledge = _seller_knowledge(db, agent, text)
+    if not knowledge:
+        return None
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
+
+    plan = state.plan_label or "não informado"
+    prompt = (
+        "Você é o Vendedor IA da Sulnet no meio de um fechamento pelo WhatsApp. "
+        "O cliente fez uma pergunta. Responda em português, em no máximo 3 frases curtas, "
+        "usando SOMENTE os fatos da base abaixo. Não invente preço, prazo, desconto ou "
+        "condição. Não faça nenhuma pergunta ao cliente: a próxima etapa será enviada "
+        "depois da sua resposta. Se a base não tiver a resposta, devolva answered=false. "
+        "Se o cliente pedir uma pessoa ou atendente, devolva human_requested=true.\n"
+        f"Plano em negociação: {plan}.\n"
+        f"Pergunta do cliente: {_redact(text)}\n"
+        f"Base aprovada:\n{knowledge}"
+    )
+    answerer = Agent(
+        name=f"{agent.name} · dúvidas",
+        instructions=(agent.system_prompt or "").strip() or "Responda só com fatos aprovados.",
+        model=agent.model or "gpt-6-luna",
+        model_settings={
+            "reasoning": {"effort": agent.reasoning_effort or "low"},
+            "verbosity": "low",
+            "timeout": 30.0,
+        },
+        output_type=SellerKnowledgeAnswer,
+    )
+    try:
+        result = run_agent_sync(answerer, prompt)
+        output = result.final_output
+        answer = (
+            output if isinstance(output, SellerKnowledgeAnswer)
+            else SellerKnowledgeAnswer.model_validate(output)
+        )
+    except Exception:
+        LOG.exception("seller_question_answer_failed step=%s", state.step)
+        return None
+    if answer.human_requested:
+        return None
+    body = answer.answer.strip()
+    if not answer.answered or not body:
+        # Vai para o analista semanal, que transforma em rascunho do manual.
+        pending = list(collected.get("_unanswered_questions") or [])
+        if text.strip() not in pending:
+            pending.append(text.strip()[:300])
+        collected["_unanswered_questions"] = pending[-10:]
+        body = (
+            "Essa informação eu não tenho confirmada aqui, e prefiro não te passar "
+            "nada errado. Já registrei sua dúvida e sigo com a sua contratação."
+        )
+    return f"{body}\n\n{_prompt_for_step(state, collected)}"
 
 
 def _interpret_ambiguous(
@@ -2419,10 +3234,11 @@ def _interpret_ambiguous(
 ) -> SellerInterpretation:
     if not settings.openai_api_key:
         return SellerInterpretation()
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     instructions = (agent.system_prompt or "").strip()
-    knowledge = _seller_knowledge(db, agent)
+    knowledge = _seller_knowledge(db, agent, message)
     prompt = (
         "Você está interpretando uma resposta curta no fechamento de uma contratação Sulnet. "
         "Não invente dados. Extraia somente o que o cliente realmente informou. "
@@ -2443,7 +3259,7 @@ def _interpret_ambiguous(
         output_type=SellerInterpretation,
     )
     try:
-        result = Runner.run_sync(interpreter, prompt)
+        result = run_agent_sync(interpreter, prompt)
         output = result.final_output
         return output if isinstance(output, SellerInterpretation) else SellerInterpretation.model_validate(output)
     except Exception:
@@ -2456,21 +3272,69 @@ def _assert_closer_owns_conversation(
     *,
     conversation: Conversation,
     agent: AIAgentProfile,
+    handoff_notice: bool = False,
 ) -> None:
     ai_state = db.scalar(
         select(AIConversationState).where(
             AIConversationState.conversation_id == conversation.id
         )
     )
+    # O aviso de transferência é a última mensagem do Vendedor: nesse momento a
+    # conversa já foi passada para um humano (HANDOFF_HUMAN) por este mesmo agente.
+    allowed_states = {"CLOSING", "HANDOFF_HUMAN"} if handoff_notice else {"CLOSING"}
     if (
         not ai_state
-        or ai_state.state != "CLOSING"
+        or ai_state.state not in allowed_states
         or int(ai_state.agent_id or 0) != int(agent.id)
         or agent.role_type != "CLOSER"
     ):
         raise CRMIntegrationError(
             "Vendedor IA tentou enviar sem propriedade exclusiva da conversa."
         )
+
+
+def _is_fixed_closing_text(closing: AIClosingState | None, text: str) -> bool:
+    """Textos montados pelo código a partir do estado, sem geração do modelo.
+
+    O resumo para aceite e o link de assinatura não passam pelo Guardião: em
+    04/11 (conversa 472) o Guardião barrou o resumo a cada minuto por "campo
+    pendente no playbook" (forma de pagamento, que o CRM preenche no
+    contract/generate) e o cliente nunca recebeu o contrato.
+    """
+    if not closing or not text.strip():
+        return False
+    if text.startswith(black_campaign.FIXED_PREFIXES) or text.startswith(_CLOSER_NOTICE_PREFIXES):
+        return True
+    if closing.step == SALE_ACCEPTANCE_STEP and text.startswith(
+        ("Antes de gerar o contrato, confira o resumo", "Só preciso da sua confirmação para gerar o contrato")
+    ):
+        return True
+    if (
+        text == SIGNED_FINAL_MESSAGE
+        and closing.step == "COMPLETED"
+        and _contract_is_signed(str(closing.contract_status or ""))
+    ):
+        return True
+    sign_url = str(closing.sign_url or "").strip()
+    return bool(sign_url) and sign_url in text and closing.step == "WAITING_SIGNATURE"
+
+
+def _is_step_prompt(closing: AIClosingState | None, text: str) -> bool:
+    """Pergunta da etapa montada pelo código ou publicada pelo playbook do CRM.
+
+    Em 04/11 (conversa 518) o Guardião barrou "qual o número a portar?" por
+    PLAYBOOK_SEQUENCE_MISMATCH e o cliente ficou parado. Para essas perguntas o
+    Guardião pode reescrever, mas nunca impedir o envio.
+    """
+    if not closing or not text.strip():
+        return False
+    collected = _load_collected(closing)
+    expected = {
+        str(_prompt_for_step(closing, collected) or "").strip(),
+        str(collected.get("_playbook_question") or "").strip(),
+    }
+    expected.discard("")
+    return text.strip() in expected
 
 
 def _send_text(
@@ -2481,6 +3345,7 @@ def _send_text(
     text: str,
     source: str = "CLOSER_TEXT",
     guardian_metadata: dict[str, Any] | None = None,
+    handoff_notice: bool = False,
 ) -> Message:
     from app.services.conversation_engine import register_message
     from app.services.zapi_instances import service_for_conversation
@@ -2491,6 +3356,7 @@ def _send_text(
         db,
         conversation=conversation,
         agent=agent,
+        handoff_notice=handoff_notice,
     )
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone:
@@ -2500,30 +3366,44 @@ def _send_text(
             AIClosingState.conversation_id == conversation.id
         )
     )
-    guardian = guard_outbound_message(
-        db,
-        agent=agent,
-        conversation=conversation,
-        reply_text=text,
-        buttons=[],
-        source=source,
-        proposed_state=str(closing.step if closing else ""),
-        metadata=(
-            guardian_metadata
-            or {"closing_step": str(closing.step if closing else "")}
-        ),
-    )
-    if not guardian.should_send:
-        raise GuardianBlockedError(guardian)
-    if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
-        text = guardian.reply_text
+    fixed_buttons: list[dict[str, str]] = []
+    if _is_fixed_closing_text(closing, text):
+        if closing.step == SALE_ACCEPTANCE_STEP:
+            fixed_buttons = _seller_step_buttons(closing.step, text, _load_collected(closing))
+    else:
+        guardian = guard_outbound_message(
+            db,
+            agent=agent,
+            conversation=conversation,
+            reply_text=text,
+            buttons=[],
+            source=source,
+            proposed_state=str(closing.step if closing else ""),
+            metadata=(
+                guardian_metadata
+                or {"closing_step": str(closing.step if closing else "")}
+            ),
+        )
+        if not guardian.should_send and not _is_step_prompt(closing, text):
+            raise GuardianBlockedError(guardian)
+        if not guardian.should_send:
+            LOG.warning(
+                "seller_guardian_override conversation=%s issues=%s",
+                conversation.id,
+                ",".join(guardian.issue_codes)[:200] or "-",
+            )
+            fixed_buttons = []
+        else:
+            if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+                text = guardian.reply_text
+            fixed_buttons = list(guardian.buttons)
 
     zapi = service_for_conversation(db, conversation.id)
-    if len(guardian.buttons) >= 2:
+    if len(fixed_buttons) >= 2:
         result = zapi.send_button_list(
             phone=phone,
             message=text,
-            buttons=guardian.buttons,
+            buttons=fixed_buttons,
         )
         message_type = "BUTTONS"
     else:
@@ -2540,6 +3420,36 @@ def _send_text(
         sender_user_id=agent.user_id,
         provider_message_id=provider_id,
         provider_zaap_id=zaap_id,
+        status="SENT",
+    )
+    db.flush()
+    return message
+
+
+def _send_fixed_step_prompt(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    conversation: Conversation,
+    text: str,
+) -> Message:
+    """Envia o texto fixo de uma etapa do fechamento sem a revisão do Guardião."""
+    from app.services.conversation_engine import register_message
+    from app.services.zapi_instances import service_for_conversation
+
+    phone = (conversation.contact.phone if conversation.contact else "").strip()
+    if not phone or not text.strip():
+        raise CRMIntegrationError("Contato sem telefone ou mensagem vazia.")
+    result = service_for_conversation(db, conversation.id).send_text(phone=phone, message=text)
+    message = register_message(
+        db,
+        conversation,
+        direction="OUTBOUND",
+        message_type="TEXT",
+        body=text,
+        sender_user_id=agent.user_id,
+        provider_message_id=str(result.get("messageId") or result.get("id") or "").strip() or None,
+        provider_zaap_id=str(result.get("zaapId") or "").strip() or None,
         status="SENT",
     )
     db.flush()
@@ -2579,18 +3489,63 @@ def _seller_step_buttons(
         if len(buttons) >= 2:
             return buttons
 
+    if step == "COMBO_MOBILE_PLAN":
+        return black_campaign.combo_page_buttons(int(current_collected.get("_combo_page") or 1))
     if step == "MOBILE_CONTRACT_TYPE" and _sdr_ia_mode(collected or {}):
         return [dict(item) for item in MOBILE_CONTRACT_BUTTONS_SDR_IA]
+    if step == "BILLING":
+        # Dias de vencimento aceitos dependem do CRM; por isso só a forma de
+        # pagamento ganha botões.
+        if not current_collected.get("paymentMethod"):
+            return [dict(item) for item in SELLER_STEP_BUTTONS["BILLING_PAYMENT_METHOD"]]
+        return []
     buttons = SELLER_STEP_BUTTONS.get(step)
     if buttons:
         return [dict(item) for item in buttons]
 
-    # Segurança adicional: se uma pergunta estruturada sair do mapa acima,
-    # ainda tentamos transformar perguntas previsíveis (ex.: sim/não) em botões.
-    from app.services.ai_quick_replies import infer_quick_replies
+    # Etapas que pedem dado digitável: nunca inferir Sim/Não.
+    # Em 04/11 o playbook "Qual número você deseja portar?" gerou botões
+    # Sim/Não por causa do cue "deseja" em infer_quick_replies.
+    free_text_steps = {
+        "NAME",
+        "CPF",
+        "BIRTH_DATE",
+        "CEP",
+        "ADDRESS_DETAILS",
+        "ADDRESS_NUMBER",
+        "EMAIL",
+        "MOBILE_NEW_ICCID",
+        "MOBILE_NEW_NUMBER",
+        "MOBILE_PORT_ICCID",
+        "MOBILE_PORT_NUMBER",
+        "MOBILE_PORT_NAME",
+        "MOBILE_PORT_DOC",
+        "MOBILE_PORT_DATE",
+        "MOBILE_M2M_QTY",
+        "MOBILE_M2M_ICCIDS",
+        "MOBILE_DUE_DAY",
+        "MOBILE_ACTIVATION_VALUE",
+        "MOBILE_DEBIT_BANK",
+        "MOBILE_DEBIT_AGENCY",
+        "MOBILE_DEBIT_ACCOUNT",
+        "MOBILE_DEBIT_HOLDER",
+        "MOBILE_UNIFY_REASON",
+        "BILLING_DUE_DAY",
+        "BILLING_ACTIVATION_VALUE",
+        "BILLING_DEBIT_BANK",
+        "BILLING_DEBIT_AGENCY",
+        "BILLING_DEBIT_ACCOUNT",
+        "BILLING_DEBIT_HOLDER",
+        "BILLING_UNIFY_REASON",
+    }
+    if step in free_text_steps:
+        return []
 
-    inferred = infer_quick_replies(text)
-    return inferred if len(inferred) >= 2 else []
+    # Segurança adicional: perguntas previsíveis (ex.: sim/não) viram botões,
+    # mas perguntas de dado livre ficam sem botão.
+    from app.services.ai_quick_replies import quick_replies_for_message
+
+    return quick_replies_for_message(text, None)
 
 
 def _send_step_message(
@@ -2606,6 +3561,7 @@ def _send_step_message(
         db,
         conversation=conversation,
         agent=agent,
+        handoff_notice=state.step == "ESCALATED",
     )
     recent_duplicate = db.scalar(
         select(Message)
@@ -2631,9 +3587,8 @@ def _send_step_message(
         and latest_message.direction == "OUTBOUND"
     ):
         LOG.info(
-            "seller_duplicate_suppressed conversation=%s step=%s message=%s",
+            "seller_duplicate_suppressed conversation=%s message=%s",
             conversation.id,
-            state.step,
             recent_duplicate.id,
         )
         return recent_duplicate
@@ -2662,6 +3617,7 @@ def _send_step_message(
             text=text,
             source="CLOSER_STEP",
             guardian_metadata=guardian_metadata,
+            handoff_notice=state.step == "ESCALATED",
         )
 
     from app.services.conversation_engine import register_message
@@ -2670,21 +3626,41 @@ def _send_step_message(
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone:
         raise CRMIntegrationError("Contato sem telefone para WhatsApp.")
-    guardian = guard_outbound_message(
-        db,
-        agent=agent,
-        conversation=conversation,
-        reply_text=text,
-        buttons=buttons,
-        source="CLOSER_STEP",
-        proposed_state=state.step,
-        metadata=guardian_metadata,
-    )
-    if not guardian.should_send:
-        raise GuardianBlockedError(guardian)
-    if guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
-        text = guardian.reply_text
-        buttons = guardian.buttons
+    if not _is_fixed_closing_text(state, text):
+        guardian = guard_outbound_message(
+            db,
+            agent=agent,
+            conversation=conversation,
+            reply_text=text,
+            buttons=buttons,
+            source="CLOSER_STEP",
+            proposed_state=state.step,
+            metadata=guardian_metadata,
+        )
+        if not guardian.should_send and not _is_step_prompt(state, text):
+            raise GuardianBlockedError(guardian)
+        if not guardian.should_send:
+            LOG.warning(
+                "seller_guardian_override conversation=%s issues=%s",
+                conversation.id,
+                ",".join(guardian.issue_codes)[:200] or "-",
+            )
+        elif guardian.verdict in {"REWRITE", "CORRECT_STATE"}:
+            text = guardian.reply_text
+            buttons = list(guardian.buttons or [])
+
+    # Guardião pode reescrever e zerar os botões. Sem ≥2 labels a Z-API
+    # estoura "Informe ao menos um botao" (conv 485 em produção).
+    if len(buttons) < 2:
+        return _send_text(
+            db,
+            agent=agent,
+            conversation=conversation,
+            text=text,
+            source="CLOSER_STEP",
+            guardian_metadata=guardian_metadata,
+            handoff_notice=state.step == "ESCALATED",
+        )
 
     zapi = service_for_conversation(db, conversation.id)
     result = zapi.send_button_list(
@@ -2733,6 +3709,21 @@ def _record_activity(
     )
 
 
+def _mark_credit_rejected_lost(client: SulnetCRMClient, state: AIClosingState) -> None:
+    """Crédito reprovado: a oportunidade vai para perda com o motivo do CRM.
+
+    Falha do CRM aqui não pode travar a conversa: o cliente segue atendido pela
+    IA e o erro vai para o estado da venda e para o log.
+    """
+    if not state.opportunity_id:
+        return
+    try:
+        client.mark_lost_credit_rejected(state.opportunity_id)
+    except CRMIntegrationError as exc:
+        state.last_error = f"Perda por crédito não registrada no CRM: {str(exc)[:300]}"
+        LOG.warning("credit_lost_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
+
+
 def _create_crm_if_ready(
     db: Session,
     *,
@@ -2748,6 +3739,18 @@ def _create_crm_if_ready(
         return
 
     client = SulnetCRMClient.from_settings()
+    synced_id = prospect_sync.synced_opportunity_id(db, conversation.id)
+    if synced_id:
+        # O CRM não deduplica por externalId: reaproveita a oportunidade que o
+        # SDR já abriu em vez de criar uma segunda.
+        state.opportunity_id = synced_id
+        try:
+            client.update_opportunity(synced_id, {"clientName": name, "clientPhone": phone})
+        except CRMIntegrationError as exc:
+            LOG.warning("crm_prospect_rename_failed opportunity=%s status=%s", synced_id, exc.status_code)
+        if black_campaign.has_marker(state.handoff_summary):
+            _apply_black_tag(client, state)
+        return
     payload: dict[str, Any] = {
         "externalId": state.external_id,
         "conversationId": conversation.id,
@@ -2761,14 +3764,141 @@ def _create_crm_if_ready(
         "runConsult": False,
     }
     payload = {key: value for key, value in payload.items() if value not in (None, "")}
-    result = client.create_opportunity(payload)
+    if black_campaign.has_marker(state.handoff_summary):
+        extras = {
+            "tags": [black_campaign.CAMPAIGN_TAG],
+            "campaign": black_campaign.CAMPAIGN_TAG,
+            "firstDueDate": black_campaign.FIRST_DUE_ISO,
+        }
+        try:
+            result = client.create_opportunity({**payload, **extras})
+        except CRMIntegrationError as exc:
+            # Campos extras que o CRM não conhece nunca podem travar a venda.
+            if exc.status_code not in (400, 422):
+                raise
+            LOG.warning("crm_black_extras_rejected status=%s", exc.status_code)
+            result = client.create_opportunity(payload)
+    else:
+        result = client.create_opportunity(payload)
     state.opportunity_id = int(result.get("opportunityId") or 0) or None
     state.protocol = str(result.get("protocol") or "")
     if not state.opportunity_id:
         raise CRMIntegrationError("CRM não retornou o identificador da oportunidade.")
+    if result.get("created") is False:
+        # A prospecção do SDR já abriu esta oportunidade com o nome provisório
+        # do WhatsApp: atualiza para o nome completo coletado no fechamento.
+        try:
+            client.update_opportunity(
+                state.opportunity_id,
+                {"clientName": name, "clientPhone": phone},
+            )
+        except CRMIntegrationError as exc:
+            LOG.warning(
+                "crm_prospect_rename_failed opportunity=%s status=%s",
+                state.opportunity_id,
+                exc.status_code,
+            )
+    if black_campaign.has_marker(state.handoff_summary):
+        _apply_black_tag(client, state)
+    try:
+        client.add_opportunity_tag(state.opportunity_id, "IA")
+    except CRMIntegrationError as exc:
+        LOG.warning("crm_ai_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
+
+
+def _apply_black_tag(client: SulnetCRMClient, state: AIClosingState) -> None:
+    """Tag "Promoção Black 2027" na oportunidade; falha da tag nunca trava a venda."""
+    if not state.opportunity_id:
+        return
+    try:
+        client.add_opportunity_tag(state.opportunity_id, black_campaign.CAMPAIGN_TAG)
+    except CRMIntegrationError as exc:
+        LOG.warning("crm_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
+
+
+COMBO_MOBILE_STEP = "COMBO_MOBILE_PLAN"
+_COMBO_KEEP_KEYS = {"_black_combo", "_sdr_ia_funnel", "_sdr_ia_defaults", "handoffReason", "freeMonths", "concessionLevel"}
+_COMBO_DROP_KEYS = {
+    "planId", "categoryId", "contractProductName", "dynamicPlaybookValues",
+    "crmPlaybook", "categoryFormValues", "mobileCategoryValues", "categoryName",
+    "catalogPlanName", "catalogMonthlyValue", "catalogPlanId", "creditStatus",
+    "paymentMethod", "dueDay", "invoiceDelivery",
+}
+
+
+def _black_combo_pending(collected: dict[str, Any]) -> bool:
+    combo = collected.get("_black_combo")
+    return isinstance(combo, dict) and combo.get("stage") == black_campaign.COMBO_STAGE_FIBER
+
+
+def _combo_after_first_signature(state: AIClosingState, collected: dict[str, Any]) -> str | None:
+    """Combo Black: a fibra foi assinada, abre a 2ª venda (móvel) na mesma conversa."""
+    if not _black_combo_pending(collected):
+        return None
+    combo = collected["_black_combo"]
+    combo["stage"] = black_campaign.COMBO_STAGE_MOBILE
+    combo["fiber"] = {
+        "opportunity_id": state.opportunity_id,
+        "protocol": state.protocol,
+        "plan": state.plan_label,
+    }
+    for key in list(collected):
+        if key in _COMBO_KEEP_KEYS:
+            continue
+        if key in _COMBO_DROP_KEYS or key.startswith("_") or "playbook" in key.lower() or key.startswith("catalog"):
+            collected.pop(key, None)
+    state.external_id = f"{state.external_id}-movel"[:120]
+    state.opportunity_id = None
+    state.protocol = ""
+    state.sign_url = ""
+    state.contract_status = ""
+    state.credit_status = ""
+    state.credit_analysis_id = None
+    state.completed_at = None
+    state.plan_label = ""
+    state.offer_price = None
+    state.step = COMBO_MOBILE_STEP
+    return black_campaign.combo_mobile_prompt()
+
+
+def _combo_choose_mobile(state: AIClosingState, collected: dict[str, Any], text: str) -> str:
+    choice = black_campaign.mobile_choice_from_text(text)
+    if choice:
+        state.plan_label = choice["name"]
+        state.offer_price = _money(choice["price"])
+        state.step = "CPF"
+        return black_campaign.combo_cpf_prompt(choice["name"], choice["price"])
+    page = int(collected.get("_combo_page") or 1)
+    folded = _norm(text)
+    if re.search(r"\b(mais planos|ver mais|mais opcoes|outros planos)\b", folded):
+        page = page + 1 if page < black_campaign.combo_page_count() else 1
+        collected["_combo_page"] = page
+        return black_campaign.combo_mobile_prompt(page)
+    if folded in {"voltar", "inicio"}:
+        collected["_combo_page"] = 1
+        return black_campaign.combo_mobile_prompt(1)
+    if _yes_no(text) == "NAO" or re.search(r"\b(desist\w*|cancel\w*|nao quero|sem movel)\b", folded):
+        collected["_black_combo"]["stage"] = black_campaign.COMBO_STAGE_DECLINED
+        state.step = "COMPLETED"
+        state.completed_at = utcnow()
+        return black_campaign.COMBO_DECLINED_MESSAGE
+    return black_campaign.combo_mobile_prompt(page)
+
+
+def _after_signed_text(state: AIClosingState, collected: dict[str, Any]) -> str:
+    """Mensagem depois de uma assinatura: próxima venda do combo ou o encerramento."""
+    if state.step == "COMPLETED":
+        combo = _combo_after_first_signature(state, collected)
+        if combo:
+            return combo
+    return SIGNED_FINAL_MESSAGE
 
 
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
+    if state.step == COMBO_MOBILE_STEP:
+        return black_campaign.combo_mobile_prompt(int(collected.get("_combo_page") or 1))
+    if state.step == SALE_ADJUST_STEP:
+        return "Me diz o que você quer ajustar: o plano, a forma de pagamento ou o dia de vencimento?"
     if _sdr_ia_mode(collected) and state.step in SDR_IA_FORBIDDEN_STEPS:
         return (
             "Vou seguir apenas com os dados necessários para concluir sua contratação "
@@ -2871,9 +4001,15 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == "BILLING_UNIFY_REASON":
         return "Qual é o motivo para não unificar as faturas?"
     if state.step == "BILLING":
-        return "Agora falta o faturamento: como prefere pagar/receber a fatura e qual dia de vencimento você prefere?"
+        if not collected.get("paymentMethod"):
+            return "Qual forma de pagamento você prefere: boleto ou débito em conta?"
+        if not collected.get("dueDay"):
+            return "Certo. Qual dia de vencimento você prefere?"
+        return "Vou confirmar os dados de faturamento para seguir."
+    if state.step == SALE_ACCEPTANCE_STEP:
+        return _sale_acceptance_prompt(state, collected, reminder=True)
     if state.step == "CREDIT_REJECTED":
-        return "A consulta cadastral não foi aprovada. Quer tentar a contratação com outro CPF?"
+        return CREDIT_REJECTED_PROMPT
     if state.step == "WAITING_CRM_READY":
         return (
             "Seus dados já foram enviados ao CRM. Estou aguardando a validação final "
@@ -2887,6 +4023,9 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
 
 
 SELLER_CUSTOMER_INPUT_STEPS = {
+    "COMBO_MOBILE_PLAN",
+    "CONFIRM_SALE",
+    "SALE_ADJUST",
     "NAME",
     "CPF",
     "BIRTH_DATE",
@@ -3014,7 +4153,7 @@ def _seller_followup_prompt(
     if state.step == "BILLING_UNIFY":
         return "Para continuar, deseja unificar esta fatura com outras faturas Sulnet?"
     if state.step == "CREDIT_REJECTED":
-        return "Se quiser continuar com outro titular, escolha Tentar outro CPF. Se não quiser continuar, escolha Encerrar."
+        return CREDIT_REJECTED_PROMPT
     if state.step == "WAITING_SIGNATURE":
         if state.sign_url:
             return f"Seu contrato continua aguardando assinatura. Quando puder, assine por aqui: {state.sign_url}"
@@ -3074,13 +4213,35 @@ def process_seller_followup(
         collected,
         followup_step=max(1, int(job.step or 1)),
     )
-    message = _send_step_message(
-        db,
-        agent=agent,
-        conversation=conversation,
-        state=state,
-        text=text,
-    )
+    try:
+        message = _send_step_message(
+            db,
+            agent=agent,
+            conversation=conversation,
+            state=state,
+            text=text,
+        )
+    except GuardianBlockedError as exc:
+        # Antes o erro escapava, o worker desfazia a transação e o mesmo
+        # follow-up voltava a cada 10 minutos, para sempre (conversa 240).
+        # Um follow-up é opcional: se o Guardião barrar, não insiste.
+        codes = ", ".join(exc.result.issue_codes) or "-"
+        job.status = "CANCELADO"
+        job.error = f"GUARDIAO_BLOQUEOU_FOLLOWUP: {codes}"[:1200]
+        write_audit(
+            db,
+            user=agent.user,
+            action="AI_CLOSER_FOLLOWUP_BLOCKED",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={
+                "followup_job_id": job.id,
+                "step": job.step,
+                "closing_step": state.step,
+                "issue_codes": list(exc.result.issue_codes),
+            },
+        )
+        return "guardian_blocked"
     job.status = "ENVIADO"
     job.sent_at = utcnow()
     job.error = None
@@ -3247,46 +4408,21 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50, since=None)
         db.flush()
     return resumed
 
-def _handoff_to_human(
-    db: Session,
-    *,
-    state: AIClosingState,
-    conversation: Conversation,
-    agent: AIAgentProfile,
-    reason: str,
-) -> None:
-    queue = queue_for_conversation(db, conversation.id)
-    owner = assign_queue_user(db, queue) if queue else None
-    if owner and owner.id == agent.user_id:
-        owner = None
-    conversation.assigned_user_id = owner.id if owner else None
-    conversation.status = "EM_ATENDIMENTO" if owner else "EM_FILA"
-    if conversation.lead:
-        conversation.lead.assigned_user_id = owner.id if owner else conversation.lead.assigned_user_id
-    db.add(
-        ConversationAssignment(
-            conversation_id=conversation.id,
-            user_id=owner.id if owner else None,
-            assigned_by_id=agent.user_id,
-            event="AI_CLOSER_HANDOFF_HUMAN",
-        )
-    )
-    state.step = "ESCALATED"
-    state.last_error = reason[:1000]
-    ai_state = db.scalar(
-        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
-    )
-    if ai_state:
-        ai_state.state = "HANDOFF_HUMAN"
-        ai_state.handoff_at = utcnow()
-    write_audit(
-        db,
-        user=agent.user,
-        action="AI_CLOSER_HANDOFF_HUMAN",
-        entity_type="conversation",
-        entity_id=conversation.id,
-        payload={"assigned_user_id": owner.id if owner else None, "reason": reason[:300]},
-    )
+def _conversation_history_rows(db: Session, conversation_id: int) -> list[dict[str, Any]]:
+    rows = db.execute(
+        select(Message.direction, Message.body)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.id)
+    ).all()
+    return [{"direction": direction, "body": body} for direction, body in rows]
+
+
+def _black_campaign_accepted(db: Session, conversation_id: int) -> bool:
+    return black_campaign.black_accepted(_conversation_history_rows(db, conversation_id))
+
+
+def _black_campaign_choice(db: Session, conversation_id: int) -> str:
+    return black_campaign.black_choice(_conversation_history_rows(db, conversation_id))
 
 
 def start_closing_from_sdr(
@@ -3334,7 +4470,12 @@ def start_closing_from_sdr(
         db.flush()
     else:
         if state.step == "COMPLETED":
-            return False
+            # Tentativa encerrada (recusa/desistência): o cliente voltou a querer
+            # comprar, então o fechamento recomeça do ponto em que parou.
+            if _contract_is_signed(str(state.contract_status or "")):
+                return False
+            state.completed_at = None
+            state.step = _resume_step_for(state, _load_collected(state))
         state.agent_id = closer.id
         if not state.plan_label:
             state.plan_label = plan_label
@@ -3346,13 +4487,32 @@ def start_closing_from_sdr(
                 f"{state.handoff_summary}\n{latest_summary}".strip()
             )[-5000:]
 
+    black_combo = False
+    if _black_campaign_accepted(db, conversation.id):
+        state.handoff_summary = black_campaign.with_marker(state.handoff_summary)[-5000:]
+        black_combo = _black_campaign_choice(db, conversation.id) == "COMBO"
+
     collected = _load_collected(state)
+    if black_combo and "_black_combo" not in collected:
+        collected["_black_combo"] = {"stage": black_campaign.COMBO_STAGE_FIBER}
+    plan_change = state.step == PLAN_CHANGE_STEP
     if state.step == "ESCALATED":
+        # Não existe mais transferência para humano: vendas antigas paradas em
+        # ESCALATED voltam para a IA do ponto em que estavam.
         resume_step = str(collected.pop("_resume_step", "") or "").strip()
-        if not resume_step:
-            # Escalonamento real para humano não deve ser reaberto automaticamente.
-            return False
-        state.step = resume_step
+        state.step = resume_step or _resume_step_for(state, collected)
+        state.last_error = ""
+        _save_collected(state, collected)
+    elif plan_change:
+        # Cliente pediu outro plano no resumo: o SDR renegociou e devolveu.
+        new_label = plan_label if plan_label != "plano combinado" else ""
+        if new_label:
+            state.plan_label = new_label
+        new_price = _money(getattr(decision, "offer_price", None))
+        if new_price is not None:
+            state.offer_price = new_price
+        collected.pop("_sale_accepted", None)
+        state.step = "PLAN_CONFIRM"
         state.last_error = ""
         _save_collected(state, collected)
     phone = _digits(conversation.contact.phone if conversation.contact else "")
@@ -3443,7 +4603,7 @@ def start_closing_from_sdr(
     prompt = ""
     try:
         _create_crm_if_ready(db, state=state, conversation=conversation)
-        if state.opportunity_id:
+        if state.opportunity_id and not plan_change:
             playbook_client = SulnetCRMClient.from_settings()
             prompt = _advance_with_playbook(
                 playbook_client,
@@ -3458,13 +4618,32 @@ def start_closing_from_sdr(
 
     if not prompt:
         prompt = _prompt_for_step(state, collected)
-    _send_step_message(
-        db,
-        agent=closer,
-        conversation=conversation,
-        state=state,
-        text=prompt,
-    )
+    try:
+        _send_step_message(
+            db,
+            agent=closer,
+            conversation=conversation,
+            state=state,
+            text=prompt,
+        )
+    except GuardianBlockedError as exc:
+        # A conversa já é do Vendedor IA e o job do SDR não volta mais: se a
+        # primeira pergunta não sair, o cliente fica parado depois do "Quero
+        # contratar". A pergunta é um texto fixo da etapa (não gerado pelo
+        # modelo), então segue sem a revisão e o bloqueio fica registrado.
+        LOG.warning(
+            "closer_first_prompt_guardian_override conversation=%s",
+            conversation.id,
+        )
+        _send_fixed_step_prompt(db, agent=closer, conversation=conversation, text=prompt)
+        write_audit(
+            db,
+            user=closer.user,
+            action="AI_CLOSER_FIRST_PROMPT_OVERRIDE",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={"step": state.step, "issues": list(exc.result.issue_codes)},
+        )
     _schedule_seller_followup(
         db,
         state=state,
@@ -3516,14 +4695,101 @@ def _finish_run(
     ai_state = db.scalar(
         select(AIConversationState).where(AIConversationState.conversation_id == job.conversation_id)
     )
-    if ai_state:
+    if ai_state and state.step == PLAN_CHANGE_STEP:
+        # A conversa voltou para o SDR renegociar o plano.
+        ai_state.last_run_id = run.id
+    elif ai_state:
         ai_state.agent_id = state.agent_id
-        ai_state.state = "CLOSING" if state.step not in {"COMPLETED", "ESCALATED"} else state.step
+        ai_state.state = "CLOSING" if state.step != "COMPLETED" else "COMPLETED"
         ai_state.last_run_id = run.id
         ai_state.updated_at = utcnow()
 
 
+def _resolve_plan_value_field(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    text: str,
+) -> str:
+    """Valor/produto do plano vêm do plano escolhido, nunca do texto livre.
+
+    Em 05/11 (conversa 546) o CRM perguntou "Confirme o valor mensal do plano",
+    o cliente respondeu "15GB" e o PATCH de monthlyValue="15GB" devolveu 500
+    em ciclo. Se o cliente citar outro plano móvel, a escolha é trocada.
+    """
+    choice = black_campaign.mobile_choice_from_text(text) if _is_mobile_plan(state, collected) else None
+    if choice and choice["name"] != state.plan_label:
+        state.plan_label = choice["name"]
+        state.offer_price = _money(choice["price"])
+        for key in ("planId", "categoryId", "catalogPlanName", "contractProductName", "_catalog_plan_synced"):
+            collected.pop(key, None)
+    _sync_plan_context(client, state, collected)
+    payload: dict[str, Any] = {}
+    if state.offer_price is not None:
+        payload["monthlyValue"] = _money_for_api(state.offer_price)
+    if collected.get("planId"):
+        payload["planId"] = collected["planId"]
+        payload["planLabel"] = collected.get("catalogPlanName") or state.plan_label
+    if payload and state.opportunity_id:
+        client.update_opportunity(state.opportunity_id, payload)
+    for key in (
+        "_playbook_dynamic_code",
+        "_playbook_dynamic_patch_key",
+        "_playbook_dynamic_label",
+        "_playbook_dynamic_options",
+    ):
+        collected.pop(key, None)
+    _save_collected(state, collected)
+    return _advance_with_playbook(
+        client,
+        state,
+        collected,
+        fallback_step="WAITING_CRM_READY",
+    )
+
+
+def _sdr_ia_auto_advance(state: AIClosingState, collected: dict[str, Any], reply: str) -> str:
+    """No funil SDR IA as etapas de faturamento não são perguntadas ao cliente.
+
+    Em 05/11 (conversa 631) a IA disse "Vou seguir apenas com os dados
+    necessários..." e ficou esperando o cliente escrever algo. A venda segue
+    sozinha pelo poller (validação do CRM → resumo para aceite).
+    """
+    if not _sdr_ia_mode(collected):
+        return reply
+    if state.step not in SDR_IA_FORBIDDEN_STEPS and state.step != "BILLING":
+        return reply
+    state.step = "WAITING_CRM_READY"
+    if not reply or reply.startswith("Vou seguir apenas com os dados necessários"):
+        return _prompt_for_step(state, collected)
+    return reply
+
+
+def _reopen_as_new_sale(db: Session, job: AIJob, conversation: Conversation) -> str | None:
+    """Venda já concluída: a nova mensagem vira uma venda nova no SDR."""
+    from app.services.ai_sdr import binding_for_conversation, process_ai_job  # noqa: PLC0415
+
+    binding = binding_for_conversation(db, conversation.id)
+    if not binding or not binding.agent or not binding.agent.active:
+        return None
+    ai_state = db.scalar(
+        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+    )
+    if ai_state is not None:
+        ai_state.state = "AI_ACTIVE"
+        ai_state.agent_id = binding.agent_id
+    job.agent_id = binding.agent_id
+    db.flush()
+    return process_ai_job(db, job)
+
+
 def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
+    result = _process_seller_job(db, job, agent)
+    crm_notes.record_milestones_safe(db, job.conversation_id)
+    return result
+
+
+def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     conversation = db.get(Conversation, job.conversation_id)
     message = db.get(Message, job.message_id)
     state = db.scalar(
@@ -3533,9 +4799,19 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         job.status = "IGNORADO"
         job.error = "Estado do fechamento não encontrado."
         return "skipped"
-    if state.step in {"COMPLETED", "ESCALATED"}:
+    if state.step in {"COMPLETED", PLAN_CHANGE_STEP}:
+        # Venda já fechada: nunca deixar o cliente sem resposta. O que ele pedir
+        # agora é uma venda nova, pelo fluxo de prospecção (SDR).
+        reopened = _reopen_as_new_sale(db, job, conversation)
+        if reopened is not None:
+            return reopened
         job.status = "IGNORADO"
+        job.error = "Venda fechada sem agente de prospecção disponível."
         return "skipped"
+    if state.step == "ESCALATED":
+        # Legado: venda que tinha ido para um consultor volta para a IA.
+        state.step = _resume_step_for(state, _load_collected(state))
+        state.last_error = ""
 
     run = AIRun(
         job_id=job.id,
@@ -3563,7 +4839,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         return "configuration"
 
     collected = _load_collected(state)
-    text = (message.body or "").strip()
+    from app.services.audio_transcription import UNREADABLE_BODY, strip_transcription_prefix
+
+    raw_text = (message.body or "").strip()
+    audio_unreadable = raw_text == UNREADABLE_BODY
+    text = strip_transcription_prefix(raw_text)
     reply = ""
     output: dict[str, Any] = {"step_before": state.step}
     client = SulnetCRMClient.from_settings()
@@ -3581,12 +4861,15 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     }
 
     try:
-        contract_knowledge_reply = _seller_contract_knowledge_reply(
+        contract_knowledge_reply = "" if audio_unreadable else _seller_contract_knowledge_reply(
             state,
             collected,
             text,
         )
-        if contract_knowledge_reply:
+        if audio_unreadable:
+            reply = f"Não consegui ouvir o seu áudio. Pode me mandar por escrito? {_prompt_for_step(state, collected)}"
+
+        elif contract_knowledge_reply:
             reply = contract_knowledge_reply
 
         elif _seller_existing_customer_plan_change_requested(
@@ -3602,6 +4885,17 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 f"essa alteração é feita pelo nosso atendimento. Entre em contato pelo {PLAN_CHANGE_SERVICE_PHONE} "
                 "que a equipe consegue verificar as opções para sua conexão."
             )
+
+        elif (
+            seller_question_reply := _seller_question_reply(
+                db,
+                agent=agent,
+                state=state,
+                collected=collected,
+                text=text,
+            )
+        ):
+            reply = seller_question_reply
 
         elif _sdr_ia_mode(collected) and (
             state.step in SDR_IA_FORBIDDEN_STEPS or state.step == "BILLING"
@@ -3628,6 +4922,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             else:
                 state.step = playbook_step
                 reply = playbook_question or _prompt_for_step(state, collected)
+
+        elif state.step == COMBO_MOBILE_STEP:
+            reply = _combo_choose_mobile(state, collected, text)
+            if state.step == "COMPLETED" and conversation.lead:
+                conversation.lead.stage = "GANHO"
+                conversation.lead.next_action_at = None
 
         elif state.step == "NAME":
             name = _extract_name(text)
@@ -3657,6 +4957,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     _create_crm_if_ready(db, state=state, conversation=conversation)
                 if not state.opportunity_id:
                     raise CRMIntegrationError("A oportunidade ainda não pôde ser criada no CRM.")
+                collected["cpf"] = cpf
                 try:
                     credit = client.consult_credit(state.opportunity_id, cpf)
                 except CRMIntegrationError as exc:
@@ -3737,6 +5038,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
             if new_cpf:
                 _clear_rejected_credit(state, collected)
+                collected["cpf"] = new_cpf
                 credit = client.consult_credit(state.opportunity_id or 0, new_cpf)
                 state.credit_status = str(credit.get("status") or "")
                 state.credit_analysis_id = int(credit.get("analysisId") or 0) or None
@@ -3766,10 +5068,27 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 _save_collected(state, collected)
                 reply = "Claro. Qual é o novo CPF que você quer usar para a contratação?"
 
+            elif _chose_credit_fee(text):
+                collected["_credit_alt"] = "FEE"
+                _save_collected(state, collected)
+                _alert_credit_alternative(db, state=state, conversation=conversation, kind="FEE")
+                reply = CREDIT_FEE_NOTICE
+
+            elif "comprovante" in normalized_text:
+                collected["_credit_alt"] = "PROOF_PENDING"
+                _save_collected(state, collected)
+                reply = CREDIT_PROOF_REQUEST
+
             elif normalized_text in {"encerrar", "nao", "não"} or _yes_no(text) == "NAO":
+                # Só aqui a oportunidade vai para perda: o cliente desistiu de
+                # tentar outro CPF e quer encerrar. A reprovação em si não perde.
+                _mark_credit_rejected_lost(client, state)
                 state.step = "COMPLETED"
                 state.completed_at = utcnow()
                 reply = "Certo. Encerramos esta tentativa de contratação. Se quiser tentar novamente depois, é só me chamar."
+
+            elif collected.get("_credit_alt") in {"FEE", "PROOF_SENT"}:
+                reply = CREDIT_ALT_WAITING_NOTICE
 
             else:
                 interpreted = _interpret_ambiguous(
@@ -3780,14 +5099,19 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     plan_label=state.plan_label,
                 )
                 if interpreted.human_requested or interpreted.wants_contest:
-                    _handoff_to_human(
+                    _record_ai_block(
                         db,
                         state=state,
                         conversation=conversation,
                         agent=agent,
-                        reason="Cliente solicitou análise/contestação após reprovação de crédito.",
+                        reason="Cliente quer contestar a reprovação de crédito.",
                     )
-                    reply = "Certo. Encaminhei seu caso para análise de um atendente, com todo o histórico da contratação."
+                    reply = (
+                        "Entendi. A análise de crédito é feita automaticamente pelo sistema da Sulnet "
+                        "e eu não consigo alterar o resultado por aqui. Você pode seguir com o CPF de "
+                        "outra pessoa da família ou encerrar esta tentativa. "
+                        + _prompt_for_step(state, collected)
+                    )
                 else:
                     reply = _prompt_for_step(state, collected)
 
@@ -3903,14 +5227,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 if answer == "NAO_INFORMADO":
                     answer = interpreted.confirmation
             if interpreted.human_requested:
-                _handoff_to_human(
-                    db,
-                    state=state,
-                    conversation=conversation,
-                    agent=agent,
-                    reason="Cliente pediu atendente durante confirmação do plano.",
-                )
-                reply = "Certo. Encaminhei a conversa para um atendente com todo o histórico."
+                reply = f"{AI_OWNS_NOTICE} {_prompt_for_step(state, collected)}"
             elif answer == "SIM":
                 try:
                     client.update_opportunity(
@@ -4005,6 +5322,54 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     fallback_step=fallback_step,
                 )
 
+        elif state.step == "PLAYBOOK_DYNAMIC_FIELD" and _playbook_code_key(
+            str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
+        ) == "categoryid":
+            # A categoria vem do plano escolhido, não de texto livre do cliente.
+            # Gravar "Internet" como texto deixava o campo pendente no CRM e o
+            # Vendedor pedia a mesma confirmação em ciclo (conversa 240).
+            category_attempts = int(collected.get("_category_sync_attempts") or 0) + 1
+            collected["_category_sync_attempts"] = category_attempts
+            try:
+                _persist_category_form(client, state, collected)
+                category_saved = True
+            except CRMIntegrationError:
+                category_saved = False
+            if category_saved:
+                for key in (
+                    "_playbook_dynamic_code",
+                    "_playbook_dynamic_patch_key",
+                    "_playbook_dynamic_label",
+                    "_playbook_dynamic_options",
+                ):
+                    collected.pop(key, None)
+                _save_collected(state, collected)
+                reply = _advance_with_playbook(
+                    client,
+                    state,
+                    collected,
+                    fallback_step="WAITING_CRM_READY",
+                )
+            still_pending = state.step == "PLAYBOOK_DYNAMIC_FIELD" and _playbook_code_key(
+                str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
+            ) == "categoryid"
+            if not category_saved or (still_pending and category_attempts >= 2):
+                _record_ai_block(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    reason="Categoria do produto não registrada no CRM após confirmação do cliente.",
+                )
+                state.step = "WAITING_CRM_READY"
+                _save_collected(state, collected)
+                reply = CLOSER_HOLD_NOTICE
+
+        elif state.step == "PLAYBOOK_DYNAMIC_FIELD" and _playbook_code_key(
+            str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
+        ) in {"monthlyvalue", "productid", "planid"}:
+            reply = _resolve_plan_value_field(client, state, collected, text)
+
         elif state.step == "PLAYBOOK_DYNAMIC_FIELD":
             value = _resolve_dynamic_playbook_value(text, collected)
             patch_key = str(
@@ -4053,14 +5418,63 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
         elif state.step.startswith("MOBILE_"):
             values = _mobile_values(collected)
-            accepted, error_reply = _apply_mobile_answer(
+            # Se o estado ficou atrás do que já está coletado (CRM rebobinou o
+            # step), avança o cursor local antes de interpretar a mensagem.
+            local_next = _mobile_next_step(
+                values,
+                sdr_ia_funnel=_sdr_ia_mode(collected),
+            )
+            if (
+                local_next
+                and local_next != state.step
+                and _mobile_step_rank(local_next) > _mobile_step_rank(state.step)
+            ):
+                LOG.warning(
+                    "seller_mobile_step_reconcile conversation=%s",
+                    conversation.id,
+                )
+                state.step = local_next
+            apply_step = _recover_mobile_step_for_text(
                 state.step,
                 text,
                 values,
                 sdr_ia_funnel=_sdr_ia_mode(collected),
             )
+            if apply_step != state.step:
+                LOG.info(
+                    "seller_mobile_step_recovered conversation=%s",
+                    conversation.id,
+                )
+                state.step = apply_step
+            accepted, error_reply = _apply_mobile_answer(
+                apply_step,
+                text,
+                values,
+                sdr_ia_funnel=_sdr_ia_mode(collected),
+            )
             if not accepted:
-                reply = error_reply
+                # CRM rebobinou para tipo de contratação já respondido: avance
+                # em vez de pedir Portabilidade/Sim de novo.
+                if (
+                    apply_step == "MOBILE_CONTRACT_TYPE"
+                    and values.get("tipo_contratacao")
+                ):
+                    next_step = _mobile_next_step(
+                        values,
+                        sdr_ia_funnel=_sdr_ia_mode(collected),
+                    )
+                    if next_step and next_step != "MOBILE_CONTRACT_TYPE":
+                        reply = _advance_with_playbook(
+                            client,
+                            state,
+                            collected,
+                            fallback_step=next_step,
+                        )
+                        _save_collected(state, collected)
+                    else:
+                        reply = error_reply
+                else:
+                    reply = error_reply
             else:
                 collected["mobileCategoryValues"] = values
                 current_code = str(collected.get("_playbook_code") or "")
@@ -4081,15 +5495,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         collected,
                         values[category_field],
                     )
-                    # Para tipo de contratação sem options publicadas, o CRM
-                    # usa a escolha apresentada ao cliente (Portabilidade/Número novo),
-                    # enquanto o estado local mantém "Número Portabilidade".
-                    if (
-                        _playbook_code_key(current_code) == "tipocontratacao"
-                        and not _playbook_current_options(collected)
-                        and values[category_field] == "Número Portabilidade"
-                    ):
-                        playbook_value = "Portabilidade"
+                    # O formulário do CRM (category_form_seeds.php) só aceita
+                    # "Número novo", "Número Portabilidade" ou "M2M"; com
+                    # "Portabilidade" o contract/generate recusa o contrato.
+                    if _playbook_code_key(current_code) == "tipocontratacao":
+                        playbook_value = _crm_form_value("tipo_contratacao", playbook_value)
                     client.update_playbook_field(
                         state.opportunity_id or 0,
                         patch_key=current_patch_key,
@@ -4191,7 +5601,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 _save_collected(state, collected)
 
         elif state.step == "BILLING":
-            billing = _billing_local(text)
+            billing = _billing_merge(collected, text)
             if not billing.get("paymentMethod") or not billing.get("dueDay"):
                 interpreted = _interpret_ambiguous(db, agent=agent, step=state.step, message=text, plan_label=state.plan_label)
                 if not billing.get("paymentMethod") and interpreted.payment_method:
@@ -4201,11 +5611,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 if not billing.get("invoiceDelivery") and interpreted.invoice_delivery:
                     billing["invoiceDelivery"] = interpreted.invoice_delivery
             if not billing.get("paymentMethod") and not billing.get("dueDay"):
-                reply = "Me informe a forma de pagamento/faturamento e o dia de vencimento. Ex.: boleto, dia 10."
+                reply = "Qual forma de pagamento você prefere: boleto ou débito em conta?"
             elif not billing.get("paymentMethod"):
                 collected["dueDay"] = billing["dueDay"]
                 _save_collected(state, collected)
-                reply = "Perfeito. E qual forma de pagamento/faturamento você prefere?"
+                reply = "Perfeito. E qual forma de pagamento você prefere: boleto ou débito em conta?"
             elif not billing.get("dueDay"):
                 collected["paymentMethod"] = billing["paymentMethod"]
                 if billing.get("invoiceDelivery"):
@@ -4227,6 +5637,43 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 else:
                     state.step = playbook_step
                     reply = playbook_question or _prompt_for_step(state, collected)
+
+        elif state.step == SALE_ACCEPTANCE_STEP and _message_predates_summary(db, conversation.id, message):
+            # Conversa 546: "Trocar para 15GB" chegou antes do resumo, foi lido
+            # como recusa do resumo e a venda foi para um consultor. Mensagem
+            # anterior ao resumo não aceita nem recusa o resumo.
+            LOG.info("seller_stale_message_ignored conversation=%s message=%s", conversation.id, message.id)
+            reply = ""
+
+        elif state.step == SALE_ACCEPTANCE_STEP:
+            answer = _sale_acceptance_answer(text)
+            interpreted = SellerInterpretation()
+            if answer == "NAO_INFORMADO":
+                interpreted = _interpret_ambiguous(
+                    db,
+                    agent=agent,
+                    step=state.step,
+                    message=text,
+                    plan_label=state.plan_label,
+                )
+                answer = interpreted.confirmation
+            if interpreted.human_requested:
+                reply = f"{AI_OWNS_NOTICE} {_sale_acceptance_prompt(state, collected, reminder=True)}"
+            elif answer == "SIM":
+                collected["_sale_accepted"] = True
+                collected["_sale_accepted_at"] = utcnow().isoformat()
+                collected["_sale_accepted_message_id"] = message.id
+                reply = _finish_sale_contract(client, state, collected)
+            elif answer == "NAO":
+                combo = collected.get("_black_combo") if isinstance(collected.get("_black_combo"), dict) else {}
+                state.step = SALE_ADJUST_STEP
+                _save_collected(state, collected)
+                reply = COMBO_MOBILE_DECLINE_NOTICE if combo.get("stage") == black_campaign.COMBO_STAGE_MOBILE else SALE_DECLINE_NOTICE
+            else:
+                reply = _sale_acceptance_prompt(state, collected, reminder=True)
+
+        elif state.step == SALE_ADJUST_STEP:
+            reply = _handle_sale_adjustment(db, state=state, conversation=conversation, collected=collected, text=text)
 
         elif state.step == "WAITING_CRM_READY":
             playbook_step, playbook_question = _query_playbook_guidance(
@@ -4253,11 +5700,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 status_payload=status,
             )
             if already_won is not None:
-                reply = (
-                    "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                    "Agora o pedido segue para o time responsável pela ativação."
-                )
-                if conversation.lead:
+                reply = _after_signed_text(state, collected)
+                if reply == SIGNED_FINAL_MESSAGE and conversation.lead:
                     conversation.lead.stage = "GANHO"
                     conversation.lead.next_action_at = None
             else:
@@ -4275,11 +5719,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 if _contract_is_signed(state.contract_status):
                     _finalize_signed_sale(client, state, collected)
                     if state.step == "COMPLETED":
-                        reply = (
-                            "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                            "Agora o pedido segue para o time responsável pela ativação."
-                        )
-                        if conversation.lead:
+                        reply = _after_signed_text(state, collected)
+                        if reply == SIGNED_FINAL_MESSAGE and conversation.lead:
                             conversation.lead.stage = "GANHO"
                             conversation.lead.next_action_at = None
                     else:
@@ -4300,6 +5741,10 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             reply = "Vou conferir o andamento da sua contratação."
             state.step = "WAITING_CONTRACT"
 
+        reply = _sdr_ia_auto_advance(state, collected, reply)
+        # Rodada sem falha do CRM: encerra o bloqueio anterior, se havia.
+        collected.pop("_hold_retries", None)
+        collected.pop("_hold_notice_step", None)
         _save_collected(state, collected)
         if reply:
             _send_step_message(
@@ -4326,6 +5771,8 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 )
                 conversation.status = "RESOLVIDO"
                 conversation.closed_at = utcnow()
+        if state.step == PLAN_CHANGE_STEP:
+            _return_to_sdr_for_plan_change(db, state=state, conversation=conversation)
         _record_activity(
             db,
             conversation=conversation,
@@ -4396,6 +5843,61 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         job.error = str(exc)[:1200]
 
         attempts = int(job.attempts or 0)
+        kind = _closer_failure_kind(exc)
+        crm_message = str(exc)[:300]
+        if kind == "ownership":
+            job.status = "IGNORADO"
+            job.locked_at = None
+            return "skipped"
+        if kind == "contract" or (kind in {"config", "logic"} and attempts >= 1):
+            # O CRM não gera o contrato só com novas tentativas imediatas
+            # (ex.: "Nenhum template de contrato"): a venda fica com a IA, o
+            # cliente é avisado e o job volta a tentar mais tarde.
+            _retry_job_later(job, state)
+            _keep_sale_with_ai(
+                db,
+                state=state,
+                conversation=conversation,
+                agent=agent,
+                reason=f"CRM recusou ({kind}) na etapa {state.step}: {crm_message}",
+                notice=CONTRACT_HOLD_NOTICE if kind == "contract" else CLOSER_HOLD_NOTICE,
+            )
+            return "held"
+        if kind == "data" and attempts >= 1:
+            # Dado recusado pelo CRM: não repete o mesmo PATCH para sempre.
+            errors = collected.setdefault("_data_errors", {})
+            errors[state.step] = int(errors.get(state.step) or 0) + 1
+            _save_collected(state, collected)
+            job.status = "CONCLUIDO"
+            job.locked_at = None
+            if errors[state.step] >= 2:
+                _retry_job_later(job, state)
+                _keep_sale_with_ai(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    reason=f"CRM recusou o dado da etapa {state.step} duas vezes: {crm_message}",
+                    notice=CLOSER_HOLD_NOTICE,
+                )
+                return "held"
+            try:
+                _send_step_message(
+                    db,
+                    agent=agent,
+                    conversation=conversation,
+                    state=state,
+                    text=f"{DATA_RETRY_PREFIX} {_prompt_for_step(state, collected)}",
+                )
+            except Exception:
+                LOG.exception("closer_data_retry_prompt_failed conversation=%s", conversation.id)
+            LOG.warning(
+                "closer_data_rejected conversation=%s job=%s error=%s",
+                conversation.id,
+                job.id,
+                crm_message,
+            )
+            return "reasked"
         if attempts < 3:
             run.reply_text = ""
             job.status = "PENDENTE"
@@ -4424,6 +5926,23 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             except Exception:
                 LOG.exception("seller_technical_notice_failed conversation=%s", conversation.id)
 
+        cycles = int(collected.get("_retry_later_cycles") or 0) + 1
+        collected["_retry_later_cycles"] = cycles
+        _save_collected(state, collected)
+        if cycles > 3:
+            # ~15 minutos sem CRM: a venda continua com a IA, que tenta de novo
+            # a cada 30 minutos e avisa o supervisor.
+            _retry_job_later(job, state)
+            _keep_sale_with_ai(
+                db,
+                state=state,
+                conversation=conversation,
+                agent=agent,
+                reason=f"CRM indisponível por mais de 15 minutos na etapa {state.step}: {crm_message}",
+                notice=CLOSER_HOLD_NOTICE,
+            )
+            return "held"
+
         run.reply_text = ""
         job.status = "PENDENTE"
         job.attempts = 0
@@ -4443,13 +5962,532 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         run.status = "FALHOU"
         run.error = str(exc)[:1200]
         run.finished_at = utcnow()
-        job.status = "FALHOU"
         job.error = str(exc)[:1200]
-        _handoff_to_human(
-            db, state=state, conversation=conversation, agent=agent,
-            reason="Falha inesperada no Vendedor IA.",
+        _retry_job_later(job, state)
+        _keep_sale_with_ai(
+            db,
+            state=state,
+            conversation=conversation,
+            agent=agent,
+            reason=f"Falha inesperada no Vendedor IA: {type(exc).__name__}: {str(exc)[:200]}",
+            notice=CLOSER_HOLD_NOTICE,
         )
-        return "failed"
+        return "held"
+
+
+AI_OWNS_NOTICE = (
+    "Eu mesma concluo tudo com você por aqui, sem precisar esperar ninguém."
+)
+CLOSER_HOLD_NOTICE = (
+    "Tive um problema no sistema para registrar essa etapa, mas tudo o que você "
+    "informou está salvo. Já estou resolvendo e te chamo por aqui assim que concluir."
+)
+CONTRACT_HOLD_NOTICE = (
+    "Sua contratação já está registrada. Estou finalizando a emissão do contrato "
+    "e te envio o link de assinatura por aqui assim que ele sair."
+)
+DATA_RETRY_PREFIX = "Não consegui registrar essa informação no sistema."
+CREDIT_REJECTED_PROMPT = (
+    "A consulta cadastral não foi aprovada, mas dá para seguir de três formas: "
+    "enviar o comprovante de pagamento em dia do seu provedor atual para uma nova análise, "
+    "pagar uma taxa de R$ 150,00 e seguir com a instalação, ou tentar com outro CPF. "
+    "Como você prefere? Se não quiser continuar, é só responder Encerrar."
+)
+CREDIT_FEE_NOTICE = (
+    "Combinado, seguimos com a taxa de R$ 150,00. Já passei o seu atendimento para um "
+    "consultor da Sulnet, que vai te chamar para concluir a contratação."
+)
+CREDIT_PROOF_REQUEST = (
+    "Certo! Me envie por aqui a foto ou o PDF do comprovante de pagamento em dia do seu "
+    "provedor atual."
+)
+CREDIT_PROOF_RECEIVED_NOTICE = (
+    "Recebi o seu comprovante. Já passei para um consultor da Sulnet fazer a nova análise, "
+    "e ele vai te chamar para dar o retorno."
+)
+CREDIT_ALT_WAITING_NOTICE = (
+    "O seu atendimento já está com um consultor da Sulnet, que vai te chamar para concluir."
+)
+
+
+def _chose_credit_fee(text: str) -> bool:
+    """Cliente escolheu pagar a taxa (pergunta sobre a taxa não conta como escolha)."""
+    if "?" in (text or ""):
+        return False
+    key = _norm(text)
+    if key in {"taxa", "pagar taxa", "pagar taxa r 150", "pagar taxa r150", "pagar taxa r$150", "a taxa"}:
+        return True
+    return bool(
+        re.search(
+            r"\b(pago|pagar|pagarei|quero|prefiro|pode ser|aceito|vou de|vou pela|vamos de|vamos pela)\b"
+            r".*\b(taxa|150)\b",
+            key,
+        )
+    )
+
+
+def _alert_credit_alternative(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    kind: str,
+) -> None:
+    """Avisa o responsável por WhatsApp: a IA ainda não libera esse caso no CRM."""
+    from app.services.ops_alerts import send_ops_alert  # noqa: PLC0415
+
+    collected = _load_collected(state)
+    contact = conversation.contact
+    name = str(collected.get("name") or (contact.name if contact else "") or "não informado")
+    phone = _digits(str(collected.get("phone") or (contact.phone if contact else "") or ""))
+    plan = state.plan_label or "plano não informado"
+    what = (
+        "optou por pagar a taxa de R$ 150,00"
+        if kind == "FEE"
+        else "enviou comprovante do provedor atual para nova análise"
+    )
+    text = (
+        f"🧾 Crédito com restrição: cliente {what}. Um consultor precisa chamar.\n"
+        f"Cliente: {name}\nTelefone: {phone or 'não informado'}\nPlano: {plan}\n"
+        f"Conversa {conversation.id}"
+    )
+    try:
+        send_ops_alert(db, key=f"credit-{kind.lower()}:{state.id}", text=text)
+    except Exception:  # noqa: BLE001 - o aviso nunca pode derrubar o atendimento
+        LOG.warning("credit_alternative_alert_failed state=%s kind=%s", state.id, kind)
+
+
+def handle_credit_proof_attachment(db: Session, conversation: Conversation, message: Message) -> bool:
+    """Anexo recebido com o crédito reprovado: é o comprovante do provedor.
+
+    Imagem e documento não geram job de IA, então o tratamento é feito na
+    entrada da mensagem. Devolve True quando o anexo foi tratado.
+    """
+    if message.direction != "INBOUND" or message.message_type in {"TEXT", "BUTTONS", "AUDIO"}:
+        return False
+    state = db.scalar(
+        select(AIClosingState).where(
+            AIClosingState.conversation_id == conversation.id,
+            AIClosingState.step == "CREDIT_REJECTED",
+        )
+    )
+    if not state:
+        return False
+    collected = _load_collected(state)
+    if collected.get("_credit_alt") == "PROOF_SENT":
+        return True
+    agent = db.get(AIAgentProfile, state.agent_id)
+    collected["_credit_alt"] = "PROOF_SENT"
+    _save_collected(state, collected)
+    _alert_credit_alternative(db, state=state, conversation=conversation, kind="PROOF")
+    if agent:
+        try:
+            _send_fixed_step_prompt(
+                db, agent=agent, conversation=conversation, text=CREDIT_PROOF_RECEIVED_NOTICE
+            )
+        except Exception:  # noqa: BLE001 - falha de envio não pode quebrar o webhook
+            LOG.warning("credit_proof_notice_failed conversation=%s", conversation.id)
+    return True
+
+
+_CLOSER_NOTICE_PREFIXES = (
+    CREDIT_FEE_NOTICE[:50],
+    CREDIT_PROOF_REQUEST[:40],
+    CREDIT_PROOF_RECEIVED_NOTICE[:40],
+    CREDIT_ALT_WAITING_NOTICE[:50],
+    "Sem problema, nada foi contratado.",
+    "Sem problema, o plano móvel ainda não foi contratado",
+    "Voltei por aqui para concluir a sua contratação.",
+    CLOSER_HOLD_NOTICE[:60],
+    CONTRACT_HOLD_NOTICE[:60],
+    AI_OWNS_NOTICE[:50],
+    "Não consegui ouvir o seu áudio.",
+    "Sem problema, nada foi contratado ainda.",
+    "Combinado! Me diz qual plano",
+    "Perfeito! Seguimos só com a sua internet",
+    "Certo, encerramos esta tentativa",
+    "Me diz o que você quer ajustar",
+    "Entendi. A análise de crédito é feita automaticamente",
+    DATA_RETRY_PREFIX,
+    "Tive uma instabilidade momentânea no sistema",
+)
+
+
+def _closer_failure_kind(exc: Exception) -> str:
+    """Classifica a falha para decidir entre tentar de novo agora, perguntar de novo ou segurar a venda.
+
+    - transient: CRM/WhatsApp fora do ar ou lento (rede, 429, 502-504, 52x, 500 em leitura);
+    - contract: o CRM recusou gerar o contrato (template ausente, campos pendentes);
+    - data: o CRM recusou um dado gravado (4xx, ou 500 em escrita);
+    - config: credencial/permissão (401/403);
+    - logic: regra interna do Vendedor IA (erro sem resposta HTTP);
+    - ownership: a conversa não é mais do Vendedor IA (não se mexe nela).
+    """
+    if isinstance(exc, ZApiError):
+        return "transient"
+    if "propriedade exclusiva" in str(exc):
+        # A conversa já é de um humano (ou de outro agente): não mexe nela.
+        return "ownership"
+    status = getattr(exc, "status_code", None)
+    path = str(getattr(exc, "path", "") or "")
+    method = str(getattr(exc, "method", "") or "").upper()
+    code = str(getattr(exc, "error_code", "") or "")
+    if code == "CRM_HTTP_ERROR" or status in {429, 502, 503, 504} or (status or 0) >= 520:
+        return "transient"
+    if "contract/generate" in path and status is not None and 400 <= status < 500:
+        return "contract"
+    if status in {401, 403}:
+        return "config"
+    if status is not None and 400 <= status < 500:
+        return "data"
+    if status == 500:
+        return "data" if method in {"PATCH", "PUT"} else "transient"
+    if status is None and not path:
+        return "logic"
+    return "transient"
+
+
+AI_HOLD_RETRY = timedelta(minutes=30)
+AI_HOLD_MAX_RETRIES = 12  # ~6 horas tentando antes de parar de reprocessar
+SALE_ADJUST_STEP = "SALE_ADJUST"
+PLAN_CHANGE_STEP = "PLAN_CHANGE"
+
+
+def _resume_step_for(state: AIClosingState, collected: dict[str, Any]) -> str:
+    if state.sign_url and not _contract_is_signed(str(state.contract_status or "")):
+        return "WAITING_SIGNATURE"
+    if state.opportunity_id:
+        return "WAITING_CRM_READY"
+    return "CPF" if collected.get("name") else "NAME"
+
+
+def _record_ai_block(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    agent: AIAgentProfile,
+    reason: str,
+) -> None:
+    """Registra para a supervisão o que a IA não conseguiu resolver sozinha.
+
+    Não tira a conversa da IA: vira alerta no painel/auditoria para o
+    programador da IA corrigir a causa (CRM, template, regra).
+    """
+    state.last_error = reason[:1000]
+    _record_activity(
+        db,
+        conversation=conversation,
+        agent=agent,
+        outcome="VENDEDOR_IA_BLOQUEIO",
+        description=(
+            f"Vendedor IA segue com a venda, mas precisa de correção: {reason} "
+            f"Oportunidade CRM: {state.opportunity_id or '-'}. Plano: {state.plan_label or '-'}."
+        ),
+    )
+    write_audit(
+        db,
+        user=agent.user,
+        action="AI_CLOSER_BLOCKED",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={"step": state.step, "opportunity_id": state.opportunity_id, "reason": reason[:500]},
+    )
+    # O motivo pode conter dado do cliente vindo do CRM: fica só na auditoria.
+    LOG.warning(
+        "closer_blocked_kept_with_ai conversation=%s opportunity=%s",
+        conversation.id,
+        state.opportunity_id,
+    )
+
+
+def _keep_sale_with_ai(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    agent: AIAgentProfile,
+    reason: str,
+    notice: str,
+) -> None:
+    """Falha que a IA não resolve na hora: a venda continua com a IA.
+
+    Antes a venda ia para um consultor (ESCALATED). Agora a etapa fica salva,
+    o cliente recebe um aviso uma única vez por bloqueio, a supervisão é
+    alertada e o job volta a tentar mais tarde. Se o cliente escrever, o
+    Vendedor IA continua respondendo normalmente.
+    """
+    _record_ai_block(db, state=state, conversation=conversation, agent=agent, reason=reason)
+    collected = _load_collected(state)
+    if collected.get("_hold_notice_step") == state.step:
+        return
+    try:
+        _send_text(db, agent=agent, conversation=conversation, text=notice)
+        collected["_hold_notice_step"] = state.step
+        _save_collected(state, collected)
+    except Exception:
+        LOG.exception("closer_hold_notice_failed conversation=%s", conversation.id)
+
+
+STATUS_POLL_STEPS = {"CREDIT_REVIEW", "WAITING_SIGNATURE"}
+STATUS_POLL_FAILURES_KEY = "_status_poll_failures"
+STATUS_POLL_ALERT_KEY = "_status_poll_alerted"
+
+
+def _clear_status_poll_failures(state: AIClosingState, collected: dict) -> None:
+    """Consulta ao CRM deu certo: zera a contagem de falhas da análise/assinatura."""
+    had_failures = collected.pop(STATUS_POLL_FAILURES_KEY, None) is not None
+    had_alert = collected.pop(STATUS_POLL_ALERT_KEY, None) is not None
+    if had_failures or had_alert:
+        _save_collected(state, collected)
+
+
+def _hold_status_poll_failure(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    agent: AIAgentProfile,
+    exc: Exception,
+    step: str,
+) -> bool:
+    """Limita as consultas ao CRM em CREDIT_REVIEW/WAITING_SIGNATURE.
+
+    Sem limite, um lead ou oportunidade que sumiu do CRM (404) fazia o poller
+    consultar a cada 45 s para sempre (venda 4, 06-07/11/2026). Depois de 3
+    falhas de dado ou 20 de instabilidade, a supervisão é avisada uma vez e a
+    consulta passa a cada 30 minutos. O cliente não recebe mensagem: na
+    assinatura ele já tem o link; na análise de crédito nada mudou para ele.
+    Devolve True quando a venda entrou em espera.
+    """
+    kind = _closer_failure_kind(exc)
+    collected = _load_collected(state)
+    failures = int(collected.get(STATUS_POLL_FAILURES_KEY) or 0) + 1
+    collected[STATUS_POLL_FAILURES_KEY] = failures
+    hold = kind != "ownership" and ((kind != "transient" and failures >= 3) or failures >= 20)
+    first_alert = hold and not collected.get(STATUS_POLL_ALERT_KEY)
+    if first_alert:
+        collected[STATUS_POLL_ALERT_KEY] = True
+    _save_collected(state, collected)
+    if first_alert:
+        _record_ai_block(
+            db,
+            state=state,
+            conversation=conversation,
+            agent=agent,
+            reason=(
+                f"CRM não encontrou a venda na etapa {step} ({kind}, {failures} falhas seguidas): "
+                f"{str(exc)[:300]} Confira se o lead/oportunidade foi apagado ou recriado no CRM."
+            ),
+        )
+    if hold:
+        # O poller ordena por updated_at e só pega o que tem mais de 45 s.
+        state.updated_at = utcnow() + AI_HOLD_RETRY
+    return hold
+
+
+def _retry_job_later(job: AIJob, state: AIClosingState) -> None:
+    collected = _load_collected(state)
+    retries = int(collected.get("_hold_retries") or 0) + 1
+    collected["_hold_retries"] = retries
+    _save_collected(state, collected)
+    job.locked_at = None
+    if retries > AI_HOLD_MAX_RETRIES:
+        job.status = "FALHOU"
+        return
+    job.status = "PENDENTE"
+    job.attempts = 0
+    job.available_at = utcnow() + AI_HOLD_RETRY
+
+
+_ADJUST_PAYMENT = re.compile(r"pagament|boleto|debito|forma|cartao|pix")
+_ADJUST_DUE_DAY = re.compile(r"vencimento|\bdia\b|data")
+_ADJUST_PLAN = re.compile(r"plano|mega|giga|\bgb\b|velocidade|outro|trocar|mudar|valor|preco|caro")
+_ADJUST_ONLY_INTERNET = re.compile(r"so (a )?internet|sem (o )?(movel|celular|chip)|so com a internet")
+_ADJUST_QUIT = re.compile(r"desist|cancel|encerr|deixa pra la|nao quero mais|nao vou (mais )?contratar|nao quero contratar")
+_ADJUST_NOTHING = re.compile(r"^(nada|ta certo|esta certo|pode gerar|confirmo|sim|ok|tudo certo)\b")
+
+
+def _handle_sale_adjustment(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    collected: dict[str, Any],
+    text: str,
+) -> str:
+    """Cliente recusou o resumo: a própria IA ajusta (antes ia para um consultor)."""
+    folded = _norm(text)
+    mobile = _is_mobile_plan(state, collected)
+    combo = collected.get("_black_combo") if isinstance(collected.get("_black_combo"), dict) else {}
+    if _ADJUST_QUIT.search(folded):
+        state.step = "COMPLETED"
+        state.completed_at = utcnow()
+        return (
+            "Certo, encerramos esta tentativa sem contratar nada. "
+            "Se mudar de ideia, é só me chamar por aqui."
+        )
+    if combo.get("stage") == black_campaign.COMBO_STAGE_MOBILE and _ADJUST_ONLY_INTERNET.search(folded):
+        state.step = "COMPLETED"
+        state.completed_at = utcnow()
+        return (
+            "Perfeito! Seguimos só com a sua internet, que já está contratada. "
+            "Qualquer coisa, é só me chamar por aqui."
+        )
+    if _ADJUST_PAYMENT.search(folded):
+        state.step = "MOBILE_PAYMENT_METHOD" if mobile else "BILLING_PAYMENT_METHOD"
+        _save_collected(state, collected)
+        return _prompt_for_step(state, collected)
+    if _ADJUST_DUE_DAY.search(folded):
+        state.step = "MOBILE_DUE_DAY" if mobile else "BILLING_DUE_DAY"
+        _save_collected(state, collected)
+        return _prompt_for_step(state, collected)
+    if _ADJUST_PLAN.search(folded):
+        # A troca de dono para o SDR acontece depois do envio desta resposta.
+        state.step = PLAN_CHANGE_STEP
+        return "Combinado! Me diz qual plano você prefere que eu ajusto a proposta por aqui."
+    if _ADJUST_NOTHING.search(folded):
+        state.step = SALE_ACCEPTANCE_STEP
+        _save_collected(state, collected)
+        return _sale_acceptance_prompt(state, collected, reminder=True)
+    return "Me diz o que você quer ajustar: o plano, a forma de pagamento ou o dia de vencimento?"
+
+
+def _return_to_sdr_for_plan_change(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+) -> None:
+    from app.services.ai_sdr import binding_for_conversation  # noqa: PLC0415
+
+    from app.services.ai_followups import cancel_pending_followups  # noqa: PLC0415
+
+    binding = binding_for_conversation(db, conversation.id)
+    cancel_pending_followups(db, conversation.id, reason="TROCA_DE_PLANO_SDR")
+    ai_state = db.scalar(
+        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+    )
+    if ai_state and binding and binding.agent:
+        # A próxima resposta do cliente vai para o SDR (enqueue_ai_job olha o estado).
+        ai_state.state = "AI_ACTIVE"
+        ai_state.agent_id = binding.agent_id
+
+
+SALE_DECLINE_NOTICE = (
+    "Sem problema, nada foi contratado ainda. O que você quer ajustar: "
+    "o plano, a forma de pagamento ou o dia de vencimento?"
+)
+COMBO_MOBILE_DECLINE_NOTICE = (
+    "Sem problema, o plano móvel ainda não foi contratado; a sua internet continua "
+    "contratada normalmente. O que você quer ajustar no móvel: o plano, a forma de "
+    "pagamento ou o dia de vencimento? Se preferir seguir só com a internet, é só me dizer."
+)
+RESUME_NOTICE = (
+    "Voltei por aqui para concluir a sua contratação. Só um instante enquanto "
+    "confiro os dados no sistema."
+)
+
+
+def _message_predates_summary(db: Session, conversation_id: int, message: Message | None) -> bool:
+    if message is None or not getattr(message, "id", None):
+        return False
+    summary_id = db.scalar(
+        select(Message.id)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "OUTBOUND",
+            Message.body.like("Antes de gerar o contrato, confira o resumo%"),
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    return bool(summary_id and int(message.id) < int(summary_id))
+
+
+def resume_closer(db: Session, conversation: Conversation, actor: Any) -> bool:
+    """Devolve ao Vendedor IA uma venda que foi para um consultor.
+
+    Retoma pelo playbook do CRM: o poller pergunta o próximo campo pendente ou
+    mostra o resumo para um novo aceite. Nada do que o cliente já informou se perde.
+    """
+    state = db.scalar(
+        select(AIClosingState).where(AIClosingState.conversation_id == conversation.id)
+    )
+    closer = active_closer(db)
+    if not state or state.step != "ESCALATED" or not closer:
+        return False
+    collected = _load_collected(state)
+    # O aceite do resumo continua valendo: se o produto mudar, o resumo é
+    # reapresentado antes do contrato (_finish_sale_contract).
+    collected.pop("_contract_recovery_reason", None)
+    collected.pop("_port_date_synced", None)
+    collected.pop("_data_errors", None)
+    collected.pop("_retry_later_cycles", None)
+    collected.pop("_poll_failures", None)
+    collected.pop("_technical_notice_sent", None)
+    if state.sign_url and not _contract_is_signed(state.contract_status):
+        state.step = "WAITING_SIGNATURE"
+    elif state.opportunity_id:
+        state.step = "WAITING_CRM_READY"
+    else:
+        state.step = "CPF" if collected.get("name") else "NAME"
+    state.agent_id = closer.id
+    state.last_error = ""
+    _save_collected(state, collected)
+
+    ai_state = db.scalar(
+        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+    )
+    if ai_state:
+        ai_state.state = "CLOSING"
+        ai_state.agent_id = closer.id
+    else:
+        db.add(AIConversationState(conversation_id=conversation.id, agent_id=closer.id, state="CLOSING"))
+    conversation.assigned_user_id = closer.user_id
+    conversation.status = "EM_ATENDIMENTO"
+    conversation.closed_at = None
+    db.add(
+        ConversationAssignment(
+            conversation_id=conversation.id,
+            user_id=closer.user_id,
+            assigned_by_id=getattr(actor, "id", None),
+            event="AI_CLOSER_RESUMED",
+        )
+    )
+    db.flush()
+    if state.step in {"CPF", "NAME"}:
+        _send_step_message(db, agent=closer, conversation=conversation, state=state, text=_prompt_for_step(state, collected))
+    else:
+        _send_text(db, agent=closer, conversation=conversation, text=RESUME_NOTICE)
+    write_audit(
+        db,
+        user=actor,
+        action="AI_CLOSER_RESUMED",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={"step": state.step, "opportunity_id": state.opportunity_id},
+    )
+    return True
+
+
+def _deliver_signed_text(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    conversation: Conversation,
+    state: AIClosingState,
+    text: str,
+) -> None:
+    if text == SIGNED_FINAL_MESSAGE:
+        _send_text(db, agent=agent, conversation=conversation, text=text)
+        if conversation.lead:
+            conversation.lead.stage = "GANHO"
+            conversation.lead.next_action_at = None
+        return
+    # Combo Black: a fibra foi assinada, segue a 2ª venda (móvel).
+    _send_step_message(db, agent=agent, conversation=conversation, state=state, text=text)
+    _schedule_seller_followup(db, state=state, conversation=conversation, source_message_id=None, step=1)
 
 
 def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
@@ -4492,6 +6530,7 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
         try:
             if state.step == "CREDIT_REVIEW":
                 status = client.get_status(state.opportunity_id)
+                _clear_status_poll_failures(state, collected)
                 opportunity = status.get("opportunity") or {}
                 credit_status = str(opportunity.get("creditStatus") or "")
                 state.credit_status = credit_status
@@ -4570,6 +6609,22 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                             step=1,
                         )
                         processed += 1
+                    elif state.step == SALE_ACCEPTANCE_STEP:
+                        _send_step_message(
+                            db,
+                            agent=agent,
+                            conversation=conversation,
+                            state=state,
+                            text=reply,
+                        )
+                        _schedule_seller_followup(
+                            db,
+                            state=state,
+                            conversation=conversation,
+                            source_message_id=None,
+                            step=1,
+                        )
+                        processed += 1
                     else:
                         state.updated_at = utcnow()
                     continue
@@ -4598,7 +6653,14 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     state.updated_at = utcnow()
                 continue
 
-            status = client.get_status(state.opportunity_id)
+            try:
+                status = client.get_status(state.opportunity_id)
+            except CRMIntegrationError as exc:
+                # Depois da assinatura o CRM tira o lead da captação (404).
+                # Com a assinatura confirmada pela ZapSign, segue sem o status.
+                if exc.status_code != 404 or not _contract_is_signed(state.contract_status):
+                    raise
+                status = {}
             already_won = _complete_if_crm_already_won(
                 client,
                 state,
@@ -4606,19 +6668,15 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 status_payload=status,
             )
             if already_won is not None:
+                signed_text = _after_signed_text(state, collected)
                 _save_collected(state, collected)
-                _send_text(
+                _deliver_signed_text(
                     db,
                     agent=agent,
                     conversation=conversation,
-                    text=(
-                        "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                        "Agora o pedido segue para o time responsável pela ativação."
-                    ),
+                    state=state,
+                    text=signed_text,
                 )
-                if conversation.lead:
-                    conversation.lead.stage = "GANHO"
-                    conversation.lead.next_action_at = None
                 processed += 1
                 continue
 
@@ -4627,11 +6685,25 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 detailed = client.get_contract(state.opportunity_id)
                 if isinstance(detailed, dict) and detailed:
                     contract = {**contract, **detailed}
+            # Status e contrato responderam: zera a contagem de falhas.
+            _clear_status_poll_failures(state, collected)
 
             contract_status = _contract_status(contract)
             sign_url = _contract_sign_url(contract)
             if contract_status:
                 state.contract_status = contract_status
+            signed_paths = _signed_paths(status)
+            if state.step == "WAITING_SIGNATURE":
+                LOG.info(
+                    "seller_signature_check state=%s opportunity_status=%s contract_status=%s signed_paths=%s keys=%s",
+                    state.id,
+                    _opportunity_status(status)[:30] or "-",
+                    _norm(contract_status)[:40] or "-",
+                    ",".join(signed_paths)[:300] or "-",
+                    _payload_shape(status)[:400],
+                )
+            if signed_paths and not _contract_is_signed(state.contract_status):
+                state.contract_status = "assinado"
 
             if _contract_is_signed(state.contract_status):
                 _finalize_signed_sale(
@@ -4639,22 +6711,25 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     state,
                     collected,
                 )
-                _save_collected(state, collected)
+                if state.step != "COMPLETED":
+                    # Assinatura confirmada: o cliente recebe a mensagem final
+                    # já; o ganho no CRM segue pelo fluxo do próprio CRM/BKO.
+                    collected["_completed_on_signature"] = True
+                    state.step = "COMPLETED"
+                    state.completed_at = utcnow()
                 if state.step == "COMPLETED":
-                    _send_text(
+                    signed_text = _after_signed_text(state, collected)
+                    _save_collected(state, collected)
+                    _deliver_signed_text(
                         db,
                         agent=agent,
                         conversation=conversation,
-                        text=(
-                            "Contrato assinado com sucesso! Sua contratação foi concluída. "
-                            "Agora o pedido segue para o time responsável pela ativação."
-                        ),
+                        state=state,
+                        text=signed_text,
                     )
-                    if conversation.lead:
-                        conversation.lead.stage = "GANHO"
-                        conversation.lead.next_action_at = None
                     processed += 1
                 else:
+                    _save_collected(state, collected)
                     state.updated_at = utcnow()
                 continue
 
@@ -4733,10 +6808,41 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
             state.last_error = str(exc)[:1200]
             state.updated_at = utcnow()
             LOG.warning(
-                "seller_contract_poll_failed state=%s step=%s error=%s",
+                "seller_contract_poll_failed state=%s error_code=%s",
                 state.id,
-                state.step,
-                exc,
+                getattr(exc, "error_code", None) or type(exc).__name__,
             )
+            # Assinatura pendente: o cliente já tem o link, só segue consultando.
+            if step_before_poll in {"WAITING_CRM_READY", "WAITING_CONTRACT"}:
+                kind = _closer_failure_kind(exc)
+                poll_collected = _load_collected(state)
+                failures = int(poll_collected.get("_poll_failures") or 0) + 1
+                poll_collected["_poll_failures"] = failures
+                _save_collected(state, poll_collected)
+                if kind == "ownership":
+                    pass
+                elif kind == "contract" or (kind != "transient" and failures >= 3) or failures >= 20:
+                    _keep_sale_with_ai(
+                        db,
+                        state=state,
+                        conversation=conversation,
+                        agent=agent,
+                        reason=f"Contrato não gerado pelo CRM ({kind}): {str(exc)[:300]}",
+                        notice=CONTRACT_HOLD_NOTICE,
+                    )
+                    # Próxima tentativa em 30 minutos (o poller ordena por updated_at).
+                    state.updated_at = utcnow() + AI_HOLD_RETRY
+                    processed += 1
+            elif step_before_poll in STATUS_POLL_STEPS:
+                _hold_status_poll_failure(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    exc=exc,
+                    step=step_before_poll,
+                )
 
+    for state in states:
+        crm_notes.record_milestones_safe(db, state.conversation_id)
     return processed

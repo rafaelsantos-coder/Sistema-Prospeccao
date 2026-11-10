@@ -10,15 +10,18 @@ from starlette.responses import JSONResponse, RedirectResponse
 from app.database import get_db
 from app.models import (
     Activity,
+    AIAgentProfile,
     Contact,
     Conversation,
     ConversationAssignment,
+    ConversationQueueLink,
     Lead,
     Message,
+    ServiceQueue,
     User,
 )
 from app.security import get_current_user, require_roles, validate_csrf
-from app.services.ai_sdr import latest_run_for_conversation
+from app.services.ai_sdr import enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
 from app.services.conversation_engine import (
     CLOSED_CONVERSATION_STATUSES,
@@ -35,7 +38,18 @@ from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
 from app.services.pii import redact_pii_text
 from app.services.upload_security import UploadValidationError, validate_upload
-from app.services.queue_routing import queue_for_conversation, queue_member_user_ids
+from app.services.queue_routing import (
+    MANUAL_TRANSFER_ORIGIN,
+    ai_queue_ids,
+    ai_transfer_queue,
+    assign_queue_user,
+    available_queues_for_user,
+    bind_conversation_queue,
+    get_queue,
+    queue_for_conversation,
+    queue_member_user_ids,
+    usable_ai_binding,
+)
 from app.services.whatsapp_presence import is_user_whatsapp_online, online_user_ids
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import service_for_conversation
@@ -69,7 +83,19 @@ def _conversation_stmt(user: User):
             selectinload(Conversation.branch),
         ),
         user,
+        inbox=True,
     )
+
+
+def _conversation_unavailable(request: Request) -> RedirectResponse:
+    """Conversa que saiu da lista do usuário (reatribuída, IA assumiu): volta à lista, sem tela de erro."""
+    flash(
+        request,
+        "Esta conversa não está mais com você (foi reatribuída ou a IA assumiu). "
+        "Se o cliente pedir, ela volta para a sua lista.",
+        "warning",
+    )
+    return RedirectResponse("/conversations", status_code=303)
 
 
 def _get_conversation(db: Session, user: User, conversation_id: int) -> Conversation | None:
@@ -104,15 +130,19 @@ def _message_visible_through_contact(
 
 
 def _eligible_users(db: Session, user: User, conversation: Conversation | None = None) -> list[User]:
-    online_ids = online_user_ids(db)
-    if not online_ids:
-        return []
+    """Vendedores para quem a conversa pode ser transferida, online ou não.
+
+    Antes só apareciam os online: com a equipe toda offline o painel sumia e a
+    conversa ficava parada na fila (conversa 1407, 09/11). Vendedor offline
+    recebe a conversa e vê quando entrar no WhatsApp.
+    """
     stmt = select(User).where(
         User.active.is_(True),
         User.role == "CONSULTOR",
-        User.id.in_(online_ids),
     ).order_by(User.name)
     users = list(db.scalars(stmt))
+    ai_user_ids = {item for item in db.scalars(select(AIAgentProfile.user_id)) if item}
+    users = [item for item in users if item.id not in ai_user_ids]
 
     if conversation:
         service_queue = queue_for_conversation(db, conversation.id)
@@ -142,8 +172,144 @@ def _eligible_users(db: Session, user: User, conversation: Conversation | None =
     return users
 
 
-def _inbox_query(db: Session, user: User, *, q: str, view: str) -> list[Conversation]:
+def _transfer_queues(
+    db: Session,
+    user: User,
+    current_queue: ServiceQueue | None,
+) -> list[dict]:
+    """Filas de destino da transferência (sem a fila atual), marcando as que têm IA.
+
+    Vendedor vê as filas de que participa e também as filas com IA, para poder
+    devolver a conversa à IA.
+    """
+    ai_ids = ai_queue_ids(db)
+    queues = {item.id: item for item in available_queues_for_user(db, user)}
+    if ai_ids:
+        for item in db.scalars(select(ServiceQueue).where(ServiceQueue.id.in_(ai_ids))):
+            queues.setdefault(item.id, item)
+    if current_queue:
+        queues.pop(current_queue.id, None)
+    return [
+        {"id": item.id, "name": item.name, "ai": item.id in ai_ids}
+        for item in sorted(queues.values(), key=lambda queue: (queue.name or "", queue.id))
+        if item.active
+    ]
+
+
+def _pending_inbound_message(db: Session, conversation: Conversation) -> Message | None:
+    """Última mensagem de texto do cliente que ainda não teve resposta nossa."""
+    latest = db.scalar(
+        select(Message)
+        .where(
+            Message.conversation_id == conversation.id,
+            Message.direction.in_(("INBOUND", "OUTBOUND")),
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    if not latest or latest.direction != "INBOUND" or latest.message_type != "TEXT":
+        return None
+    return latest
+
+
+_RETRYABLE_AI_JOB_STATUSES = {"FALHOU", "IGNORADO", "CANCELADO"}
+
+
+def _move_conversation_to_queue(
+    db: Session,
+    *,
+    actor: User,
+    conversation: Conversation,
+    queue: ServiceQueue,
+    reason: str,
+) -> dict:
+    """Troca a fila da conversa e entrega para a IA da fila ou para um vendedor online."""
+    previous_queue = queue_for_conversation(db, conversation.id)
+    previous_user_id = conversation.assigned_user_id
+    bind_conversation_queue(db, conversation.id, queue.id, origin=MANUAL_TRANSFER_ORIGIN)
+    conversation.team = queue.team
+    conversation.assigned_user_id = None
+    if conversation.status not in CLOSED_CONVERSATION_STATUSES:
+        conversation.status = "EM_FILA"
+
+    result = {"ai_job": None, "assigned": None, "pending_message": None}
+    binding = usable_ai_binding(db, queue.id)
+    if binding:
+        message = _pending_inbound_message(db, conversation)
+        result["pending_message"] = message
+        if message:
+            # Transferência manual para a IA: responde já, sem esperar os 10 min
+            # da fila comercial.
+            job = enqueue_ai_job(
+                db,
+                conversation=conversation,
+                message=message,
+                takeover=True,
+            )
+            if job and job.status in _RETRYABLE_AI_JOB_STATUSES:
+                # Job dessa mensagem já tinha falhado (ex.: OpenAI sem crédito em
+                # 09/11): a transferência manual dá uma nova chance.
+                job.status = "PENDENTE"
+                job.attempts = 0
+                job.locked_at = None
+                job.available_at = utcnow()
+                job.agent_id = binding.agent_id
+                job.queue_id = queue.id
+                job.error = f"[transferência manual] {job.error or ''}"[:2000]
+            if job and job.status in {"PENDENTE", "PROCESSANDO"}:
+                result["ai_job"] = job
+    else:
+        target = assign_queue_user(db, queue)
+        if target:
+            conversation.assigned_user_id = target.id
+            conversation.status = "ATRIBUIDO"
+            if conversation.lead:
+                conversation.lead.assigned_user_id = target.id
+            db.add(
+                ConversationAssignment(
+                    conversation_id=conversation.id,
+                    user_id=target.id,
+                    assigned_by_id=actor.id,
+                    event="TRANSFERRED" if previous_user_id else "ASSIGNED",
+                )
+            )
+            result["assigned"] = target
+
+    write_audit(
+        db,
+        user=actor,
+        action="CONVERSATION_QUEUE_TRANSFERRED",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={
+            "reason": reason,
+            "from_queue_id": previous_queue.id if previous_queue else None,
+            "to_queue_id": queue.id,
+            "from_user_id": previous_user_id,
+            "to_user_id": result["assigned"].id if result["assigned"] else None,
+            "ai_job_id": result["ai_job"].id if result["ai_job"] else None,
+        },
+    )
+    return result
+
+
+def _inbox_query(
+    db: Session,
+    user: User,
+    *,
+    q: str,
+    view: str,
+    assignee_id: int | None = None,
+    queue_id: int | None = None,
+) -> list[Conversation]:
     stmt = _conversation_stmt(user).join(Contact, Conversation.contact_id == Contact.id)
+    if assignee_id:
+        stmt = stmt.where(Conversation.assigned_user_id == assignee_id)
+    if queue_id:
+        stmt = stmt.join(
+            ConversationQueueLink,
+            ConversationQueueLink.conversation_id == Conversation.id,
+        ).where(ConversationQueueLink.queue_id == queue_id)
     if q:
         term = f"%{q.strip()}%"
         stmt = stmt.outerjoin(Lead, Conversation.lead_id == Lead.id).where(
@@ -173,13 +339,74 @@ def _inbox_query(db: Session, user: User, *, q: str, view: str) -> list[Conversa
 
 
 def _inbox_counts(db: Session, user: User) -> dict[str, int]:
-    scoped = list(db.scalars(apply_conversation_scope(select(Conversation), user)))
+    scoped = list(db.scalars(apply_conversation_scope(select(Conversation), user, inbox=True)))
     return {
         "active": sum(1 for item in scoped if item.status in OPEN_CONVERSATION_STATUSES),
         "unread": sum(1 for item in scoped if item.unread_count > 0),
         "closed": sum(1 for item in scoped if item.status in CLOSED_CONVERSATION_STATUSES),
         "queue": sum(1 for item in scoped if item.assigned_user_id is None),
     }
+
+
+def _seller_panel(db: Session, user: User) -> list[dict]:
+    """Vendedores visíveis para o usuário, com presença online e carga de conversas abertas."""
+    if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
+        return []
+    stmt = select(User).where(User.active.is_(True), User.role == "CONSULTOR").order_by(User.name)
+    sellers = list(db.scalars(stmt))
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            sellers = [item for item in sellers if item.branch_id == user.branch_id]
+        else:
+            sellers = [item for item in sellers if item.team == user.team]
+    online_ids = set(online_user_ids(db))
+    # Agente de IA não faz login: está online enquanto o perfil estiver ativo.
+    ai_user_ids = set(
+        db.scalars(
+            select(AIAgentProfile.user_id).where(
+                AIAgentProfile.active.is_(True),
+                AIAgentProfile.user_id.is_not(None),
+            )
+        )
+    )
+    online_ids |= ai_user_ids
+    open_counts: dict[int, int] = {}
+    for assigned_id in db.scalars(
+        select(Conversation.assigned_user_id).where(
+            Conversation.assigned_user_id.is_not(None),
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+        )
+    ):
+        open_counts[assigned_id] = open_counts.get(assigned_id, 0) + 1
+    return [
+        {
+            "id": item.id,
+            "name": item.name,
+            "online": item.id in online_ids,
+            "open": open_counts.get(item.id, 0),
+        }
+        for item in sellers
+    ]
+
+
+def _queue_panel(db: Session, user: User) -> list[dict]:
+    """Filas ativas com quantas conversas abertas cada uma tem agora."""
+    if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
+        return []
+    queues = list(db.scalars(select(ServiceQueue).where(ServiceQueue.active.is_(True)).order_by(ServiceQueue.name)))
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            queues = [item for item in queues if item.branch_id == user.branch_id]
+        else:
+            queues = [item for item in queues if item.team == user.team]
+    open_counts: dict[int, int] = {}
+    for queue_id in db.scalars(
+        select(ConversationQueueLink.queue_id)
+        .join(Conversation, Conversation.id == ConversationQueueLink.conversation_id)
+        .where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES))
+    ):
+        open_counts[queue_id] = open_counts.get(queue_id, 0) + 1
+    return [{"id": item.id, "name": item.name, "open": open_counts.get(item.id, 0)} for item in queues]
 
 
 def _render_inbox(
@@ -190,13 +417,15 @@ def _render_inbox(
     conversation_id: int | None = None,
     q: str = "",
     view: str = "active",
+    assignee_id: int | None = None,
+    queue_id: int | None = None,
 ):
-    conversations = _inbox_query(db, user, q=q, view=view)
+    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee_id, queue_id=queue_id)
     selected = None
     if conversation_id is not None:
         selected = _get_conversation(db, user, conversation_id)
         if not selected:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+            return _conversation_unavailable(request)
     elif conversations:
         selected = conversations[0]
 
@@ -212,11 +441,33 @@ def _render_inbox(
             db.commit()
         messages = _contact_history_messages(db, selected)
         users = _eligible_users(db, user, selected)
+        transfer_online_ids = set(online_user_ids(db))
+        users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
+        ai_queue = ai_transfer_queue(db, selected.id)
+        transfer_queues = _transfer_queues(db, user, selected_queue)
+    else:
+        transfer_online_ids = set()
+        ai_queue = None
+        transfer_queues = []
+
+    closer_escalated = False
+    if selected and user.role in {"ADMIN", "GESTOR"}:
+        from app.models import AIClosingState
+
+        closer_escalated = bool(
+            db.scalar(
+                select(AIClosingState.id).where(
+                    AIClosingState.conversation_id == selected.id,
+                    AIClosingState.step == "ESCALATED",
+                )
+            )
+        )
 
     counts = _inbox_counts(db, user)
     return render(
         request,
         "conversations/inbox.html",
+        closer_escalated=closer_escalated,
         user=user,
         active_nav="conversations",
         page_title="Conversas",
@@ -224,11 +475,18 @@ def _render_inbox(
         conversation=selected,
         messages=messages,
         users=users,
+        transfer_online_ids=transfer_online_ids,
+        ai_transfer_queue=ai_queue,
+        transfer_queues=transfer_queues,
         selected_queue=selected_queue,
         latest_ai_run=latest_ai_run,
         counts=counts,
         query=q,
         view=view,
+        assignee_id=assignee_id,
+        queue_id=queue_id,
+        sellers=_seller_panel(db, user),
+        queues=_queue_panel(db, user),
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -239,12 +497,14 @@ def inbox(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
+    queue: int | None = None,
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
     if redirect:
         return redirect
-    return _render_inbox(request, db, user, q=q, view=view)
+    return _render_inbox(request, db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
 
 
 @router.get("/conversations/{conversation_id}")
@@ -253,6 +513,8 @@ def conversation_detail(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
+    queue: int | None = None,
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
@@ -263,6 +525,8 @@ def conversation_detail(
         db,
         user,
         conversation_id=conversation_id,
+        assignee_id=assignee,
+        queue_id=queue,
         q=q,
         view=view,
     )
@@ -327,7 +591,7 @@ def send_message(
     validate_csrf(request, csrf_token)
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        return _conversation_unavailable(request)
     if conversation.lead and (conversation.lead.do_not_contact or conversation.lead.stage == "NAO_CONTATAR"):
         flash(request, "Este contato esta bloqueado para novas mensagens.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
@@ -413,7 +677,7 @@ async def send_media(
     validate_csrf(request, csrf_token)
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        return _conversation_unavailable(request)
     if conversation.lead and (
         conversation.lead.do_not_contact
         or conversation.lead.stage == "NAO_CONTATAR"
@@ -690,10 +954,106 @@ def assign_conversation(
         payload={"from_user_id": previous, "to_user_id": target.id},
     )
     db.commit()
-    flash(request, f"Conversa transferida para {target.name}.")
+    online = is_user_whatsapp_online(db, target.id)
+    flash(
+        request,
+        f"Conversa transferida para {target.name}."
+        + ("" if online else " Ele está offline e verá a conversa quando entrar no WhatsApp."),
+    )
     if user.role == "CONSULTOR":
         return RedirectResponse("/conversations?view=active", status_code=303)
     return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+
+def _after_queue_transfer_redirect(user: User, conversation: Conversation) -> RedirectResponse:
+    if user.role == "CONSULTOR":
+        return RedirectResponse("/conversations?view=active", status_code=303)
+    return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+
+@router.post("/conversations/{conversation_id}/transfer-queue")
+def transfer_conversation_queue(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    queue_id: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    current = queue_for_conversation(db, conversation.id)
+    allowed = {item["id"] for item in _transfer_queues(db, user, current)}
+    queue = get_queue(db, queue_id)
+    if not queue or not queue.active or queue.id not in allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    result = _move_conversation_to_queue(
+        db,
+        actor=user,
+        conversation=conversation,
+        queue=queue,
+        reason="QUEUE",
+    )
+    db.commit()
+    if result["ai_job"]:
+        flash(request, f"Conversa enviada para a fila {queue.name}. A IA vai responder o cliente agora.")
+    elif result["assigned"]:
+        flash(request, f"Conversa enviada para a fila {queue.name} e atribuída a {result['assigned'].name}.")
+    else:
+        flash(request, f"Conversa enviada para a fila {queue.name}. Ela fica na fila até alguém assumir.")
+    return _after_queue_transfer_redirect(user, conversation)
+
+
+@router.post("/conversations/{conversation_id}/transfer-ai")
+def transfer_conversation_to_ai(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    queue = ai_transfer_queue(db, conversation.id)
+    if not queue:
+        flash(request, "Nenhuma fila está com a IA ativa. Ative a IA em uma fila antes de transferir.", "warning")
+        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+    result = _move_conversation_to_queue(
+        db,
+        actor=user,
+        conversation=conversation,
+        queue=queue,
+        reason="AI",
+    )
+    db.commit()
+    if result["ai_job"]:
+        flash(request, f"Conversa passada para a IA (fila {queue.name}). Ela vai responder o cliente agora.")
+    elif result["pending_message"]:
+        flash(
+            request,
+            f"Conversa movida para a fila {queue.name}, mas a IA não pôde assumir "
+            "(cliente pediu para sair ou atendimento já concluído). Atribua a um vendedor.",
+            "warning",
+        )
+    else:
+        flash(
+            request,
+            f"Conversa passada para a IA (fila {queue.name}). Não há mensagem do cliente pendente; "
+            "a IA responde na próxima mensagem ou no follow-up.",
+        )
+    return _after_queue_transfer_redirect(user, conversation)
 
 
 @router.post("/conversations/{conversation_id}/status")
@@ -735,11 +1095,43 @@ def update_conversation_status(
     return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
 
+@router.post("/conversations/{conversation_id}/ai/resume")
+def resume_conversation_closer(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    from app.services.ai_seller import resume_closer
+
+    try:
+        resumed = resume_closer(db, conversation, user)
+    except Exception:
+        db.rollback()
+        resumed = False
+    if resumed:
+        db.commit()
+        flash(request, "Venda devolvida ao Vendedor IA.")
+    else:
+        flash(request, "Esta conversa não tem venda do Vendedor IA para retomar.", "warning")
+    return RedirectResponse(f"/conversations/{conversation_id}", status_code=303)
+
+
 @router.get("/api/conversations/inbox")
 def conversation_inbox_api(
     request: Request,
     q: str = "",
     view: str = "active",
+    assignee: int | None = None,
+    queue: int | None = None,
     db: Session = Depends(get_db),
 ):
     user = get_current_user(request, db)
@@ -750,7 +1142,7 @@ def conversation_inbox_api(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Entre no WhatsApp para acessar o canal.",
         )
-    conversations = _inbox_query(db, user, q=q, view=view)
+    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
     return {
         "counts": _inbox_counts(db, user),
         "items": [

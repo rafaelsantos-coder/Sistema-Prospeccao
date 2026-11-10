@@ -17,7 +17,8 @@ from app.models import (
     Conversation,
     Message,
 )
-from app.services.ai_quick_replies import quick_replies_for_message
+from app.services import ai_campaign_black as black_campaign
+from app.services.ai_quick_replies import asks_for_free_text, quick_replies_for_message
 from app.services.ai_supervisor import (
     _catalog_snapshot,
     _closing_context,
@@ -56,8 +57,22 @@ Seu veredito deve ser um destes:
 Regras obrigatórias:
 1. Nunca invente plano, preço, cobertura, aprovação de crédito, prazo, contrato, assinatura ou
    status do CRM. Catálogo e playbook presentes no contexto são fonte de verdade.
+1.1. approved_catalog é a fonte única de preços. Um preço citado que seja igual ao
+     price_with_fidelity ou ao price_without_fidelity do plano (residencial), ou ao price
+     (empresa/Sulmóvel), e um plano oferecido numa cidade listada em cities, são fatos
+     COMPROVADOS: não bloqueie, não reescreva para "o valor precisa ser confirmado" e não
+     remova o preço. Só aponte erro de preço quando o valor for diferente do catálogo ou o
+     plano não existir na cidade do cliente.
+1.2. proposed_action.metadata.tool_facts traz os resultados das ferramentas oficiais chamadas
+     nesta resposta (catálogo, calculadora de multa, manual aprovado). Valores e fatos que estão
+     em tool_facts são COMPROVADOS: não os remova nem os troque por "não tenho essa informação".
 2. SDR não coleta CPF, data de nascimento, CEP contratual, e-mail contratual, dados bancários
    ou assinatura. Intenção clara de compra deve seguir para o Vendedor IA.
+2.1. Política comercial aprovada: assim que cidade e segmento estão confirmados, o SDR apresenta
+     o maior plano disponível na cidade com preço e uma chamada direta para contratar (ex.: "Quer
+     contratar esse plano agora?"). Isso é a oferta esperada, NÃO é confirmação de compra
+     prematura. Também não bloqueie só porque intent/metadata do SDR (ex.: QUALIFYING) diverge
+     do proposed_state; isso é rótulo interno e não chega ao cliente.
 3. Vendedor IA continua exatamente do ponto atual do fechamento e não reabre prospecção.
 4. Perguntas com 2 ou 3 respostas previsíveis devem usar botões/quick replies.
 5. Não repita pergunta, oferta ou CTA recente sem mudança real de estratégia.
@@ -82,6 +97,11 @@ Regras obrigatórias:
 9. CORRECT_STATE só deve ser usado quando o contexto provar o estado correto. Não adivinhe.
 10. Se houver dúvida factual, não crie um problema novo. Prefira APPROVE quando não houver
     evidência objetiva de erro.
+11. Não existe atendimento humano na Sulnet digital. Mensagem que promete consultor, atendente,
+    vendedor humano ou transferência para uma pessoa deve ser REWRITE: a própria IA responde a
+    dúvida do cliente (ou faz a próxima pergunta da venda) e segue o atendimento.
+12. Mensagem do cliente sem resposta é o pior erro: prefira REWRITE a BLOCK sempre que for
+    possível corrigir a resposta, para o cliente receber uma resposta agora.
 
 Para REWRITE, preencha reply_text com a mensagem final pronta para envio.
 Para perguntas fechadas, preencha suggested_buttons com 2 ou 3 rótulos curtos.
@@ -115,9 +135,22 @@ class GuardianResult(BaseModel):
     should_send: bool = True
 
 
+def guardian_enforcing() -> bool:
+    """Modo ativo: pode reescrever ou bloquear antes do WhatsApp."""
+    return bool(settings.ai_supervisor_guardian_enabled)
+
+
+def guardian_shadowing() -> bool:
+    """Modo sombra: revisa e audita sem alterar o envio."""
+    return bool(
+        settings.ai_supervisor_guardian_shadow_enabled
+        and not guardian_enforcing()
+    )
+
+
 def guardian_operational() -> bool:
     return bool(
-        settings.ai_supervisor_guardian_enabled
+        (guardian_enforcing() or guardian_shadowing())
         and settings.openai_api_key
     )
 
@@ -248,7 +281,8 @@ def build_guardian_context(
 
 
 def _run_guardian_model(context: dict[str, Any]) -> GuardianReview:
-    from agents import Agent, Runner
+    from agents import Agent
+    from app.services.ai_runtime import run_agent_sync
 
     prompt = (
         "Valide esta ação antes do envio. Use os achados determinísticos como evidência, "
@@ -269,7 +303,7 @@ def _run_guardian_model(context: dict[str, Any]) -> GuardianReview:
         },
         output_type=GuardianReview,
     )
-    result = Runner.run_sync(guardian, prompt)
+    result = run_agent_sync(guardian, prompt)
     review = result.final_output
     return review if isinstance(review, GuardianReview) else GuardianReview.model_validate(review)
 
@@ -330,6 +364,23 @@ def _apply_guardrails(
     original_text: str,
     original_buttons: list[dict[str, str]],
 ) -> GuardianResult:
+    # Textos fixos da campanha Black são montados em código a partir das regras
+    # do comercial: o modelo não pode reescrevê-los como "promoção não comprovada".
+    if black_campaign.black_active() and original_text.strip() in {
+        black_campaign.OFFER_QUESTION,
+        black_campaign.CUSTOMER_OFFER_QUESTION,
+        black_campaign.OPTIONS_TEXT,
+    }:
+        return GuardianResult(
+            verdict="APPROVE",
+            risk="LOW",
+            quality_score=100,
+            rationale="Texto fixo da campanha Black aprovada pelo comercial.",
+            reply_text=original_text,
+            buttons=original_buttons,
+            should_send=True,
+        )
+
     critical, high, deterministic_codes = _severity_sets(context)
     review.issue_codes = list(
         dict.fromkeys(
@@ -378,6 +429,31 @@ def _apply_guardrails(
             if code not in signature_false_positives
         ]
 
+    # Regras do SDR (não pedir CPF, não fazer fechamento...) não valem para o
+    # Vendedor IA: coletar dados é exatamente a etapa dele. Em 04/11 o Guardião
+    # barrou a primeira pergunta do Vendedor com SDR_PROHIBITED_PII_COLLECTION
+    # e o cliente ficou sem resposta depois do "Quero contratar".
+    if str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER":
+        model_codes = set(review.issue_codes) - deterministic_codes
+        sdr_only = {code for code in model_codes if code.upper().startswith("SDR_")}
+        if sdr_only:
+            review.issue_codes = [code for code in review.issue_codes if code not in sdr_only]
+            if (
+                not (model_codes - sdr_only)
+                and not high
+                and not critical
+                and review.verdict in {"BLOCK", "REWRITE", "CORRECT_STATE"}
+            ):
+                review.verdict = "APPROVE"
+                review.risk = "LOW"
+                review.quality_score = max(review.quality_score, 90)
+                review.reply_text = ""
+                review.corrected_state = ""
+                review.rationale = (
+                    "Regras exclusivas do SDR não se aplicam ao Vendedor IA; "
+                    "coleta de dados é a etapa do fechamento."
+                )
+
     metadata = proposed.get("metadata") or {}
     sdr_closer_handoff = bool(
         str((context.get("agent") or {}).get("role") or "").upper() == "SDR"
@@ -402,6 +478,10 @@ def _apply_guardrails(
     authoritative_contract_knowledge = bool(
         str((context.get("agent") or {}).get("role") or "").upper() == "CLOSER"
         and metadata.get("authoritative_contract_knowledge") is True
+    )
+    authoritative_sdr_script = bool(
+        str((context.get("agent") or {}).get("role") or "").upper() == "SDR"
+        and metadata.get("authoritative_sdr_script") is True
     )
 
     # Dúvidas contratuais resolvidas pela base oficial são fatos autoritativos.
@@ -555,6 +635,27 @@ def _apply_guardrails(
         review.reply_text = ""
         review.corrected_state = ""
 
+    # Catálogo e Black são textos fixos. Reescrever aqui trocou o menu de
+    # planos por um convite ao 15GB e cortou o botão em "Quero conhecer opçõe".
+    if (
+        authoritative_sdr_script
+        and not critical
+        and review.verdict in {"REWRITE", "CORRECT_STATE", "APPROVE"}
+    ):
+        review.verdict = "APPROVE"
+        review.risk = "LOW"
+        review.confidence = max(review.confidence, 0.95)
+        review.quality_score = max(review.quality_score, 95)
+        review.reply_text = ""
+        review.suggested_buttons = []
+        review.corrected_state = ""
+        review.issue_codes = [
+            code for code in review.issue_codes if code in deterministic_codes
+        ]
+        review.rationale = (
+            "Resposta comercial montada por regra fixa; preservar texto e botões."
+        )
+
     final_text = original_text
     final_buttons = list(original_buttons)
 
@@ -570,6 +671,11 @@ def _apply_guardrails(
     if review.verdict == "APPROVE":
         final_buttons = _normalize_buttons(original_text, original_buttons)
 
+    # Pergunta que pede dado digitado (cidade, CEP, nome...) não leva botões,
+    # nem os sugeridos pelo Guardião.
+    if asks_for_free_text(final_text):
+        final_buttons = []
+
     # A reescrita do próprio Guardião também precisa passar pelo anti-repetição.
     # Caso contrário ele poderia detectar repetição e devolver uma paráfrase
     # praticamente idêntica, que ainda assim chegaria ao cliente.
@@ -578,6 +684,7 @@ def _apply_guardrails(
         and final_text
         and not playbook_recovery
         and not authoritative_contract_knowledge
+        and not authoritative_sdr_script
     ):
         prior_outbounds = [
             str(item.get("body") or "")
@@ -628,7 +735,10 @@ def _record_guardian_review(
     result: GuardianResult,
     original_text: str,
     original_buttons: list[dict[str, str]],
+    shadow_only: bool = False,
+    observed_verdict: str | None = None,
 ) -> None:
+    observed = observed_verdict or result.verdict
     write_audit(
         db,
         user=agent.user,
@@ -640,22 +750,28 @@ def _record_guardian_review(
             "agent_id": agent.id,
             "agent_role": _role(agent),
             "source": source,
-            "verdict": result.verdict,
+            "verdict": "APPROVE" if shadow_only else result.verdict,
+            "observed_verdict": observed,
             "risk": result.risk,
             "confidence": result.confidence,
             "quality_score": result.quality_score,
             "issue_codes": result.issue_codes,
             "rationale": result.rationale,
-            "suggested_reply": result.reply_text if result.verdict != "APPROVE" else "",
+            "suggested_reply": (
+                _redact_text(result.reply_text)
+                if observed != "APPROVE"
+                else ""
+            ),
             "suggested_state": result.corrected_state,
             "suggested_buttons": [item.get("label") for item in result.buttons],
             "original_reply": _redact_text(original_text),
             "original_buttons": _redact_object(original_buttons),
             "deterministic_findings": context.get("deterministic_findings") or [],
             "guardian": True,
-            "shadow_only": False,
-            "intervened": result.verdict != "APPROVE",
-            "state_corrected": result.state_corrected,
+            "shadow_only": shadow_only,
+            "intervened": (not shadow_only) and result.verdict != "APPROVE",
+            "would_intervene": observed != "APPROVE",
+            "state_corrected": (not shadow_only) and result.state_corrected,
         },
     )
 
@@ -684,7 +800,9 @@ def guard_outbound_message(
             should_send=False,
         )
 
-    if not settings.ai_supervisor_guardian_enabled:
+    enforcing = guardian_enforcing()
+    shadowing = guardian_shadowing()
+    if not enforcing and not shadowing:
         return GuardianResult(
             verdict="APPROVE",
             risk="LOW",
@@ -706,18 +824,31 @@ def guard_outbound_message(
         proposed_state=proposed_state,
         metadata=metadata,
     )
+    if shadowing:
+        context = {**context, "mode": "GUARDIAN_SHADOW"}
+
+    # Catálogo/Black/entrada já vêm de regra fixa. Chamar o modelo só para
+    # aprovar o mesmo texto atrasa 10–30s sem ganho (e já houve rewrite ruim).
+    skip_model = (
+        _role(agent) == "SDR"
+        and (metadata or {}).get("authoritative_sdr_script") is True
+    )
 
     try:
-        if guardian_operational():
+        if guardian_operational() and not skip_model:
             review = _run_guardian_model(context)
         else:
-            # Sem modelo, ainda aplicamos os guardrails objetivos.
+            # Sem modelo (ou script autoritativo): só os guardrails objetivos.
             review = GuardianReview(
                 verdict="APPROVE",
                 risk="LOW",
                 confidence=1.0,
                 quality_score=100,
-                rationale="Avaliação determinística sem modelo disponível.",
+                rationale=(
+                    "Script comercial autoritativo: sem chamada ao modelo."
+                    if skip_model
+                    else "Avaliação determinística sem modelo disponível."
+                ),
             )
         result = _apply_guardrails(
             db,
@@ -726,6 +857,48 @@ def guard_outbound_message(
             original_text=original_text,
             original_buttons=original_buttons,
         )
+        observed_verdict = result.verdict
+        if shadowing:
+            # Sombra nunca altera a saída: registra o que faria e libera o original.
+            _record_guardian_review(
+                db,
+                agent=agent,
+                conversation=conversation,
+                source=source,
+                context=context,
+                result=result,
+                original_text=original_text,
+                original_buttons=original_buttons,
+                shadow_only=True,
+                observed_verdict=observed_verdict,
+            )
+            LOG.info(
+                "ai_guardian_shadow conversation=%s source=%s role=%s observed=%s risk=%s issues=%s",
+                conversation.id,
+                source,
+                _role(agent),
+                observed_verdict,
+                result.risk,
+                ",".join(result.issue_codes) or "-",
+            )
+            return GuardianResult(
+                verdict="APPROVE",
+                risk=result.risk,
+                confidence=result.confidence,
+                quality_score=result.quality_score,
+                issue_codes=list(result.issue_codes),
+                rationale=(
+                    f"[sombra] observou {observed_verdict}: {result.rationale}"
+                    if result.rationale
+                    else f"[sombra] observou {observed_verdict}"
+                ),
+                reply_text=original_text,
+                buttons=original_buttons,
+                corrected_state="",
+                state_corrected=False,
+                should_send=True,
+            )
+
         _record_guardian_review(
             db,
             agent=agent,
@@ -735,6 +908,7 @@ def guard_outbound_message(
             result=result,
             original_text=original_text,
             original_buttons=original_buttons,
+            shadow_only=False,
         )
         LOG.info(
             "ai_guardian conversation=%s source=%s role=%s verdict=%s risk=%s issues=%s",
@@ -748,9 +922,10 @@ def guard_outbound_message(
         return result
     except Exception as exc:
         # Disponibilidade: falha do modelo não derruba uma ação limpa. Achado
-        # determinístico HIGH/CRITICAL, porém, continua fail-closed.
+        # determinístico HIGH/CRITICAL, porém, continua fail-closed — exceto
+        # em sombra, onde nunca bloqueamos o envio.
         _critical, high, codes = _severity_sets(context)
-        fail_closed = bool(high)
+        fail_closed = bool(high) and enforcing
         write_audit(
             db,
             user=agent.user,
@@ -765,13 +940,15 @@ def guard_outbound_message(
                 "error": _redact_text(str(exc))[:1200],
                 "issue_codes": sorted(codes),
                 "fail_closed": fail_closed,
+                "shadow_only": shadowing,
             },
         )
         LOG.exception(
-            "ai_guardian_failed conversation=%s source=%s fail_closed=%s",
+            "ai_guardian_failed conversation=%s source=%s fail_closed=%s shadow=%s",
             conversation.id,
             source,
             fail_closed,
+            shadowing,
         )
         if fail_closed:
             return GuardianResult(
@@ -790,7 +967,11 @@ def guard_outbound_message(
             risk="MEDIUM",
             confidence=0.0,
             quality_score=70,
-            rationale="Guardião indisponível; ação sem achado objetivo liberada em fail-open.",
+            rationale=(
+                "Guardião em sombra indisponível; envio liberado."
+                if shadowing
+                else "Guardião indisponível; ação sem achado objetivo liberada em fail-open."
+            ),
             reply_text=original_text,
             buttons=original_buttons,
             should_send=True,

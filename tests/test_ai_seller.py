@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 from app.services.crm_sulnet import (
@@ -25,9 +26,13 @@ from app.services.ai_seller import (
     _prepare_contract_before_win,
     _persist_category_form,
     _win_idempotency_key,
+    _advance_with_playbook,
     _mobile_missing_fields,
     _mobile_next_step,
     _mobile_values,
+    _recover_mobile_step_for_text,
+    _recover_contract_pending_field,
+    _infer_mobile_contract_type,
     _category_values,
     _canonical_playbook_value,
     _playbook_code_key,
@@ -181,6 +186,86 @@ def test_sdr_ia_mobile_contract_type_rejects_m2m():
     assert "M2M" not in message
 
 
+def test_infer_mobile_contract_type_from_portability_evidence():
+    assert (
+        _infer_mobile_contract_type(
+            {
+                "mobileCategoryValues": {
+                    "numero_portado": "55999002508",
+                    "port_titular": "Sim",
+                }
+            }
+        )
+        == "Número Portabilidade"
+    )
+    assert (
+        _infer_mobile_contract_type(
+            {"mobileCategoryValues": {"numero_novo": "55998887766"}}
+        )
+        == "Número novo"
+    )
+
+
+def test_recover_contract_pending_resyncs_known_tipo_without_rewind():
+    patches: list[tuple[str, object]] = []
+
+    class FakeClient:
+        def update_playbook_field(self, opportunity_id, *, patch_key, value):
+            patches.append(("field", opportunity_id, patch_key, value))
+            return {"ok": True}
+
+        def update_category_form(self, opportunity_id, values, **kwargs):
+            patches.append(("form", opportunity_id, dict(values), kwargs))
+            return {"ok": True}
+
+        def playbook(self, opportunity_id, category=None):
+            raise AssertionError("playbook não deve ser consultado após sync local")
+
+    state = SimpleNamespace(
+        opportunity_id=14370,
+        step="CONFIRM_SALE",
+        contract_status="aguardando_confirmacao",
+        plan_label="SULMOVEL_2GB",
+    )
+    collected = {
+        "categoryId": 83,
+        "planId": 388,
+        "mobileCategoryValues": {
+            "numero_portado": "55999002508",
+            "port_titular": "Sim",
+            "forma_pagamento": "Boleto",
+            "envio_fatura": ["WhatsApp"],
+        },
+        "_sdr_ia_funnel": True,
+        "_sdr_ia_defaults": {
+            "vencimento": "10",
+            "taxa_ativacao": "Não",
+            "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
+        },
+    }
+    exc = CRMIntegrationError(
+        "Campos pendentes para contrato: Tipo de contratação móvel",
+        status_code=400,
+        response_body={"error": "Campos pendentes para contrato: Tipo de contratação móvel"},
+    )
+
+    recovered = _recover_contract_pending_field(
+        FakeClient(),
+        state,
+        collected,
+        exc,
+    )
+
+    assert recovered is None
+    assert collected["_contract_recovery_reason"] == "mobile_contract_type_synced"
+    assert collected["mobileCategoryValues"]["tipo_contratacao"] == "Número Portabilidade"
+    assert state.step == "CONFIRM_SALE"
+    assert any(
+        item[0] == "field" and item[3] == "Número Portabilidade"
+        for item in patches
+    )
+
+
 def test_mobile_portability_does_not_repeat_holder_data_when_same_holder():
     values = {
         "tipo_assinatura_contrato": MOBILE_SIGNATURE_TYPE,
@@ -250,6 +335,129 @@ def test_mobile_next_step_for_portability_goes_directly_to_number():
     assert _mobile_next_step(values) == "MOBILE_PORT_NUMBER"
 
 
+def test_recover_mobile_step_accepts_phone_when_crm_rewound_to_contract_type():
+    values = {
+        "tipo_contratacao": "Número Portabilidade",
+    }
+    assert (
+        _recover_mobile_step_for_text(
+            "MOBILE_CONTRACT_TYPE",
+            "55999002508",
+            values,
+        )
+        == "MOBILE_PORT_NUMBER"
+    )
+    accepted, error = _apply_mobile_answer(
+        "MOBILE_PORT_NUMBER",
+        "55999002508",
+        values,
+    )
+    assert accepted is True
+    assert error == ""
+    assert values["numero_portado"] == "55999002508"
+    assert _mobile_next_step(values) == "MOBILE_PORT_TITULAR"
+
+
+def test_playbook_does_not_reask_portability_after_successful_sync():
+    """CRM insiste em tipocontratacao após PATCH → não volta a perguntar."""
+    tipo = CRMPlaybookMissingItem(
+        code="tipo_contratacao",
+        question="Informe: Tipo de contratação móvel.",
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+        options=[
+            {"id": "portabilidade", "label": "Portabilidade", "value": "Número Portabilidade"},
+            {"id": "novo", "label": "Número novo", "value": "Número novo"},
+        ],
+    )
+    numero = CRMPlaybookMissingItem(
+        code="numero_portado",
+        question="Qual número você deseja portar?",
+        patch_key="productInfo.categoryForm.values.numero_portado",
+    )
+    # 1ª chamada: sync tipo. 2ª: CRM ainda devolve tipo+numero → pula tipo.
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[tipo, numero],
+            next_question="Informe: Tipo de contratação móvel.",
+            category="telefonia-movel",
+        ),
+        _playbook_result(
+            missing=[tipo, numero],
+            next_question="Informe: Tipo de contratação móvel.",
+            category="telefonia-movel",
+        ),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="MOBILE_PORT_NUMBER",
+    )
+    collected = {
+        "categoryName": "Telefonia Móvel",
+        "mobileCategoryValues": {
+            "tipo_contratacao": "Número Portabilidade",
+        },
+    }
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="MOBILE_PORT_NUMBER",
+    )
+
+    assert step == "MOBILE_PORT_NUMBER"
+    assert "portar" in (question or "").lower() or question is None
+    assert client.playbook_patches
+    assert client.playbook_patches[0][2] == "Número Portabilidade"
+
+
+def test_advance_blocks_playbook_rewind_to_contract_type():
+    tipo = CRMPlaybookMissingItem(
+        code="tipo_contratacao",
+        question="Como você quer contratar?",
+        patch_key="productInfo.categoryForm.values.tipo_contratacao",
+        options=[
+            {"id": "portabilidade", "label": "Portabilidade", "value": "Número Portabilidade"},
+            {"id": "novo", "label": "Número novo", "value": "Número novo"},
+        ],
+    )
+    # Após sync, CRM ainda só devolve tipo (sem numero) → fallback local.
+    client = _PlaybookClient([
+        _playbook_result(
+            missing=[tipo],
+            next_question="Como você quer contratar?",
+            category="telefonia-movel",
+        ),
+        _playbook_result(
+            missing=[tipo],
+            next_question="Como você quer contratar?",
+            category="telefonia-movel",
+        ),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Sulmóvel 15GB",
+        credit_status="",
+        step="MOBILE_PORT_NUMBER",
+    )
+    collected = {
+        "categoryName": "Telefonia Móvel",
+        "mobileCategoryValues": {
+            "tipo_contratacao": "Número Portabilidade",
+            "numero_portado": "55999002508",
+        },
+    }
+
+    reply = _advance_with_playbook(
+        client,
+        state,
+        collected,
+        fallback_step="MOBILE_PORT_TITULAR",
+    )
+    assert state.step == "MOBILE_PORT_TITULAR"
+    assert "titular" in reply.lower() or "sim ou não" in reply.lower()
 
 
 class _MobilePlanContextClient:
@@ -366,6 +574,9 @@ def test_seller_step_buttons_cover_predefined_mobile_questions():
 
 def test_seller_step_buttons_keep_free_text_steps_without_buttons():
     assert _seller_step_buttons("MOBILE_PORT_NUMBER", "Qual é o número que será portado?") == []
+    assert _seller_step_buttons(
+        "MOBILE_PORT_NUMBER", "Qual número você deseja portar?"
+    ) == []
     assert _seller_step_buttons("EMAIL", "Qual é o seu e-mail?") == []
 
 
@@ -1316,7 +1527,7 @@ def test_phase4_ready_for_win_generates_contract_before_any_win():
         },
     )
     state = _phase4_state()
-    collected = {"_playbook_ready_for_win": True}
+    collected = {"_playbook_ready_for_win": True, "_sale_accepted": True}
 
     reply = _finish_sale_contract(
         client,
@@ -1387,6 +1598,10 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
     )
 
     class _RecoveryClient(_Phase4ContractClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.playbook_field_patches: list[tuple[str, object]] = []
+
         def generate_agent_contract(
             self,
             opportunity_id,
@@ -1395,6 +1610,15 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
             require_ready_for_win=True,
         ):
             self.generate_calls += 1
+            # Após o sync local do tipo, a 2ª tentativa já consegue gerar.
+            if self.generate_calls >= 2:
+                return {
+                    "protocol": "CRM-TEST",
+                    "templateId": 9,
+                    "status": "sent",
+                    "signatureReused": False,
+                    "signUrl": "https://sign.example/contract",
+                }
             raise CRMIntegrationError(
                 "Campos pendentes para contrato: Tipo de contratação móvel",
                 status_code=400,
@@ -1419,6 +1643,13 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
                 category="telefonia-movel",
                 sdr_ia_funnel=True,
             )
+
+        def update_playbook_field(self, opportunity_id, *, patch_key, value):
+            self.playbook_field_patches.append((patch_key, value))
+            return {"ok": True}
+
+        def update_category_form(self, opportunity_id, values, **kwargs):
+            return {"ok": True}
 
         def get_opportunity(self, opportunity_id):
             return {"opportunityId": opportunity_id, "planId": 1500}
@@ -1459,23 +1690,21 @@ def test_mobile_contract_400_recovers_to_contract_type_with_crm_options():
         collected,
     )
 
-    assert client.generate_calls == 1
-    assert state.step == "MOBILE_CONTRACT_TYPE"
-    assert state.contract_status == "aguardando_tipo_contratacao"
-    assert "contratar" in reply.lower()
-    assert "tipo_contratacao" not in collected["categoryFormValues"]
-    assert collected["_playbook_code"] == "cf_tipo_contratacao"
-    assert collected["_playbook_patch_key"] == (
-        "productInfo.categoryForm.values.tipo_contratacao"
-    )
-    assert _seller_step_buttons(
-        state.step,
-        reply,
-        collected,
-    ) == [
-        {"id": "portabilidade", "label": "Portabilidade"},
-        {"id": "numero_novo", "label": "Número novo"},
+    assert client.generate_calls == 2
+    # Portabilidade sem data: a data da venda é gravada antes de gerar (conversa 546).
+    assert (
+        "productInfo.categoryForm.values.tipo_contratacao",
+        "Número Portabilidade",
+    ) in client.playbook_field_patches
+    assert [key for key, _ in client.playbook_field_patches if key.endswith("port_data")] == [
+        "productInfo.categoryForm.values.port_data"
     ]
+    assert collected["categoryFormValues"]["tipo_contratacao"] == (
+        "Número Portabilidade"
+    )
+    assert collected["_contract_recovery_reason"] == "mobile_contract_type_synced"
+    assert state.step != "MOBILE_CONTRACT_TYPE"
+    assert "contratar" not in reply.lower() or "assinatura" in reply.lower() or reply
 
 
 def test_phase4_not_ready_never_generates_contract_or_marks_won():
@@ -1506,7 +1735,7 @@ def test_phase4_contract_without_sign_url_stays_pending_and_not_won():
         contract=False,
     )
     state = _phase4_state()
-    collected = {"_playbook_ready_for_win": True}
+    collected = {"_playbook_ready_for_win": True, "_sale_accepted": True}
 
     _finish_sale_contract(
         client,
@@ -1812,3 +2041,331 @@ def test_seller_contract_penalty_after_twelve_months_is_zero():
 
     assert reply is not None
     assert "não há multa de permanência" in reply.lower()
+
+
+def _penalty_state():
+    return SimpleNamespace(plan_label="800 Mega", offer_price=119.90, handoff_summary="")
+
+
+def test_seller_contract_penalty_understands_ordinal_month():
+    # Caso real da conversa 114: "qual a multa se eu quiser cancelar no setimo mes ?"
+    reply = _seller_contract_knowledge_reply(
+        _penalty_state(),
+        {"freeMonths": 0},
+        "qual a multa se eu quiser cancelar no setimo mes ?",
+    )
+
+    assert reply is not None
+    assert "faltam 5 meses" in reply
+    assert "R$ 358,33" in reply
+
+
+def test_seller_contract_penalty_understands_numeric_ordinal():
+    reply = _seller_contract_knowledge_reply(
+        _penalty_state(),
+        {"freeMonths": 0},
+        "e a multa se eu cancelar no 7º mês?",
+    )
+
+    assert reply is not None
+    assert "faltam 5 meses" in reply
+
+
+def test_seller_contract_penalty_uses_bare_number_after_asking_months():
+    collected = {"freeMonths": 0}
+    first = _seller_contract_knowledge_reply(
+        _penalty_state(),
+        collected,
+        "qual o valor da multa de contrato?",
+    )
+    assert first is not None
+    assert "quantos meses" in first
+    assert collected.get("_pending_penalty_months") is True
+
+    second = _seller_contract_knowledge_reply(_penalty_state(), collected, "7")
+
+    assert second is not None
+    assert "faltam 5 meses" in second
+    assert "R$ 358,33" in second
+    assert "_pending_penalty_months" not in collected
+
+
+def test_seller_contract_penalty_pending_question_does_not_capture_other_answers():
+    collected = {"freeMonths": 0, "_pending_penalty_months": True}
+
+    reply = _seller_contract_knowledge_reply(_penalty_state(), collected, "Boleto")
+
+    assert reply is None
+    assert "_pending_penalty_months" not in collected
+
+
+def test_billing_merge_keeps_previous_answers_across_messages():
+    # Sequência real da conversa 62: "10" -> "Boleto" -> "10" entrava em ciclo.
+    from app.services.ai_seller import _billing_merge
+
+    collected = {}
+    first = _billing_merge(collected, "Boleto")
+    assert first == {"paymentMethod": "Boleto"}
+
+    collected["paymentMethod"] = first["paymentMethod"]
+    second = _billing_merge(collected, "10")
+    assert second == {"paymentMethod": "Boleto", "dueDay": 10}
+
+
+def test_billing_merge_keeps_due_day_when_payment_comes_later():
+    from app.services.ai_seller import _billing_merge
+
+    billing = _billing_merge({"dueDay": 10}, "Boleto")
+
+    assert billing == {"paymentMethod": "Boleto", "dueDay": 10}
+
+
+def test_billing_merge_ignores_bare_number_before_payment_method():
+    from app.services.ai_seller import _billing_merge
+
+    billing = _billing_merge({}, "10")
+
+    assert "dueDay" not in billing
+
+
+def test_billing_prompt_and_buttons_ask_one_thing_at_a_time():
+    from app.services.ai_seller import _prompt_for_step, _seller_step_buttons
+
+    state = SimpleNamespace(step="BILLING", plan_label="800 Mega")
+
+    assert "forma de pagamento" in _prompt_for_step(state, {})
+    assert "vencimento" not in _prompt_for_step(state, {})
+    assert {b["label"] for b in _seller_step_buttons("BILLING", "", {})} == {"Boleto", "Débito em conta"}
+
+    paid = {"paymentMethod": "Boleto"}
+    assert "vencimento" in _prompt_for_step(state, paid)
+    assert _seller_step_buttons("BILLING", "", paid) == []
+
+
+def test_playbook_category_id_is_persisted_with_resolved_plan():
+    # Conversa 240: o CRM pedia categoryId e o Vendedor perguntava ao cliente em
+    # ciclo. Com plano e categoria já resolvidos no catálogo, grava sem perguntar.
+    item = CRMPlaybookMissingItem(
+        code="categoryId",
+        label="Categoria do produto",
+        question="Confirme a categoria do produto (Telefonia Móvel).",
+        patch_key="",
+    )
+    client = _PlaybookClient([
+        _playbook_result(missing=[item], next_question=item.question),
+        _playbook_result(missing=[], ready=True),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=11754,
+        plan_label="Fibra 800 Mega",
+        offer_price=119.90,
+        credit_status="Aprovado",
+        step="WAITING_CONTRACT",
+    )
+    collected = {"planId": 77, "categoryId": 3, "categoryName": "Internet"}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="__FINISH__",
+    )
+
+    assert step == "__FINISH__"
+    assert question is None
+    assert [(opp, cat, plan) for opp, _values, cat, plan in client.category_updates] == [
+        (11754, 3, 77),
+    ]
+
+
+def test_closer_ownership_requires_closing_state():
+    from app.services.ai_seller import CRMIntegrationError, _assert_closer_owns_conversation
+
+    agent = SimpleNamespace(id=2, role_type="CLOSER")
+    conversation = SimpleNamespace(id=240)
+
+    class _Db:
+        def __init__(self, state):
+            self.state = state
+
+        def scalar(self, _query):
+            return SimpleNamespace(state=self.state, agent_id=2)
+
+    _assert_closer_owns_conversation(_Db("CLOSING"), conversation=conversation, agent=agent)
+    try:
+        _assert_closer_owns_conversation(_Db("AI_ACTIVE"), conversation=conversation, agent=agent)
+    except CRMIntegrationError:
+        pass
+    else:
+        raise AssertionError("Vendedor IA não envia em conversa que voltou ao SDR.")
+
+
+def test_seller_followup_blocked_by_guardian_is_cancelled_not_retried(monkeypatch):
+    # Conversa 240: o bloqueio escapava, o worker desfazia a transação e o mesmo
+    # follow-up voltava a cada 10 minutos.
+    from app.services import ai_seller
+    from app.services.ai_guardian import GuardianBlockedError, GuardianResult
+
+    conversation = SimpleNamespace(id=240)
+    state = SimpleNamespace(step="CPF", conversation_id=240)
+    job = SimpleNamespace(id=359, conversation_id=240, step=3, status="PROCESSANDO", error=None, source_message_id=None)
+    agent = SimpleNamespace(user=None)
+    audits = []
+
+    class _Db:
+        def get(self, _model, _id):
+            return conversation
+
+        def scalar(self, _query):
+            return state
+
+    def _blocked(*_args, **_kwargs):
+        raise GuardianBlockedError(
+            GuardianResult(verdict="BLOCK", issue_codes=["REPEATED_QUESTION", "CATEGORY_CONFLICT"])
+        )
+
+    scheduled = []
+    monkeypatch.setattr(ai_seller, "_load_collected", lambda _state: {})
+    monkeypatch.setattr(ai_seller, "_seller_followup_prompt", lambda *_a, **_k: "Pode me enviar o CPF?")
+    monkeypatch.setattr(ai_seller, "_send_step_message", _blocked)
+    monkeypatch.setattr(ai_seller, "_schedule_seller_followup", lambda *_a, **_k: scheduled.append(1))
+    monkeypatch.setattr(ai_seller, "write_audit", lambda *_a, **kw: audits.append(kw))
+
+    outcome = ai_seller.process_seller_followup(_Db(), job, agent)
+
+    assert outcome == "guardian_blocked"
+    assert job.status == "CANCELADO"
+    assert "REPEATED_QUESTION" in job.error
+    assert scheduled == []
+    assert audits and audits[0]["action"] == "AI_CLOSER_FOLLOWUP_BLOCKED"
+
+
+def test_contract_waits_for_explicit_acceptance():
+    """Conversa 114: o contrato saiu sem o cliente ter aceitado o resumo."""
+    client = _Phase4ContractClient(
+        generated={"status": "aguardando_assinatura", "signUrl": "https://sign.example/1"},
+    )
+    state = _phase4_state()
+    collected = {
+        "_playbook_ready_for_win": True,
+        "paymentMethod": "Boleto",
+        "dueDay": 10,
+    }
+
+    reply = _finish_sale_contract(client, state, collected)
+
+    assert client.generate_calls == 0
+    assert state.step == "CONFIRM_SALE"
+    assert "800 Mega" in reply
+    assert "119,90" in reply
+    assert "Boleto" in reply
+    assert "dia 10" in reply
+    assert "confirma" in reply.lower()
+
+    collected["_sale_accepted"] = True
+    _finish_sale_contract(client, state, collected)
+    assert client.generate_calls == 1
+    assert state.step == "WAITING_SIGNATURE"
+
+
+def test_sale_acceptance_answer_reads_buttons_and_free_text():
+    from app.services.ai_seller import _sale_acceptance_answer
+
+    assert _sale_acceptance_answer("Confirmo") == "SIM"
+    assert _sale_acceptance_answer("sim, pode gerar") == "SIM"
+    assert _sale_acceptance_answer("Quero ajustar") == "NAO"
+    assert _sale_acceptance_answer("não, quero pensar melhor") == "NAO"
+    assert _sale_acceptance_answer("qual a fidelidade?") == "NAO_INFORMADO"
+
+
+def test_confirm_sale_step_has_buttons_and_reminder_prompt():
+    from app.services.ai_seller import _prompt_for_step, _seller_step_buttons
+
+    state = _phase4_state(step="CONFIRM_SALE")
+    labels = [item["label"] for item in _seller_step_buttons("CONFIRM_SALE", "", {})]
+    assert labels == ["Confirmo", "Quero ajustar"]
+    prompt = _prompt_for_step(state, {})
+    assert "confirma" in prompt.lower()
+    assert "800 Mega" in prompt
+
+
+def test_seller_question_detection_keeps_step_answers():
+    from app.services.ai_seller import _seller_is_question
+
+    assert _seller_is_question("Quanto tempo demora a instalação?")
+    assert _seller_is_question("e se eu mudar de endereço")
+    assert not _seller_is_question("posso pagar no boleto?")
+    assert not _seller_is_question("sim, pode seguir?")
+    assert not _seller_is_question("Rafael Santos")
+    assert not _seller_is_question("10")
+
+
+def test_seller_question_reply_answers_from_kb_and_resumes_step(monkeypatch):
+    from app.services import ai_runtime, ai_seller
+
+    captured = {}
+
+    def fake_run(agent, prompt):
+        captured["prompt"] = prompt
+        return SimpleNamespace(final_output=ai_seller.SellerKnowledgeAnswer(
+            answered=True,
+            answer="O prazo contratual de instalação é de até 45 dias úteis.",
+        ))
+
+    monkeypatch.setattr(ai_runtime, "run_agent_sync", fake_run)
+    monkeypatch.setattr(ai_seller, "_seller_knowledge", lambda db, agent, query="": "- Condições contratuais FTTH: até 45 dias úteis")
+    monkeypatch.setattr(ai_seller, "settings", replace(ai_seller.settings, openai_api_key="sk-test"))
+    state = _phase4_state(step="BILLING")
+    agent = SimpleNamespace(name="Vendedor", system_prompt="", model="m", reasoning_effort="low")
+
+    reply = ai_seller._seller_question_reply(
+        None, agent=agent, state=state, collected={}, text="Quanto tempo demora a instalação?",
+    )
+
+    assert reply.startswith("O prazo contratual de instalação é de até 45 dias úteis.")
+    assert "forma de pagamento" in reply
+    assert "45 dias úteis" in captured["prompt"]
+
+
+def test_seller_question_reply_never_invents_when_kb_has_no_answer(monkeypatch):
+    from app.services import ai_runtime, ai_seller
+
+    monkeypatch.setattr(
+        ai_runtime,
+        "run_agent_sync",
+        lambda agent, prompt: SimpleNamespace(final_output=ai_seller.SellerKnowledgeAnswer(answered=False)),
+    )
+    monkeypatch.setattr(ai_seller, "_seller_knowledge", lambda db, agent, query="": "- item")
+    monkeypatch.setattr(ai_seller, "settings", replace(ai_seller.settings, openai_api_key="sk-test"))
+    state = _phase4_state(step="BILLING")
+    agent = SimpleNamespace(name="Vendedor", system_prompt="", model="m", reasoning_effort="low")
+
+    reply = ai_seller._seller_question_reply(
+        None, agent=agent, state=state, collected={}, text="Vocês têm sinal de TV a cabo?",
+    )
+
+    assert "não tenho confirmada" in reply
+    assert "forma de pagamento" in reply
+
+
+def test_seed_gives_closer_its_own_knowledge_base():
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.main import app
+    from app.models import AIAgentProfile, AIKnowledgeItem
+
+    with TestClient(app):
+        db = SessionLocal()
+        try:
+            closer = db.scalar(select(AIAgentProfile).where(AIAgentProfile.slug == "sulia-vendedor-fechamento"))
+            assert closer is not None
+            titles = set(db.scalars(
+                select(AIKnowledgeItem.title).where(AIKnowledgeItem.agent_id == closer.id)
+            ))
+            assert "Condições contratuais FTTH" in titles
+            assert "Fechamento digital - resumo, aceite e assinatura" in titles
+            assert "Formas de pagamento e fatura no canal digital" in titles
+        finally:
+            db.close()

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import AuthThrottle
-from app.timeutils import utcnow
+from app.timeutils import utc_naive, utcnow
 
 
 def throttle_key(email: str, ip: str | None) -> str:
@@ -22,12 +22,14 @@ def retry_after_seconds(
     ip: str | None,
 ) -> int:
     row = db.get(AuthThrottle, throttle_key(email, ip))
-    if not row or not row.blocked_until:
+    # O PostgreSQL devolve estas colunas com fuso; utcnow() é UTC sem fuso.
+    blocked_until = utc_naive(row.blocked_until) if row else None
+    if not blocked_until:
         return 0
     now = utcnow()
-    if row.blocked_until <= now:
+    if blocked_until <= now:
         return 0
-    return max(1, int((row.blocked_until - now).total_seconds()))
+    return max(1, int((blocked_until - now).total_seconds()))
 
 
 def record_failure(
@@ -51,7 +53,10 @@ def record_failure(
         db.add(row)
         db.flush()
 
-    if now - row.window_started_at > window:
+    # O PostgreSQL devolve estas colunas com fuso; utcnow() é UTC sem fuso.
+    # Misturar os dois quebrava o login com erro 500 a partir da 2ª senha errada.
+    window_started_at = utc_naive(row.window_started_at) or now
+    if now - window_started_at > window:
         row.attempts = 0
         row.window_started_at = now
         row.blocked_until = None
@@ -61,8 +66,9 @@ def record_failure(
         row.blocked_until = now + block
     row.updated_at = now
 
-    if row.blocked_until and row.blocked_until > now:
-        return max(1, int((row.blocked_until - now).total_seconds()))
+    blocked_until = utc_naive(row.blocked_until)
+    if blocked_until and blocked_until > now:
+        return max(1, int((blocked_until - now).total_seconds()))
     return 0
 
 

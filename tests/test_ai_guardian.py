@@ -242,6 +242,50 @@ def test_guardian_allows_real_sign_url_in_waiting_signature():
 
 
 
+def test_guardian_keeps_authoritative_sdr_catalog_script():
+    review = GuardianReview(
+        verdict="REWRITE",
+        risk="MEDIUM",
+        confidence=0.8,
+        quality_score=60,
+        issue_codes=["POSSIBLE_REPEAT"],
+        rationale="Trocaria o menu por um único plano.",
+        reply_text=(
+            "Para usar só móvel, o plano com mais internet é o Sulmóvel 15GB "
+            "por R$ 69,80. Quer contratar esse plano agora?"
+        ),
+        suggested_buttons=["Sim, quero contratar", "Quero conhecer opções"],
+    )
+    context = _context([], role="SDR")
+    context["proposed_action"] = {
+        "proposed_state": "OFFERING",
+        "metadata": {"authoritative_sdr_script": True},
+    }
+    original = "No Sulmóvel temos planos nacionais com valores confirmados. Escolha uma opção para continuar:"
+    buttons = [
+        {"id": "mobile_2gb", "label": "2GB - R$ 33,90"},
+        {"id": "mobile_5gb", "label": "5GB - R$ 44,90"},
+        {"id": "mobile_mais", "label": "Mais planos"},
+    ]
+
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=context,
+        original_text=original,
+        original_buttons=buttons,
+    )
+
+    assert result.verdict == "APPROVE"
+    assert result.should_send is True
+    assert result.reply_text == original
+    assert [item["label"] for item in result.buttons] == [
+        "2GB - R$ 33,90",
+        "5GB - R$ 44,90",
+        "Mais planos",
+    ]
+
+
 def test_guardian_allows_authoritative_crm_playbook_recovery():
     review = GuardianReview(
         verdict="BLOCK",
@@ -437,3 +481,220 @@ def test_guardian_approves_operational_sdr_to_closer_handoff():
     assert result.should_send is True
     assert result.risk == "LOW"
     assert result.issue_codes == []
+
+
+def test_guardian_nao_aplica_regras_do_sdr_ao_vendedor_ia():
+    # 04/11, conversa 459: a primeira pergunta do Vendedor IA foi barrada
+    # como se fosse o SDR pedindo dado pessoal; o cliente ficou sem resposta.
+    review = GuardianReview(
+        verdict="BLOCK",
+        risk="HIGH",
+        confidence=0.9,
+        quality_score=30,
+        issue_codes=["SDR_PROHIBITED_PII_COLLECTION", "SDR_FUNNEL_CLOSING_STEP"],
+    )
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=_context([], role="CLOSER"),
+        original_text="Perfeito! Para começar, me confirma seu nome completo?",
+        original_buttons=[],
+    )
+    assert result.should_send is True
+    assert result.verdict == "APPROVE"
+    assert not [code for code in result.issue_codes if code.startswith("SDR_")]
+
+
+def test_guardian_mantem_bloqueio_do_vendedor_com_outro_motivo():
+    review = GuardianReview(
+        verdict="BLOCK",
+        risk="HIGH",
+        confidence=0.9,
+        quality_score=30,
+        issue_codes=["SDR_FUNNEL_CLOSING_STEP", "CUSTOMER_DECLINED"],
+    )
+    result = _apply_guardrails(
+        None,
+        review=review,
+        context=_context([], role="CLOSER"),
+        original_text="Qual é o seu CPF?",
+        original_buttons=[],
+    )
+    assert result.should_send is False
+    assert "CUSTOMER_DECLINED" in result.issue_codes
+
+
+def test_guardian_shadow_observes_block_but_still_sends(monkeypatch):
+    from dataclasses import replace
+
+    from app.config import settings
+    from app.services import ai_guardian
+
+    audits: list[dict] = []
+
+    monkeypatch.setattr(
+        ai_guardian,
+        "settings",
+        replace(
+            settings,
+            ai_supervisor_guardian_enabled=False,
+            ai_supervisor_guardian_shadow_enabled=True,
+            openai_api_key="sk-test",
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "build_guardian_context",
+        lambda *args, **kwargs: _context(
+            [
+                {
+                    "code": "WON_BEFORE_SIGNATURE",
+                    "severity": "CRITICAL",
+                    "detail": "Venda marcada como ganha antes da assinatura.",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "_run_guardian_model",
+        lambda _context: GuardianReview(
+            verdict="APPROVE",
+            risk="LOW",
+            confidence=0.9,
+            quality_score=95,
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "write_audit",
+        lambda db, user=None, action="", entity_type="", entity_id=None, payload=None: audits.append(
+            {"action": action, "payload": payload or {}}
+        ),
+    )
+
+    agent = SimpleNamespace(id=7, user=None, role_type="CLOSER")
+    conversation = SimpleNamespace(id=42)
+    result = ai_guardian.guard_outbound_message(
+        None,
+        agent=agent,
+        conversation=conversation,
+        reply_text="Sua contratação foi concluída.",
+        buttons=[],
+        source="CLOSER_TEST",
+    )
+
+    assert result.should_send is True
+    assert result.verdict == "APPROVE"
+    assert result.reply_text == "Sua contratação foi concluída."
+    assert "WON_BEFORE_SIGNATURE" in result.issue_codes
+    assert audits
+    payload = audits[0]["payload"]
+    assert payload["shadow_only"] is True
+    assert payload["intervened"] is False
+    assert payload["would_intervene"] is True
+    assert payload["observed_verdict"] == "BLOCK"
+    assert payload["verdict"] == "APPROVE"
+
+
+def test_guardian_shadow_disabled_skips_review(monkeypatch):
+    from dataclasses import replace
+
+    from app.config import settings
+    from app.services import ai_guardian
+
+    called = {"model": False}
+
+    monkeypatch.setattr(
+        ai_guardian,
+        "settings",
+        replace(
+            settings,
+            ai_supervisor_guardian_enabled=False,
+            ai_supervisor_guardian_shadow_enabled=False,
+            openai_api_key="sk-test",
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "_run_guardian_model",
+        lambda _context: called.__setitem__("model", True) or GuardianReview(),
+    )
+
+    agent = SimpleNamespace(id=7, user=None, role_type="SDR")
+    conversation = SimpleNamespace(id=42)
+    result = ai_guardian.guard_outbound_message(
+        None,
+        agent=agent,
+        conversation=conversation,
+        reply_text="Olá!",
+        buttons=[],
+        source="SDR_TEST",
+    )
+
+    assert result.should_send is True
+    assert result.verdict == "APPROVE"
+    assert called["model"] is False
+    assert "desativado" in result.rationale.casefold()
+
+
+def test_guardian_skips_model_for_authoritative_sdr_script(monkeypatch):
+    from dataclasses import replace
+
+    from app.config import settings
+    from app.services import ai_guardian
+
+    called = {"model": False}
+
+    monkeypatch.setattr(
+        ai_guardian,
+        "settings",
+        replace(
+            settings,
+            ai_supervisor_guardian_enabled=True,
+            ai_supervisor_guardian_shadow_enabled=False,
+            openai_api_key="sk-test",
+        ),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "build_guardian_context",
+        lambda *args, **kwargs: {
+            "conversation_id": 42,
+            "agent": {"role": "SDR"},
+            "history": [],
+            "deterministic_findings": [],
+            "proposed": {
+                "reply_text": "Escolha um plano Sulmóvel:",
+                "buttons": [{"id": "1", "label": "15GB"}],
+                "metadata": {"authoritative_sdr_script": True},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "_run_guardian_model",
+        lambda _context: called.__setitem__("model", True) or GuardianReview(),
+    )
+    monkeypatch.setattr(
+        ai_guardian,
+        "write_audit",
+        lambda *args, **kwargs: None,
+    )
+
+    agent = SimpleNamespace(id=7, user=None, role_type="SDR")
+    conversation = SimpleNamespace(id=42)
+    result = ai_guardian.guard_outbound_message(
+        None,
+        agent=agent,
+        conversation=conversation,
+        reply_text="Escolha um plano Sulmóvel:",
+        buttons=[{"id": "1", "label": "15GB"}],
+        source="SDR_DECISION",
+        metadata={"authoritative_sdr_script": True},
+    )
+
+    assert called["model"] is False
+    assert result.should_send is True
+    assert result.verdict == "APPROVE"
+    assert "autoritativo" in result.rationale.casefold()

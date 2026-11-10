@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
+import threading
+import time
 import unicodedata
 from typing import Any, Literal
 import uuid
@@ -13,8 +16,15 @@ import httpx
 from app.config import settings
 
 
+CREDIT_REJECTED_OUTCOME_FALLBACK_ID = 19
 LOG = logging.getLogger("sulnet_crm_client")
 
+
+
+def _fold_tag(value: str) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", text.casefold()).strip()
 
 class CRMIntegrationError(RuntimeError):
     def __init__(
@@ -222,6 +232,74 @@ class CRMPlaybookResult:
             "sdrIaDefaults": dict(self.sdr_ia_defaults),
             "sdrIaFieldPolicy": dict(self.sdr_ia_field_policy),
         }
+
+
+# Perfil de integração do CRM compartilhado entre clientes do mesmo processo.
+# Cada job criava um cliente novo e repetia GET /api/capture/config (404 no
+# CRM atual) e /api/capture/context antes de qualquer chamada útil.
+_PROFILE_TTL_SECONDS = 600.0
+WON_STATUSES = {"won", "ganho", "ganha", "closed_won", "fechado_ganho"}
+_STATUS_ROUTE_RETRY_AT = [0.0]
+_SIGNED_WORDS = ("assinad", "signed", "signature_completed", "assinatura_concluida")
+
+
+def _stage_name(opportunity: dict[str, Any]) -> str:
+    stage = opportunity.get("stage") or opportunity.get("pipelineStage") or opportunity.get("etapa")
+    if isinstance(stage, dict):
+        stage = stage.get("name") or stage.get("nome") or stage.get("title")
+    return str(stage or opportunity.get("stageName") or "")
+
+
+def _signature_signals(opportunity: dict[str, Any]) -> set[str]:
+    """Sinais de assinatura/ganho num payload legado da oportunidade (sem dados pessoais)."""
+    signals: set[str] = set()
+    stage = unicodedata.normalize("NFD", _stage_name(opportunity).casefold())
+    if "ganh" in stage or "won" in stage:
+        signals.add("stage_won")
+    if "assinad" in stage:
+        signals.add("contract_signed")
+    for key in ("contract", "contrato", "signature", "assinatura", "aiClosing", "productInfo"):
+        value = opportunity.get(key)
+        if isinstance(value, dict):
+            for sub in ("status", "contractStatus", "signatureStatus", "situacao"):
+                text = str(value.get(sub) or "").casefold()
+                if any(word in text for word in _SIGNED_WORDS):
+                    signals.add("contract_signed")
+            if value.get("signedAt") or value.get("assinadoEm"):
+                signals.add("contract_signed")
+    for key in ("contractStatus", "signatureStatus", "statusContrato", "contractSignatureStatus"):
+        text = str(opportunity.get(key) or "").casefold()
+        if any(word in text for word in _SIGNED_WORDS):
+            signals.add("contract_signed")
+    if opportunity.get("contractSignedAt") or opportunity.get("signedAt"):
+        signals.add("contract_signed")
+    signals.add("keys:" + "|".join(sorted(k for k in opportunity if any(w in k.casefold() for w in ("contr", "sign", "assin", "stage", "status", "etapa"))))[:300])
+    return signals
+
+
+_SHARED_PROFILES: dict[str, tuple[float, dict[str, Any]]] = {}
+_SHARED_PROFILES_LOCK = threading.Lock()
+
+
+def _shared_profile(base_url: str) -> dict[str, Any] | None:
+    with _SHARED_PROFILES_LOCK:
+        cached = _SHARED_PROFILES.get(base_url)
+    if not cached:
+        return None
+    stored_at, profile = cached
+    if time.monotonic() - stored_at > _PROFILE_TTL_SECONDS:
+        return None
+    return dict(profile)
+
+
+def _store_shared_profile(base_url: str, profile: dict[str, Any]) -> None:
+    with _SHARED_PROFILES_LOCK:
+        _SHARED_PROFILES[base_url] = (time.monotonic(), dict(profile))
+
+
+def clear_shared_profiles() -> None:
+    with _SHARED_PROFILES_LOCK:
+        _SHARED_PROFILES.clear()
 
 
 @dataclass(slots=True)
@@ -433,6 +511,11 @@ class SulnetCRMClient:
     def integration_profile(self, *, refresh: bool = False) -> dict[str, Any]:
         if self._profile_cache is not None and not refresh:
             return dict(self._profile_cache)
+        if not refresh:
+            shared = _shared_profile(self.base_url)
+            if shared is not None:
+                self._profile_cache = shared
+                return dict(shared)
 
         profile: dict[str, Any] = {}
         try:
@@ -459,6 +542,7 @@ class SulnetCRMClient:
         profile.setdefault("capabilities", {})
         profile["legacy"] = int(profile.get("apiVersion") or 0) < 2
         self._profile_cache = dict(profile)
+        _store_shared_profile(self.base_url, profile)
         LOG.info(
             "crm_profile api_version=%s app_version=%s legacy=%s",
             profile.get("apiVersion"),
@@ -823,11 +907,10 @@ class SulnetCRMClient:
             if selected_product:
                 generic["planIds"] = [int(selected_product.get("id") or 0)]
             elif "planIds" not in generic:
+                # Só a contagem: o payload pode carregar dados do cliente.
                 LOG.warning(
-                    "crm_plan_ambiguous label=%s candidates=%s expected_value=%s",
-                    plan_label[:120],
+                    "crm_plan_ambiguous candidates=%s",
                     len(products),
-                    payload.get("monthlyValue"),
                 )
                 raise CRMIntegrationError(
                     "Plano não localizado de forma inequívoca no catálogo do CRM.",
@@ -883,9 +966,184 @@ class SulnetCRMClient:
         )
         return self._fallback_update_opportunity(opportunity_id, payload)
 
+    @staticmethod
+    def _parse_json_object(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                return {}
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        return {}
+
+    @classmethod
+    def _normalize_opportunity_record(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        """Normaliza GET de oportunidade para o formato camelCase do Vendedor IA.
+
+        O endpoint genérico devolve `product_info` como JSON string; o playbook
+        e os PATCHes usam `productInfo.categoryForm.values`. Sem essa normalização
+        o merge do formulário começa vazio e um PATCH de um campo só apaga o
+        restante (ex.: tipo_contratacao some depois de gravar numero_portado).
+        """
+        record = dict(payload)
+        lead = record.get("lead")
+        if isinstance(lead, dict):
+            merged = dict(lead)
+            for key, value in record.items():
+                if key == "lead":
+                    continue
+                if key not in merged or merged.get(key) in (None, "", [], {}):
+                    merged[key] = value
+            record = merged
+
+        product_info = record.get("productInfo")
+        if not isinstance(product_info, dict):
+            product_info = cls._parse_json_object(record.get("product_info"))
+        if product_info:
+            category_form = product_info.get("categoryForm")
+            if not isinstance(category_form, dict):
+                category_form = cls._parse_json_object(
+                    product_info.get("category_form")
+                )
+            if category_form:
+                values = category_form.get("values")
+                if not isinstance(values, dict):
+                    values = cls._parse_json_object(category_form.get("values"))
+                files = category_form.get("files")
+                if not isinstance(files, dict):
+                    files = cls._parse_json_object(category_form.get("files"))
+                ai_closing = product_info.get("aiClosing")
+                if not isinstance(ai_closing, dict):
+                    ai_closing = cls._parse_json_object(
+                        product_info.get("ai_closing")
+                    )
+                product_info = {
+                    **{
+                        key: value
+                        for key, value in product_info.items()
+                        if key
+                        not in {
+                            "categoryForm",
+                            "category_form",
+                            "aiClosing",
+                            "ai_closing",
+                        }
+                    },
+                    "categoryForm": {
+                        **{
+                            key: value
+                            for key, value in category_form.items()
+                            if key not in {"values", "files"}
+                        },
+                        "values": values,
+                        "files": files,
+                    },
+                }
+                if not isinstance(ai_closing, dict):
+                    ai_closing = cls._parse_json_object(record.get("aiClosing"))
+                if not isinstance(ai_closing, dict):
+                    ai_closing = cls._parse_json_object(record.get("ai_closing"))
+                if ai_closing:
+                    product_info["aiClosing"] = ai_closing
+            record["productInfo"] = product_info
+
+        if "aiClosing" not in record or not isinstance(record.get("aiClosing"), dict):
+            ai_closing = cls._parse_json_object(record.get("aiClosing"))
+            if not ai_closing:
+                ai_closing = cls._parse_json_object(record.get("ai_closing"))
+            if not ai_closing and isinstance(record.get("productInfo"), dict):
+                ai_closing = cls._parse_json_object(
+                    record["productInfo"].get("aiClosing")
+                )
+            if ai_closing:
+                record["aiClosing"] = ai_closing
+
+        return record
+
+    def tag_id_by_name(self, name: str) -> int | None:
+        """Id da tag do CRM (GET /api/catalog/reference → tags)."""
+        wanted = _fold_tag(name)
+        result = self._request("GET", "/api/catalog/reference")
+        tags = result.get("tags") if isinstance(result, dict) else None
+        if not isinstance(tags, list) and isinstance(result, dict) and isinstance(result.get("data"), dict):
+            tags = result["data"].get("tags")
+        for tag in tags or []:
+            if isinstance(tag, dict) and _fold_tag(str(tag.get("name") or "")) == wanted:
+                try:
+                    return int(tag.get("id"))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def add_opportunity_note(
+        self,
+        opportunity_id: int,
+        *,
+        result: str,
+        description: str,
+        channel: str = "WhatsApp",
+    ) -> None:
+        """Anotação na linha do tempo da oportunidade (append-only, autor = usuário da IA)."""
+        self._request(
+            "POST",
+            f"/api/opportunities/{opportunity_id}/notes",
+            json_body={
+                "channel": channel,
+                "result": result[:120],
+                "description": description[:4000],
+                "contactedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    def add_opportunity_tag(self, opportunity_id: int, tag_name: str) -> bool:
+        """Adiciona a tag sem apagar as outras: o PATCH de tagIds substitui a lista inteira."""
+        tag_id = self.tag_id_by_name(tag_name)
+        if not tag_id:
+            LOG.warning("crm_tag_missing opportunity=%s", opportunity_id)
+            return False
+        current = self._request("GET", f"/api/opportunities/{opportunity_id}")
+        record = current.get("data") if isinstance(current, dict) and isinstance(current.get("data"), dict) else current
+        existing: list[int] = []
+        raw = record.get("tagIds") if isinstance(record, dict) else None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raw = []
+        for item in raw or []:
+            try:
+                existing.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if tag_id in existing:
+            return True
+        self._request(
+            "PATCH",
+            f"/api/opportunities/{opportunity_id}",
+            json_body={"tagIds": existing + [tag_id]},
+        )
+        LOG.info("crm_tag_added opportunity=%s tag_id=%s", opportunity_id, tag_id)
+        return True
+
     def get_opportunity(self, opportunity_id: int) -> dict[str, Any]:
+        # Preferir o endpoint genérico: ele traz product_info completo.
+        try:
+            result = self._request("GET", f"/api/opportunities/{opportunity_id}")
+            if isinstance(result, dict) and result:
+                return self._normalize_opportunity_record(result)
+        except CRMIntegrationError as exc:
+            if exc.status_code not in {404, 405, 501}:
+                raise
+
         result = self._request("GET", f"/api/capture/leads/{opportunity_id}")
-        return result if isinstance(result, dict) else {}
+        if isinstance(result, dict) and result:
+            return self._normalize_opportunity_record(result)
+        return {}
 
     def update_category_form(
         self,
@@ -915,6 +1173,14 @@ class SulnetCRMClient:
             current_values = {}
         merged_values = dict(current_values)
         merged_values.update(values)
+        # O formulário do CRM só aceita "Número novo", "Número Portabilidade" ou "M2M".
+        tipo_raw = str(merged_values.get("tipo_contratacao") or "").strip().lower()
+        tipo_folded = unicodedata.normalize("NFKD", tipo_raw)
+        tipo_folded = "".join(ch for ch in tipo_folded if not unicodedata.combining(ch))
+        if tipo_folded in {"portabilidade", "numero portabilidade"} or (
+            "port" in tipo_folded and "novo" not in tipo_folded and "m2m" not in tipo_folded
+        ):
+            merged_values["tipo_contratacao"] = "Número Portabilidade"
 
         current_files = category_form.get("files")
         if not isinstance(current_files, dict):
@@ -1009,14 +1275,42 @@ class SulnetCRMClient:
         patch_key: str,
         value: Any,
     ) -> dict[str, Any]:
-        payload = self._playbook_patch_payload(patch_key, value)
+        canonical_value = value
+        # Mesma regra do formulário: CRM rejeita "Portabilidade" solto.
+        patch_key_folded = re.sub(
+            r"[^a-z0-9]+",
+            "",
+            unicodedata.normalize("NFKD", str(patch_key or "").lower()),
+        )
+        patch_key_folded = "".join(
+            ch for ch in patch_key_folded if not unicodedata.combining(ch)
+        )
+        if "tipocontratacao" in patch_key_folded:
+            tipo_raw = str(value or "").strip().lower()
+            tipo_folded = unicodedata.normalize("NFKD", tipo_raw)
+            tipo_folded = "".join(
+                ch for ch in tipo_folded if not unicodedata.combining(ch)
+            )
+            if tipo_folded in {"portabilidade", "numero portabilidade"} or (
+                "port" in tipo_folded
+                and "novo" not in tipo_folded
+                and "m2m" not in tipo_folded
+            ):
+                canonical_value = "Número Portabilidade"
+
+        payload = self._playbook_patch_payload(patch_key, canonical_value)
         current = self.get_opportunity(opportunity_id)
         if isinstance(current, dict):
+            # O CRM substitui o objeto `values` inteiro no PATCH. Sem merge com
+            # o formulário atual, gravar tipocontratacao apaga numero_portado
+            # (e o inverso). Sempre reconstruímos productInfo a partir do GET.
             payload = self._deep_merge_dict(current, payload)
 
         # Nunca devolvemos identificadores/estado capturados pelo GET no PATCH.
         # Preservamos apenas os ramos que o patchKey pediu para alterar.
-        patch_root = next(iter(self._playbook_patch_payload(patch_key, value)))
+        patch_root = next(
+            iter(self._playbook_patch_payload(patch_key, canonical_value))
+        )
         payload = {patch_root: payload.get(patch_root)}
 
         result = self._request(
@@ -1201,6 +1495,44 @@ class SulnetCRMClient:
         )
         return result if isinstance(result, list) else []
 
+    def credit_rejected_outcome_id(self) -> int:
+        """Id do motivo "Análise de Crédito Reprovada" (type=lost) no catálogo do CRM."""
+        wanted = _fold_tag("Analise de Crédito Reprovada")
+        try:
+            result = self._request("GET", "/api/catalog/reference")
+            reasons = result.get("outcomeReasons") if isinstance(result, dict) else None
+            for reason in reasons or []:
+                if not isinstance(reason, dict) or str(reason.get("type") or "").lower() != "lost":
+                    continue
+                name = _fold_tag(str(reason.get("name") or ""))
+                if name == wanted or "credito reprovada" in name:
+                    return int(reason.get("id"))
+        except (CRMIntegrationError, TypeError, ValueError) as exc:
+            LOG.warning("crm_outcome_reason_lookup_failed error=%s", type(exc).__name__)
+        # Id fixo em produção (confirmado com o CRM em 06/11/2026).
+        return CREDIT_REJECTED_OUTCOME_FALLBACK_ID
+
+    def mark_lost_credit_rejected(
+        self,
+        opportunity_id: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Perda automática por crédito reprovado: só status lost + outcomeReasonId."""
+        request_key = str(idempotency_key or f"lose-{opportunity_id}-{uuid.uuid4()}")
+        closed_at = datetime.now(timezone(timedelta(hours=-3))).isoformat(timespec="seconds")
+        result = self._request(
+            "PATCH",
+            f"/api/opportunities/{opportunity_id}",
+            json_body={
+                "status": "lost",
+                "outcomeReasonId": self.credit_rejected_outcome_id(),
+                "closedAt": closed_at,
+            },
+            extra_headers={"Idempotency-Key": request_key},
+        )
+        return result if isinstance(result, dict) else {}
+
     def mark_won(
         self,
         opportunity_id: int,
@@ -1269,17 +1601,42 @@ class SulnetCRMClient:
             )
             return result if isinstance(result, dict) else {}
 
-        # Legado não expõe estado consolidado do contrato. Mantemos apenas o
-        # estado comercial sem gerar 404 em loop; ao atualizar o CRM, o profile
-        # v2 passa automaticamente a usar /status.
+        # O perfil do CRM pode estar desatualizado (/api/capture/config 404)
+        # enquanto /status já existe. Tenta uma vez a cada 30 min; se não
+        # existir, usa a oportunidade como antes, sem gerar 404 em loop.
+        if time.monotonic() >= _STATUS_ROUTE_RETRY_AT[0]:
+            try:
+                result = self._request(
+                    "GET",
+                    f"/api/capture/leads/{opportunity_id}/status",
+                )
+                # Só serve se trouxer contrato ou situação da oportunidade; a
+                # versão atual do CRM devolve apenas lead + análise de crédito.
+                if isinstance(result, dict) and ("contract" in result or "opportunity" in result):
+                    return result
+            except CRMIntegrationError as exc:
+                if exc.status_code not in {404, 405, 501}:
+                    raise
+                _STATUS_ROUTE_RETRY_AT[0] = time.monotonic() + 1800
+
         opportunity = self.get_opportunity(opportunity_id)
+        signals = _signature_signals(opportunity)
+        LOG.info(
+            "crm_legacy_status opportunity=%s status=%s stage=%s signals=%s",
+            opportunity_id,
+            str(opportunity.get("status") or "-")[:40],
+            str(_stage_name(opportunity) or "-")[:60],
+            ",".join(sorted(signals)) or "-",
+        )
+        won = str(opportunity.get("status") or "").strip().casefold() in WON_STATUSES or "stage_won" in signals
+        signed = won or "contract_signed" in signals
         return {
-            "opportunity": opportunity,
+            "opportunity": {**opportunity, "status": "won"} if won else opportunity,
             "contract": {
                 "status": (
                     "aguardando_backoffice"
-                    if str(opportunity.get("status") or "").lower() == "won"
-                    else "aguardando_fechamento_crm"
+                    if won
+                    else "assinado" if signed else "aguardando_fechamento_crm"
                 )
             },
         }

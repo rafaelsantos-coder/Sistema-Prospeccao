@@ -1,0 +1,37 @@
+{
+  "id": "preco-650-santo-angelo",
+  "conversation": 238,
+  "description": "Cliente pergunta o preço do 650 Mega em Santo Ângelo: a IA informa R$ 99,90, sem dizer que o valor precisa ser confirmado.",
+  "lead": {
+    "city": "Santo Ângelo"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "Olá! Aqui é da Sulnet. Você já é cliente Sulnet?"
+    },
+    {
+      "direction": "INBOUND",
+      "body": "Não sou cliente"
+    },
+    {
+      "direction": "OUTBOUND",
+      "body": "A internet é para sua casa ou empresa?"
+    },
+    {
+      "direction": "INBOUND",
+      "body": "Para casa"
+    }
+  ],
+  "latest": "Quanto custa o plano de 650 mega aqui em Santo Ângelo?",
+  "expect": {
+    "reply_contains_any": [
+      "99,90"
+    ],
+    "reply_not_contains": [
+      "confirmad",
+      "nao tenho o valor",
+      "não tenho o valor"
+    ]
+  }
+}

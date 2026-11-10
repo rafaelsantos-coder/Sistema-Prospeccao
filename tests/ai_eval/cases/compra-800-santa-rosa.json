@@ -1,0 +1,36 @@
+{
+  "id": "compra-800-santa-rosa",
+  "conversation": 239,
+  "description": "Depois da oferta, 'quero contratar' leva ao fechamento (Vendedor IA), não a um humano.",
+  "lead": {
+    "city": "Santa Rosa"
+  },
+  "history": [
+    {
+      "direction": "OUTBOUND",
+      "body": "Você já é cliente Sulnet?"
+    },
+    {
+      "direction": "INBOUND",
+      "body": "Não"
+    },
+    {
+      "direction": "OUTBOUND",
+      "body": "A internet é para sua casa ou empresa?"
+    },
+    {
+      "direction": "INBOUND",
+      "body": "Casa"
+    },
+    {
+      "direction": "OUTBOUND",
+      "body": "Legal! Em Santa Rosa temos o plano de fibra óptica de 800 Mega por R$ 119,90 mensais. Quer aproveitar e contratar esse plano agora?"
+    }
+  ],
+  "latest": "Sim, quero contratar o de 800",
+  "expect": {
+    "handoff_target_in": [
+      "CLOSER_AI"
+    ]
+  }
+}
