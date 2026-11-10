@@ -265,6 +265,10 @@ def unanswered_customers(db: Session) -> list[dict]:
         conversation = db.get(Conversation, conversation_id)
         if not conversation or conversation.status in _CLOSED_STATUSES:
             continue
+        from app.services.auto_reply import latest_inbound_is_auto_reply  # noqa: PLC0415
+
+        if latest_inbound_is_auto_reply(db, conversation_id):
+            continue
         ai_state = db.scalar(
             select(AIConversationState.state).where(
                 AIConversationState.conversation_id == conversation_id

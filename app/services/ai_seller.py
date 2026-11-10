@@ -3741,6 +3741,10 @@ def _create_crm_if_ready(
             )
     if black_campaign.has_marker(state.handoff_summary):
         _apply_black_tag(client, state)
+    try:
+        client.add_opportunity_tag(state.opportunity_id, "IA")
+    except CRMIntegrationError as exc:
+        LOG.warning("crm_ai_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
 
 
 def _apply_black_tag(client: SulnetCRMClient, state: AIClosingState) -> None:
@@ -4090,7 +4094,7 @@ def _seller_followup_prompt(
     if state.step == "BILLING_UNIFY":
         return "Para continuar, deseja unificar esta fatura com outras faturas Sulnet?"
     if state.step == "CREDIT_REJECTED":
-        return "Se quiser continuar com outro titular, escolha Tentar outro CPF. Se não quiser continuar, escolha Encerrar."
+        return CREDIT_REJECTED_PROMPT
     if state.step == "WAITING_SIGNATURE":
         if state.sign_url:
             return f"Seu contrato continua aguardando assinatura. Quando puder, assine por aqui: {state.sign_url}"
