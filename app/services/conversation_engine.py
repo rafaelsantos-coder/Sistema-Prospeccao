@@ -838,6 +838,19 @@ def store_received_payload(
             payload_json=json.dumps(payload, ensure_ascii=False, default=str),
         )
     )
+    if not from_me and message.message_type not in {"TEXT", "BUTTONS", "AUDIO"}:
+        # Anexo com o crédito reprovado é o comprovante do provedor: avisa o
+        # consultor e responde o cliente (imagem não gera job de IA).
+        try:
+            from app.services.ai_seller import handle_credit_proof_attachment
+
+            handle_credit_proof_attachment(db, conversation, message)
+        except Exception:  # noqa: BLE001 - o webhook não pode falhar por causa do aviso
+            import logging
+
+            logging.getLogger("sulnet_conversation_engine").warning(
+                "credit_proof_hook_failed conversation=%s", conversation.id
+            )
     if not from_me:
         from app.services.ai_sdr import enqueue_ai_job
         enqueue_ai_job(

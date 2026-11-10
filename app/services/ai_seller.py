@@ -684,8 +684,9 @@ SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
         {"id": "ajustar", "label": "Quero ajustar"},
     ],
     "CREDIT_REJECTED": [
+        {"id": "comprovante", "label": "Enviar comprovante"},
+        {"id": "taxa", "label": "Pagar taxa R$150"},
         {"id": "outro_cpf", "label": "Tentar outro CPF"},
-        {"id": "encerrar", "label": "Encerrar"},
     ],
     "PLAN_CONFIRM": [
         {"id": "sim", "label": "Sim"},
@@ -3945,7 +3946,7 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == SALE_ACCEPTANCE_STEP:
         return _sale_acceptance_prompt(state, collected, reminder=True)
     if state.step == "CREDIT_REJECTED":
-        return "A consulta cadastral não foi aprovada. Quer tentar a contratação com outro CPF?"
+        return CREDIT_REJECTED_PROMPT
     if state.step == "WAITING_CRM_READY":
         return (
             "Seus dados já foram enviados ao CRM. Estou aguardando a validação final "
@@ -4998,10 +4999,24 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 _save_collected(state, collected)
                 reply = "Claro. Qual é o novo CPF que você quer usar para a contratação?"
 
+            elif _chose_credit_fee(text):
+                collected["_credit_alt"] = "FEE"
+                _save_collected(state, collected)
+                _alert_credit_alternative(db, state=state, conversation=conversation, kind="FEE")
+                reply = CREDIT_FEE_NOTICE
+
+            elif "comprovante" in normalized_text:
+                collected["_credit_alt"] = "PROOF_PENDING"
+                _save_collected(state, collected)
+                reply = CREDIT_PROOF_REQUEST
+
             elif normalized_text in {"encerrar", "nao", "não"} or _yes_no(text) == "NAO":
                 state.step = "COMPLETED"
                 state.completed_at = utcnow()
                 reply = "Certo. Encerramos esta tentativa de contratação. Se quiser tentar novamente depois, é só me chamar."
+
+            elif collected.get("_credit_alt") in {"FEE", "PROOF_SENT"}:
+                reply = CREDIT_ALT_WAITING_NOTICE
 
             else:
                 interpreted = _interpret_ambiguous(
@@ -5900,7 +5915,114 @@ CONTRACT_HOLD_NOTICE = (
     "e te envio o link de assinatura por aqui assim que ele sair."
 )
 DATA_RETRY_PREFIX = "Não consegui registrar essa informação no sistema."
+CREDIT_REJECTED_PROMPT = (
+    "A consulta cadastral não foi aprovada, mas dá para seguir de três formas: "
+    "enviar o comprovante de pagamento em dia do seu provedor atual para uma nova análise, "
+    "pagar uma taxa de R$ 150,00 e seguir com a instalação, ou tentar com outro CPF. "
+    "Como você prefere? Se não quiser continuar, é só responder Encerrar."
+)
+CREDIT_FEE_NOTICE = (
+    "Combinado, seguimos com a taxa de R$ 150,00. Já passei o seu atendimento para um "
+    "consultor da Sulnet, que vai te chamar para concluir a contratação."
+)
+CREDIT_PROOF_REQUEST = (
+    "Certo! Me envie por aqui a foto ou o PDF do comprovante de pagamento em dia do seu "
+    "provedor atual."
+)
+CREDIT_PROOF_RECEIVED_NOTICE = (
+    "Recebi o seu comprovante. Já passei para um consultor da Sulnet fazer a nova análise, "
+    "e ele vai te chamar para dar o retorno."
+)
+CREDIT_ALT_WAITING_NOTICE = (
+    "O seu atendimento já está com um consultor da Sulnet, que vai te chamar para concluir."
+)
+
+
+def _chose_credit_fee(text: str) -> bool:
+    """Cliente escolheu pagar a taxa (pergunta sobre a taxa não conta como escolha)."""
+    if "?" in (text or ""):
+        return False
+    key = _norm(text)
+    if key in {"taxa", "pagar taxa", "pagar taxa r 150", "pagar taxa r150", "pagar taxa r$150", "a taxa"}:
+        return True
+    return bool(
+        re.search(
+            r"\b(pago|pagar|pagarei|quero|prefiro|pode ser|aceito|vou de|vou pela|vamos de|vamos pela)\b"
+            r".*\b(taxa|150)\b",
+            key,
+        )
+    )
+
+
+def _alert_credit_alternative(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    kind: str,
+) -> None:
+    """Avisa o responsável por WhatsApp: a IA ainda não libera esse caso no CRM."""
+    from app.services.ops_alerts import send_ops_alert  # noqa: PLC0415
+
+    collected = _load_collected(state)
+    contact = conversation.contact
+    name = str(collected.get("name") or (contact.name if contact else "") or "não informado")
+    phone = _digits(str(collected.get("phone") or (contact.phone if contact else "") or ""))
+    plan = state.plan_label or "plano não informado"
+    what = (
+        "optou por pagar a taxa de R$ 150,00"
+        if kind == "FEE"
+        else "enviou comprovante do provedor atual para nova análise"
+    )
+    text = (
+        f"🧾 Crédito com restrição: cliente {what}. Um consultor precisa chamar.\n"
+        f"Cliente: {name}\nTelefone: {phone or 'não informado'}\nPlano: {plan}\n"
+        f"Conversa {conversation.id}"
+    )
+    try:
+        send_ops_alert(db, key=f"credit-{kind.lower()}:{state.id}", text=text)
+    except Exception:  # noqa: BLE001 - o aviso nunca pode derrubar o atendimento
+        LOG.warning("credit_alternative_alert_failed state=%s kind=%s", state.id, kind)
+
+
+def handle_credit_proof_attachment(db: Session, conversation: Conversation, message: Message) -> bool:
+    """Anexo recebido com o crédito reprovado: é o comprovante do provedor.
+
+    Imagem e documento não geram job de IA, então o tratamento é feito na
+    entrada da mensagem. Devolve True quando o anexo foi tratado.
+    """
+    if message.direction != "INBOUND" or message.message_type in {"TEXT", "BUTTONS", "AUDIO"}:
+        return False
+    state = db.scalar(
+        select(AIClosingState).where(
+            AIClosingState.conversation_id == conversation.id,
+            AIClosingState.step == "CREDIT_REJECTED",
+        )
+    )
+    if not state:
+        return False
+    collected = _load_collected(state)
+    if collected.get("_credit_alt") == "PROOF_SENT":
+        return True
+    agent = db.get(AIAgentProfile, state.agent_id)
+    collected["_credit_alt"] = "PROOF_SENT"
+    _save_collected(state, collected)
+    _alert_credit_alternative(db, state=state, conversation=conversation, kind="PROOF")
+    if agent:
+        try:
+            _send_fixed_step_prompt(
+                db, agent=agent, conversation=conversation, text=CREDIT_PROOF_RECEIVED_NOTICE
+            )
+        except Exception:  # noqa: BLE001 - falha de envio não pode quebrar o webhook
+            LOG.warning("credit_proof_notice_failed conversation=%s", conversation.id)
+    return True
+
+
 _CLOSER_NOTICE_PREFIXES = (
+    CREDIT_FEE_NOTICE[:50],
+    CREDIT_PROOF_REQUEST[:40],
+    CREDIT_PROOF_RECEIVED_NOTICE[:40],
+    CREDIT_ALT_WAITING_NOTICE[:50],
     "Sem problema, nada foi contratado.",
     "Sem problema, o plano móvel ainda não foi contratado",
     "Voltei por aqui para concluir a sua contratação.",
