@@ -78,7 +78,7 @@ jobs:
           APP_ENV: test
         run: |
           python -m app.migrate
-          alembic current | grep 0007_mfa_schema_repair
+          alembic current | grep 0010_bind_ai_default_queue
 
       - name: Executar testes
         run: pytest -q

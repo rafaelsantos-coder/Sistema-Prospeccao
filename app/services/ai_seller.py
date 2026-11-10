@@ -33,6 +33,8 @@ from app.services.ai_guardian import GuardianBlockedError, guard_outbound_messag
 from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE
 from app.services.audit import write_audit
 from app.services import ai_campaign_black as black_campaign
+from app.services import crm_notes
+from app.services import crm_prospect_sync as prospect_sync
 from app.services.crm_sulnet import (
     CRMIntegrationError,
     CRMPlaybookMissingItem,
@@ -684,8 +686,9 @@ SELLER_STEP_BUTTONS: dict[str, list[dict[str, str]]] = {
         {"id": "ajustar", "label": "Quero ajustar"},
     ],
     "CREDIT_REJECTED": [
+        {"id": "comprovante", "label": "Enviar comprovante"},
+        {"id": "taxa", "label": "Pagar taxa R$150"},
         {"id": "outro_cpf", "label": "Tentar outro CPF"},
-        {"id": "encerrar", "label": "Encerrar"},
     ],
     "PLAN_CONFIRM": [
         {"id": "sim", "label": "Sim"},
@@ -2796,6 +2799,26 @@ def _backoffice_id(payload: dict[str, Any] | None) -> Any:
     return None
 
 
+def _payload_shows_signed(payload: dict[str, Any] | None) -> bool:
+    """Assinatura confirmada pelo CRM: contractSignatureStatus "assinado" ou contractSignedAt."""
+    if not isinstance(payload, dict):
+        return False
+    layers = [payload]
+    for key in ("opportunity", "data", "contract"):
+        inner = payload.get(key)
+        if isinstance(inner, dict):
+            layers.append(inner)
+    for layer in layers:
+        if layer.get("contractSignedAt") or layer.get("signedAt"):
+            return True
+        for key in ("contractSignatureStatus", "signatureStatus", "contractStatus"):
+            if _contract_is_signed(str(layer.get(key) or "")):
+                return True
+        if layer is not payload and _contract_is_signed(str(layer.get("status") or "")) and layer is payload.get("contract"):
+            return True
+    return False
+
+
 def _complete_if_crm_already_won(
     client: SulnetCRMClient,
     state: AIClosingState,
@@ -2816,6 +2839,16 @@ def _complete_if_crm_already_won(
             status = {}
     if _opportunity_status(status) != "won":
         return None
+    # No CRM "won" (venda ganha) não prova assinatura: só vale
+    # contractSignatureStatus == "assinado" ou contractSignedAt preenchido.
+    if not (_contract_is_signed(state.contract_status) or _payload_shows_signed(status)):
+        try:
+            record = client.get_opportunity(state.opportunity_id)
+        except CRMIntegrationError:
+            record = {}
+        if not _payload_shows_signed(record):
+            LOG.info("crm_won_without_signature opportunity=%s", state.opportunity_id)
+            return None
 
     collected["_won_after_signature"] = True
     collected["_won_confirmed_by_crm"] = True
@@ -3706,6 +3739,18 @@ def _create_crm_if_ready(
         return
 
     client = SulnetCRMClient.from_settings()
+    synced_id = prospect_sync.synced_opportunity_id(db, conversation.id)
+    if synced_id:
+        # O CRM não deduplica por externalId: reaproveita a oportunidade que o
+        # SDR já abriu em vez de criar uma segunda.
+        state.opportunity_id = synced_id
+        try:
+            client.update_opportunity(synced_id, {"clientName": name, "clientPhone": phone})
+        except CRMIntegrationError as exc:
+            LOG.warning("crm_prospect_rename_failed opportunity=%s status=%s", synced_id, exc.status_code)
+        if black_campaign.has_marker(state.handoff_summary):
+            _apply_black_tag(client, state)
+        return
     payload: dict[str, Any] = {
         "externalId": state.external_id,
         "conversationId": conversation.id,
@@ -3739,8 +3784,26 @@ def _create_crm_if_ready(
     state.protocol = str(result.get("protocol") or "")
     if not state.opportunity_id:
         raise CRMIntegrationError("CRM não retornou o identificador da oportunidade.")
+    if result.get("created") is False:
+        # A prospecção do SDR já abriu esta oportunidade com o nome provisório
+        # do WhatsApp: atualiza para o nome completo coletado no fechamento.
+        try:
+            client.update_opportunity(
+                state.opportunity_id,
+                {"clientName": name, "clientPhone": phone},
+            )
+        except CRMIntegrationError as exc:
+            LOG.warning(
+                "crm_prospect_rename_failed opportunity=%s status=%s",
+                state.opportunity_id,
+                exc.status_code,
+            )
     if black_campaign.has_marker(state.handoff_summary):
         _apply_black_tag(client, state)
+    try:
+        client.add_opportunity_tag(state.opportunity_id, "IA")
+    except CRMIntegrationError as exc:
+        LOG.warning("crm_ai_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
 
 
 def _apply_black_tag(client: SulnetCRMClient, state: AIClosingState) -> None:
@@ -3946,7 +4009,7 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if state.step == SALE_ACCEPTANCE_STEP:
         return _sale_acceptance_prompt(state, collected, reminder=True)
     if state.step == "CREDIT_REJECTED":
-        return "A consulta cadastral não foi aprovada. Quer tentar a contratação com outro CPF?"
+        return CREDIT_REJECTED_PROMPT
     if state.step == "WAITING_CRM_READY":
         return (
             "Seus dados já foram enviados ao CRM. Estou aguardando a validação final "
@@ -4090,7 +4153,7 @@ def _seller_followup_prompt(
     if state.step == "BILLING_UNIFY":
         return "Para continuar, deseja unificar esta fatura com outras faturas Sulnet?"
     if state.step == "CREDIT_REJECTED":
-        return "Se quiser continuar com outro titular, escolha Tentar outro CPF. Se não quiser continuar, escolha Encerrar."
+        return CREDIT_REJECTED_PROMPT
     if state.step == "WAITING_SIGNATURE":
         if state.sign_url:
             return f"Seu contrato continua aguardando assinatura. Quando puder, assine por aqui: {state.sign_url}"
@@ -4702,7 +4765,31 @@ def _sdr_ia_auto_advance(state: AIClosingState, collected: dict[str, Any], reply
     return reply
 
 
+def _reopen_as_new_sale(db: Session, job: AIJob, conversation: Conversation) -> str | None:
+    """Venda já concluída: a nova mensagem vira uma venda nova no SDR."""
+    from app.services.ai_sdr import binding_for_conversation, process_ai_job  # noqa: PLC0415
+
+    binding = binding_for_conversation(db, conversation.id)
+    if not binding or not binding.agent or not binding.agent.active:
+        return None
+    ai_state = db.scalar(
+        select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
+    )
+    if ai_state is not None:
+        ai_state.state = "AI_ACTIVE"
+        ai_state.agent_id = binding.agent_id
+    job.agent_id = binding.agent_id
+    db.flush()
+    return process_ai_job(db, job)
+
+
 def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
+    result = _process_seller_job(db, job, agent)
+    crm_notes.record_milestones_safe(db, job.conversation_id)
+    return result
+
+
+def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     conversation = db.get(Conversation, job.conversation_id)
     message = db.get(Message, job.message_id)
     state = db.scalar(
@@ -4713,7 +4800,13 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         job.error = "Estado do fechamento não encontrado."
         return "skipped"
     if state.step in {"COMPLETED", PLAN_CHANGE_STEP}:
+        # Venda já fechada: nunca deixar o cliente sem resposta. O que ele pedir
+        # agora é uma venda nova, pelo fluxo de prospecção (SDR).
+        reopened = _reopen_as_new_sale(db, job, conversation)
+        if reopened is not None:
+            return reopened
         job.status = "IGNORADO"
+        job.error = "Venda fechada sem agente de prospecção disponível."
         return "skipped"
     if state.step == "ESCALATED":
         # Legado: venda que tinha ido para um consultor volta para a IA.
@@ -4975,6 +5068,17 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 _save_collected(state, collected)
                 reply = "Claro. Qual é o novo CPF que você quer usar para a contratação?"
 
+            elif _chose_credit_fee(text):
+                collected["_credit_alt"] = "FEE"
+                _save_collected(state, collected)
+                _alert_credit_alternative(db, state=state, conversation=conversation, kind="FEE")
+                reply = CREDIT_FEE_NOTICE
+
+            elif "comprovante" in normalized_text:
+                collected["_credit_alt"] = "PROOF_PENDING"
+                _save_collected(state, collected)
+                reply = CREDIT_PROOF_REQUEST
+
             elif normalized_text in {"encerrar", "nao", "não"} or _yes_no(text) == "NAO":
                 # Só aqui a oportunidade vai para perda: o cliente desistiu de
                 # tentar outro CPF e quer encerrar. A reprovação em si não perde.
@@ -4982,6 +5086,9 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 state.step = "COMPLETED"
                 state.completed_at = utcnow()
                 reply = "Certo. Encerramos esta tentativa de contratação. Se quiser tentar novamente depois, é só me chamar."
+
+            elif collected.get("_credit_alt") in {"FEE", "PROOF_SENT"}:
+                reply = CREDIT_ALT_WAITING_NOTICE
 
             else:
                 interpreted = _interpret_ambiguous(
@@ -5880,7 +5987,114 @@ CONTRACT_HOLD_NOTICE = (
     "e te envio o link de assinatura por aqui assim que ele sair."
 )
 DATA_RETRY_PREFIX = "Não consegui registrar essa informação no sistema."
+CREDIT_REJECTED_PROMPT = (
+    "A consulta cadastral não foi aprovada, mas dá para seguir de três formas: "
+    "enviar o comprovante de pagamento em dia do seu provedor atual para uma nova análise, "
+    "pagar uma taxa de R$ 150,00 e seguir com a instalação, ou tentar com outro CPF. "
+    "Como você prefere? Se não quiser continuar, é só responder Encerrar."
+)
+CREDIT_FEE_NOTICE = (
+    "Combinado, seguimos com a taxa de R$ 150,00. Já passei o seu atendimento para um "
+    "consultor da Sulnet, que vai te chamar para concluir a contratação."
+)
+CREDIT_PROOF_REQUEST = (
+    "Certo! Me envie por aqui a foto ou o PDF do comprovante de pagamento em dia do seu "
+    "provedor atual."
+)
+CREDIT_PROOF_RECEIVED_NOTICE = (
+    "Recebi o seu comprovante. Já passei para um consultor da Sulnet fazer a nova análise, "
+    "e ele vai te chamar para dar o retorno."
+)
+CREDIT_ALT_WAITING_NOTICE = (
+    "O seu atendimento já está com um consultor da Sulnet, que vai te chamar para concluir."
+)
+
+
+def _chose_credit_fee(text: str) -> bool:
+    """Cliente escolheu pagar a taxa (pergunta sobre a taxa não conta como escolha)."""
+    if "?" in (text or ""):
+        return False
+    key = _norm(text)
+    if key in {"taxa", "pagar taxa", "pagar taxa r 150", "pagar taxa r150", "pagar taxa r$150", "a taxa"}:
+        return True
+    return bool(
+        re.search(
+            r"\b(pago|pagar|pagarei|quero|prefiro|pode ser|aceito|vou de|vou pela|vamos de|vamos pela)\b"
+            r".*\b(taxa|150)\b",
+            key,
+        )
+    )
+
+
+def _alert_credit_alternative(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    kind: str,
+) -> None:
+    """Avisa o responsável por WhatsApp: a IA ainda não libera esse caso no CRM."""
+    from app.services.ops_alerts import send_ops_alert  # noqa: PLC0415
+
+    collected = _load_collected(state)
+    contact = conversation.contact
+    name = str(collected.get("name") or (contact.name if contact else "") or "não informado")
+    phone = _digits(str(collected.get("phone") or (contact.phone if contact else "") or ""))
+    plan = state.plan_label or "plano não informado"
+    what = (
+        "optou por pagar a taxa de R$ 150,00"
+        if kind == "FEE"
+        else "enviou comprovante do provedor atual para nova análise"
+    )
+    text = (
+        f"🧾 Crédito com restrição: cliente {what}. Um consultor precisa chamar.\n"
+        f"Cliente: {name}\nTelefone: {phone or 'não informado'}\nPlano: {plan}\n"
+        f"Conversa {conversation.id}"
+    )
+    try:
+        send_ops_alert(db, key=f"credit-{kind.lower()}:{state.id}", text=text)
+    except Exception:  # noqa: BLE001 - o aviso nunca pode derrubar o atendimento
+        LOG.warning("credit_alternative_alert_failed state=%s kind=%s", state.id, kind)
+
+
+def handle_credit_proof_attachment(db: Session, conversation: Conversation, message: Message) -> bool:
+    """Anexo recebido com o crédito reprovado: é o comprovante do provedor.
+
+    Imagem e documento não geram job de IA, então o tratamento é feito na
+    entrada da mensagem. Devolve True quando o anexo foi tratado.
+    """
+    if message.direction != "INBOUND" or message.message_type in {"TEXT", "BUTTONS", "AUDIO"}:
+        return False
+    state = db.scalar(
+        select(AIClosingState).where(
+            AIClosingState.conversation_id == conversation.id,
+            AIClosingState.step == "CREDIT_REJECTED",
+        )
+    )
+    if not state:
+        return False
+    collected = _load_collected(state)
+    if collected.get("_credit_alt") == "PROOF_SENT":
+        return True
+    agent = db.get(AIAgentProfile, state.agent_id)
+    collected["_credit_alt"] = "PROOF_SENT"
+    _save_collected(state, collected)
+    _alert_credit_alternative(db, state=state, conversation=conversation, kind="PROOF")
+    if agent:
+        try:
+            _send_fixed_step_prompt(
+                db, agent=agent, conversation=conversation, text=CREDIT_PROOF_RECEIVED_NOTICE
+            )
+        except Exception:  # noqa: BLE001 - falha de envio não pode quebrar o webhook
+            LOG.warning("credit_proof_notice_failed conversation=%s", conversation.id)
+    return True
+
+
 _CLOSER_NOTICE_PREFIXES = (
+    CREDIT_FEE_NOTICE[:50],
+    CREDIT_PROOF_REQUEST[:40],
+    CREDIT_PROOF_RECEIVED_NOTICE[:40],
+    CREDIT_ALT_WAITING_NOTICE[:50],
     "Sem problema, nada foi contratado.",
     "Sem problema, o plano móvel ainda não foi contratado",
     "Voltei por aqui para concluir a sua contratação.",
@@ -6013,6 +6227,63 @@ def _keep_sale_with_ai(
         _save_collected(state, collected)
     except Exception:
         LOG.exception("closer_hold_notice_failed conversation=%s", conversation.id)
+
+
+STATUS_POLL_STEPS = {"CREDIT_REVIEW", "WAITING_SIGNATURE"}
+STATUS_POLL_FAILURES_KEY = "_status_poll_failures"
+STATUS_POLL_ALERT_KEY = "_status_poll_alerted"
+
+
+def _clear_status_poll_failures(state: AIClosingState, collected: dict) -> None:
+    """Consulta ao CRM deu certo: zera a contagem de falhas da análise/assinatura."""
+    had_failures = collected.pop(STATUS_POLL_FAILURES_KEY, None) is not None
+    had_alert = collected.pop(STATUS_POLL_ALERT_KEY, None) is not None
+    if had_failures or had_alert:
+        _save_collected(state, collected)
+
+
+def _hold_status_poll_failure(
+    db: Session,
+    *,
+    state: AIClosingState,
+    conversation: Conversation,
+    agent: AIAgentProfile,
+    exc: Exception,
+    step: str,
+) -> bool:
+    """Limita as consultas ao CRM em CREDIT_REVIEW/WAITING_SIGNATURE.
+
+    Sem limite, um lead ou oportunidade que sumiu do CRM (404) fazia o poller
+    consultar a cada 45 s para sempre (venda 4, 06-07/11/2026). Depois de 3
+    falhas de dado ou 20 de instabilidade, a supervisão é avisada uma vez e a
+    consulta passa a cada 30 minutos. O cliente não recebe mensagem: na
+    assinatura ele já tem o link; na análise de crédito nada mudou para ele.
+    Devolve True quando a venda entrou em espera.
+    """
+    kind = _closer_failure_kind(exc)
+    collected = _load_collected(state)
+    failures = int(collected.get(STATUS_POLL_FAILURES_KEY) or 0) + 1
+    collected[STATUS_POLL_FAILURES_KEY] = failures
+    hold = kind != "ownership" and ((kind != "transient" and failures >= 3) or failures >= 20)
+    first_alert = hold and not collected.get(STATUS_POLL_ALERT_KEY)
+    if first_alert:
+        collected[STATUS_POLL_ALERT_KEY] = True
+    _save_collected(state, collected)
+    if first_alert:
+        _record_ai_block(
+            db,
+            state=state,
+            conversation=conversation,
+            agent=agent,
+            reason=(
+                f"CRM não encontrou a venda na etapa {step} ({kind}, {failures} falhas seguidas): "
+                f"{str(exc)[:300]} Confira se o lead/oportunidade foi apagado ou recriado no CRM."
+            ),
+        )
+    if hold:
+        # O poller ordena por updated_at e só pega o que tem mais de 45 s.
+        state.updated_at = utcnow() + AI_HOLD_RETRY
+    return hold
 
 
 def _retry_job_later(job: AIJob, state: AIClosingState) -> None:
@@ -6259,6 +6530,7 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
         try:
             if state.step == "CREDIT_REVIEW":
                 status = client.get_status(state.opportunity_id)
+                _clear_status_poll_failures(state, collected)
                 opportunity = status.get("opportunity") or {}
                 credit_status = str(opportunity.get("creditStatus") or "")
                 state.credit_status = credit_status
@@ -6413,6 +6685,8 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                 detailed = client.get_contract(state.opportunity_id)
                 if isinstance(detailed, dict) and detailed:
                     contract = {**contract, **detailed}
+            # Status e contrato responderam: zera a contagem de falhas.
+            _clear_status_poll_failures(state, collected)
 
             contract_status = _contract_status(contract)
             sign_url = _contract_sign_url(contract)
@@ -6559,5 +6833,16 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     # Próxima tentativa em 30 minutos (o poller ordena por updated_at).
                     state.updated_at = utcnow() + AI_HOLD_RETRY
                     processed += 1
+            elif step_before_poll in STATUS_POLL_STEPS:
+                _hold_status_poll_failure(
+                    db,
+                    state=state,
+                    conversation=conversation,
+                    agent=agent,
+                    exc=exc,
+                    step=step_before_poll,
+                )
 
+    for state in states:
+        crm_notes.record_milestones_safe(db, state.conversation_id)
     return processed

@@ -166,7 +166,7 @@ def test_ai_recovery_answers_and_keeps_the_conversation_with_ai(monkeypatch):
 
     assert outcome == "ai_recovery"
     sent = [item[1] for item in calls if item[0] == "send"][0]
-    assert sent.startswith("Bom dia! Aqui é da Sulnet")
+    assert sent.endswith("você já é cliente da Sulnet?")
     assert ("crm", "NONE") in calls
     assert ("audit", "AI_SDR_RECOVERY") in calls
     assert ("followup", 1) in calls
@@ -299,18 +299,19 @@ def _two_no_context(latest="Não"):
     }
 
 
-def test_two_bare_no_answers_close_the_conversation():
-    # Conversa de 06/11 (Loine): "Não" duas vezes e a IA seguiu perguntando.
+def test_two_bare_no_answers_ask_to_stop_messages():
+    # Conversa de 06/11 (Loine): "Não" duas vezes — agora confirma se deve parar.
     from app.services import ai_sdr_policies
 
     decision = _decision("Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?")
     result = ai_sdr_policies._apply_repeated_rejection_policy(decision, _two_no_context())
-    assert result.reply_text == ai_sdr_policies.REJECTION_CLOSE_MESSAGE
+    assert result.reply_text == ai_sdr_policies.STOP_CONFIRM_MESSAGE
     assert result.intent == "NOT_INTERESTED"
     assert result.followup_needed is False
+    assert [item.label for item in result.quick_replies] == ["Sim, pare", "Não"]
 
 
-def test_single_no_does_not_close_yet():
+def test_single_no_to_offer_gets_soft_hook():
     from app.services import ai_sdr_policies
 
     context = {
@@ -322,4 +323,26 @@ def test_single_no_does_not_close_yet():
     }
     decision = _decision("Tudo bem! Quer ver a Telefonia Móvel?")
     result = ai_sdr_policies._apply_repeated_rejection_policy(decision, context)
-    assert result.reply_text == "Tudo bem! Quer ver a Telefonia Móvel?"
+    assert result.reply_text == ai_sdr_policies.SOFT_REFUSAL_HOOK_MESSAGE
+
+
+def test_relato_de_problema_na_internet_vai_para_a_central_sem_venda():
+    # Conversa Rafael Trennepohl (06/11): "Estou com problema na internet" e a IA ofereceu plano.
+    from app.services import ai_sdr_policies
+
+    context = {"latest_customer_message": "Estou com problema na internet", "history": []}
+    decision = _decision("Para sua próxima contratação, prefere Telefonia Móvel?")
+    result = ai_sdr_policies._apply_existing_customer_plan_change_policy(decision, context)
+    assert result.reply_text == ai_sdr_policies.CENTRAL_REDIRECT_MESSAGE
+    assert result.offer_plan_code is None
+
+
+def test_nao_temos_interesse_e_recusa_firme():
+    # Conversa Dona Ella (06/11): "não temos interesse no momento" não era recusa
+    # e a palavra "interesse" zerava a contagem.
+    from app.services import ai_sdr_policies
+
+    context = {"latest_customer_message": "nao temos interesse no momento!!", "history": []}
+    decision = _decision("Certo! Seria para sua casa ou para uma empresa?")
+    result = ai_sdr_policies._apply_repeated_rejection_policy(decision, context)
+    assert result.reply_text == ai_sdr_policies.SOFT_REFUSAL_HOOK_MESSAGE

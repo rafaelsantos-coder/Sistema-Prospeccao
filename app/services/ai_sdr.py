@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -87,6 +87,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
 from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
 from app.services.audit import write_audit
 from app.services.queue_routing import (
+    AI_WHEN_HUMAN_IDLE,
     AI_WHEN_OFFLINE,
     ai_owns_conversation,
     assign_queue_user,
@@ -259,6 +260,28 @@ def reclaim_conversation_for_ai(
     return True
 
 
+def sdr_debounce_seconds_for_message(body: str) -> int:
+    """Debounce curto para Sim/Não/botão/cidade; completo para texto longo.
+
+    O debounce de 6s evita responder no meio de uma rajada. Em resposta de
+    botão ou frase curta ("número errado", "Ok", "Santa Rosa") esse atraso
+    só empilha com o poll do worker e a chamada ao modelo.
+    """
+    full = max(0, int(settings.ai_sdr_debounce_seconds or 0))
+    short = max(0, int(settings.ai_sdr_debounce_short_seconds or 0))
+    if short >= full:
+        return full
+    text = (body or "").strip()
+    if not text:
+        return full
+    if "\n" in text:
+        return full
+    words = [part for part in re.split(r"\s+", text) if part]
+    if len(text) <= 80 and len(words) <= 12:
+        return short
+    return full
+
+
 def enqueue_ai_job(
     db: Session,
     *,
@@ -343,22 +366,27 @@ def enqueue_ai_job(
             binding.queue_id,
         )
         return None
+    # Fila comercial: com vendedor online na fila a IA espera (o worker assume
+    # após 10 min sem resposta); sem vendedor online, ou se a IA já conduz, atende.
     if (
-        binding.handling_mode == AI_WHEN_OFFLINE
+        binding.handling_mode == AI_WHEN_HUMAN_IDLE
         and not takeover
         and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
         and not ai_owns_conversation(db, conversation.id)
         and human_online_in_queue(db, binding.queue_id)
     ):
-        # Fila "IA quando não houver vendedor online": tem vendedor, a conversa é dele.
         LOG.info(
-            "ai_job_skipped conversation=%s reason=human_online queue=%s",
+            "ai_job_skipped conversation=%s reason=human_online_wait queue=%s",
             conversation.id,
             binding.queue_id,
         )
         return None
-    if not takeover and not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_is_attending(
-        db, conversation
+    # Fila da IA (AI_WHEN_OFFLINE): somente a IA atende, sem checar vendedor online.
+    if (
+        binding.handling_mode not in (AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE)
+        and not takeover
+        and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
+        and human_is_attending(db, conversation)
     ):
         LOG.info(
             "ai_job_skipped conversation=%s reason=human_attending queue=%s",
@@ -387,23 +415,25 @@ def enqueue_ai_job(
         pending.status = "IGNORADO"
         pending.error = "AGRUPADA_COM_MENSAGEM_SEGUINTE"
 
+    debounce_seconds = sdr_debounce_seconds_for_message(message.body or "")
     job = AIJob(
         agent_id=binding.agent_id,
         queue_id=binding.queue_id,
         conversation_id=conversation.id,
         message_id=message.id,
         status="PENDENTE",
-        available_at=utcnow() + timedelta(seconds=max(0, settings.ai_sdr_debounce_seconds)),
+        available_at=utcnow() + timedelta(seconds=max(0, debounce_seconds)),
     )
     db.add(job)
     db.flush()
     LOG.info(
-        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s",
+        "ai_job_enqueued job=%s conversation=%s message=%s queue=%s agent=%s debounce=%ss",
         job.id,
         conversation.id,
         message.id,
         binding.queue_id,
         binding.agent_id,
+        debounce_seconds,
     )
     return job
 
@@ -970,8 +1000,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "de internet em casa ou na empresa, preferencialmente com botões Sim/Não. Nunca diga 'não vou insistir' nesse cenário. "
         "Quando o cliente confirmar que é para empresa/PJ, preserve esse segmento como memória confirmada e use apenas o catálogo corporativo: "
         "Corp. 200 Mega R$ 139,00; Corp. 250 Mega R$ 169,00; Corp. 650 Mega R$ 199,90, todos com IP Fixo, Sulnet Monitora, Wi-Fi 6, ativação gratuita e atendimento prioritário; "
-        "250 inclui também Sulnet Play. O diferencial corporativo inclui SLA de atendimento de até 8 horas, suporte nível 2, equipe especializada em empresas, "
-        "entrega de banda diferenciada em relação ao residencial e monitoramento proativo do NOC. Não chame de link dedicado e não trate 8 horas como prazo de resolução. "
+        "250 inclui também Sulnet Play. O diferencial corporativo inclui compromisso de reparo de até 8 horas, suporte nível 2, equipe especializada em empresas, "
+        "entrega de banda diferenciada em relação ao residencial e monitoramento proativo do NOC. Não chame de link dedicado. "
         "Não aplique promoções residenciais ao corporativo sem regra aprovada. "
         "Quando o cliente pedir todos os planos, catálogo, preços ou velocidades de forma ampla, nunca diga que não possui a lista e nunca estime valores: "
         "se o segmento confirmado for Empresa, liste os corporativos; caso contrário, ofereça primeiro Fibra óptica/Móvel em botões e depois liste somente opções confirmadas do catálogo. "
@@ -1387,6 +1417,16 @@ def _apply_crm_decision(
     )
 
 
+def _client_asked_for_human(db: Session, conversation: Conversation) -> bool:
+    latest = db.scalar(
+        select(Message.body)
+        .where(Message.conversation_id == conversation.id, Message.direction == "INBOUND")
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return _explicit_human_request({"latest_customer_message": latest or ""})
+
+
 def _perform_handoff(
     db: Session,
     *,
@@ -1400,8 +1440,14 @@ def _perform_handoff(
     queue = queue_for_conversation(db, conversation.id)
     owner = conversation.assigned_user
     if not owner or owner.role == "AI_SDR":
-        owner = assign_queue_user(db, queue) if queue else None
-        conversation.assigned_user_id = owner.id if owner else None
+        if not _client_asked_for_human(db, conversation):
+            # A IA é o vendedor: a conversa fica com ela e nenhum vendedor vê,
+            # a não ser que o cliente peça um humano (regra de 06/11).
+            conversation.assigned_user_id = agent.user_id or None
+            owner = None
+        else:
+            owner = assign_queue_user(db, queue) if queue else None
+            conversation.assigned_user_id = owner.id if owner else None
 
     conversation.status = "EM_ATENDIMENTO" if owner else "EM_FILA"
     db.add(
@@ -1495,6 +1541,18 @@ def _greeting_word(folded: str) -> str:
     return "Olá"
 
 
+def _time_greeting() -> str:
+    """Cumprimento pela hora de Santa Rosa/RS (horário de Brasília)."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    hour = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
+    if hour < 12:
+        return "Bom dia"
+    if hour < 18:
+        return "Boa tarde"
+    return "Boa noite"
+
+
 def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
     """Resposta segura que a própria IA envia quando a resposta gerada não passou.
 
@@ -1513,14 +1571,13 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
 
     candidates: list[tuple[str, list[QuickReply]]] = []
     if not previous:
+        # Abertura padrão de prospecção (comercial, 06/11): primeiro saber se já é cliente.
         candidates.append(
             (
-                f"{greeting}! Aqui é da Sulnet 😊 Você procura internet para casa, "
-                "para empresa ou um plano de celular?",
+                f"{_time_greeting()}, você já é cliente da Sulnet?",
                 [
-                    QuickReply(id="casa", label="Casa"),
-                    QuickReply(id="empresa", label="Empresa"),
-                    QuickReply(id="celular", label="Celular"),
+                    QuickReply(id="cliente_sulnet_sim", label="Sim"),
+                    QuickReply(id="cliente_sulnet_nao", label="Não"),
                 ],
             )
         )
@@ -1767,6 +1824,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         job.error = "Agente inexistente ou inativo."
         return "skipped"
 
+    from app.services.auto_reply import (  # noqa: PLC0415
+        ai_already_spoke_after_auto_reply,
+        only_auto_replies,
+    )
+
+    auto_reply_only = only_auto_replies(db, job.conversation_id)
+    if auto_reply_only and (
+        agent.role_type == "CLOSER" or ai_already_spoke_after_auto_reply(db, job.conversation_id)
+    ):
+        job.status = "IGNORADO"
+        job.error = "Só resposta automática de empresa; a IA já deixou recado ao responsável."
+        LOG.info("ai_job_skipped conversation=%s reason=auto_reply", job.conversation_id)
+        return "skipped"
+
     current_state = db.scalar(
         select(AIConversationState).where(
             AIConversationState.conversation_id == job.conversation_id
@@ -1813,6 +1884,8 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "skipped"
 
     context = build_ai_context(db, job=job, agent=agent)
+    if auto_reply_only:
+        context["business_auto_reply"] = True
     effective_mode = _effective_execution_mode(agent)
     run = AIRun(
         job_id=job.id,
@@ -2143,6 +2216,9 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
+                # Número errado / opt-out: sai da fila imediatamente (antes ficava EM FILA).
+                conversation.status = "ENCERRADO"
+                conversation.closed_at = utcnow()
             elif (
                 not closer_started
                 and sent_message is not None

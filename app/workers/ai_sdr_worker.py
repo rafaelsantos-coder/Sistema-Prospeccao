@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, Conversation, Message
+from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import (
@@ -25,7 +25,7 @@ from app.services.ai_learning import run_learning_loop
 from app.services.ai_engineer import run_engineer_loop
 from app.services.ai_weekly_analyst import run_weekly_analyst_loop
 from app.services.ai_sdr_policy import followup_spec, next_business_time
-from app.services.queue_routing import bind_conversation_queue, queue_for_conversation
+from app.services.queue_routing import MANUAL_TRANSFER_ORIGIN, bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utc_naive, utcnow
 
@@ -686,7 +686,20 @@ def _recover_recent_unqueued_inbounds() -> int:
                 reasons["before_ai_enabled"] += 1
                 continue
 
-            if instance and target_queue and target_binding:
+            manual_transfer = bool(
+                current_queue
+                and db.scalar(
+                    select(ConversationQueueLink.id).where(
+                        ConversationQueueLink.conversation_id == conversation.id,
+                        ConversationQueueLink.origin == MANUAL_TRANSFER_ORIGIN,
+                    )
+                )
+            )
+            if manual_transfer:
+                # Alguém transferiu a conversa de fila na tela: a recuperação não
+                # devolve para a fila do número.
+                reasons["manual_transfer_kept"] += 1
+            elif instance and target_queue and target_binding:
                 if not current_queue or current_queue.id != target_queue.id:
                     bind_conversation_queue(
                         db,
@@ -744,7 +757,7 @@ _TAKEOVER_BLOCKED_STATES = {
 
 def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
     from app.models import ConversationAssignment, ConversationQueueLink
-    from app.services.queue_routing import AI_WHEN_OFFLINE
+    from app.services.queue_routing import AI_WHEN_OFFLINE_MODES
 
     db = SessionLocal()
     taken = 0
@@ -754,7 +767,7 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
             db.scalars(
                 select(AIQueueBinding).where(
                     AIQueueBinding.active.is_(True),
-                    AIQueueBinding.handling_mode == AI_WHEN_OFFLINE,
+                    AIQueueBinding.handling_mode.in_(AI_WHEN_OFFLINE_MODES),
                 )
             )
         )
@@ -1047,6 +1060,8 @@ def run() -> None:
 
     missing_key_logged = False
     last_inbound_recovery = time.monotonic()
+    last_ops_alerts = time.monotonic() - 90
+    last_crm_prospect = time.monotonic() - 100
     last_stale_recovery = time.monotonic()
     while True:
         if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
@@ -1081,6 +1096,25 @@ def run() -> None:
             except Exception:
                 LOG.exception("Falha na supervisão de conversas sem resposta.")
             last_inbound_recovery = now_mono
+
+        if now_mono - last_ops_alerts >= 120:
+            last_ops_alerts = now_mono
+            try:
+                from app.services.ops_alerts import run_ops_alert_checks
+
+                with SessionLocal() as alert_db:
+                    run_ops_alert_checks(alert_db)
+            except Exception:
+                LOG.exception("Falha nos avisos operacionais.")
+        if now_mono - last_crm_prospect >= 120:
+            last_crm_prospect = now_mono
+            try:
+                from app.services.crm_prospect_sync import sync_prospects
+
+                with SessionLocal() as prospect_db:
+                    sync_prospects(prospect_db)
+            except Exception:
+                LOG.exception("Falha ao registrar prospecções no CRM.")
 
         if now_mono - last_stale_recovery >= 300:
             try:
