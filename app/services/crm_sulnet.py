@@ -265,7 +265,7 @@ def _signature_signals(opportunity: dict[str, Any]) -> set[str]:
                     signals.add("contract_signed")
             if value.get("signedAt") or value.get("assinadoEm"):
                 signals.add("contract_signed")
-    for key in ("contractStatus", "signatureStatus", "statusContrato"):
+    for key in ("contractStatus", "signatureStatus", "statusContrato", "contractSignatureStatus"):
         text = str(opportunity.get(key) or "").casefold()
         if any(word in text for word in _SIGNED_WORDS):
             signals.add("contract_signed")
