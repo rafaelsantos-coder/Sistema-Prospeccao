@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -595,6 +595,24 @@ def _consultant_manual_queue_waiting(user: User):
     )
 
 
+def outbound_without_reply_clause():
+    """Conversa iniciada por disparo/campanha em que o cliente ainda não respondeu.
+
+    O que foi enviado fica guardado (mensagens, disparo, log), mas não aparece nas
+    telas de atendimento: a conversa só entra na caixa quando o cliente responde.
+    """
+    started_by_dispatch = or_(
+        Conversation.source.like("DISPARO:%"),
+        Conversation.source.like("CAMPANHA:%"),
+        Conversation.source == "TELEGRAM",
+    )
+    customer_replied = exists().where(
+        Message.conversation_id == Conversation.id,
+        Message.direction == "INBOUND",
+    )
+    return started_by_dispatch & ~customer_replied
+
+
 def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
     """Restringe as conversas que cada perfil enxerga.
 
@@ -604,6 +622,8 @@ def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
     - CONSULTOR: somente as conversas atribuídas a ele. A exceção são filas
       MANUAL, em que ele vê o que pediu atendimento humano para poder pegar.
     """
+    if inbox:
+        stmt = stmt.where(~outbound_without_reply_clause())
     if user.role in {"ADMIN", "GESTOR"}:
         return stmt
     if user.role == "SUPERVISOR":
