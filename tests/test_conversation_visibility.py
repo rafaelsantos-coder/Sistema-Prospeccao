@@ -18,6 +18,7 @@ from app.models import (
     Contact,
     Conversation,
     ConversationQueueLink,
+    Message,
     ServiceQueue,
     ServiceQueueMember,
     User,
@@ -42,7 +43,8 @@ def _user(db, email: str, role: str) -> User:
 
 
 def _conversation(db, phone: str, *, queue: ServiceQueue, owner: User | None = None,
-                  status: str = "AGUARDANDO_CLIENTE", unread: int = 0) -> Conversation:
+                  status: str = "AGUARDANDO_CLIENTE", unread: int = 0,
+                  replied: bool = True) -> Conversation:
     contact = Contact(phone=phone, name=phone)
     db.add(contact)
     db.flush()
@@ -57,6 +59,11 @@ def _conversation(db, phone: str, *, queue: ServiceQueue, owner: User | None = N
     db.add(conversation)
     db.flush()
     db.add(ConversationQueueLink(conversation_id=conversation.id, queue_id=queue.id, origin="DISPATCH"))
+    db.add(Message(conversation_id=conversation.id, direction="OUTBOUND", message_type="TEXT",
+                   body="Disparo", status="SENT"))
+    if replied:
+        db.add(Message(conversation_id=conversation.id, direction="INBOUND", message_type="TEXT",
+                       body="Resposta do cliente", status="RECEIVED"))
     db.flush()
     return conversation
 
@@ -92,14 +99,14 @@ def test_inbox_visibility_by_role():
                 ])
             db.flush()
 
-            dispatch = _conversation(db, "5555900000001", queue=carousel)
+            dispatch = _conversation(db, "5555900000001", queue=carousel, replied=False)
             dispatch_replied_ai = _conversation(db, "5555900000002", queue=carousel,
                                                 status="EM_FILA", unread=1)
             mine = _conversation(db, "5555900000003", queue=carousel, owner=seller,
                                  status="ATRIBUIDO", unread=1)
             others = _conversation(db, "5555900000004", queue=carousel, owner=other,
                                    status="EM_ATENDIMENTO")
-            manual_dispatch = _conversation(db, "5555900000005", queue=manual)
+            manual_dispatch = _conversation(db, "5555900000005", queue=manual, replied=False)
             manual_handoff = _conversation(db, "5555900000006", queue=manual, status="EM_FILA")
             manual_replied = _conversation(db, "5555900000007", queue=manual,
                                            status="EM_FILA", unread=2)
@@ -112,7 +119,10 @@ def test_inbox_visibility_by_role():
             ids = [c.id for c in (dispatch, dispatch_replied_ai, mine, others,
                                   manual_dispatch, manual_handoff, manual_replied)]
 
-            assert _visible(db, admin, ids) == set(ids)
+            # Disparo sem resposta fica só guardado: nem o admin vê na caixa.
+            assert _visible(db, admin, ids) == set(ids) - {dispatch.id, manual_dispatch.id}
+            # Fora da caixa (relatórios, histórico) o disparo continua existindo.
+            assert _visible(db, admin, ids, inbox=False) == set(ids)
 
             seller_sees = _visible(db, seller, ids)
             assert mine.id in seller_sees

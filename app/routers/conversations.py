@@ -27,6 +27,7 @@ from app.services.conversation_engine import (
     CLOSED_CONVERSATION_STATUSES,
     OPEN_CONVERSATION_STATUSES,
     apply_conversation_scope,
+    outbound_without_reply_clause,
     conversation_visible_to_user,
     ensure_contact,
     ensure_open_conversation,
@@ -375,6 +376,7 @@ def _seller_panel(db: Session, user: User) -> list[dict]:
         select(Conversation.assigned_user_id).where(
             Conversation.assigned_user_id.is_not(None),
             Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            ~outbound_without_reply_clause(),
         )
     ):
         open_counts[assigned_id] = open_counts.get(assigned_id, 0) + 1
@@ -403,7 +405,7 @@ def _queue_panel(db: Session, user: User) -> list[dict]:
     for queue_id in db.scalars(
         select(ConversationQueueLink.queue_id)
         .join(Conversation, Conversation.id == ConversationQueueLink.conversation_id)
-        .where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES))
+        .where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES), ~outbound_without_reply_clause())
     ):
         open_counts[queue_id] = open_counts.get(queue_id, 0) + 1
     return [{"id": item.id, "name": item.name, "open": open_counts.get(item.id, 0)} for item in queues]
