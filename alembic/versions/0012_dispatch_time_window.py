@@ -13,8 +13,12 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("campaign_dispatches", sa.Column("window_start", sa.String(5), nullable=True))
-    op.add_column("campaign_dispatches", sa.Column("window_end", sa.String(5), nullable=True))
+    # Baseline usa create_all com os modelos atuais; em banco novo as colunas já existem.
+    existing = {c["name"] for c in sa.inspect(op.get_bind()).get_columns("campaign_dispatches")}
+    if "window_start" not in existing:
+        op.add_column("campaign_dispatches", sa.Column("window_start", sa.String(5), nullable=True))
+    if "window_end" not in existing:
+        op.add_column("campaign_dispatches", sa.Column("window_end", sa.String(5), nullable=True))
 
 
 def downgrade():
