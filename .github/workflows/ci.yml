@@ -78,7 +78,7 @@ jobs:
           APP_ENV: test
         run: |
           python -m app.migrate
-          alembic current | grep 0011_credit_geo_aggregates
+          alembic current | grep 0012_dispatch_time_window
 
       - name: Executar testes
         run: pytest -q

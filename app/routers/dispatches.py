@@ -25,6 +25,7 @@ from app.services.dispatch_queue import (
     ensure_dispatch_lead,
     estimated_duration_seconds,
     parse_dispatch_csv,
+    parse_window,
 )
 from app.services.queue_routing import available_queues_for_user, get_queue
 from app.services.scoring import normalize_phone
@@ -134,6 +135,8 @@ async def create_dispatch(
     queue_id: int = Form(...),
     interval_seconds: int = Form(30),
     daily_limit: int = Form(100),
+    window_start: str = Form(""),
+    window_end: str = Form(""),
     csv_file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -165,6 +168,11 @@ async def create_dispatch(
 
     interval = max(5, min(int(interval_seconds or 30), 3600))
     limit = max(1, min(int(daily_limit or campaign.daily_limit or 100), 5000))
+    try:
+        win_start, win_end = parse_window(window_start, window_end)
+    except ValueError as exc:
+        flash(request, str(exc), "warning")
+        return RedirectResponse("/dispatches", status_code=303)
 
     filename = (csv_file.filename or "").lower()
     if filename and not filename.endswith(".csv"):
@@ -188,6 +196,8 @@ async def create_dispatch(
         status="RASCUNHO",
         interval_seconds=interval,
         daily_limit=limit,
+        window_start=win_start,
+        window_end=win_end,
         created_by_id=actor.id,
     )
     db.add(dispatch)
@@ -250,6 +260,7 @@ async def create_dispatch(
             "queue_id": queue.id,
             "interval_seconds": interval,
             "daily_limit": limit,
+            "window": [win_start, win_end],
             "csv_filename": csv_file.filename,
             "summary": summary,
         },
@@ -313,6 +324,8 @@ def update_dispatch_configuration(
     csrf_token: str = Form(...),
     interval_seconds: int = Form(...),
     daily_limit: int = Form(...),
+    window_start: str = Form(""),
+    window_end: str = Form(""),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -333,9 +346,17 @@ def update_dispatch_configuration(
     limit = max(1, min(int(daily_limit or 100), 5000))
     old_interval = int(dispatch.interval_seconds or 30)
     old_limit = int(dispatch.daily_limit or 100)
+    old_window = [dispatch.window_start, dispatch.window_end]
+    try:
+        win_start, win_end = parse_window(window_start, window_end)
+    except ValueError as exc:
+        flash(request, str(exc), "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
 
     dispatch.interval_seconds = interval
     dispatch.daily_limit = limit
+    dispatch.window_start = win_start
+    dispatch.window_end = win_end
     if dispatch.status == "PAUSADO":
         dispatch.next_send_at = None
 
@@ -365,13 +386,15 @@ def update_dispatch_configuration(
                 "from": old_limit,
                 "to": limit,
             },
+            "window": {"from": old_window, "to": [win_start, win_end]},
             "status": dispatch.status,
         },
     )
     db.commit()
+    janela = f" e janela das {win_start} às {win_end}" if win_start else ""
     flash(
         request,
-        f"Configuração atualizada: intervalo de {interval}s e limite de {limit} mensagens/dia.",
+        f"Configuração atualizada: intervalo de {interval}s, limite de {limit} mensagens/dia{janela}.",
     )
     return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
 
