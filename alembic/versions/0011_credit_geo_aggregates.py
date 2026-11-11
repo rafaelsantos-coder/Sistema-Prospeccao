@@ -13,6 +13,10 @@ depends_on = None
 
 
 def upgrade():
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table('credit_map_aggregates'):
+        # Baseline usa create_all com os modelos atuais; em banco novo a tabela já existe.
+        return
     op.create_table(
         'credit_map_aggregates',
         sa.Column('id', sa.Integer(), primary_key=True),
