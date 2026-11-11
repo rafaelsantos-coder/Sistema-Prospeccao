@@ -33,6 +33,7 @@ from app.services.conversation_engine import (
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.queue_routing import set_lead_queue_preference
 from app.services.scoring import normalize_phone
+from app.services.telegram import TelegramService, active_link_for_lead, invite_url_for_lead
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import queue_instance, service_for_queue
 from app.timeutils import LOCAL_TZ, local_day_start_utc, utcnow
@@ -532,10 +533,31 @@ def process_dispatch_recipient(
         _finish_if_done(db, dispatch)
         return "failed"
 
+    telegram = (dispatch.channel or "WHATSAPP") == "TELEGRAM"
+    telegram_link = None
+    if telegram:
+        # Telegram só fala com quem já abriu o bot pelo link; nunca há envio a frio.
+        telegram_link = active_link_for_lead(db, lead.id)
+        if not telegram_link or not telegram_link.chat_id:
+            recipient.status = "IGNORADO"
+            recipient.error = "Cliente ainda não iniciou o Telegram."
+            _finish_if_done(db, dispatch)
+            return "skipped"
+    elif "{{link_telegram}}" in body:
+        # Convite: campanha de WhatsApp leva o link único do bot para o cliente aceitar.
+        invite = invite_url_for_lead(db, lead)
+        if not invite:
+            recipient.status = "IGNORADO"
+            recipient.error = "Telegram indisponível para este cliente."
+            _finish_if_done(db, dispatch)
+            return "skipped"
+        body = body.replace("{{link_telegram}}", invite)
+        recipient.message_body = body
+
     recipient.attempts = int(recipient.attempts or 0) + 1
     quick_replies = campaign_quick_replies(campaign)
-    zapi_instance = queue_instance(db, queue.id)
-    zapi = service_for_queue(db, queue.id)
+    zapi_instance = None if telegram else queue_instance(db, queue.id)
+    zapi = TelegramService(telegram_link.chat_id) if telegram_link else service_for_queue(db, queue.id)
     try:
         if quick_replies:
             result = zapi.send_button_list(
@@ -550,6 +572,13 @@ def process_dispatch_recipient(
             )
     except ZApiError as exc:
         recipient.error = str(exc)[:500]
+        if telegram_link and getattr(exc, "blocked", False):
+            # Cliente bloqueou o bot: encerra o canal para ele e não tenta de novo.
+            telegram_link.status = "PARADO"
+            telegram_link.stopped_at = utcnow()
+            recipient.status = "IGNORADO"
+            _finish_if_done(db, dispatch)
+            return "failed"
         if recipient.attempts >= 3:
             recipient.status = "FALHOU"
             _finish_if_done(db, dispatch)
@@ -568,7 +597,7 @@ def process_dispatch_recipient(
         db,
         contact,
         lead=lead,
-        source=f"DISPARO:{dispatch.id}",
+        source="TELEGRAM" if telegram else f"DISPARO:{dispatch.id}",
         queue_id=queue.id,
         queue_origin="DISPATCH",
         assign_if_unowned=False,
@@ -593,7 +622,7 @@ def process_dispatch_recipient(
 
     media_sent = 0
     media_errors: list[str] = []
-    attachments = campaign_media_attachments(campaign)
+    attachments = [] if telegram else campaign_media_attachments(campaign)
     if attachments:
         storage = MediaStorage()
         for attachment in attachments:
@@ -660,10 +689,10 @@ def process_dispatch_recipient(
         Activity(
             lead_id=lead.id,
             user_id=dispatch.created_by_id,
-            kind="WHATSAPP",
+            kind="TELEGRAM" if telegram else "WHATSAPP",
             status="CONCLUIDA",
-            channel="WHATSAPP",
-            outcome=f"DISPARO_ZAPI:{provider_id or message.id}"[:120],
+            channel="TELEGRAM" if telegram else "WHATSAPP",
+            outcome=f"DISPARO_{'TELEGRAM' if telegram else 'ZAPI'}:{provider_id or message.id}"[:120],
             description=(
                 f"Disparo #{dispatch.id} · Campanha {campaign.name}: {body}"
             ),

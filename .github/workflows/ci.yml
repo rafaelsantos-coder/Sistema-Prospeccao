@@ -78,7 +78,7 @@ jobs:
           APP_ENV: test
         run: |
           python -m app.migrate
-          alembic current | grep 0012_dispatch_time_window
+          alembic current | grep 0013_telegram_channel
 
       - name: Executar testes
         run: pytest -q

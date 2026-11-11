@@ -572,6 +572,8 @@ class CampaignDispatch(Base):
     status: Mapped[str] = mapped_column(String(30), default="RASCUNHO", index=True)
     interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
     daily_limit: Mapped[int] = mapped_column(Integer, default=100)
+    # Canal do disparo: WHATSAPP (padrão) ou TELEGRAM (só para quem já iniciou o bot).
+    channel: Mapped[str] = mapped_column(String(20), default="WHATSAPP")
     # Janela diária de envio (HH:MM, horário local). Nulo = sem restrição de horário.
     window_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
     window_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
@@ -587,6 +589,26 @@ class CampaignDispatch(Base):
     campaign: Mapped[Campaign] = relationship()
     queue: Mapped[ServiceQueue] = relationship()
     created_by: Mapped[User | None] = relationship()
+
+
+class TelegramLink(Base):
+    """Vínculo entre um lead da base e o chat do Telegram que ele abriu pelo link do bot."""
+
+    __tablename__ = "telegram_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    token: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    chat_id: Mapped[str | None] = mapped_column(String(40), nullable=True, unique=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # PENDENTE (link gerado) -> ATIVO (cliente iniciou) -> PARADO (cliente pediu para parar)
+    status: Mapped[str] = mapped_column(String(20), default="PENDENTE", index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    lead: Mapped[Lead] = relationship()
 
 
 class CampaignDispatchRecipient(Base):

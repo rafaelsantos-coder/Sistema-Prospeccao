@@ -29,6 +29,7 @@ from app.services.dispatch_queue import (
 )
 from app.services.queue_routing import available_queues_for_user, get_queue
 from app.services.scoring import normalize_phone
+from app.services.telegram import configured as telegram_configured, ensure_telegram_queue
 from app.timeutils import utcnow
 from app.web import flash, render
 
@@ -104,6 +105,7 @@ def dispatch_list(request: Request, db: Session = Depends(get_db)):
         counts=counts,
         campaigns=_campaigns(db),
         service_queues=available_queues_for_user(db, actor),
+        telegram_ready=telegram_configured(),
         format_duration=format_duration,
     )
 
@@ -132,7 +134,8 @@ async def create_dispatch(
     request: Request,
     csrf_token: str = Form(...),
     campaign_id: int = Form(...),
-    queue_id: int = Form(...),
+    queue_id: int = Form(0),
+    channel: str = Form("WHATSAPP"),
     interval_seconds: int = Form(30),
     daily_limit: int = Form(100),
     window_start: str = Form(""),
@@ -160,11 +163,19 @@ async def create_dispatch(
         flash(request, "A campanha selecionada não possui mensagem válida.", "warning")
         return RedirectResponse("/dispatches", status_code=303)
 
-    queue = get_queue(db, queue_id)
-    allowed_queue_ids = {item.id for item in available_queues_for_user(db, actor)}
-    if not queue or queue.id not in allowed_queue_ids:
-        flash(request, "Selecione uma fila ativa e permitida.", "warning")
-        return RedirectResponse("/dispatches", status_code=303)
+    channel = "TELEGRAM" if (channel or "").strip().upper() == "TELEGRAM" else "WHATSAPP"
+    if channel == "TELEGRAM":
+        # Fila própria do Telegram; só alcança clientes que já abriram o bot.
+        if not telegram_configured():
+            flash(request, "O bot do Telegram ainda não foi configurado.", "warning")
+            return RedirectResponse("/dispatches", status_code=303)
+        queue = ensure_telegram_queue(db)
+    else:
+        queue = get_queue(db, queue_id)
+        allowed_queue_ids = {item.id for item in available_queues_for_user(db, actor)}
+        if not queue or queue.id not in allowed_queue_ids:
+            flash(request, "Selecione uma fila ativa e permitida.", "warning")
+            return RedirectResponse("/dispatches", status_code=303)
 
     interval = max(5, min(int(interval_seconds or 30), 3600))
     limit = max(1, min(int(daily_limit or campaign.daily_limit or 100), 5000))
@@ -193,6 +204,7 @@ async def create_dispatch(
     dispatch = CampaignDispatch(
         campaign_id=campaign.id,
         queue_id=queue.id,
+        channel=channel,
         status="RASCUNHO",
         interval_seconds=interval,
         daily_limit=limit,
