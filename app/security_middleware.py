@@ -65,6 +65,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 ]
             ),
         )
+        if request.url.path == "/reports/credit-map":
+            # Exceção restrita a esta página; as demais continuam sem scripts externos.
+            policy = response.headers["Content-Security-Policy"]
+            response.headers["Content-Security-Policy"] = policy.replace(
+                "script-src 'self' 'unsafe-inline'",
+                "script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com",
+            )
         if settings.is_production:
             response.headers.setdefault(
                 "Strict-Transport-Security",

@@ -58,6 +58,11 @@
       <a href="/reports/whatsapp" class="nav-item {% if active_nav == 'reports' %}active{% endif %}">
         <span class="nav-icon">▥</span><span>Relatórios</span>
       </a>
+      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+      <a href="/reports/credit-map" class="nav-item {% if active_nav == 'credit-map' %}active{% endif %}">
+        <span class="nav-icon">◉</span><span>Mapa de crédito</span>
+      </a>
+      {% endif %}
       {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
       <a href="/settings" class="nav-item {% if active_nav == 'settings' %}active{% endif %}">
         <span class="nav-icon">⚙</span><span>Configurações</span>

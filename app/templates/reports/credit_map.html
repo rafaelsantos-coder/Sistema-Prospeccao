@@ -1,0 +1,61 @@
+{% extends 'base.html' %}
+{% block page_content_class %}credit-map-page{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', path='/css/credit_map.css') }}">
+<div class="cm-shell" id="credit-map-app" data-maps-key="{{ google_maps_browser_key|e }}" data-csrf="{{ csrf_token|e }}" data-import="{{ 'true' if can_import else 'false' }}">
+  <div class="cm-hero">
+    <div class="cm-hero-copy">
+      <div class="cm-overline"><span class="cm-overline-dot"></span> INTELIGÊNCIA TERRITORIAL <span class="cm-overline-sep">/</span> SULNET PROSPECTA</div>
+      <h2>Mapa de calor <span>do crédito.</span></h2>
+      <p>Entenda onde acontecem as consultas, como evolui a aprovação e onde oportunidades chegam a contrato.</p>
+    </div>
+    <div class="cm-hero-actions">
+      <span class="cm-sync" id="cm-sync"><span></span> Base aguardando leitura</span>
+      {% if can_import %}<button id="cm-import-toggle" type="button" class="cm-button cm-button-light"><span>↑</span> Importar CSV</button>{% endif %}
+    </div>
+  </div>
+
+  <div class="cm-filters" aria-label="Filtros do mapa de crédito">
+    <label>Município<select id="cm-city"><option value="SANTO ÂNGELO">Santo Ângelo</option></select></label>
+    <label>De<input id="cm-from" type="month" value="2026-08" min="2026-01" max="2035-12"></label>
+    <label>Até<input id="cm-to" type="month" value="2026-11" min="2026-01" max="2035-12"></label>
+    <label>Visualizar<select id="cm-metric"><option value="approved">Volume de aprovações</option><option value="approval_rate">Taxa de aprovação</option><option value="rejected">Volume de reprovações</option><option value="signed_approved">Contratos assinados</option><option value="signed_rate">Conversão em contrato</option><option value="total">Total de consultas</option></select></label>
+    <button id="cm-apply" type="button" class="cm-button cm-button-dark">Atualizar análise <span>↗</span></button>
+  </div>
+
+  <div id="cm-message" class="cm-message" role="status" aria-live="polite" hidden></div>
+
+  <div class="cm-kpis">
+    <div class="cm-kpi"><span class="cm-kpi-caption">CONSULTAS DE CPF</span><strong id="cm-kpi-total">—</strong><span class="cm-kpi-foot">Protocolos com CPF de 11 dígitos</span><span class="cm-kpi-glyph">◎</span></div>
+    <div class="cm-kpi"><span class="cm-kpi-caption">APROVADOS</span><strong id="cm-kpi-approved">—</strong><span class="cm-kpi-foot"><b id="cm-kpi-approved-rate">—</b> das decisões finais</span><span class="cm-kpi-glyph cm-glyph-green">↗</span></div>
+    <div class="cm-kpi"><span class="cm-kpi-caption">REPROVADOS</span><strong id="cm-kpi-rejected">—</strong><span class="cm-kpi-foot">Consultas reprovadas</span><span class="cm-kpi-glyph cm-glyph-orange">↘</span></div>
+    <div class="cm-kpi cm-kpi-emph"><span class="cm-kpi-caption">CONTRATOS ASSINADOS</span><strong id="cm-kpi-signed">—</strong><span class="cm-kpi-foot"><b id="cm-kpi-signed-rate">—</b> dos aprovados assinaram</span><span class="cm-kpi-glyph">✳</span></div>
+  </div>
+
+  <div class="cm-main-grid">
+    <section class="cm-map-card">
+      <div class="cm-card-heading"><div><span class="cm-section-label">VISÃO GEOGRÁFICA</span><h3 id="cm-map-title">Intensidade por bairro</h3></div><div class="cm-map-head-right"><span class="cm-tag">Google Maps</span></div></div>
+      <div class="cm-map-wrap">
+        <div id="cm-map" class="cm-map" aria-label="Mapa geográfico da intensidade de consultas por bairro"></div>
+        <div class="cm-map-empty" id="cm-map-empty"><div class="cm-map-dots"></div><div class="cm-map-empty-inner"><span class="cm-map-pin">⌖</span><strong>Seu mapa está quase pronto</strong><p>Configure a chave do Google Maps no ambiente do Prospecta para visualizar a camada territorial.</p><a href="https://developers.google.com/maps/documentation/javascript/get-api-key" target="_blank" rel="noopener noreferrer">Configurar Google Maps ↗</a></div></div>
+        <div class="cm-map-legend"><span><i class="cm-dot cm-dot-green"></i> Aprovação alta</span><span><i class="cm-dot cm-dot-amber"></i> Intermediária</span><span><i class="cm-dot cm-dot-red"></i> Baixa</span></div>
+      </div>
+      <div class="cm-map-footer"><span id="cm-geocode-status">Exibimos apenas bairros com 10 ou mais consultas.</span><span class="cm-map-footer-note">Localização aproximada · não indica domicílios</span></div>
+    </section>
+    <section class="cm-ranking-card"><div class="cm-card-heading"><div><span class="cm-section-label">OPORTUNIDADES POR REGIÃO</span><h3>Ranking dos bairros</h3></div><button id="cm-export" type="button" class="cm-icon-button" title="Exportar ranking agregado">↓ CSV</button></div>
+      <div class="cm-search"><span>⌕</span><input type="search" id="cm-search" placeholder="Buscar bairro..." autocomplete="off" aria-label="Buscar bairro"></div>
+      <div class="cm-rank-head"><span>BAIRRO / PARTICIPAÇÃO</span><span id="cm-rank-col">APROVADOS</span></div>
+      <div class="cm-ranking" id="cm-ranking"><div class="cm-loading">Carregando bairros...</div></div>
+      <div class="cm-rank-foot"><span id="cm-rank-foot">—</span><span class="cm-min-note">mín. 10 consultas</span></div>
+    </section>
+  </div>
+
+  <div class="cm-bottom-grid"><section class="cm-month-card"><div class="cm-card-heading"><div><span class="cm-section-label">EVOLUÇÃO COMERCIAL</span><h3>Consultas e aprovações por mês</h3></div></div><div id="cm-months" class="cm-months"></div></section>
+    <section class="cm-insight-card"><div class="cm-card-heading"><div><span class="cm-section-label">LEITURA DO FUNIL</span><h3>O que esses dados indicam?</h3></div></div><div class="cm-insight-body"><div class="cm-insight-icon">✦</div><p id="cm-insight">Importe a base de consultas de crédito para gerar os indicadores de Santo Ângelo.</p><span class="cm-disclaimer">Indicadores agregados para análise de operação e cobertura, não para decidir aprovação individual.</span></div></section></div>
+
+  {% if can_import %}
+  <dialog id="cm-import-dialog" class="cm-import-dialog"><form method="dialog"><button aria-label="Fechar" class="cm-dialog-x">×</button></form><span class="cm-section-label">ATUALIZAÇÃO DA BASE</span><h3>Importar consultas de crédito</h3><p>O CSV será processado no servidor. Apenas contagens por município, bairro, mês e resultado serão guardadas. Nenhum CPF será salvo no painel.</p><label class="cm-file-label" for="cm-file">Escolher arquivo CSV <small id="cm-file-name">Nenhum arquivo selecionado</small></label><input type="file" id="cm-file" accept=".csv,text/csv" hidden><p class="cm-import-warning">A importação substitui integralmente os dados agregados da versão anterior. Limite: 15 MB.</p><button id="cm-import-send" class="cm-button cm-button-dark" type="button">Validar e substituir base ↗</button><p id="cm-import-result" class="cm-dialog-result" role="status"></p></dialog>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/js/credit_map.js') }}" defer></script>{% endblock %}
