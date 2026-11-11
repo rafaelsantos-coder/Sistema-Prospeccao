@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.credit_map import aggregate_csv, credit_decision, summarize
 
 
@@ -33,8 +35,5 @@ def test_status_and_period_validation():
     assert credit_decision('Pré-aprovado com taxa') == 'PENDENTE'
     assert credit_decision('Liberado comprovante provedor') == 'APROVADO'
     assert credit_decision('Reprovação mantida') == 'REPROVADO'
-    try:
+    with pytest.raises(ValueError):
         summarize([], start_month='2026-11', end_month='2026-08')
-        assert False, 'should fail'
-    except ValueError:
-        pass

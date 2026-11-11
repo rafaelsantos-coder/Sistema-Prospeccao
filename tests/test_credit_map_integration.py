@@ -43,7 +43,12 @@ def test_admin_importa_e_api_oculta_bairro_pequeno_sem_guardar_dado_pessoal():
         _login(client)
         page = client.get("/reports/credit-map")
         assert page.status_code == 200
-        assert "maps.googleapis.com" in page.headers["content-security-policy"]
+        script_src = next(
+            part.split()
+            for part in page.headers["content-security-policy"].split(";")
+            if part.strip().startswith("script-src")
+        )
+        assert "https://maps.googleapis.com" in script_src
         token = re.search(r'data-csrf="([^"]*)"', page.text).group(1)
 
         sem_csrf = client.post(
