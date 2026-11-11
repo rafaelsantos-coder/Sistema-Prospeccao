@@ -61,6 +61,18 @@
           <small>Ao atingir o limite, o envio retoma no dia seguinte.</small>
         </label>
 
+        <label class="field">
+          <span>Horário de início</span>
+          <input type="time" name="window_start" value="09:00">
+          <small>Os envios só começam a partir deste horário (fuso de Brasília).</small>
+        </label>
+
+        <label class="field">
+          <span>Horário de fim</span>
+          <input type="time" name="window_end" value="18:00">
+          <small>Depois dele, o disparo espera e retoma no início do dia seguinte. Deixe início e fim em branco para enviar a qualquer hora.</small>
+        </label>
+
         <label class="field field-span-2">
           <span>Arquivo CSV</span>
           <input type="file" name="csv_file" accept=".csv,text/csv" required data-dispatch-csv>
@@ -128,7 +140,7 @@
           <td><strong>#{{ item.id }}</strong><span class="table-subline">{{ item.created_at|datetime_br }}</span></td>
           <td><strong>{{ item.campaign.name }}</strong></td>
           <td>{{ item.queue.name }}<span class="table-subline">{{ item.queue.code }}</span></td>
-          <td>{{ item.interval_seconds }}s<span class="table-subline">{{ item.daily_limit }}/dia</span></td>
+          <td>{{ item.interval_seconds }}s<span class="table-subline">{{ item.daily_limit }}/dia{% if item.window_start %} · {{ item.window_start }}–{{ item.window_end }}{% endif %}</span></td>
           <td>
             <strong>{{ sent }}/{{ total }}</strong>
             <div class="dispatch-mini-progress"><i style="width: {{ '%.1f'|format(pct) }}%"></i></div>

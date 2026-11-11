@@ -5,7 +5,7 @@
   <div>
     <span class="eyebrow">DISPARO WHATSAPP</span>
     <h2>#{{ dispatch.id }} · {{ dispatch.campaign.name }}</h2>
-    <p>Fila {{ dispatch.queue.name }} · intervalo de {{ dispatch.interval_seconds }}s · {{ dispatch.daily_limit }} mensagens/dia.</p>
+    <p>Fila {{ dispatch.queue.name }} · intervalo de {{ dispatch.interval_seconds }}s · {{ dispatch.daily_limit }} mensagens/dia · {% if dispatch.window_start %}envia das {{ dispatch.window_start }} às {{ dispatch.window_end }}{% else %}sem restrição de horário{% endif %}.</p>
   </div>
   <div class="page-actions">
     <a class="button button-secondary" href="/dispatches">Voltar</a>
@@ -76,13 +76,23 @@
           <input type="number" name="daily_limit" min="1" max="5000" step="1" value="{{ dispatch.daily_limit }}" required>
           <small>Quantidade máxima de mensagens enviadas por dia neste disparo.</small>
         </label>
+        <label class="field">
+          <span>Horário de início</span>
+          <input type="time" name="window_start" value="{{ dispatch.window_start or '' }}">
+          <small>Hora local (Brasília) em que os envios do dia começam.</small>
+        </label>
+        <label class="field">
+          <span>Horário de fim</span>
+          <input type="time" name="window_end" value="{{ dispatch.window_end or '' }}">
+          <small>Depois deste horário o disparo espera até o início seguinte. Em branco nos dois = sem restrição.</small>
+        </label>
       </div>
       <button class="button button-primary" type="submit">Salvar configuração</button>
     </form>
     {% else %}
     <div class="info-box top-space">
       <strong>Configuração bloqueada durante o envio</strong>
-      <p>Pause o disparo para alterar o intervalo ou o limite diário.</p>
+      <p>Pause o disparo para alterar o intervalo, o limite diário ou o horário.</p>
     </div>
     {% endif %}
   </article>

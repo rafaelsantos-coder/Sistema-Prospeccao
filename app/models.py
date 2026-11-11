@@ -572,6 +572,9 @@ class CampaignDispatch(Base):
     status: Mapped[str] = mapped_column(String(30), default="RASCUNHO", index=True)
     interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
     daily_limit: Mapped[int] = mapped_column(Integer, default=100)
+    # Janela diária de envio (HH:MM, horário local). Nulo = sem restrição de horário.
+    window_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    window_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
     next_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     import_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)

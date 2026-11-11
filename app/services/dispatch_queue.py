@@ -3,7 +3,8 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import timedelta
+import re
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -34,7 +35,7 @@ from app.services.queue_routing import set_lead_queue_preference
 from app.services.scoring import normalize_phone
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import queue_instance, service_for_queue
-from app.timeutils import local_day_start_utc, utcnow
+from app.timeutils import LOCAL_TZ, local_day_start_utc, utcnow
 
 
 CSV_NAME_ALIASES = {"nome", "name", "cliente", "empresa", "contato"}
@@ -215,6 +216,49 @@ def dispatch_counts(db: Session, dispatch_id: int) -> dict[str, int]:
     }
 
 
+_HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def parse_window(start: str | None, end: str | None) -> tuple[str | None, str | None]:
+    """Valida a janela de envio. Ambos vazios = sem restrição. Levanta ValueError."""
+    start = (start or "").strip()
+    end = (end or "").strip()
+    if not start and not end:
+        return None, None
+    if not start or not end:
+        raise ValueError("Informe o horário de início e o de fim, ou deixe os dois em branco.")
+    if not _HHMM.match(start) or not _HHMM.match(end):
+        raise ValueError("Horário inválido. Use o formato HH:MM (ex.: 09:00).")
+    if start >= end:
+        raise ValueError("O horário de fim deve ser depois do início (a janela não pode virar a noite).")
+    return start, end
+
+
+def _as_time(value: str) -> time:
+    hour, minute = value.split(":")
+    return time(int(hour), int(minute))
+
+
+def window_next_start(dispatch: CampaignDispatch, now: datetime | None = None) -> datetime | None:
+    """None se agora está dentro da janela (ou sem janela). Senão, quando ela abre (UTC sem fuso)."""
+    if not dispatch.window_start or not dispatch.window_end:
+        return None
+    now_utc = now or utcnow()
+    local = now_utc.replace(tzinfo=UTC).astimezone(LOCAL_TZ)
+    start, end = _as_time(dispatch.window_start), _as_time(dispatch.window_end)
+    if start <= local.time() < end:
+        return None
+    day = local.date() if local.time() < start else local.date() + timedelta(days=1)
+    opens = datetime.combine(day, start, tzinfo=LOCAL_TZ)
+    return opens.astimezone(UTC).replace(tzinfo=None)
+
+
+def format_window(dispatch: CampaignDispatch) -> str:
+    if dispatch.window_start and dispatch.window_end:
+        return f"{dispatch.window_start} às {dispatch.window_end}"
+    return "Sem restrição de horário"
+
+
 def estimated_duration_seconds(total: int, interval_seconds: int) -> int:
     return max(0, int(total) - 1) * max(1, int(interval_seconds))
 
@@ -228,6 +272,8 @@ def create_dispatch_from_leads(
     created_by_id: int | None,
     interval_seconds: int = 30,
     daily_limit: int = 100,
+    window_start: str | None = None,
+    window_end: str | None = None,
     auto_start: bool = False,
     source: str = "PROSPECTING",
 ) -> tuple[CampaignDispatch | None, dict[str, Any]]:
@@ -245,6 +291,8 @@ def create_dispatch_from_leads(
         status="RASCUNHO",
         interval_seconds=interval,
         daily_limit=limit,
+        window_start=window_start,
+        window_end=window_end,
         created_by_id=created_by_id,
     )
     db.add(dispatch)
@@ -352,6 +400,14 @@ def _sent_today(db: Session, dispatch_id: int) -> int:
 def claim_next_dispatch_recipient(
     db: Session,
 ) -> CampaignDispatchRecipient | None:
+    for _ in range(10):
+        recipient = _claim_once(db)
+        if recipient != "OUT_OF_WINDOW":
+            return recipient
+    return None
+
+
+def _claim_once(db: Session) -> CampaignDispatchRecipient | None | str:
     now = utcnow()
     recipient = db.scalar(
         select(CampaignDispatchRecipient)
@@ -381,6 +437,13 @@ def claim_next_dispatch_recipient(
     dispatch = db.get(CampaignDispatch, recipient.dispatch_id)
     if not dispatch:
         return None
+
+    opens_at = window_next_start(dispatch, now)
+    if opens_at is not None:
+        # Fora da janela de envio: o disparo espera abrir, sem consumir o contato.
+        dispatch.next_send_at = opens_at
+        db.flush()
+        return "OUT_OF_WINDOW"
 
     recipient.status = "ENVIANDO"
     dispatch.next_send_at = now + timedelta(
