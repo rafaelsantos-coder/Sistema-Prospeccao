@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings, validate_production_settings
 from app.database import Base, SessionLocal, engine
 from app.routers import credit_map
-from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, diagnostico, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, zapi, zapsign
+from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, diagnostico, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, telegram as telegram_router, zapi, zapsign
 from app.services.seed import seed_database
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import instance_webhook_url, list_zapi_instances, service_for_instance
@@ -156,6 +156,7 @@ app.include_router(presence.router)
 app.include_router(queues.router)
 app.include_router(settings_router.router)
 app.include_router(zapi.router)
+app.include_router(telegram_router.router)
 app.include_router(zapsign.router)
 app.include_router(api.router)
 app.include_router(diagnostico.router)

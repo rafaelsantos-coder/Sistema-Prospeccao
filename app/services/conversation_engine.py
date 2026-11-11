@@ -242,7 +242,24 @@ def ensure_open_conversation(
     assign_if_unowned: bool = True,
     zapi_instance_id: int | None = None,
 ) -> Conversation:
-    if zapi_instance_id:
+    # Canais não se misturam: Telegram só reaproveita conversa Telegram, e o
+    # restante nunca cai numa conversa de Telegram (a resposta sairia no canal errado).
+    if source == "TELEGRAM":
+        channel_filter = Conversation.source == "TELEGRAM"
+    else:
+        channel_filter = Conversation.source != "TELEGRAM"
+    if source == "TELEGRAM":
+        conversation = db.scalar(
+            select(Conversation)
+            .where(
+                Conversation.contact_id == contact.id,
+                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                channel_filter,
+            )
+            .order_by(Conversation.updated_at.desc())
+            .limit(1)
+        )
+    elif zapi_instance_id:
         conversation = db.scalar(
             select(Conversation)
             .join(
@@ -252,6 +269,7 @@ def ensure_open_conversation(
             .where(
                 Conversation.contact_id == contact.id,
                 Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                channel_filter,
                 ConversationZApiInstance.zapi_instance_id == zapi_instance_id,
             )
             .order_by(Conversation.updated_at.desc())
@@ -267,6 +285,7 @@ def ensure_open_conversation(
                 .where(
                     Conversation.contact_id == contact.id,
                     Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                channel_filter,
                     ConversationZApiInstance.id.is_(None),
                 )
                 .order_by(Conversation.updated_at.desc())
@@ -278,6 +297,7 @@ def ensure_open_conversation(
             .where(
                 Conversation.contact_id == contact.id,
                 Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                channel_filter,
             )
             .order_by(Conversation.updated_at.desc())
             .limit(1)

@@ -206,7 +206,15 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
     sobrescrever o número configurado atualmente na fila. Se estiver antigo,
     ele é autocorrigido antes do envio.
     """
+    from app.models import Conversation
     from app.services.queue_routing import queue_for_conversation
+
+    conversation = db.get(Conversation, conversation_id)
+    if conversation is not None and conversation.source == "TELEGRAM":
+        # Conversa do canal Telegram: mesma interface de envio, outro remetente.
+        from app.services.telegram import service_for_telegram_conversation
+
+        return service_for_telegram_conversation(db, conversation)  # type: ignore[return-value]
 
     queue = queue_for_conversation(db, conversation_id)
     if queue:

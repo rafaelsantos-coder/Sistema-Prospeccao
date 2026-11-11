@@ -36,8 +36,17 @@
         </label>
 
         <label class="field field-span-2">
-          <span>Fila que receberá as respostas</span>
-          <select name="queue_id" required>
+          <span>Canal do disparo</span>
+          <select name="channel">
+            <option value="WHATSAPP">WhatsApp</option>
+            {% if telegram_ready %}<option value="TELEGRAM">Telegram (só clientes que já abriram o bot)</option>{% endif %}
+          </select>
+          <small>No Telegram o envio só alcança quem já aceitou pelo link do bot; os demais ficam como ignorados. Para convidar pelo WhatsApp, use {{ '{{link_telegram}}' }} na mensagem da campanha.</small>
+        </label>
+
+        <label class="field field-span-2">
+          <span>Fila que receberá as respostas (WhatsApp)</span>
+          <select name="queue_id">
             <option value="">Selecione a fila</option>
             {% for queue in service_queues %}
             <option value="{{ queue.id }}">{{ queue.name }} · {{ constants.teams.get(queue.team, queue.team) }}</option>
@@ -139,7 +148,7 @@
         <tr>
           <td><strong>#{{ item.id }}</strong><span class="table-subline">{{ item.created_at|datetime_br }}</span></td>
           <td><strong>{{ item.campaign.name }}</strong></td>
-          <td>{{ item.queue.name }}<span class="table-subline">{{ item.queue.code }}</span></td>
+          <td>{{ item.queue.name }}<span class="table-subline">{{ item.queue.code }} · {{ 'Telegram' if item.channel == 'TELEGRAM' else 'WhatsApp' }}</span></td>
           <td>{{ item.interval_seconds }}s<span class="table-subline">{{ item.daily_limit }}/dia{% if item.window_start %} · {{ item.window_start }}–{{ item.window_end }}{% endif %}</span></td>
           <td>
             <strong>{{ sent }}/{{ total }}</strong>

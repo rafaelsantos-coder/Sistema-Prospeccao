@@ -58,6 +58,10 @@ class Settings:
     zapi_instance_token: str = os.getenv("ZAPI_INSTANCE_TOKEN", "")
     zapi_client_token: str = os.getenv("ZAPI_CLIENT_TOKEN", "")
     zapi_webhook_secret: str = os.getenv("ZAPI_WEBHOOK_SECRET", "")
+    # Canal Telegram (bot oficial; o cliente precisa iniciar a conversa pelo link).
+    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    telegram_bot_username: str = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
+    telegram_webhook_secret: str = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")
     resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
@@ -204,6 +208,12 @@ class Settings:
     @property
     def effective_data_encryption_key(self) -> str:
         return self.data_encryption_key or self.secret_key
+
+    @property
+    def telegram_webhook_url(self) -> str:
+        if not self.app_public_url or not self.telegram_webhook_secret:
+            return ""
+        return f"{self.app_public_url}/webhooks/telegram/{self.telegram_webhook_secret}"
 
     @property
     def zapi_webhook_url(self) -> str:
