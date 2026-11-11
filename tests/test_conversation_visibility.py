@@ -59,10 +59,10 @@ def _conversation(db, phone: str, *, queue: ServiceQueue, owner: User | None = N
     db.add(conversation)
     db.flush()
     db.add(ConversationQueueLink(conversation_id=conversation.id, queue_id=queue.id, origin="DISPATCH"))
-    db.add(Message(conversation_id=conversation.id, direction="OUTBOUND", message_type="TEXT",
+    db.add(Message(conversation_id=conversation.id, contact_id=contact.id, direction="OUTBOUND", message_type="TEXT",
                    body="Disparo", status="SENT"))
     if replied:
-        db.add(Message(conversation_id=conversation.id, direction="INBOUND", message_type="TEXT",
+        db.add(Message(conversation_id=conversation.id, contact_id=contact.id, direction="INBOUND", message_type="TEXT",
                        body="Resposta do cliente", status="RECEIVED"))
     db.flush()
     return conversation

@@ -34,7 +34,7 @@ def _conversation(db, source: str) -> Conversation:
     conversation = Conversation(contact_id=contact.id, team="B2B", source=source, status="AGUARDANDO_CLIENTE")
     db.add(conversation)
     db.flush()
-    db.add(Message(conversation_id=conversation.id, direction="OUTBOUND", message_type="TEXT", body="Oferta", status="SENT"))
+    db.add(Message(conversation_id=conversation.id, contact_id=contact.id, direction="OUTBOUND", message_type="TEXT", body="Oferta", status="SENT"))
     db.flush()
     return conversation
 
@@ -57,7 +57,7 @@ def test_disparo_aparece_so_depois_da_resposta_do_cliente():
                 assert not _in_inbox(db, admin, conversation), conversation.source
 
             for conversation in conversations:
-                db.add(Message(conversation_id=conversation.id, direction="INBOUND", message_type="TEXT",
+                db.add(Message(conversation_id=conversation.id, contact_id=conversation.contact_id, direction="INBOUND", message_type="TEXT",
                                body="Tenho interesse", status="RECEIVED"))
             db.flush()
             for conversation in conversations:
