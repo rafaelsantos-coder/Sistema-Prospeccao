@@ -1899,7 +1899,8 @@ def _sync_plan_context(
         folded = _norm(state.plan_label).replace(" ", "")
         capacity_match = re.search(r"(\d{1,3}gb)", folded)
         capacity = capacity_match.group(1) if capacity_match else ""
-        pool = products
+        # Só produtos compatíveis com o plano da conversa (fibra não disputa preço com móvel).
+        pool = [item for item in products if _plan_matches_label(item, state.plan_label)] or products
 
         if capacity:
             same_capacity = [
@@ -1936,7 +1937,21 @@ def _sync_plan_context(
             if len(same_price) == 1:
                 selected = same_price[0]
 
+    if not selected and state.plan_label:
+        # Último recurso: um único produto do catálogo compatível com o plano.
+        compatible = [item for item in products if _plan_matches_label(item, state.plan_label)]
+        if len(compatible) == 1:
+            selected = compatible[0]
+
     if not selected:
+        LOG.warning(
+            "seller_plan_unresolved opportunity=%s plan_label=%s offer_price=%s crm_plan_id=%s catalog=%s",
+            state.opportunity_id,
+            state.plan_label,
+            state.offer_price,
+            plan_id,
+            len(products),
+        )
         return
 
     resolved_plan_id = int(selected.get("id") or 0)
