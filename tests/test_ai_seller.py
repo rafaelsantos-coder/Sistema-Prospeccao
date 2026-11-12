@@ -2178,6 +2178,49 @@ def test_playbook_category_id_is_persisted_with_resolved_plan():
     ]
 
 
+def test_playbook_category_failure_never_asks_customer():
+    # Conversa 1382: o CRM recusava gravar a categoria e o Vendedor perguntava
+    # "confirme a categoria" ao cliente em ciclo. Agora espera, sem perguntar.
+    from app.services.ai_seller import CRMIntegrationError
+
+    item = CRMPlaybookMissingItem(
+        code="categoryId",
+        label="Categoria do produto",
+        question="Confirme a categoria do produto (Telefonia Móvel).",
+        patch_key="",
+    )
+
+    class _FailingClient(_PlaybookClient):
+        def update_category_form(self, *args, **kwargs):
+            raise CRMIntegrationError("CRM recusou")
+
+        def get_opportunity(self, *args, **kwargs):
+            raise CRMIntegrationError("CRM recusou")
+
+    client = _FailingClient([
+        _playbook_result(missing=[item], next_question=item.question),
+    ])
+    state = SimpleNamespace(
+        opportunity_id=14940,
+        plan_label="Fibra 500 Mega",
+        offer_price=99.90,
+        credit_status="Aprovado",
+        step="WAITING_CONTRACT",
+    )
+    collected = {"planId": 77, "categoryId": 3, "categoryName": "Internet"}
+
+    step, question = _query_playbook_guidance(
+        client,
+        state,
+        collected,
+        fallback_step="__FINISH__",
+    )
+
+    assert step == "WAITING_CRM_READY"
+    assert question is None
+    assert collected.get("_playbook_step") != "PLAYBOOK_DYNAMIC_FIELD"
+
+
 def test_closer_ownership_requires_closing_state():
     from app.services.ai_seller import CRMIntegrationError, _assert_closer_owns_conversation
 

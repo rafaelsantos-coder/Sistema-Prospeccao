@@ -1381,7 +1381,16 @@ def _sync_known_playbook_missing(
         # no catálogo, nunca sozinho (o que poderia trocar o plano).
         try:
             _persist_category_form(client, state, collected)
-        except CRMIntegrationError:
+        except CRMIntegrationError as exc:
+            LOG.warning(
+                "seller_category_persist_failed opportunity=%s category=%s plan=%s status=%s method=%s path=%s",
+                state.opportunity_id,
+                collected.get("categoryId"),
+                collected.get("planId"),
+                getattr(exc, "status_code", None),
+                getattr(exc, "method", None),
+                getattr(exc, "path", None),
+            )
             return False
     elif field.startswith("category:"):
         category_field = field.split(":", 1)[1]
@@ -1405,6 +1414,32 @@ def _sync_known_playbook_missing(
         item.code,
         field,
     )
+    return True
+
+
+def _heal_category(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+) -> bool:
+    """Segunda tentativa de gravar a categoria: refaz a resolução plano/categoria no catálogo."""
+    stale = {key: collected.pop(key, None) for key in ("planId", "categoryId", "categoryName")}
+    try:
+        _sync_plan_context(client, state, collected)
+        _persist_category_form(client, state, collected)
+    except CRMIntegrationError as exc:
+        for key, value in stale.items():
+            if value is not None and not collected.get(key):
+                collected[key] = value
+        LOG.warning(
+            "seller_category_heal_failed opportunity=%s status=%s method=%s path=%s",
+            state.opportunity_id,
+            getattr(exc, "status_code", None),
+            getattr(exc, "method", None),
+            getattr(exc, "path", None),
+        )
+        return False
+    collected.pop("_category_unsaved", None)
     return True
 
 
@@ -1577,6 +1612,21 @@ def _query_playbook_guidance(
                     # Sincroniza no máximo uma vez por campo; reconsulta o CRM.
                     selected = None
                     break
+                if first_key == "categoryid":
+                    # Categoria é dado interno, derivado do plano: nunca se pergunta ao
+                    # cliente (conversas 240 e 1382 giravam em "confirme a categoria").
+                    # Tenta de novo resolvendo o plano no catálogo; se ainda falhar,
+                    # a venda espera e o poller tenta de novo, sem mensagem repetida.
+                    healed = _heal_category(client, state, collected)
+                    if healed:
+                        selected = None
+                        break
+                    collected["_category_unsaved"] = True
+                    LOG.warning(
+                        "seller_category_unsaved_waiting opportunity=%s",
+                        state.opportunity_id,
+                    )
+                    return "WAITING_CRM_READY", None
                 # Sync falhou (ex.: opções do CRM não batem) → pergunta ao cliente.
                 selected = first
                 break
@@ -1594,6 +1644,18 @@ def _query_playbook_guidance(
                     )
                 ]
                 continue
+            if first_key == "categoryid":
+                # Categoria ainda não resolvida localmente: resolve pelo plano, nunca
+                # pergunta ao cliente.
+                if first_key not in synced_codes and _heal_category(client, state, collected):
+                    synced_codes.add(first_key)
+                    selected = None
+                    break
+                LOG.warning(
+                    "seller_category_unresolved_waiting opportunity=%s",
+                    state.opportunity_id,
+                )
+                return "WAITING_CRM_READY", None
             selected = first
             break
 
@@ -5428,8 +5490,12 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     reason="Categoria do produto não registrada no CRM após confirmação do cliente.",
                 )
                 state.step = "WAITING_CRM_READY"
+                if collected.get("_hold_notice_step") == "CATEGORY":
+                    reply = _prompt_for_step(state, collected)
+                else:
+                    collected["_hold_notice_step"] = "CATEGORY"
+                    reply = CLOSER_HOLD_NOTICE
                 _save_collected(state, collected)
-                reply = CLOSER_HOLD_NOTICE
 
         elif state.step == "PLAYBOOK_DYNAMIC_FIELD" and _playbook_code_key(
             str(collected.get("_playbook_dynamic_code") or collected.get("_playbook_code") or "")
