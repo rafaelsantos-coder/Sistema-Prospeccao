@@ -187,7 +187,8 @@
     const city = $('cm-city').value, from = $('cm-from').value, to = $('cm-to').value;
     const query = new URLSearchParams({city, date_from: from, date_to: to});
     let last = null;
-    for (let round = 0; round < 80; round += 1) {
+    let errors = 0;
+    for (let round = 0; round < 120; round += 1) {
       if (ticket !== state.revision) return null;
       const r = await fetch('/api/reports/credit-map/geo?' + query, {credentials: 'same-origin', cache: 'no-store'});
       if (r.status === 401) { window.location.assign('/login'); return null; }
@@ -195,8 +196,17 @@
       last = await r.json();
       const total = (state.data?.neighborhoods || []).length;
       const done = Object.keys(last.positions || {}).length + (last.not_found || []).length;
-      $('cm-geocode-status').textContent = last.pending ? `Localizando bairros no mapa… ${done} de ${total}` : '';
-      if (!last.pending || last.error) break;
+      if (!last.pending) break;
+      if (last.error) {
+        // O serviço público de endereços limita o ritmo: espera e tenta de novo (o que já foi localizado fica guardado).
+        errors += 1;
+        if (errors > 8) break;
+        $('cm-geocode-status').textContent = `Serviço de endereços ocupado; tentando de novo… ${done} de ${total} bairros`;
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        continue;
+      }
+      errors = 0;
+      $('cm-geocode-status').textContent = `Localizando bairros no mapa… ${done} de ${total}`;
     }
     return last;
   }
@@ -222,7 +232,7 @@
     if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [40, 40], maxZoom: 14});
     else if (geo.city_center) state.map.setView([geo.city_center.lat, geo.city_center.lng], 12);
     let status = `${located} de ${rows.length} bairros localizados · centros aproximados, não indicam domicílios`;
-    if (geo.error) status += ` · ${geo.error} Atualize a página para continuar.`;
+    if (geo.error && geo.pending) status += ' · alguns bairros ainda não foram localizados; atualize a página para continuar.';
     else if (!geo.city_center) status = 'Não foi possível localizar a cidade no mapa. O ranking continua válido.';
     $('cm-geocode-status').textContent = status;
   }
@@ -233,6 +243,32 @@
     const row = (state.data?.neighborhoods || []).find(x => x.name === name);
     state.map.setView([point.lat, point.lng], Math.max(state.map.getZoom(), 14));
     if (row) L.popup().setLatLng([point.lat, point.lng]).setContent(infoHtml(row)).openOn(state.map);
+  }
+  function initFullscreen() {
+    const wrap = document.querySelector('.cm-map-wrap');
+    const button = $('cm-fullscreen');
+    if (!wrap || !button) return;
+    const isOpen = () => document.fullscreenElement === wrap || wrap.classList.contains('cm-map-expanded');
+    const refresh = () => {
+      const open = isOpen();
+      button.textContent = open ? '✕ Sair da tela cheia' : '⛶ Tela cheia';
+      if (state.map) {
+        if (open) state.map.scrollWheelZoom.enable(); else state.map.scrollWheelZoom.disable();
+        setTimeout(() => state.map.invalidateSize(), 150);
+      }
+    };
+    button.addEventListener('click', async () => {
+      if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+      if (wrap.classList.contains('cm-map-expanded')) { wrap.classList.remove('cm-map-expanded'); refresh(); return; }
+      if (wrap.requestFullscreen) {
+        try { await wrap.requestFullscreen(); return; } catch { /* cai no modo ampliado abaixo */ }
+      }
+      wrap.classList.add('cm-map-expanded'); refresh();
+    });
+    document.addEventListener('fullscreenchange', refresh);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && wrap.classList.contains('cm-map-expanded')) { wrap.classList.remove('cm-map-expanded'); refresh(); }
+    });
   }
   function exportRanking(){
     if(!state.data)return;
@@ -266,5 +302,6 @@
   $('cm-search').addEventListener('input',drawRanking);
   $('cm-export').addEventListener('click',exportRanking);
   initImport();
+  initFullscreen();
   (async () => {await fetchCities(); await fetchData();})();
 })();
