@@ -23,8 +23,11 @@ def _csv() -> bytes:
 
 def test_street_and_cep_helpers_drop_house_number():
     assert street_name("Rua das Flores, 123") == "RUA DAS FLORES"
-    assert street_name("Av. Brasil 45A") == "AV. BRASIL"
+    assert street_name("Av. Brasil 45A") == "AVENIDA BRASIL"
     assert street_name("Rua 7 de Setembro") == "RUA 7 DE SETEMBRO"
+    assert street_name("R. São José, 55") == "RUA SAO JOSE"
+    assert street_name("Av Getúlio Vargas") == "AVENIDA GETULIO VARGAS"
+    assert street_name("INTERIOR") == ""
     assert cep_digits("98900-000") == "98900000"
     assert cep_digits("123") == ""
 
@@ -47,7 +50,7 @@ def test_street_aggregates_never_keep_house_number_or_cpf():
     assert not any(re.search(r"\b10\d\b", row["street"]) for row in streets)
 
 
-def test_streets_endpoint_only_returns_streets_with_ten_or_more(monkeypatch):
+def test_streets_endpoint_only_returns_streets_with_five_or_more(monkeypatch):
     monkeypatch.setattr(geocoding, "city_center", lambda city: (-27.87, -54.48))
     monkeypatch.setattr(geocoding, "street_point", lambda *args, **kwargs: (-27.871, -54.481))
     with TestClient(app) as client:

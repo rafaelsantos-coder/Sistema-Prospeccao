@@ -154,14 +154,14 @@ def map_geo(request: Request, city: str = 'SANTO ÂNGELO',
 
 
 STREET_BATCH = 4
-MAX_STREETS = 150
+MAX_STREETS = 300
 
 
 @router.get('/api/reports/credit-map/streets')
 def map_streets(request: Request, city: str = 'SANTO ÂNGELO',
                 date_from: str = '2026-08', date_to: str = '2026-11',
                 db: Session = Depends(get_db)):
-    """Ruas com 10+ consultas, posicionadas (cache no banco). Sem número de casa."""
+    """Ruas com 5+ consultas, posicionadas (cache no banco). Sem número de casa."""
     allowed(request, db)
     if not city or len(city) > 120:
         raise HTTPException(status_code=400, detail='Cidade inválida.')
@@ -175,7 +175,7 @@ def map_streets(request: Request, city: str = 'SANTO ÂNGELO',
             {'city': e.city, 'neighborhood': e.neighborhood, 'street': e.street, 'cep': e.cep,
              'month': e.month, 'decision': e.decision, 'signed': e.signed, 'count': e.count}
             for e in entries
-        ], city=city, start_month=date_from, end_month=date_to, min_sample=10)[:MAX_STREETS]
+        ], city=city, start_month=date_from, end_month=date_to)[:MAX_STREETS]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     cached = {g.neighborhood: g for g in db.scalars(
