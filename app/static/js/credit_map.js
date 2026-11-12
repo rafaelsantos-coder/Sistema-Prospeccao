@@ -307,7 +307,7 @@
         dot.bindPopup(`<div class="cm-map-info"><strong>${esc(row.street)}</strong><br><small>${esc(row.neighborhood)}${row.cep ? ' · CEP ' + esc(row.cep.slice(0,5) + '-' + row.cep.slice(5)) : ''}</small><br>${fmt(row.total)} consultas · aprovados <b>${fmt(row.approved)}</b> (${pct(row.approval_rate)})<br>Assinados: <b>${fmt(row.signed_approved)}</b></div>`);
         dot.addTo(streetGroup);
       }
-      const note = `${(data.streets || []).length} de ${data.total} ruas com 10+ consultas localizadas`;
+      const note = `${(data.streets || []).length} de ${data.total} ruas com 5+ consultas localizadas`;
       if (!data.total) { $('cm-streets-status').textContent = 'Sem ruas na base (importe o CSV com Rua/CEP).'; return; }
       $('cm-streets-status').textContent = note;
       if (!data.pending) return;

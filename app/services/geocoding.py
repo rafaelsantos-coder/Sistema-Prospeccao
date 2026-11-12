@@ -87,7 +87,9 @@ def street_point(
     street: str, neighborhood: str, city: str, cep: str, center: tuple[float, float],
 ) -> tuple[float, float] | None:
     """Posição aproximada da rua (meio do logradouro), descartando resultado longe da cidade."""
-    queries = [f"{street}, {neighborhood}, {city}, Rio Grande do Sul, Brasil"]
+    queries = []
+    if neighborhood:
+        queries.append(f"{street}, {neighborhood}, {city}, Rio Grande do Sul, Brasil")
     queries.append(f"{street}, {city}, Rio Grande do Sul, Brasil")
     if cep:
         queries.append(f"{cep[:5]}-{cep[5:]}, {city}, Rio Grande do Sul, Brasil")

@@ -17,9 +17,11 @@ REQUIRED_COLUMNS = {
     'Protocolo', 'Documento', 'Cidade', 'Bairro', 'Data da consulta',
     'Status', 'Contrato assinado',
 }
+STREET_MIN_SAMPLE = 5
 STREET_HEADERS = ('Rua', 'Logradouro', 'Endereço', 'Endereco')
 CEP_HEADERS = ('CEP',)
 NO_NEIGHBORHOOD = 'SEM BAIRRO INFORMADO'
+NOT_A_STREET = {'INTERIOR', 'ZONA RURAL', 'RURAL', 'SEM RUA', 'NAO INFORMADO', 'NAO INFORMADA', 'S/N'}
 NO_DATE = 'SEM_DATA'
 APPROVED = 'APROVADO'
 REJECTED = 'REPROVADO'
@@ -57,6 +59,15 @@ def street_name(value: str) -> str:
     """Nome da rua sem número da casa (o número nunca é guardado)."""
     raw = fold(value)
     raw = re.sub(r'\s*(,|-|\bN\b\.?|\bNUMERO\b|\bNO\b)?\s*\d+\s*[A-Z]?$', '', raw).strip(' ,-')
+    # Abreviações comuns, para a mesma rua não se dividir em várias.
+    prefixes = {'R': 'RUA', 'AV': 'AVENIDA', 'AVE': 'AVENIDA', 'TRAV': 'TRAVESSA', 'TV': 'TRAVESSA',
+                'PCA': 'PRACA', 'ROD': 'RODOVIA', 'EST': 'ESTRADA', 'AL': 'ALAMEDA'}
+    parts = raw.split(' ', 1)
+    head = parts[0].rstrip('.')
+    if head in prefixes and len(parts) > 1:
+        raw = prefixes[head] + ' ' + parts[1]
+    if raw in NOT_A_STREET:
+        return ''
     return raw[:100]
 
 
@@ -177,18 +188,19 @@ def aggregate_csv_full(
 
 def summarize_streets(
     items: list[dict[str, Any]], *, city: str, start_month: str, end_month: str,
-    min_sample: int = 10,
+    min_sample: int = STREET_MIN_SAMPLE,
 ) -> list[dict[str, Any]]:
-    """Ruas com pelo menos ``min_sample`` consultas no período (agrupadas por rua+bairro)."""
+    """Ruas com pelo menos ``min_sample`` consultas no período (a mesma rua agrupa todos os bairros)."""
     city = city_name(city)
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for item in items:
         if city_name(item['city']) != city or not (start_month <= item['month'] <= end_month):
             continue
-        key = (item['street'], neighborhood_name(item['neighborhood']))
+        key = (item['street'], '')
         row = groups.setdefault(key, {
-            'street': key[0], 'neighborhood': key[1], 'total': 0, 'approved': 0,
-            'rejected': 0, 'pending': 0, 'signed_approved': 0, 'ceps': Counter()})
+            'street': key[0], 'neighborhood': '', 'total': 0, 'approved': 0,
+            'rejected': 0, 'pending': 0, 'signed_approved': 0, 'ceps': Counter(), 'hoods': Counter()})
+        hood = neighborhood_name(item['neighborhood'])
         n = int(item['count'])
         row['total'] += n
         decision = item['decision']
@@ -197,16 +209,20 @@ def summarize_streets(
             row['signed_approved'] += n
         if item.get('cep'):
             row['ceps'][item['cep']] += n
+        if hood != NO_NEIGHBORHOOD:
+            row['hoods'][hood] += n
     result = []
     for row in groups.values():
         if row['total'] < min_sample:
             continue
         ceps = row.pop('ceps')
+        hoods = row.pop('hoods')
         row['cep'] = ceps.most_common(1)[0][0] if ceps else ''
+        row['neighborhood'] = hoods.most_common(1)[0][0] if hoods else ''
         decided = row['approved'] + row['rejected']
         row['approval_rate'] = round(row['approved'] / decided * 100, 1) if decided else None
         row['signed_rate'] = round(row['signed_approved'] / row['approved'] * 100, 1) if row['approved'] else None
-        row['key'] = f"RUA|{row['street']}|{row['neighborhood']}"[:180]
+        row['key'] = f"RUA|{row['street']}"[:180]
         result.append(row)
     result.sort(key=lambda x: (-x['total'], x['street']))
     return result
