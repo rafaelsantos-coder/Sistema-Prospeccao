@@ -126,6 +126,17 @@ def _save_collected(state: AIClosingState, collected: dict[str, Any]) -> None:
     state.collected_json = json.dumps(collected, ensure_ascii=False, default=str)
 
 
+def _friendly_plan_label(label: str | None) -> str:
+    """Código interno do CRM (FTTH_650) vira texto de cliente (650 Mega)."""
+    clean = (label or "").strip()
+    if not clean:
+        return "plano combinado"
+    match = re.fullmatch(r"[A-Za-z]+[_ -]?(\d{2,4})", clean)
+    if match and clean.upper() == clean:
+        return f"plano de {match.group(1)} Mega"
+    return clean
+
+
 def _looks_like_full_name(value: str) -> bool:
     clean = re.sub(r"\s+", " ", (value or "").strip())
     if len(clean) < 5 or len(clean) > 120:
@@ -3724,6 +3735,40 @@ def _mark_credit_rejected_lost(client: SulnetCRMClient, state: AIClosingState) -
         LOG.warning("credit_lost_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
 
 
+def _adopt_name_from_crm(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    conversation: Conversation,
+    credit: dict[str, Any],
+) -> None:
+    """Nome completo do titular, vindo do CRM depois da consulta pelo CPF."""
+    if _looks_like_full_name(str(collected.get("name") or "")):
+        return
+    analysis = credit.get("analysis") if isinstance(credit.get("analysis"), dict) else {}
+    lead = credit.get("lead") if isinstance(credit.get("lead"), dict) else {}
+    candidates = [
+        credit.get("clientName"),
+        lead.get("clientName"),
+        analysis.get("clientName"),
+        analysis.get("name"),
+    ]
+    if not any(_looks_like_full_name(str(item or "")) for item in candidates) and state.opportunity_id:
+        try:
+            candidates.append(_find_nested(client.get_opportunity(state.opportunity_id), "clientName"))
+        except CRMIntegrationError as exc:
+            LOG.warning("crm_name_lookup_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
+    for item in candidates:
+        name = re.sub(r"\s+", " ", str(item or "")).strip().title()
+        if _looks_like_full_name(name):
+            collected["name"] = name
+            if conversation.contact:
+                conversation.contact.name = name
+            if conversation.lead:
+                conversation.lead.contact_name = name
+            return
+
+
 def _create_crm_if_ready(
     db: Session,
     *,
@@ -3735,19 +3780,24 @@ def _create_crm_if_ready(
     collected = _load_collected(state)
     name = str(collected.get("name") or "").strip()
     phone = _digits(str(collected.get("phone") or conversation.contact.phone or ""))
-    if not _looks_like_full_name(name) or len(phone) < 10:
+    if len(phone) < 10:
+        return
+
+    synced_id = prospect_sync.synced_opportunity_id(db, conversation.id)
+    if not synced_id and not _looks_like_full_name(name):
         return
 
     client = SulnetCRMClient.from_settings()
-    synced_id = prospect_sync.synced_opportunity_id(db, conversation.id)
     if synced_id:
         # O CRM não deduplica por externalId: reaproveita a oportunidade que o
-        # SDR já abriu em vez de criar uma segunda.
+        # SDR já abriu em vez de criar uma segunda. Não precisa do nome completo
+        # antes: o CPF vai primeiro e o nome vem do CRM na consulta cadastral.
         state.opportunity_id = synced_id
-        try:
-            client.update_opportunity(synced_id, {"clientName": name, "clientPhone": phone})
-        except CRMIntegrationError as exc:
-            LOG.warning("crm_prospect_rename_failed opportunity=%s status=%s", synced_id, exc.status_code)
+        if _looks_like_full_name(name):
+            try:
+                client.update_opportunity(synced_id, {"clientName": name, "clientPhone": phone})
+            except CRMIntegrationError as exc:
+                LOG.warning("crm_prospect_rename_failed opportunity=%s status=%s", synced_id, exc.status_code)
         if black_campaign.has_marker(state.handoff_summary):
             _apply_black_tag(client, state)
         return
@@ -3910,11 +3960,18 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
     if playbook_question and playbook_step == state.step:
         return playbook_question
 
-    plan = state.plan_label or "plano combinado"
+    plan = _friendly_plan_label(state.plan_label)
     if state.step == "NAME":
+        if collected.get("cpf"):
+            return "Consulta aprovada! Para emitir o contrato, me confirma seu nome completo?"
         return f"Perfeito! Vamos dar início à contratação do {plan}. Para começar, me confirma seu nome completo?"
     if state.step == "CPF":
-        return "Ótimo. Agora preciso do seu CPF para realizar a consulta cadastral e seguir com a contratação."
+        if _looks_like_full_name(str(collected.get("name") or "")):
+            return "Ótimo. Agora preciso do seu CPF para realizar a consulta cadastral e seguir com a contratação."
+        return (
+            f"Perfeito! Vamos dar início à contratação do {plan}. "
+            "Para começar, me envia seu CPF para eu fazer a consulta cadastral?"
+        )
     if state.step == "BIRTH_DATE":
         return "Para concluir a consulta cadastral, preciso também da sua data de nascimento. Pode me enviar no formato DD/MM/AAAA?"
     if state.step == "CEP":
@@ -4537,7 +4594,11 @@ def start_closing_from_sdr(
     _save_collected(state, collected)
 
     if created_state:
-        state.step = "CPF" if collected.get("name") else "NAME"
+        has_crm_lead = bool(
+            state.opportunity_id or prospect_sync.synced_opportunity_id(db, conversation.id)
+        )
+        # CPF primeiro: o nome completo vem do CRM pela consulta cadastral.
+        state.step = "CPF" if (collected.get("name") or has_crm_lead) else "NAME"
     conversation.assigned_user_id = closer.user_id
     conversation.status = "EM_ATENDIMENTO"
     if conversation.lead:
@@ -4945,7 +5006,7 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     client,
                     state,
                     collected,
-                    fallback_step="CPF",
+                    fallback_step="CEP" if collected.get("cpf") else "CPF",
                 )
 
         elif state.step == "CPF":
@@ -4972,8 +5033,13 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     state.credit_status = str(credit.get("status") or "")
                     state.credit_analysis_id = int(credit.get("analysisId") or 0) or None
                     collected["creditStatus"] = state.credit_status
+                    _adopt_name_from_crm(client, state, collected, conversation, credit)
                     _save_collected(state, collected)
-                    if credit.get("approved"):
+                    if credit.get("approved") and not _looks_like_full_name(str(collected.get("name") or "")):
+                        # O CRM não devolveu o nome: pede só agora, já com a consulta aprovada.
+                        state.step = "NAME"
+                        reply = _prompt_for_step(state, collected)
+                    elif credit.get("approved"):
                         reply = _advance_with_playbook(
                             client,
                             state,
