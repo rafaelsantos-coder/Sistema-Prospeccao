@@ -78,7 +78,7 @@ jobs:
           APP_ENV: test
         run: |
           python -m app.migrate
-          alembic current | grep 0013_telegram_channel
+          alembic current | grep 0014_credit_map_geocodes
 
       - name: Executar testes
         run: pytest -q

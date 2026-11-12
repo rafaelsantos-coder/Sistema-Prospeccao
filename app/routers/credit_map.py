@@ -6,18 +6,20 @@ cidade/bairro/mês/resultado/assinatura. Autorização usa a sessão do Prospect
 from __future__ import annotations
 
 import csv
-import os
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import delete, distinct, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CreditMapAggregate
+from app.models import CreditMapAggregate, CreditMapGeocode
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
+from app.services import geocoding
 from app.services.credit_map import aggregate_csv, city_name, summarize
+from app.timeutils import utcnow
 from app.web import render
 
 router = APIRouter()
@@ -40,12 +42,9 @@ def map_page(request: Request, db: Session = Depends(get_db)):
     if not user:
         return RedirectResponse('/login', status_code=303)
     require_roles(user, *READ_ROLES)
-    # Chave de navegador: NÃO é uma credencial secreta. Restringir HTTP referrers
-    # ao domínio do Prospecta e APIS ao Maps JavaScript API no Google Cloud.
     return render(
         request, 'reports/credit_map.html', user=user, active_nav='credit-map',
         page_title='Mapa de calor de crédito',
-        google_maps_browser_key=os.getenv('GOOGLE_MAPS_BROWSER_KEY', '').strip(),
         can_import=user.role in WRITE_ROLES,
     )
 
@@ -71,6 +70,84 @@ def map_data(request: Request, city: str = 'SANTO ÂNGELO',
         ], city=city, start_month=date_from, end_month=date_to, min_sample=10)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+GEOCODE_BATCH = 6  # ~7 s por chamada (1 consulta/s do serviço público); o navegador repete até acabar.
+NOT_FOUND_RETRY_DAYS = 30
+
+
+@router.get('/api/reports/credit-map/geo')
+def map_geo(request: Request, city: str = 'SANTO ÂNGELO',
+            date_from: str = '2026-08', date_to: str = '2026-11',
+            db: Session = Depends(get_db)):
+    """Posições aproximadas dos bairros exibíveis (mín. 10 consultas), com cache no banco."""
+    allowed(request, db)
+    if not city or len(city) > 120:
+        raise HTTPException(status_code=400, detail='Cidade inválida.')
+    entries = list(db.scalars(select(CreditMapAggregate).where(
+        CreditMapAggregate.city == city_name(city),
+        CreditMapAggregate.month >= date_from,
+        CreditMapAggregate.month <= date_to,
+    )))
+    try:
+        summary = summarize([
+            {'city': e.city, 'neighborhood': e.neighborhood, 'month': e.month,
+             'decision': e.decision, 'signed': e.signed, 'count': e.count}
+            for e in entries
+        ], city=city, start_month=date_from, end_month=date_to, min_sample=10)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    names = [row['name'] for row in summary.get('neighborhoods', [])]
+    cached = {g.neighborhood: g for g in db.scalars(
+        select(CreditMapGeocode).where(CreditMapGeocode.city == city_name(city)))}
+    retry_before = utcnow().timestamp() - NOT_FOUND_RETRY_DAYS * 86400
+
+    def usable(item: CreditMapGeocode | None) -> bool:
+        if item is None:
+            return False
+        return item.status == 'FOUND' or item.checked_at.timestamp() > retry_before
+
+    todo = ([''] if not usable(cached.get('')) else []) + [n for n in names if not usable(cached.get(n))]
+    error = ''
+    for key in todo[:GEOCODE_BATCH]:
+        try:
+            if key == '':
+                center = geocoding.city_center(city)
+                point = center
+            else:
+                base = cached.get('')
+                if not base or base.lat is None:
+                    continue
+                point = geocoding.neighborhood_center(key, city, (base.lat, base.lng))
+        except geocoding.GeocodingError as exc:
+            error = str(exc)
+            break
+        record = cached.get(key) or CreditMapGeocode(city=city_name(city), neighborhood=key)
+        record.lat, record.lng = (point if point else (None, None))
+        record.status = 'FOUND' if point else 'NOT_FOUND'
+        record.checked_at = utcnow()
+        db.add(record)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()  # outro usuário gravou a mesma posição ao mesmo tempo
+        cached[key] = record
+    cached = {g.neighborhood: g for g in db.scalars(
+        select(CreditMapGeocode).where(CreditMapGeocode.city == city_name(city)))}
+    center = cached.get('')
+    positions = {n: {'lat': cached[n].lat, 'lng': cached[n].lng}
+                 for n in names if n in cached and cached[n].status == 'FOUND' and cached[n].lat is not None}
+    if center is not None and center.lat is None:
+        pending = 0  # cidade não localizada: sem centro não há como validar os bairros
+    else:
+        pending = len([k for k in ([''] + names) if not usable(cached.get(k))])
+    return {
+        'city_center': {'lat': center.lat, 'lng': center.lng} if center and center.lat is not None else None,
+        'positions': positions,
+        'not_found': [n for n in names if n in cached and cached[n].status == 'NOT_FOUND'],
+        'pending': pending,
+        'error': error,
+    }
 
 
 @router.get('/api/reports/credit-map/cities')

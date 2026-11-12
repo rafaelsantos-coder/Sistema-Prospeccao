@@ -2,7 +2,7 @@
 {% block page_content_class %}credit-map-page{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="{{ url_for('static', path='/css/credit_map.css') }}">
-<div class="cm-shell" id="credit-map-app" data-maps-key="{{ google_maps_browser_key|e }}" data-csrf="{{ csrf_token|e }}" data-import="{{ 'true' if can_import else 'false' }}">
+<div class="cm-shell" id="credit-map-app" data-csrf="{{ csrf_token|e }}" data-import="{{ 'true' if can_import else 'false' }}">
   <div class="cm-hero">
     <div class="cm-hero-copy">
       <div class="cm-overline"><span class="cm-overline-dot"></span> INTELIGÊNCIA TERRITORIAL <span class="cm-overline-sep">/</span> SULNET PROSPECTA</div>
@@ -34,10 +34,10 @@
 
   <div class="cm-main-grid">
     <section class="cm-map-card">
-      <div class="cm-card-heading"><div><span class="cm-section-label">VISÃO GEOGRÁFICA</span><h3 id="cm-map-title">Intensidade por bairro</h3></div><div class="cm-map-head-right"><span class="cm-tag">Google Maps</span></div></div>
+      <div class="cm-card-heading"><div><span class="cm-section-label">VISÃO GEOGRÁFICA</span><h3 id="cm-map-title">Intensidade por bairro</h3></div><div class="cm-map-head-right"><span class="cm-tag">OpenStreetMap</span></div></div>
       <div class="cm-map-wrap">
         <div id="cm-map" class="cm-map" aria-label="Mapa geográfico da intensidade de consultas por bairro"></div>
-        <div class="cm-map-empty" id="cm-map-empty"><div class="cm-map-dots"></div><div class="cm-map-empty-inner"><span class="cm-map-pin">⌖</span><strong>Seu mapa está quase pronto</strong><p>Configure a chave do Google Maps no ambiente do Prospecta para visualizar a camada territorial.</p><a href="https://developers.google.com/maps/documentation/javascript/get-api-key" target="_blank" rel="noopener noreferrer">Configurar Google Maps ↗</a></div></div>
+        <div class="cm-map-empty" id="cm-map-empty"><div class="cm-map-dots"></div><div class="cm-map-empty-inner"><span class="cm-map-pin">⌖</span><strong>Carregando o mapa…</strong><p>O ranking e os indicadores já estão disponíveis ao lado.</p></div></div>
         <div class="cm-map-legend"><span><i class="cm-dot cm-dot-green"></i> Aprovação alta</span><span><i class="cm-dot cm-dot-amber"></i> Intermediária</span><span><i class="cm-dot cm-dot-red"></i> Baixa</span></div>
       </div>
       <div class="cm-map-footer"><span id="cm-geocode-status">Exibimos apenas bairros com 10 ou mais consultas.</span><span class="cm-map-footer-note">Localização aproximada · não indica domicílios</span></div>

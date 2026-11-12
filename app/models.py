@@ -1030,6 +1030,23 @@ class AIEngineeringProposal(Base):
 
 
 
+class CreditMapGeocode(Base):
+    """Centro aproximado de bairro/cidade (OpenStreetMap), guardado para não repetir consultas."""
+    __tablename__ = 'credit_map_geocodes'
+    __table_args__ = (
+        UniqueConstraint('city', 'neighborhood', name='uq_credit_map_geocode'),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    city: Mapped[str] = mapped_column(String(120), nullable=False)
+    # Vazio = centro da própria cidade.
+    neighborhood: Mapped[str] = mapped_column(String(180), nullable=False, default='')
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default='FOUND')
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class CreditMapAggregate(Base):
     """Apenas contagens por território, sem dados individuais."""
     __tablename__ = 'credit_map_aggregates'

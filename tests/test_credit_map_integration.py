@@ -46,7 +46,8 @@ def test_admin_importa_e_api_oculta_bairro_pequeno_sem_guardar_dado_pessoal():
         csp = page.headers["content-security-policy"]
         directives = {d.split()[0]: d.split()[1:] for d in csp.split(";") if d.strip()}
         assert "script-src" in directives
-        assert any(src.startswith("https://maps.") for src in directives["script-src"])
+        assert any(src == "https://unpkg.com" for src in directives["script-src"])
+        assert not any(src.startswith("https://maps.") for src in directives["script-src"])
         token = re.search(r'data-csrf="([^"]*)"', page.text).group(1)
 
         sem_csrf = client.post(
