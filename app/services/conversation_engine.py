@@ -669,6 +669,44 @@ def conversation_visible_to_user(conversation: Conversation, user: User) -> bool
     return conversation.assigned_user_id == user.id
 
 
+def location_map_url(payload: dict[str, Any]) -> str | None:
+    """Link do Google Maps montado só com as coordenadas recebidas (nunca com URL de terceiros)."""
+    location = payload.get("location") if isinstance(payload, dict) else None
+    if not isinstance(location, dict):
+        return None
+    try:
+        lat = float(location.get("latitude", location.get("degreesLatitude")))
+        lng = float(location.get("longitude", location.get("degreesLongitude")))
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return None
+    return f"https://www.google.com/maps?q={lat:.6f},{lng:.6f}"
+
+
+def location_urls_for(db: Session, messages) -> dict[int, str]:
+    """Mapa message_id -> link do mapa para as mensagens de localização (inclui as antigas)."""
+    ids = [m.id for m in messages if m.message_type == "LOCATION"]
+    if not ids:
+        return {}
+    result: dict[int, str] = {}
+    rows = db.execute(
+        select(MessageEvent.message_id, MessageEvent.payload_json)
+        .where(MessageEvent.message_id.in_(ids), MessageEvent.event_type == "RECEIVED_CALLBACK")
+        .order_by(MessageEvent.id.desc())
+    )
+    for message_id, raw in rows:
+        if message_id in result:
+            continue
+        try:
+            url = location_map_url(json.loads(raw or "{}"))
+        except ValueError:
+            continue
+        if url:
+            result[message_id] = url
+    return result
+
+
 def payload_message_content(payload: dict[str, Any]) -> tuple[str, str, str | None, str | None]:
     text = payload.get("text")
     if isinstance(text, dict) and text.get("message"):
@@ -729,8 +767,13 @@ def payload_message_content(payload: dict[str, Any]) -> tuple[str, str, str | No
 
     location = payload.get("location")
     if isinstance(location, dict):
-        body = location.get("name") or location.get("address") or "[Localizacao]"
-        return "LOCATION", str(body).strip(), location.get("url"), None
+        label = str(location.get("name") or location.get("address") or "").strip()
+        map_url = location_map_url(payload)
+        if map_url:
+            body = f"Localização compartilhada pelo cliente: {label}" if label else "Localização compartilhada pelo cliente"
+            coords = map_url.split("q=", 1)[1]
+            return "LOCATION", f"{body} ({coords})", None, None
+        return "LOCATION", label or "[Localizacao]", None, None
 
     contact = payload.get("contact")
     if isinstance(contact, dict):

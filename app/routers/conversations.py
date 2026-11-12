@@ -27,6 +27,7 @@ from app.services.conversation_engine import (
     CLOSED_CONVERSATION_STATUSES,
     OPEN_CONVERSATION_STATUSES,
     apply_conversation_scope,
+    location_urls_for,
     outbound_without_reply_clause,
     conversation_visible_to_user,
     ensure_contact,
@@ -476,6 +477,7 @@ def _render_inbox(
         conversations=conversations,
         conversation=selected,
         messages=messages,
+        location_urls=location_urls_for(db, messages),
         users=users,
         transfer_online_ids=transfer_online_ids,
         ai_transfer_queue=ai_queue,
@@ -1198,11 +1200,13 @@ def conversation_messages_api(
     if conversation.unread_count:
         mark_conversation_read(db, conversation)
         db.commit()
+    location_urls = location_urls_for(db, items)
     return {
         "conversation_id": conversation.id,
         "items": [
             {
                 "id": item.id,
+                "map_url": location_urls.get(item.id),
                 "direction": item.direction,
                 "type": item.message_type,
                 "body": item.body,
