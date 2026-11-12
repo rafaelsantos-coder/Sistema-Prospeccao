@@ -23,7 +23,7 @@ def _csv() -> bytes:
 
 def test_street_and_cep_helpers_drop_house_number():
     assert street_name("Rua das Flores, 123") == "RUA DAS FLORES"
-    assert street_name("Av. Brasil 45A") == "AV. BRASIL"
+    assert street_name("Av. Brasil 45A") == "AVENIDA BRASIL"
     assert street_name("Rua 7 de Setembro") == "RUA 7 DE SETEMBRO"
     assert street_name("R. São José, 55") == "RUA SAO JOSE"
     assert street_name("Av Getúlio Vargas") == "AVENIDA GETULIO VARGAS"
