@@ -4,7 +4,9 @@ import re
 
 from fastapi.testclient import TestClient
 
+from app.database import SessionLocal
 from app.main import app
+from app.models import CreditMapGeocode
 from app.services import geocoding
 from tests.test_credit_map_integration import _csv, _login
 
@@ -13,7 +15,14 @@ NEAR = (-28.3010, -54.2640)
 FAR = (-23.5500, -46.6300)
 
 
+def _clear_geocodes():
+    with SessionLocal() as db:
+        db.query(CreditMapGeocode).delete()
+        db.commit()
+
+
 def _import(client):
+    _clear_geocodes()
     page = client.get("/reports/credit-map")
     token = re.search(r'data-csrf="([^"]*)"', page.text).group(1)
     resp = client.post(
