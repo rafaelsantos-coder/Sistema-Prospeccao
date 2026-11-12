@@ -119,8 +119,8 @@ def map_geo(request: Request, city: str = 'SANTO ÂNGELO',
                 if not base or base.lat is None:
                     continue
                 point = geocoding.neighborhood_center(key, city, (base.lat, base.lng))
-        except geocoding.GeocodingError as exc:
-            error = str(exc)
+        except geocoding.GeocodingError:
+            error = 'Serviço de endereços indisponível agora.'
             break
         record = cached.get(key) or CreditMapGeocode(city=city_name(city), neighborhood=key)
         record.lat, record.lng = (point if point else (None, None))
