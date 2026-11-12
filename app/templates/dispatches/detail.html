@@ -21,6 +21,12 @@
       <button class="button button-secondary" type="submit">Pausar</button>
     </form>
     {% endif %}
+    {% if dispatch.status == 'CANCELADO' %}
+    <form action="/dispatches/{{ dispatch.id }}/reopen" method="post" onsubmit="return confirm('Retomar este disparo? Os contatos que o cancelamento ignorou voltam para a fila.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-primary" type="submit">Retomar disparo</button>
+    </form>
+    {% endif %}
     {% if dispatch.status not in ['CONCLUIDO','CANCELADO'] %}
     <form action="/dispatches/{{ dispatch.id }}/cancel" method="post" onsubmit="return confirm('Cancelar os contatos ainda pendentes deste disparo?');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
