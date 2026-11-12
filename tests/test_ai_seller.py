@@ -2194,6 +2194,9 @@ def test_playbook_category_failure_never_asks_customer():
         def update_category_form(self, *args, **kwargs):
             raise CRMIntegrationError("CRM recusou")
 
+        def get_opportunity(self, *args, **kwargs):
+            raise CRMIntegrationError("CRM recusou")
+
     client = _FailingClient([
         _playbook_result(missing=[item], next_question=item.question),
     ])
