@@ -15,11 +15,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CreditMapAggregate, CreditMapGeocode
+from app.models import CreditMapAggregate, CreditMapGeocode, CreditMapStreetAggregate
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services import geocoding
-from app.services.credit_map import aggregate_csv, city_name, summarize
+from app.services.credit_map import aggregate_csv_full, city_name, summarize, summarize_streets
 from app.timeutils import utcnow
 from app.web import render
 
@@ -153,6 +153,72 @@ def map_geo(request: Request, city: str = 'SANTO ÂNGELO',
     }
 
 
+STREET_BATCH = 4
+MAX_STREETS = 150
+
+
+@router.get('/api/reports/credit-map/streets')
+def map_streets(request: Request, city: str = 'SANTO ÂNGELO',
+                date_from: str = '2026-08', date_to: str = '2026-11',
+                db: Session = Depends(get_db)):
+    """Ruas com 10+ consultas, posicionadas (cache no banco). Sem número de casa."""
+    allowed(request, db)
+    if not city or len(city) > 120:
+        raise HTTPException(status_code=400, detail='Cidade inválida.')
+    entries = list(db.scalars(select(CreditMapStreetAggregate).where(
+        CreditMapStreetAggregate.city == city_name(city),
+        CreditMapStreetAggregate.month >= date_from,
+        CreditMapStreetAggregate.month <= date_to,
+    )))
+    try:
+        rows = summarize_streets([
+            {'city': e.city, 'neighborhood': e.neighborhood, 'street': e.street, 'cep': e.cep,
+             'month': e.month, 'decision': e.decision, 'signed': e.signed, 'count': e.count}
+            for e in entries
+        ], city=city, start_month=date_from, end_month=date_to, min_sample=10)[:MAX_STREETS]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cached = {g.neighborhood: g for g in db.scalars(
+        select(CreditMapGeocode).where(CreditMapGeocode.city == city_name(city)))}
+    base = cached.get('')
+    retry_before = utcnow().timestamp() - NOT_FOUND_RETRY_DAYS * 86400
+
+    def usable(item: CreditMapGeocode | None) -> bool:
+        return item is not None and (item.status == 'FOUND' or item.checked_at.timestamp() > retry_before)
+
+    error = ''
+    if base is not None and base.lat is not None:
+        todo = [r for r in rows if not usable(cached.get(r['key']))]
+        for row in todo[:STREET_BATCH]:
+            try:
+                point = geocoding.street_point(
+                    row['street'], row['neighborhood'], city, row['cep'], (base.lat, base.lng))
+            except geocoding.GeocodingError as exc:
+                LOG.warning('credit_map_street_geocode_failed reason=%s', str(exc)[:160])
+                error = 'Serviço de endereços indisponível agora.'
+                break
+            record = cached.get(row['key']) or CreditMapGeocode(city=city_name(city), neighborhood=row['key'])
+            record.lat, record.lng = (point if point else (None, None))
+            record.status = 'FOUND' if point else 'NOT_FOUND'
+            record.checked_at = utcnow()
+            db.add(record)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+            cached[row['key']] = record
+    streets = []
+    pending = 0
+    for row in rows:
+        item = cached.get(row['key'])
+        if item is not None and item.status == 'FOUND' and item.lat is not None:
+            streets.append({**row, 'lat': item.lat, 'lng': item.lng})
+        elif not usable(item):
+            pending += 1
+    return {'streets': streets, 'pending': pending if base is not None and base.lat is not None else 0,
+            'total': len(rows), 'error': error}
+
+
 @router.get('/api/reports/credit-map/cities')
 def map_cities(request: Request, db: Session = Depends(get_db)):
     allowed(request, db)
@@ -170,7 +236,7 @@ async def import_file(request: Request, file: UploadFile = File(...), db: Sessio
     if len(raw) > MAX_BYTES:
         raise HTTPException(status_code=413, detail='CSV excede 15 MB.')
     try:
-        aggregates, stats = aggregate_csv(raw)
+        aggregates, street_rows, stats = aggregate_csv_full(raw)
     except (ValueError, UnicodeError, csv.Error) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not aggregates:
@@ -178,12 +244,16 @@ async def import_file(request: Request, file: UploadFile = File(...), db: Sessio
 
     # Substituição atômica. Nem o CSV nem campos pessoais entram no banco.
     db.execute(delete(CreditMapAggregate))
+    db.execute(delete(CreditMapStreetAggregate))
+    db.execute(delete(CreditMapGeocode).where(CreditMapGeocode.neighborhood.like('RUA|%')))
     db.add_all(CreditMapAggregate(**row) for row in aggregates)
+    db.add_all(CreditMapStreetAggregate(**row) for row in street_rows)
     write_audit(db, user=user, action='CREDIT_MAP_IMPORTED',
                 entity_type='report', entity_id='credit_map',
                 payload={'cpf_validos_formato': stats.get('cpf_validos_formato', 0),
                          'agrupamentos': len(aggregates),
                          'sem_data': stats.get('sem_data', 0),
-                         'protocolos_duplicados': stats.get('protocolos_duplicados', 0)})
+                         'protocolos_duplicados': stats.get('protocolos_duplicados', 0),
+                         'com_rua': stats.get('com_rua', 0)})
     db.commit()
     return {'ok': True, 'stats': stats, 'aggregates': len(aggregates)}

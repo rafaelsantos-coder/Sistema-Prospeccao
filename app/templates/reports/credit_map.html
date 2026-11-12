@@ -34,14 +34,14 @@
 
   <div class="cm-main-grid">
     <section class="cm-map-card">
-      <div class="cm-card-heading"><div><span class="cm-section-label">VISÃO GEOGRÁFICA</span><h3 id="cm-map-title">Intensidade por bairro</h3></div><div class="cm-map-head-right"><span class="cm-tag">OpenStreetMap</span></div></div>
+      <div class="cm-card-heading"><div><span class="cm-section-label">VISÃO GEOGRÁFICA</span><h3 id="cm-map-title">Intensidade por bairro</h3></div><div class="cm-map-head-right"><label class="cm-street-toggle"><input type="checkbox" id="cm-streets" checked> Ruas (10+ consultas)</label><span class="cm-tag">OpenStreetMap</span></div></div>
       <div class="cm-map-wrap">
         <button type="button" id="cm-fullscreen" class="cm-fs-btn" title="Mapa em tela cheia">⛶ Tela cheia</button>
         <div id="cm-map" class="cm-map" aria-label="Mapa geográfico da intensidade de consultas por bairro"></div>
         <div class="cm-map-empty" id="cm-map-empty"><div class="cm-map-dots"></div><div class="cm-map-empty-inner"><span class="cm-map-pin">⌖</span><strong>Carregando o mapa…</strong><p>O ranking e os indicadores já estão disponíveis ao lado.</p></div></div>
         <div class="cm-map-legend"><span><i class="cm-dot cm-dot-green"></i> Aprovação alta</span><span><i class="cm-dot cm-dot-amber"></i> Intermediária</span><span><i class="cm-dot cm-dot-red"></i> Baixa</span></div>
       </div>
-      <div class="cm-map-footer"><span id="cm-geocode-status">Exibimos apenas bairros com 10 ou mais consultas.</span><span class="cm-map-footer-note">Localização aproximada · não indica domicílios</span></div>
+      <div class="cm-map-footer"><span id="cm-streets-status" class="cm-streets-status"></span><span id="cm-geocode-status">Exibimos apenas bairros com 10 ou mais consultas.</span><span class="cm-map-footer-note">Localização aproximada · não indica domicílios</span></div>
     </section>
     <section class="cm-ranking-card"><div class="cm-card-heading"><div><span class="cm-section-label">OPORTUNIDADES POR REGIÃO</span><h3>Ranking dos bairros</h3></div><button id="cm-export" type="button" class="cm-icon-button" title="Exportar ranking agregado">↓ CSV</button></div>
       <div class="cm-search"><span>⌕</span><input type="search" id="cm-search" placeholder="Buscar bairro..." autocomplete="off" aria-label="Buscar bairro"></div>
@@ -55,7 +55,7 @@
     <section class="cm-insight-card"><div class="cm-card-heading"><div><span class="cm-section-label">LEITURA DO FUNIL</span><h3>O que esses dados indicam?</h3></div></div><div class="cm-insight-body"><div class="cm-insight-icon">✦</div><p id="cm-insight">Importe a base de consultas de crédito para gerar os indicadores de Santo Ângelo.</p><span class="cm-disclaimer">Indicadores agregados para análise de operação e cobertura, não para decidir aprovação individual.</span></div></section></div>
 
   {% if can_import %}
-  <dialog id="cm-import-dialog" class="cm-import-dialog"><form method="dialog"><button aria-label="Fechar" class="cm-dialog-x">×</button></form><span class="cm-section-label">ATUALIZAÇÃO DA BASE</span><h3>Importar consultas de crédito</h3><p>O CSV será processado no servidor. Apenas contagens por município, bairro, mês e resultado serão guardadas. Nenhum CPF será salvo no painel.</p><label class="cm-file-label" for="cm-file">Escolher arquivo CSV <small id="cm-file-name">Nenhum arquivo selecionado</small></label><input type="file" id="cm-file" accept=".csv,text/csv" hidden><p class="cm-import-warning">A importação substitui integralmente os dados agregados da versão anterior. Limite: 15 MB.</p><button id="cm-import-send" class="cm-button cm-button-dark" type="button">Validar e substituir base ↗</button><p id="cm-import-result" class="cm-dialog-result" role="status"></p></dialog>
+  <dialog id="cm-import-dialog" class="cm-import-dialog"><form method="dialog"><button aria-label="Fechar" class="cm-dialog-x">×</button></form><span class="cm-section-label">ATUALIZAÇÃO DA BASE</span><h3>Importar consultas de crédito</h3><p>O CSV será processado no servidor. Apenas contagens por município, bairro, rua, mês e resultado serão guardadas (colunas opcionais: Rua, CEP, Número; o número da casa não é guardado). Nenhum CPF será salvo no painel.</p><label class="cm-file-label" for="cm-file">Escolher arquivo CSV <small id="cm-file-name">Nenhum arquivo selecionado</small></label><input type="file" id="cm-file" accept=".csv,text/csv" hidden><p class="cm-import-warning">A importação substitui integralmente os dados agregados da versão anterior. Limite: 15 MB.</p><button id="cm-import-send" class="cm-button cm-button-dark" type="button">Validar e substituir base ↗</button><p id="cm-import-result" class="cm-dialog-result" role="status"></p></dialog>
   {% endif %}
 </div>
 {% endblock %}

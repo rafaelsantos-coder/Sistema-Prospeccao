@@ -17,6 +17,8 @@ REQUIRED_COLUMNS = {
     'Protocolo', 'Documento', 'Cidade', 'Bairro', 'Data da consulta',
     'Status', 'Contrato assinado',
 }
+STREET_HEADERS = ('Rua', 'Logradouro', 'Endereço', 'Endereco')
+CEP_HEADERS = ('CEP',)
 NO_NEIGHBORHOOD = 'SEM BAIRRO INFORMADO'
 NO_DATE = 'SEM_DATA'
 APPROVED = 'APROVADO'
@@ -51,6 +53,25 @@ def neighborhood_name(value: str) -> str:
     return aliases.get(raw, raw)
 
 
+def street_name(value: str) -> str:
+    """Nome da rua sem número da casa (o número nunca é guardado)."""
+    raw = fold(value)
+    raw = re.sub(r'\s*(,|-|\bN\b\.?|\bNUMERO\b|\bNO\b)?\s*\d+\s*[A-Z]?$', '', raw).strip(' ,-')
+    return raw[:100]
+
+
+def cep_digits(value: str) -> str:
+    digits = re.sub(r'\D', '', value or '')
+    return digits if len(digits) == 8 else ''
+
+
+def _first_value(line: dict[str, Any], names: tuple[str, ...]) -> str:
+    for name in names:
+        if line.get(name):
+            return str(line.get(name))
+    return ''
+
+
 def credit_decision(value: str) -> str:
     name = fold(value)
     if name.startswith('REPROVADO') or name == 'REPROVACAO MANTIDA':
@@ -80,7 +101,16 @@ def _decoded(raw: bytes) -> str:
 
 
 def aggregate_csv(raw: bytes) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Retorna agrupamentos sem PII e estatísticas de integridade da importação.
+    aggregates, _streets, stats = aggregate_csv_full(raw)
+    return aggregates, stats
+
+
+def aggregate_csv_full(
+    raw: bytes,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+    """Retorna agrupamentos sem PII (bairro e rua) e estatísticas da importação.
+
+    Colunas opcionais Rua/Logradouro, CEP e Número: o número da casa é ignorado.
 
     Cada protocolo é contado uma única vez, e apenas documentos com 11
     dígitos são contabilizados. Datas sem data são mantidas em SEM_DATA.
@@ -95,6 +125,7 @@ def aggregate_csv(raw: bytes) -> tuple[list[dict[str, Any]], dict[str, int]]:
         raise ValueError('Colunas obrigatórias ausentes: ' + ', '.join(sorted(missing)))
 
     counts: Counter[tuple[str, str, str, str, bool]] = Counter()
+    street_counts: Counter[tuple[str, str, str, str, str, str, bool]] = Counter()
     seen: set[str] = set()
     stats = Counter()
     for line in reader:
@@ -125,13 +156,60 @@ def aggregate_csv(raw: bytes) -> tuple[list[dict[str, Any]], dict[str, int]]:
             stats['reprovados_assinados_inconsistentes'] += 1
         counts[(city, neighborhood, month, decision, signed)] += 1
         stats['cpf_validos_formato'] += 1
+        street = street_name(_first_value(line, STREET_HEADERS))
+        if street:
+            cep = cep_digits(_first_value(line, CEP_HEADERS))
+            street_counts[(city, neighborhood, street, cep, month, decision, signed)] += 1
+            stats['com_rua'] += 1
 
     aggregates = [
         {'city': city, 'neighborhood': bairro, 'month': month,
          'decision': decision, 'signed': signed, 'count': count}
         for (city, bairro, month, decision, signed), count in sorted(counts.items())
     ]
-    return aggregates, dict(stats)
+    streets = [
+        {'city': city, 'neighborhood': bairro, 'street': street, 'cep': cep, 'month': month,
+         'decision': decision, 'signed': signed, 'count': count}
+        for (city, bairro, street, cep, month, decision, signed), count in sorted(street_counts.items())
+    ]
+    return aggregates, streets, dict(stats)
+
+
+def summarize_streets(
+    items: list[dict[str, Any]], *, city: str, start_month: str, end_month: str,
+    min_sample: int = 10,
+) -> list[dict[str, Any]]:
+    """Ruas com pelo menos ``min_sample`` consultas no período (agrupadas por rua+bairro)."""
+    city = city_name(city)
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in items:
+        if city_name(item['city']) != city or not (start_month <= item['month'] <= end_month):
+            continue
+        key = (item['street'], neighborhood_name(item['neighborhood']))
+        row = groups.setdefault(key, {
+            'street': key[0], 'neighborhood': key[1], 'total': 0, 'approved': 0,
+            'rejected': 0, 'pending': 0, 'signed_approved': 0, 'ceps': Counter()})
+        n = int(item['count'])
+        row['total'] += n
+        decision = item['decision']
+        row[{'APROVADO': 'approved', 'REPROVADO': 'rejected', 'PENDENTE': 'pending'}[decision]] += n
+        if decision == APPROVED and bool(item['signed']):
+            row['signed_approved'] += n
+        if item.get('cep'):
+            row['ceps'][item['cep']] += n
+    result = []
+    for row in groups.values():
+        if row['total'] < min_sample:
+            continue
+        ceps = row.pop('ceps')
+        row['cep'] = ceps.most_common(1)[0][0] if ceps else ''
+        decided = row['approved'] + row['rejected']
+        row['approval_rate'] = round(row['approved'] / decided * 100, 1) if decided else None
+        row['signed_rate'] = round(row['signed_approved'] / row['approved'] * 100, 1) if row['approved'] else None
+        row['key'] = f"RUA|{row['street']}|{row['neighborhood']}"[:180]
+        result.append(row)
+    result.sort(key=lambda x: (-x['total'], x['street']))
+    return result
 
 
 def summarize(
