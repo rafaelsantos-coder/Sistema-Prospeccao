@@ -2221,6 +2221,42 @@ def test_playbook_category_failure_never_asks_customer():
     assert collected.get("_playbook_step") != "PLAYBOOK_DYNAMIC_FIELD"
 
 
+def test_plan_context_resolves_fiber_when_crm_plan_is_mobile_with_same_price():
+    # Conversa 1382: a oportunidade veio com plano móvel e o preço da fibra coincidia
+    # com produtos de outras categorias; o plano não resolvia e a categoria virava
+    # pergunta ao cliente.
+    from app.services.ai_seller import _sync_plan_context
+
+    catalog = [
+        {"id": 5, "name": "Sulmóvel 15GB", "categoryId": 9, "categoryName": "Telefonia Móvel", "monthlyValue": 99.9},
+        {"id": 6, "name": "Fibra 300 Mega", "categoryId": 3, "categoryName": "Internet", "monthlyValue": 99.9},
+        {"id": 7, "name": "Fibra 500 Mega", "categoryId": 3, "categoryName": "Internet", "monthlyValue": 119.9},
+    ]
+
+    class _Client:
+        def __init__(self):
+            self.updates = []
+
+        def get_opportunity(self, _opportunity_id):
+            return {"planId": 5}
+
+        def products(self, query=""):
+            return catalog
+
+        def update_opportunity(self, opportunity_id, payload):
+            self.updates.append(payload)
+
+    client = _Client()
+    state = SimpleNamespace(opportunity_id=14940, plan_label="Fibra 300 Mega Wi-Fi", offer_price=99.9)
+    collected = {}
+
+    _sync_plan_context(client, state, collected)
+
+    assert collected["planId"] == 6
+    assert collected["categoryId"] == 3
+    assert client.updates and client.updates[0]["planId"] == 6
+
+
 def test_closer_ownership_requires_closing_state():
     from app.services.ai_seller import CRMIntegrationError, _assert_closer_owns_conversation
 
