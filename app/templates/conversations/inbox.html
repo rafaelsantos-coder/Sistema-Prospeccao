@@ -151,6 +151,9 @@
                 <span><strong>{{ item.body or 'Documento' }}</strong><small>{{ item.mime_type or 'Arquivo' }}</small></span>
                 <b>↗</b>
               </a>
+            {% elif item.message_type == 'LOCATION' %}
+              <p>{{ item.body }}</p>
+              {% if location_urls.get(item.id) %}<a class="message-media-link" href="{{ location_urls[item.id] }}" target="_blank" rel="noopener noreferrer">📍 Abrir localização no mapa ↗</a>{% endif %}
             {% else %}
               <p>{{ item.body }}</p>
               {% if item.media_url %}<a class="message-media-link" href="/conversations/messages/{{ item.id }}/media" target="_blank" rel="noopener">Abrir mídia / arquivo ↗</a>{% endif %}
@@ -601,6 +604,15 @@
       const p = document.createElement('p');
       p.textContent = item.body;
       bubble.append(p);
+      if (item.type === 'LOCATION' && item.map_url && item.map_url.startsWith('https://www.google.com/maps?q=')) {
+        const a = document.createElement('a');
+        a.className = 'message-media-link';
+        a.href = item.map_url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = '📍 Abrir localização no mapa ↗';
+        bubble.append(a);
+      }
       if (safeMedia) {
         const a = document.createElement('a');
         a.className = 'message-media-link';
