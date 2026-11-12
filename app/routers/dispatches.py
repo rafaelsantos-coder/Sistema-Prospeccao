@@ -629,6 +629,59 @@ def pause_dispatch(
     return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
 
 
+CANCEL_REASON = "Disparo cancelado pelo gestor."
+
+
+@router.post("/{dispatch_id}/reopen")
+def reopen_cancelled_dispatch(
+    dispatch_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Desfaz um cancelamento: devolve à fila os contatos que o cancelamento ignorou e retoma o envio."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+
+    dispatch = _dispatch_or_404(db, dispatch_id)
+    if dispatch.status != "CANCELADO":
+        flash(request, "Só dá para retomar um disparo cancelado.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    restored = 0
+    for recipient in db.scalars(
+        select(CampaignDispatchRecipient).where(
+            CampaignDispatchRecipient.dispatch_id == dispatch.id,
+            CampaignDispatchRecipient.status == "IGNORADO",
+            CampaignDispatchRecipient.error == CANCEL_REASON,
+        )
+    ):
+        recipient.status = "PENDENTE"
+        recipient.error = None
+        restored += 1
+    if not restored:
+        flash(request, "Não há contatos para retomar neste disparo.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    dispatch.status = "ATIVO"
+    dispatch.finished_at = None
+    dispatch.paused_at = None
+    dispatch.next_send_at = utcnow()
+    write_audit(
+        db,
+        user=actor,
+        action="CAMPAIGN_DISPATCH_REOPENED",
+        entity_type="campaign_dispatch",
+        entity_id=dispatch.id,
+        payload={"restored": restored},
+    )
+    db.commit()
+    flash(request, f"Disparo retomado: {restored} contatos voltaram para a fila.")
+    return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+
 @router.post("/{dispatch_id}/cancel")
 def cancel_dispatch(
     dispatch_id: int,
@@ -656,7 +709,7 @@ def cancel_dispatch(
         )
     ):
         recipient.status = "IGNORADO"
-        recipient.error = "Disparo cancelado pelo gestor."
+        recipient.error = CANCEL_REASON
 
     write_audit(
         db,

@@ -638,3 +638,57 @@ def test_active_dispatch_configuration_is_locked():
             assert dispatch.daily_limit == 300
         finally:
             db.close()
+
+
+def test_cancelar_por_engano_e_retomar_devolve_os_contatos_para_a_fila():
+    with TestClient(app) as client:
+        csrf = _login_admin(client)
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "REOPEN")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id, status="ATIVO",
+                interval_seconds=45, daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            db.add_all(
+                [
+                    CampaignDispatchRecipient(
+                        dispatch_id=dispatch.id, name=f"Cliente {i}", phone=f"55559999913{i:02d}",
+                        message_body="Oferta", status="PENDENTE",
+                    )
+                    for i in range(3)
+                ]
+                + [
+                    CampaignDispatchRecipient(
+                        dispatch_id=dispatch.id, name="Já ignorado", phone="5555999991399",
+                        message_body="Oferta", status="IGNORADO", error="Cliente em lista de bloqueio.",
+                    )
+                ]
+            )
+            db.commit()
+            dispatch_id = dispatch.id
+        finally:
+            db.close()
+
+        client.post(f"/dispatches/{dispatch_id}/cancel", data={"csrf_token": csrf}, follow_redirects=False)
+        page = client.get(f"/dispatches/{dispatch_id}")
+        assert "CANCELADO" in page.text and f"/dispatches/{dispatch_id}/reopen" in page.text
+
+        client.post(f"/dispatches/{dispatch_id}/reopen", data={"csrf_token": csrf}, follow_redirects=False)
+        db = SessionLocal()
+        try:
+            dispatch = db.get(CampaignDispatch, dispatch_id)
+            assert dispatch.status == "ATIVO" and dispatch.finished_at is None
+            counts = dispatch_counts(db, dispatch_id)
+            assert counts["pending"] == 3
+            other = db.scalar(
+                select(CampaignDispatchRecipient).where(
+                    CampaignDispatchRecipient.dispatch_id == dispatch_id,
+                    CampaignDispatchRecipient.name == "Já ignorado",
+                )
+            )
+            assert other.status == "IGNORADO", "quem foi ignorado por outro motivo não volta"
+        finally:
+            db.close()
