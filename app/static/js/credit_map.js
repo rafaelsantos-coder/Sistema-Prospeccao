@@ -17,7 +17,7 @@
     signed_rate: {label: 'Conversão', unit:'%', short:'conversão em contrato'},
     total: {label: 'Consultas', unit:'', short:'consultas'},
   };
-  const state = {data: null, map: null, geocoder: null, info: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0};
+  const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0};
   const metric = () => $('cm-metric').value;
   const metricValue = (row) => row[metric()] == null ? 0 : row[metric()];
   const metricDisplay = (row) => ['approval_rate','signed_rate'].includes(metric()) ? pct(row[metric()]) : fmt(row[metric()]);
@@ -115,102 +115,124 @@
     } catch { /* Métricas ainda disponíveis mesmo sem lista de cidades */ }
   }
 
-  function geoDistanceKm(a,b) {
-    const r = 6371, toRad = v=>v*Math.PI/180;
-    const dLat = toRad(a.lat-b.lat), dLon = toRad(a.lng-b.lng);
-    const h = Math.sin(dLat/2)**2 + Math.cos(toRad(b.lat))*Math.cos(toRad(a.lat))*Math.sin(dLon/2)**2;
-    return 2*r*Math.atan2(Math.sqrt(h),Math.sqrt(1-h));
+  const LEAFLET = {
+    version: '1.9.4',
+    primary: {
+      js: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+      css: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+      jsIntegrity: 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=',
+      cssIntegrity: 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=',
+    },
+    fallback: {
+      js: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js',
+      css: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css',
+    },
+  };
+  function loadAsset(tag, url, integrity) {
+    return new Promise((resolve, reject) => {
+      const el = document.createElement(tag);
+      if (tag === 'script') { el.src = url; el.async = true; } else { el.rel = 'stylesheet'; el.href = url; }
+      if (integrity) { el.integrity = integrity; el.crossOrigin = ''; }
+      el.onload = () => resolve();
+      el.onerror = () => { el.remove(); reject(new Error('Falha ao carregar a biblioteca do mapa.')); };
+      document.head.appendChild(el);
+    });
   }
-  async function loadGoogle() {
-    const key = root.dataset.mapsKey;
-    if(!key) {showMapPlaceholder('Para ativar o Google Maps, adicione GOOGLE_MAPS_BROWSER_KEY nas variáveis do serviço web. O ranking e os indicadores já funcionam sem o mapa.'); return;}
+  async function loadLeaflet() {
+    if (window.L) return;
+    // Primeiro com verificação de integridade (SRI); se o hash não bater, usa a cópia do cdnjs.
+    try {
+      await Promise.all([
+        loadAsset('link', LEAFLET.primary.css, LEAFLET.primary.cssIntegrity),
+        loadAsset('script', LEAFLET.primary.js, LEAFLET.primary.jsIntegrity),
+      ]);
+    } catch {
+      await Promise.all([loadAsset('link', LEAFLET.fallback.css), loadAsset('script', LEAFLET.fallback.js)]);
+    }
+  }
+  async function loadMap() {
     if (state.mapLoading || state.mapReady) return;
     state.mapLoading = true;
-    await new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      window.__sulnetCreditMapInit = () => resolve();
-      script.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(key) + '&callback=__sulnetCreditMapInit&v=weekly&language=pt-BR&region=BR';
-      script.async = true; script.defer = true; script.onerror = () => reject(Error('Falha na API do Google Maps.'));
-      document.head.appendChild(script);
-    }).then(() => {
-      state.map = new google.maps.Map($('cm-map'), {center:{lat:-28.30,lng:-54.26},zoom:12,gestureHandling:'cooperative',streetViewControl:false,fullscreenControl:true,mapTypeControl:false,styles:[{featureType:'poi',stylers:[{visibility:'off'}]},{featureType:'water',elementType:'geometry',stylers:[{color:'#dcebec'}]},{featureType:'road',elementType:'geometry',stylers:[{color:'#ffffff'}]},{featureType:'landscape',elementType:'geometry',stylers:[{color:'#eff2ef'}]}]});
-      state.geocoder = new google.maps.Geocoder();state.info = new google.maps.InfoWindow();state.mapReady=true;
-      $('cm-map-empty').hidden=true;
-    }).catch(err => { showMapPlaceholder(err.message); $('cm-geocode-status').textContent = 'Google Maps indisponível. Confira chave, faturamento e restrição de domínio.'; });
+    try {
+      await loadLeaflet();
+      state.map = L.map($('cm-map'), {center: [-28.30, -54.26], zoom: 12, scrollWheelZoom: false});
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+      }).addTo(state.map);
+      state.layerGroup = L.layerGroup().addTo(state.map);
+      state.mapReady = true;
+      $('cm-map-empty').hidden = true;
+    } catch (err) {
+      showMapPlaceholder(err.message);
+      $('cm-geocode-status').textContent = 'Mapa indisponível agora. O ranking e os indicadores continuam funcionando.';
+    }
     state.mapLoading = false;
   }
-  function clearLayers(){ for(const circle of state.layers) circle.setMap(null);state.layers=[];if(state.info)state.info.close(); }
-  function locationLooksRight(result, name, cityCenter) {
-    const nameFold = folded(name).replace(/^BAIRRO\s+/,'');
-    const address = folded(result.formatted_address || '');
-    const componentMatches = (result.address_components || []).some(c=>folded(c.long_name)===nameFold);
-    const plausibleName = componentMatches || address.includes(nameFold);
-    const loc = result.geometry?.location;
-    return !!(loc && plausibleName && geoDistanceKm({lat:loc.lat(),lng:loc.lng()},cityCenter) <= 32);
-  }
-  async function geocodeNeighborhood(name, cityCenter) {
-    const key = `${$('cm-city').value}::${name}`;
-    if (state.positions.has(key)) return state.positions.get(key);
-    try {
-      const city = $('cm-city').value;
-      const res = await state.geocoder.geocode({address:`Bairro ${name}, ${city}, Rio Grande do Sul, Brasil`,region:'BR'});
-      const found = (res.results || []).find(x => locationLooksRight(x, name, cityCenter));
-      const point = found ? {lat:found.geometry.location.lat(),lng:found.geometry.location.lng()} : null;
-      state.positions.set(key, point);
-      return point;
-    } catch {state.positions.set(key,null);return null;}
-  }
+  function clearLayers() { if (state.layerGroup) state.layerGroup.clearLayers(); state.layers = []; }
   function infoHtml(row) {
     return `<div class="cm-map-info"><strong>${esc(row.name)}</strong><br><small>${fmt(row.total)} consultas no período</small><br>Aprovados: <b>${fmt(row.approved)}</b> · ${pct(row.approval_rate)}<br>Reprovados: <b>${fmt(row.rejected)}</b><br>Contratos assinados: <b>${fmt(row.signed_approved)}</b> · ${pct(row.signed_rate)}</div>`;
   }
-  function plotRow(row, point, max){
+  function plotRow(row, point, max) {
     const v = Number(metricValue(row) || 0);
-    const intensity = Math.sqrt(v / Math.max(1,max));
-    const radius = 130 + 580*intensity;
+    const intensity = Math.sqrt(v / Math.max(1, max));
+    const radius = 130 + 580 * intensity;
     const color = layerColor(row);
-    const outer=new google.maps.Circle({map:state.map,center:point,radius,fillColor:color,fillOpacity:.20,strokeColor:color,strokeOpacity:.25,strokeWeight:1,zIndex:10});
-    const inner=new google.maps.Circle({map:state.map,center:point,radius:Math.max(70,radius*.45),fillColor:color,fillOpacity:.38,strokeOpacity:0,zIndex:11});
-    const click = () => {state.map.panTo(point); state.info.setContent(infoHtml(row));state.info.setPosition(point);state.info.open(state.map);};
-    outer.addListener('click',click);inner.addListener('click',click);
-    state.layers.push(outer,inner);
+    const outer = L.circle([point.lat, point.lng], {radius, color, weight: 1, opacity: .25, fillColor: color, fillOpacity: .20});
+    const inner = L.circle([point.lat, point.lng], {radius: Math.max(70, radius * .45), stroke: false, fillColor: color, fillOpacity: .38});
+    for (const circle of [outer, inner]) { circle.bindPopup(infoHtml(row)); circle.addTo(state.layerGroup); state.layers.push(circle); }
+  }
+  async function fetchGeo(ticket) {
+    // O servidor localiza alguns bairros por chamada (limite de 1 consulta/s do serviço público) e guarda o resultado.
+    const city = $('cm-city').value, from = $('cm-from').value, to = $('cm-to').value;
+    const query = new URLSearchParams({city, date_from: from, date_to: to});
+    let last = null;
+    for (let round = 0; round < 80; round += 1) {
+      if (ticket !== state.revision) return null;
+      const r = await fetch('/api/reports/credit-map/geo?' + query, {credentials: 'same-origin', cache: 'no-store'});
+      if (r.status === 401) { window.location.assign('/login'); return null; }
+      if (!r.ok) throw new Error('Falha ao localizar bairros');
+      last = await r.json();
+      const total = (state.data?.neighborhoods || []).length;
+      const done = Object.keys(last.positions || {}).length + (last.not_found || []).length;
+      $('cm-geocode-status').textContent = last.pending ? `Localizando bairros no mapa… ${done} de ${total}` : '';
+      if (!last.pending || last.error) break;
+    }
+    return last;
   }
   async function refreshMap() {
     if (!state.data) return;
-    await loadGoogle();
-    if(!state.mapReady) return;
-    const ticket=++state.revision;
+    await loadMap();
+    if (!state.mapReady) return;
+    const ticket = ++state.revision;
     clearLayers();
-    const rows=state.data.neighborhoods || [];
-    if(!rows.length) {$('cm-geocode-status').textContent='Nenhum bairro com amostra suficiente neste período.';return;}
-    let cityCenter={lat:-28.30,lng:-54.26};
-    try {
-      const res=await state.geocoder.geocode({address:`${$('cm-city').value}, Rio Grande do Sul, Brasil`,region:'BR'});
-      if (res.results?.[0]?.geometry?.location) {
-        const location = res.results[0].geometry.location;
-        cityCenter={lat:location.lat(),lng:location.lng()};
-      }
-    } catch { /* mantém apenas coordenada de centralização; não fabrica bairros */ }
-    if(ticket!==state.revision) return;
-    state.map.setCenter(cityCenter); state.map.setZoom(12);
-    const max=Math.max(1,...rows.map(r=>Number(metricValue(r)||0)));
-    let located=0; const allBounds=new google.maps.LatLngBounds();
+    const rows = state.data.neighborhoods || [];
+    if (!rows.length) { $('cm-geocode-status').textContent = 'Nenhum bairro com amostra suficiente neste período.'; return; }
+    let geo;
+    try { geo = await fetchGeo(ticket); } catch (err) { $('cm-geocode-status').textContent = err.message; return; }
+    if (!geo || ticket !== state.revision) return;
+    state.positions = new Map(Object.entries(geo.positions || {}));
+    const max = Math.max(1, ...rows.map(r => Number(metricValue(r) || 0)));
+    const bounds = [];
+    let located = 0;
     for (const row of rows) {
-      if(ticket!==state.revision) return;
-      const p=await geocodeNeighborhood(row.name,cityCenter);
-      if(p) {plotRow(row,p,max);allBounds.extend(p);located++;}
-      $('cm-geocode-status').textContent = `${located} de ${rows.length} bairros localizados · mapas representam centros aproximados`;
+      const point = state.positions.get(row.name);
+      if (point) { plotRow(row, point, max); bounds.push([point.lat, point.lng]); located += 1; }
     }
-    if(located>=2) {state.map.fitBounds(allBounds,62);const once=google.maps.event.addListenerOnce(state.map,'idle',()=>{if(state.map.getZoom()>13) state.map.setZoom(13);});}
-    if(!located) $('cm-geocode-status').textContent='Bairros sem geocodificação confiável. O ranking continua válido; revise as posições antes de usar o mapa.';
+    if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [40, 40], maxZoom: 14});
+    else if (geo.city_center) state.map.setView([geo.city_center.lat, geo.city_center.lng], 12);
+    let status = `${located} de ${rows.length} bairros localizados · centros aproximados, não indicam domicílios`;
+    if (geo.error) status += ` · ${geo.error} Atualize a página para continuar.`;
+    else if (!geo.city_center) status = 'Não foi possível localizar a cidade no mapa. O ranking continua válido.';
+    $('cm-geocode-status').textContent = status;
   }
   function locateRow(name) {
-    if(!state.mapReady) {showMessage('O mapa precisa da chave Google Maps para localizar bairros.');return;}
-    const key=$('cm-city').value+'::'+name;
-    const point=state.positions.get(key);
-    if(!point) {$('cm-geocode-status').textContent=`Bairro ${name}: localização geográfica não validada; consulte os indicadores no ranking.`;return;}
-    const row=(state.data?.neighborhoods||[]).find(x=>x.name===name);
-    state.map.panTo(point);state.map.setZoom(Math.max(state.map.getZoom(),13));
-    if(row){state.info.setContent(infoHtml(row));state.info.setPosition(point);state.info.open(state.map);}
+    if (!state.mapReady) { showMessage('O mapa ainda não carregou; o ranking continua disponível.'); return; }
+    const point = state.positions.get(name);
+    if (!point) { $('cm-geocode-status').textContent = `Bairro ${name}: localização geográfica não validada; consulte os indicadores no ranking.`; return; }
+    const row = (state.data?.neighborhoods || []).find(x => x.name === name);
+    state.map.setView([point.lat, point.lng], Math.max(state.map.getZoom(), 14));
+    if (row) L.popup().setLatLng([point.lat, point.lng]).setContent(infoHtml(row)).openOn(state.map);
   }
   function exportRanking(){
     if(!state.data)return;
