@@ -6,6 +6,7 @@ cidade/bairro/mês/resultado/assinatura. Autorização usa a sessão do Prospect
 from __future__ import annotations
 
 import csv
+import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
@@ -23,6 +24,7 @@ from app.timeutils import utcnow
 from app.web import render
 
 router = APIRouter()
+LOG = logging.getLogger('sulnet_credit_map')
 READ_ROLES = ('ADMIN', 'GESTOR', 'SUPERVISOR')
 WRITE_ROLES = ('ADMIN', 'GESTOR')
 MAX_BYTES = 15 * 1024 * 1024
@@ -119,7 +121,8 @@ def map_geo(request: Request, city: str = 'SANTO ÂNGELO',
                 if not base or base.lat is None:
                     continue
                 point = geocoding.neighborhood_center(key, city, (base.lat, base.lng))
-        except geocoding.GeocodingError:
+        except geocoding.GeocodingError as exc:
+            LOG.warning('credit_map_geocode_failed key=%s reason=%s', key or '(cidade)', str(exc)[:160])
             error = 'Serviço de endereços indisponível agora.'
             break
         record = cached.get(key) or CreditMapGeocode(city=city_name(city), neighborhood=key)
