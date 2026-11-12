@@ -3,3 +3,6 @@
 .cm-fs-btn:hover{background:#f6f9f6}
 .cm-map-wrap:fullscreen{height:100vh;margin:0;border-radius:0}
 .cm-map-wrap.cm-map-expanded{position:fixed;inset:0;z-index:9999;height:100vh;margin:0;border-radius:0}
+
+.cm-street-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; margin-right: 12px; cursor: pointer; }
+.cm-streets-status { display: block; font-size: 12px; opacity: .8; }

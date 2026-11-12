@@ -78,6 +78,43 @@
   }
   function drawAll() { drawKPIs(); drawRanking(); drawMonths(); refreshMap(); }
 
+  const ALL_CITIES = '__ALL__';
+  const cityLabel = (name) => name.toLowerCase().replace(/(^|\s)\S/g, ch => ch.toUpperCase());
+  async function fetchCityData(city, from, to) {
+    const query = new URLSearchParams({city, date_from:from, date_to:to});
+    const r = await fetch('/api/reports/credit-map?' + query, {credentials:'same-origin',cache:'no-store'});
+    if(r.status === 401) {window.location.assign('/login');return null;}
+    const payload = await r.json();
+    if(!r.ok) throw new Error(payload.detail || 'Falha ao carregar a base');
+    return payload;
+  }
+  function cityList() {
+    return [...$('cm-city').options].map(o => o.value).filter(v => v && v !== ALL_CITIES);
+  }
+  async function fetchAllCities(from, to) {
+    const cities = cityList();
+    const parts = await Promise.all(cities.map(async city => [city, await fetchCityData(city, from, to)]));
+    const totals = {total:0, approved:0, rejected:0, pending:0, signed_approved:0, signed_rejected_inconsistent:0};
+    const months = new Map();
+    const rows = [];
+    let suppressed = 0;
+    for (const [city, part] of parts) {
+      if (!part) return null;
+      for (const key of Object.keys(totals)) totals[key] += Number(part.totals?.[key] || 0);
+      suppressed += Number(part.suppressed_neighborhoods || 0);
+      for (const hood of part.neighborhoods || []) rows.push({...hood, name: `${hood.name} · ${cityLabel(city)}`, hood: hood.name, city});
+      for (const m of part.months || []) {
+        const cur = months.get(m.month) || {month:m.month, total:0, approved:0, rejected:0, pending:0, signed_approved:0};
+        for (const key of ['total','approved','rejected','pending','signed_approved']) cur[key] += Number(m[key] || 0);
+        months.set(m.month, cur);
+      }
+    }
+    const decided = totals.approved + totals.rejected;
+    totals.approval_rate = decided ? Math.round(totals.approved / decided * 1000) / 10 : null;
+    totals.signed_rate = totals.approved ? Math.round(totals.signed_approved / totals.approved * 1000) / 10 : null;
+    return {city: 'TODAS', all: true, cities, totals, neighborhoods: rows, suppressed_neighborhoods: suppressed,
+            months: [...months.values()].sort((a,b) => a.month.localeCompare(b.month))};
+  }
   async function fetchData() {
     const city = $('cm-city').value;
     const from = $('cm-from').value, to = $('cm-to').value;
@@ -91,12 +128,13 @@
         // Prévia contém apenas dados agrupados de um período fechado.
         data = JSON.parse(element.textContent);
       } else {
-        const query = new URLSearchParams({city, date_from:from, date_to:to});
-        const r = await fetch('/api/reports/credit-map?' + query, {credentials:'same-origin',cache:'no-store'});
-        if(r.status === 401) {window.location.assign('/login');return;}
-        const payload = await r.json();
-        if(!r.ok) throw new Error(payload.detail || 'Falha ao carregar a base');
-        data = payload;
+        if(city === ALL_CITIES) {
+          data = await fetchAllCities(from, to);
+          if(!data) return;
+        } else {
+          data = await fetchCityData(city, from, to);
+          if(!data) return;
+        }
       }
       state.data = data; state.revision += 1; sync('Dados agregados carregados'); drawAll();
     } catch(err) { showMessage('Não foi possível carregar os indicadores: ' + err.message); sync('Erro ao carregar'); }
@@ -110,8 +148,8 @@
       const cities = (await r.json()).cities || [];
       const el = $('cm-city');const prev = el.value;
       if (!cities.length) return;
-      el.innerHTML = cities.map(city=> `<option value="${esc(city)}">${esc(city)}</option>`).join('');
-      el.value = cities.includes(prev) ? prev : cities[0];
+      el.innerHTML = `<option value="${ALL_CITIES}">Todas as cidades</option>` + cities.map(city=> `<option value="${esc(city)}">${esc(city)}</option>`).join('');
+      el.value = (cities.includes(prev) || prev === ALL_CITIES) ? prev : cities[0];
     } catch { /* Métricas ainda disponíveis mesmo sem lista de cidades */ }
   }
 
@@ -182,9 +220,9 @@
     const inner = L.circle([point.lat, point.lng], {radius: Math.max(70, radius * .45), stroke: false, fillColor: color, fillOpacity: .38});
     for (const circle of [outer, inner]) { circle.bindPopup(infoHtml(row)); circle.addTo(state.layerGroup); state.layers.push(circle); }
   }
-  async function fetchGeo(ticket) {
+  async function fetchGeo(ticket, cityName) {
     // O servidor localiza alguns bairros por chamada (limite de 1 consulta/s do serviço público) e guarda o resultado.
-    const city = $('cm-city').value, from = $('cm-from').value, to = $('cm-to').value;
+    const city = cityName || $('cm-city').value, from = $('cm-from').value, to = $('cm-to').value;
     const query = new URLSearchParams({city, date_from: from, date_to: to});
     let last = null;
     let errors = 0;
@@ -194,7 +232,7 @@
       if (r.status === 401) { window.location.assign('/login'); return null; }
       if (!r.ok) throw new Error('Falha ao localizar bairros');
       last = await r.json();
-      const total = (state.data?.neighborhoods || []).length;
+      const total = (state.data?.neighborhoods || []).filter(r => !r.city || r.city === city).length;
       const done = Object.keys(last.positions || {}).length + (last.not_found || []).length;
       if (!last.pending) break;
       if (last.error) {
@@ -206,7 +244,7 @@
         continue;
       }
       errors = 0;
-      $('cm-geocode-status').textContent = `Localizando bairros no mapa… ${done} de ${total}`;
+      $('cm-geocode-status').textContent = `Localizando bairros no mapa${state.data?.all ? ' (' + cityLabel(city) + ')' : ''}… ${done} de ${total}`;
     }
     return last;
   }
@@ -219,22 +257,62 @@
     const rows = state.data.neighborhoods || [];
     if (!rows.length) { $('cm-geocode-status').textContent = 'Nenhum bairro com amostra suficiente neste período.'; return; }
     let geo;
-    try { geo = await fetchGeo(ticket); } catch (err) { $('cm-geocode-status').textContent = err.message; return; }
-    if (!geo || ticket !== state.revision) return;
-    state.positions = new Map(Object.entries(geo.positions || {}));
-    const max = Math.max(1, ...rows.map(r => Number(metricValue(r) || 0)));
     const bounds = [];
     let located = 0;
+    const positions = new Map();
+    const cities = state.data.all ? (state.data.cities || []) : [$('cm-city').value];
+    const centers = [];
+    let pending = false;
+    for (const city of cities) {
+      try { geo = await fetchGeo(ticket, city); } catch (err) { $('cm-geocode-status').textContent = err.message; return; }
+      if (!geo || ticket !== state.revision) return;
+      if (geo.city_center) centers.push([geo.city_center.lat, geo.city_center.lng]);
+      if (geo.error && geo.pending) pending = true;
+      for (const [name, point] of Object.entries(geo.positions || {})) {
+        positions.set(state.data.all ? `${name} · ${cityLabel(city)}` : name, point);
+      }
+      // Desenha cada cidade assim que fica pronta (sem esperar as demais).
+      state.positions = positions;
+    }
+    const max = Math.max(1, ...rows.map(r => Number(metricValue(r) || 0)));
     for (const row of rows) {
-      const point = state.positions.get(row.name);
+      const point = positions.get(row.name);
       if (point) { plotRow(row, point, max); bounds.push([point.lat, point.lng]); located += 1; }
     }
-    if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [40, 40], maxZoom: 14});
-    else if (geo.city_center) state.map.setView([geo.city_center.lat, geo.city_center.lng], 12);
+    if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [40, 40], maxZoom: state.data.all ? 11 : 14});
+    else if (centers.length) state.map.setView(centers[0], 12);
     let status = `${located} de ${rows.length} bairros localizados · centros aproximados, não indicam domicílios`;
-    if (geo.error && geo.pending) status += ' · alguns bairros ainda não foram localizados; atualize a página para continuar.';
-    else if (!geo.city_center) status = 'Não foi possível localizar a cidade no mapa. O ranking continua válido.';
+    if (pending) status += ' · alguns bairros ainda não foram localizados; atualize a página para continuar.';
+    else if (!centers.length) status = 'Não foi possível localizar a cidade no mapa. O ranking continua válido.';
     $('cm-geocode-status').textContent = status;
+    if (!state.data.all) drawStreets(ticket);
+  }
+  let streetGroup = null;
+  async function drawStreets(ticket) {
+    if (streetGroup) { streetGroup.clearLayers(); }
+    const toggle = $('cm-streets');
+    if (!toggle || !toggle.checked || !state.mapReady) return;
+    streetGroup = streetGroup || L.layerGroup().addTo(state.map);
+    const query = new URLSearchParams({city: $('cm-city').value, date_from: $('cm-from').value, date_to: $('cm-to').value});
+    let errors = 0;
+    for (let round = 0; round < 80; round += 1) {
+      if (ticket !== state.revision || !toggle.checked) return;
+      const r = await fetch('/api/reports/credit-map/streets?' + query, {credentials: 'same-origin', cache: 'no-store'});
+      if (!r.ok) return;
+      const data = await r.json();
+      streetGroup.clearLayers();
+      for (const row of data.streets || []) {
+        const color = layerColor(row);
+        const dot = L.circleMarker([row.lat, row.lng], {radius: 7, color: '#fff', weight: 1.5, fillColor: color, fillOpacity: .9});
+        dot.bindPopup(`<div class="cm-map-info"><strong>${esc(row.street)}</strong><br><small>${esc(row.neighborhood)}${row.cep ? ' · CEP ' + esc(row.cep.slice(0,5) + '-' + row.cep.slice(5)) : ''}</small><br>${fmt(row.total)} consultas · aprovados <b>${fmt(row.approved)}</b> (${pct(row.approval_rate)})<br>Assinados: <b>${fmt(row.signed_approved)}</b></div>`);
+        dot.addTo(streetGroup);
+      }
+      const note = `${(data.streets || []).length} de ${data.total} ruas com 10+ consultas localizadas`;
+      if (!data.total) { $('cm-streets-status').textContent = 'Sem ruas na base (importe o CSV com Rua/CEP).'; return; }
+      $('cm-streets-status').textContent = note;
+      if (!data.pending) return;
+      if (data.error) { errors += 1; if (errors > 6) return; await new Promise(res => setTimeout(res, 10000)); }
+    }
   }
   function locateRow(name) {
     if (!state.mapReady) { showMessage('O mapa ainda não carregou; o ranking continua disponível.'); return; }
@@ -298,6 +376,8 @@
     });
   }
   $('cm-apply').addEventListener('click',fetchData);
+  ['cm-city','cm-from','cm-to'].forEach(id => $(id).addEventListener('change', fetchData));
+  if ($('cm-streets')) $('cm-streets').addEventListener('change', () => { state.revision += 1; drawStreets(state.revision); });
   $('cm-metric').addEventListener('change',()=>{if(state.data)drawAll();});
   $('cm-search').addEventListener('input',drawRanking);
   $('cm-export').addEventListener('click',exportRanking);
