@@ -639,7 +639,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 (() => {
   const root = document.querySelector('[data-report-dates]');
   if (!root) return;

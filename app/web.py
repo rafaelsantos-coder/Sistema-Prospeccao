@@ -96,6 +96,7 @@ def render(
         "current_user": user_to_session_context(user),
         "active_nav": active_nav,
         "csrf_token": csrf_token(request),
+        "csp_nonce": getattr(request.state, "csp_nonce", ""),
         "show_demo_credentials": settings.app_env.lower() == "development",
         "integrations": settings.integrations,
         "whatsapp_provider": "Z-API",

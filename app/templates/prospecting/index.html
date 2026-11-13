@@ -150,7 +150,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 (() => {
   const form = document.querySelector("[data-prospecting-form]");
   if (!form) return;

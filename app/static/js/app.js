@@ -198,3 +198,9 @@
     }
   });
 })();
+
+// Confirmação antes de enviar formulários sensíveis (substitui onsubmit inline, bloqueado pela CSP).
+document.addEventListener('submit', (event) => {
+  const message = event.target && event.target.dataset ? event.target.dataset.confirm : '';
+  if (message && !window.confirm(message)) event.preventDefault();
+});
