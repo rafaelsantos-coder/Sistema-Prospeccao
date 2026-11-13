@@ -6962,9 +6962,16 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
             state.last_error = str(exc)[:1200]
             state.updated_at = utcnow()
             LOG.warning(
-                "seller_contract_poll_failed state=%s error_code=%s",
+                "seller_contract_poll_failed state=%s step=%s kind=%s error_code=%s "
+                "status=%s method=%s path=%s detail=%s",
                 state.id,
+                step_before_poll,
+                _closer_failure_kind(exc),
                 getattr(exc, "error_code", None) or type(exc).__name__,
+                getattr(exc, "status_code", None),
+                getattr(exc, "method", "") or "-",
+                str(getattr(exc, "path", "") or "-")[:120],
+                str(exc)[:200],
             )
             # Assinatura pendente: o cliente já tem o link, só segue consultando.
             if step_before_poll in {"WAITING_CRM_READY", "WAITING_CONTRACT"}:
