@@ -25,6 +25,7 @@ from app.models import (
     CampaignDispatchRecipient,
     Conversation,
     ConversationZApiInstance,
+    ProspectingJob,
     ServiceQueue,
     ServiceQueueZApiInstance,
     ZApiInstance,
@@ -154,8 +155,26 @@ def diagnostico(secret: str, db: Session = Depends(get_db)):
         ).all()
     }
 
+    prospecting_jobs = [
+        {
+            "id": job.id,
+            "status": job.status,
+            "limit": job.limit,
+            "found": job.found_count,
+            "imported": job.imported_count,
+            "error": (job.error or "")[:300] or None,
+            "created_at": _iso(job.created_at),
+            "started_at": _iso(job.started_at),
+            "finished_at": _iso(job.finished_at),
+        }
+        for job in db.scalars(
+            select(ProspectingJob).order_by(ProspectingJob.id.desc()).limit(10)
+        )
+    ]
+
     return {
         "generated_at": now.isoformat(),
+        "prospecting_jobs": prospecting_jobs,
         "queues": queues,
         "dispatches": dispatches,
         "zapi_instances": [

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Request
@@ -28,6 +29,8 @@ from app.services.queue_routing import (
 from app.timeutils import utcnow
 from app.web import flash, render
 
+
+LOG = logging.getLogger("sulnet_prospecting")
 
 router = APIRouter(prefix="/prospecting")
 
@@ -78,6 +81,7 @@ def _run_job(job_id: int) -> None:
         job.status = "EXECUTANDO"
         job.started_at = utcnow()
         db.commit()
+        LOG.info("prospecting_job_started job=%s limit=%s", job.id, job.limit)
         try:
             service_queue = queue_for_prospecting_job(db, job.id)
             results = asyncio.run(
@@ -167,9 +171,22 @@ def _run_job(job_id: int) -> None:
                     _set_execution_plan(job, plan)
 
             job.status = "CONCLUIDO"
+            LOG.info(
+                "prospecting_job_done job=%s found=%s imported=%s dispatch=%s",
+                job.id,
+                job.found_count,
+                job.imported_count,
+                _execution_plan(job).get("dispatch_id"),
+            )
         except Exception as exc:
             job.status = "FALHOU"
             job.error = str(exc)[:1000]
+            LOG.warning(
+                "prospecting_job_failed job=%s type=%s error=%s",
+                job.id,
+                type(exc).__name__,
+                str(exc)[:300],
+            )
         finally:
             job.finished_at = utcnow()
             db.commit()
