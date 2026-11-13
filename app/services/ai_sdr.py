@@ -84,7 +84,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _service_city_in_text,
     _show_corporate_differentials,
 )
-from app.services.ai_sdr_policy import SULIA_SYSTEM_PROMPT
+from app.services.ai_sdr_policy import MAX_AI_REPLIES_PER_HOUR, SULIA_SYSTEM_PROMPT, UNTRUSTED_INPUT_NOTICE
 from app.services.audit import write_audit
 from app.services.queue_routing import (
     AI_WHEN_HUMAN_IDLE,
@@ -1011,7 +1011,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     from agents import Agent
     from app.services.ai_runtime import run_agent_sync
 
-    instructions = (agent.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
+    instructions = ((agent.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT) + UNTRUSTED_INPUT_NOTICE
     effective_mode = _effective_execution_mode(agent)
     prompt = (
         "Analise esta interação comercial do WhatsApp da Sulnet. "
@@ -1911,11 +1911,30 @@ def _try_fast_purchase_path(
 
 
 
+def ai_reply_limit_reached(db: Session, conversation_id: int) -> bool:
+    """Trava de custo/abuso: mensagens enviadas na última hora nesta conversa."""
+    since = utcnow() - timedelta(hours=1)
+    sent = db.scalar(
+        select(func.count(Message.id)).where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "OUTBOUND",
+            Message.created_at >= since,
+        )
+    )
+    return int(sent or 0) >= MAX_AI_REPLIES_PER_HOUR
+
+
 def process_ai_job(db: Session, job: AIJob) -> str:
     agent = db.get(AIAgentProfile, job.agent_id)
     if not agent or not agent.active:
         job.status = "IGNORADO"
         job.error = "Agente inexistente ou inativo."
+        return "skipped"
+
+    if ai_reply_limit_reached(db, job.conversation_id):
+        job.status = "IGNORADO"
+        job.error = "Limite de respostas da IA por hora atingido nesta conversa."
+        LOG.warning("ai_reply_limit_reached conversation=%s", job.conversation_id)
         return "skipped"
 
     from app.services.auto_reply import (  # noqa: PLC0415
