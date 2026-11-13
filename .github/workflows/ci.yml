@@ -83,6 +83,12 @@ jobs:
       - name: Executar testes
         run: pytest -q
 
+      - name: Varredura de segredos no código
+        run: |
+          if git grep -nIE '(sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|xox[bp]-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{35}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' -- . ':!tests' ':!docs'; then
+            echo "Possível segredo no repositório. Remova e troque a chave." && exit 1
+          fi
+
       - name: Auditoria de dependências Python
         run: pip-audit -r requirements.txt
 

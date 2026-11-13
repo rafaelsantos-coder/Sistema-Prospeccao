@@ -30,7 +30,7 @@ from app.models import (
     Message,
 )
 from app.services.ai_guardian import GuardianBlockedError, guard_outbound_message
-from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE
+from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE, UNTRUSTED_INPUT_NOTICE
 from app.services.audit import write_audit
 from app.services import ai_campaign_black as black_campaign
 from app.services import crm_notes
@@ -3277,7 +3277,7 @@ def _seller_question_reply(
     )
     answerer = Agent(
         name=f"{agent.name} · dúvidas",
-        instructions=(agent.system_prompt or "").strip() or "Responda só com fatos aprovados.",
+        instructions=((agent.system_prompt or "").strip() or "Responda só com fatos aprovados.") + UNTRUSTED_INPUT_NOTICE,
         model=agent.model or "gpt-6-luna",
         model_settings={
             "reasoning": {"effort": agent.reasoning_effort or "low"},
@@ -3337,7 +3337,7 @@ def _interpret_ambiguous(
     )
     interpreter = Agent(
         name=f"{agent.name} · interpretação",
-        instructions=instructions or "Interprete respostas de fechamento com conservadorismo.",
+        instructions=(instructions or "Interprete respostas de fechamento com conservadorismo.") + UNTRUSTED_INPUT_NOTICE,
         model=agent.model or "gpt-6-luna",
         model_settings={
             "reasoning": {"effort": agent.reasoning_effort or "low"},
@@ -4936,6 +4936,13 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     if not conversation or not message or not state:
         job.status = "IGNORADO"
         job.error = "Estado do fechamento não encontrado."
+        return "skipped"
+    from app.services.ai_sdr import ai_reply_limit_reached  # noqa: PLC0415
+
+    if ai_reply_limit_reached(db, job.conversation_id):
+        job.status = "IGNORADO"
+        job.error = "Limite de respostas da IA por hora atingido nesta conversa."
+        LOG.warning("ai_reply_limit_reached conversation=%s", job.conversation_id)
         return "skipped"
     if state.step in {"COMPLETED", PLAN_CHANGE_STEP}:
         # Venda já fechada: nunca deixar o cliente sem resposta. O que ele pedir
