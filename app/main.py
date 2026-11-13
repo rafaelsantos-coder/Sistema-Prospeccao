@@ -101,10 +101,41 @@ async def configure_zapi_webhooks() -> None:
         db.close()
 
 
+def log_recent_prospecting_jobs() -> None:
+    """Registra os últimos jobs de prospecção (sem dados pessoais) para diagnóstico por log."""
+    from sqlalchemy import select
+
+    from app.models import ProspectingJob
+
+    db = SessionLocal()
+    try:
+        for job in db.scalars(
+            select(ProspectingJob).order_by(ProspectingJob.id.desc()).limit(10)
+        ):
+            LOG.info(
+                "prospecting_report job=%s status=%s found=%s imported=%s created=%s "
+                "started=%s finished=%s error=%s plan=%s",
+                job.id,
+                job.status,
+                job.found_count,
+                job.imported_count,
+                job.created_at,
+                job.started_at,
+                job.finished_at,
+                (job.error or "-")[:300],
+                (job.execution_json or "{}")[:300],
+            )
+    except Exception:  # diagnóstico nunca pode impedir a subida
+        LOG.warning("prospecting_report_failed", exc_info=True)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_production_settings()
     await initialize_database()
+    log_recent_prospecting_jobs()
     await configure_zapi_webhooks()
     yield
 
