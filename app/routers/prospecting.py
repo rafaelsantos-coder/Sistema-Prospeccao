@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Request
@@ -70,6 +71,30 @@ def _whatsapp_campaigns(db: Session) -> list[Campaign]:
 
 def _can_schedule_dispatch(user: User) -> bool:
     return user.role in {"ADMIN", "GESTOR"}
+
+
+STALE_JOB_MINUTES = 15
+
+
+def fail_stale_jobs(db: Session) -> int:
+    """Encerra buscas que ficaram presas (ex.: o servidor reiniciou durante a execução)."""
+    limit = utcnow() - timedelta(minutes=STALE_JOB_MINUTES)
+    stale = list(
+        db.scalars(
+            select(ProspectingJob).where(
+                ProspectingJob.status.in_(["PENDENTE", "EXECUTANDO"]),
+                ProspectingJob.created_at <= limit,
+            )
+        )
+    )
+    for job in stale:
+        job.status = "FALHOU"
+        job.error = "Busca interrompida (o servidor reiniciou durante a execução). Refaça a busca."
+        job.finished_at = utcnow()
+        LOG.warning("prospecting_job_stale job=%s", job.id)
+    if stale:
+        db.commit()
+    return len(stale)
 
 
 def _run_job(job_id: int) -> None:
@@ -199,6 +224,7 @@ def prospecting_page(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    fail_stale_jobs(db)
     stmt = (
         select(ProspectingJob)
         .options(selectinload(ProspectingJob.branch), selectinload(ProspectingJob.created_by))

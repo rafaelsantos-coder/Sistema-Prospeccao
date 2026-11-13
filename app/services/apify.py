@@ -18,6 +18,19 @@ class ApifySearchError(RuntimeError):
     pass
 
 
+def _start_error(status_code: int) -> str:
+    if status_code == 402:
+        return (
+            "Apify sem crédito ou limite do plano atingido (HTTP 402). "
+            "Recarregue o saldo em console.apify.com > Billing e refaça a busca."
+        )
+    if status_code in {401, 403}:
+        return f"Apify recusou o acesso (HTTP {status_code}). Verifique o token da integração."
+    if status_code == 429:
+        return "Apify limitou as requisições (HTTP 429). Tente novamente em alguns minutos."
+    return f"Falha ao iniciar busca: HTTP {status_code}"
+
+
 class ApifyService:
     base_url = "https://api.apify.com/v2"
 
@@ -41,7 +54,7 @@ class ApifyService:
         async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(run_url, params=params, json=payload)
             if response.status_code >= 400:
-                raise ApifySearchError(f"Falha ao iniciar busca: HTTP {response.status_code}")
+                raise ApifySearchError(_start_error(response.status_code))
             run_data = response.json().get("data", {})
             run_id = run_data.get("id")
             if not run_id:
