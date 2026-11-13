@@ -107,8 +107,11 @@ def log_recent_prospecting_jobs() -> None:
 
     from app.models import ProspectingJob
 
+    from app.routers.prospecting import fail_stale_jobs
+
     db = SessionLocal()
     try:
+        fail_stale_jobs(db)
         for job in db.scalars(
             select(ProspectingJob).order_by(ProspectingJob.id.desc()).limit(10)
         ):
