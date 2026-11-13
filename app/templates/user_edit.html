@@ -105,7 +105,7 @@
       <a class="button button-secondary top-space" href="/change-password">Alterar minha senha</a>
     {% else %}
       <p class="panel-note">O reset invalida a senha atual, gera uma senha provisória aleatória e obriga o usuário a trocar a senha no próximo acesso.</p>
-      <form action="/settings/users/{{ target_user.id }}/reset-password" method="post" class="top-space" onsubmit="return confirm('Gerar uma nova senha provisória para {{ target_user.name }}? A senha atual deixará de funcionar.');">
+      <form action="/settings/users/{{ target_user.id }}/reset-password" method="post" class="top-space" data-confirm="Gerar uma nova senha provisória para {{ target_user.name }}? A senha atual deixará de funcionar.">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="button button-danger" type="submit">Resetar senha</button>
       </form>
@@ -119,7 +119,7 @@
 
 {% block scripts %}
 {% if temporary_password %}
-<script>
+<script nonce="{{ csp_nonce }}">
 document.addEventListener("click", function (event) {
   const button = event.target.closest("[data-copy-temporary-password]");
   if (!button) return;

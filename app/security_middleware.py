@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import ipaddress
+import secrets
 from urllib.parse import urlparse
 
 from fastapi import Request
@@ -35,6 +36,9 @@ def trusted_hosts() -> list[str]:
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
+        # Um nonce por resposta: só scripts da própria página (com o nonce) rodam; script injetado não.
+        nonce = secrets.token_urlsafe(16)
+        request.state.csp_nonce = nonce
         response = await call_next(request)
 
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -56,7 +60,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                     "frame-ancestors 'none'",
                     "form-action 'self'",
                     "object-src 'none'",
-                    "script-src 'self' 'unsafe-inline'",
+                    f"script-src 'self' 'nonce-{nonce}'",
                     "style-src 'self' 'unsafe-inline'",
                     "img-src 'self' data: blob: https:",
                     "media-src 'self' blob: https:",
@@ -70,7 +74,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             policy = response.headers["Content-Security-Policy"]
             external = "https://unpkg.com https://cdnjs.cloudflare.com"
             policy = policy.replace(
-                "script-src 'self' 'unsafe-inline'", f"script-src 'self' 'unsafe-inline' {external}"
+                f"script-src 'self' 'nonce-{nonce}'", f"script-src 'self' 'nonce-{nonce}' {external}"
             ).replace("style-src 'self' 'unsafe-inline'", f"style-src 'self' 'unsafe-inline' {external}")
             response.headers["Content-Security-Policy"] = policy
         if settings.is_production:
