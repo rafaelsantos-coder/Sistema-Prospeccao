@@ -32,7 +32,7 @@ def test_csp_usa_nonce_novo_por_resposta_e_sem_unsafe_inline_em_script():
 def test_todo_script_embutido_tem_nonce_e_nao_ha_handlers_inline():
     for path in TEMPLATES.rglob("*.html"):
         text = path.read_text(encoding="utf-8")
-        for tag in re.findall(r"<script\b[^>]*>", text):
+        for tag in re.findall(r"<script\b[^>]*>", text, re.IGNORECASE):
             if "src=" in tag or 'type="application/json"' in tag:
                 continue
             assert 'nonce="{{ csp_nonce }}"' in tag, f"{path.name}: script embutido sem nonce"
