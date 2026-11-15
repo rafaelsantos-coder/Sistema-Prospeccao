@@ -3,12 +3,15 @@
 Eventos cobertos:
 - instância Z-API desconectou ou reconectou;
 - venda finalizada pela IA (assinada e confirmada como ganha);
-- conversa escalada para atendimento humano.
+- conversa escalada para atendimento humano;
+- venda parada no fechamento por erro (ex.: plano não encontrado no CRM), para
+  um vendedor chamar o cliente antes de perder a venda.
 
 O aviso sai por qualquer instância Z-API ativa e conectada (nunca pela que
 caiu). Cada aviso tem chave de deduplicação gravada na auditoria, então o
-mesmo evento não é enviado duas vezes. Não leva nome, telefone nem CPF do
-cliente: só identificadores técnicos, plano e valor.
+mesmo evento não é enviado duas vezes. Só os avisos em que um vendedor precisa
+chamar o cliente (venda parada, crédito com restrição) levam nome e telefone;
+os demais levam identificadores técnicos, plano e valor. CPF nunca é enviado.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import AIClosingState, AuditLog, Message, ZApiInstance
+from app.models import AIClosingState, AuditLog, Contact, Conversation, Message, ZApiInstance
 from app.services.audit import write_audit
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import list_zapi_instances, service_for_instance
@@ -218,6 +221,77 @@ def check_sales_and_escalations(db: Session) -> int:
             key=f"escalated:{state.id}",
             text=text,
         ):
+            sent += 1
+    return sent
+
+
+STUCK_SALE_AFTER = timedelta(minutes=10)
+STUCK_SALE_WINDOW = timedelta(hours=24)
+STUCK_SALE_COOLDOWN = timedelta(hours=6)
+_SALE_DONE_STEPS = {"COMPLETED", "ESCALATED"}
+_LONG_DIGITS = re.compile(r"\d{6,}")
+
+
+def stuck_sale_text(*, name: str, phone: str, plan: str, step: str, error: str, conversation_id: int,
+                    opportunity_id: int | None) -> str:
+    reason = _LONG_DIGITS.sub("<número>", " ".join((error or "").split()))[:240]
+    reason = reason or "A venda está aguardando o CRM e não avançou."
+    opportunity = f" · oportunidade {opportunity_id}" if opportunity_id else ""
+    return (
+        "⚠️ Venda parada na IA. Um vendedor precisa chamar o cliente.\n"
+        f"Cliente: {name or 'não informado'}\n"
+        f"Telefone: {phone or 'não informado'}\n"
+        f"Plano: {plan or 'não informado'}\n"
+        f"Etapa: {step}\n"
+        f"Erro: {reason}\n"
+        f"Conversa {conversation_id}{opportunity}"
+    )
+
+
+def check_stuck_sales(db: Session) -> int:
+    """Avisa venda em fechamento que parou por erro ou ficou aguardando o CRM.
+
+    Só conta como parada quando a conversa está sem mensagem nova há 10 minutos,
+    para não avisar um erro que a IA resolveu sozinha na tentativa seguinte.
+    """
+    sent = 0
+    now = utcnow()
+    states = db.scalars(
+        select(AIClosingState).where(
+            AIClosingState.completed_at.is_(None),
+            AIClosingState.updated_at >= now - STUCK_SALE_WINDOW,
+        )
+    )
+    for state in list(states):
+        error = (state.last_error or "").strip()
+        if state.step in _SALE_DONE_STEPS or not (error or state.step == "WAITING_CRM_READY"):
+            continue
+        recent = db.scalar(
+            select(Message.id)
+            .where(
+                Message.conversation_id == state.conversation_id,
+                Message.created_at >= now - STUCK_SALE_AFTER,
+            )
+            .limit(1)
+        )
+        if recent is not None:
+            continue
+        try:
+            collected = json.loads(state.collected_json or "{}")
+        except ValueError:
+            collected = {}
+        conversation = db.get(Conversation, state.conversation_id)
+        contact = db.get(Contact, conversation.contact_id) if conversation and conversation.contact_id else None
+        text = stuck_sale_text(
+            name=str(collected.get("name") or (contact.name if contact else "") or "").strip(),
+            phone=_digits(str(collected.get("phone") or (contact.phone if contact else "") or "")),
+            plan=str(state.plan_label or ""),
+            step=str(state.step or ""),
+            error=error,
+            conversation_id=state.conversation_id,
+            opportunity_id=state.opportunity_id,
+        )
+        if send_ops_alert(db, key=f"stuck-sale:{state.id}:{state.step}", text=text, cooldown=STUCK_SALE_COOLDOWN):
             sent += 1
     return sent
 
@@ -444,7 +518,7 @@ def check_daily_funnel(db: Session) -> int:
 
 def run_ops_alert_checks(db: Session) -> int:
     sent = check_instances(db) + check_sales_and_escalations(db)
-    for check in (check_unanswered_customers, check_daily_funnel):
+    for check in (check_stuck_sales, check_unanswered_customers, check_daily_funnel):
         try:
             sent += check(db)
         except Exception:  # noqa: BLE001 - um aviso com erro não pode parar os outros

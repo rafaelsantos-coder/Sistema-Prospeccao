@@ -88,3 +88,33 @@ def test_tag_do_contrato_no_vendedor():
     # A Black tem prioridade no CRM: as duas tags não se misturam.
     black_state = SimpleNamespace(plan_label="Fibra 800 Mega", handoff_summary=black.with_marker("Venda."))
     assert _discount_tag_for(black_state, {"freeMonths": 3}) == ""
+
+
+CATALOGO_CRM = [
+    {"id": 9, "name": "Sulnet RESID FIBRA - 650MB - 2-25", "active": True, "categoryId": 76},
+    {"id": 11, "name": "Sulnet RESID FIBRA - 800MB - 2-25", "active": True, "categoryId": 76},
+    {"id": 20, "name": "CORP - 650M - FTTH", "active": True, "categoryId": 80},
+    {"id": 21, "name": "Sulnet RESID FIBRA - 800MB + MOVEL", "active": True, "categoryId": 76},
+    {"id": 22, "name": "Sulnet RESID FIBRA - 650MB - 2-24", "active": False, "categoryId": 76},
+    {"id": 23, "name": "Sulnet RESID FIBRA - 650MB com 3 mensalidades", "active": True, "categoryId": 76},
+]
+
+
+def test_plano_residencial_vem_do_catalogo_pelo_nome():
+    from app.services.ai_seller import _resid_fiber_product, _resid_fiber_speed
+
+    # O código interno do SDR não existe no CRM e travava o fechamento (oportunidades 16278 e 14940).
+    assert _resid_fiber_speed("FTTH_650") == 650
+    assert _resid_fiber_speed("Fibra 800 Mega") == 800
+    assert _resid_fiber_speed("Sulmóvel 10GB") == 0
+    assert _resid_fiber_speed("Corp. 650 Mega") == 0
+    assert _resid_fiber_product(CATALOGO_CRM, 650)["id"] == 9
+    assert _resid_fiber_product(CATALOGO_CRM, 800)["id"] == 11
+
+
+def test_codigo_ftth_tambem_recebe_a_tag_de_desconto():
+    from app.services.ai_seller import PROMO_TAGS, _discount_tag_for
+
+    state = SimpleNamespace(plan_label="FTTH_800", handoff_summary="")
+    assert _discount_tag_for(state, {"freeMonths": 3}) == "Desconto 3 mensalidades"
+    assert "Promoção Black 2027" in PROMO_TAGS and len(PROMO_TAGS) == 4

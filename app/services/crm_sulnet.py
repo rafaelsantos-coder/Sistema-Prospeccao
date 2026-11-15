@@ -1130,6 +1130,40 @@ class SulnetCRMClient:
         LOG.info("crm_tag_added opportunity=%s tag_id=%s", opportunity_id, tag_id)
         return True
 
+    def set_promo_tag(self, opportunity_id: int, tag_name: str, exclusive_names: tuple[str, ...]) -> bool:
+        """Deixa só uma tag de promoção na oportunidade (o CRM escolhe o contrato por ela).
+
+        Mantém as demais tags (ex.: IA) e remove as outras de ``exclusive_names``.
+        """
+        tag_id = self.tag_id_by_name(tag_name)
+        if not tag_id:
+            LOG.warning("crm_tag_missing opportunity=%s", opportunity_id)
+            return False
+        others = {self.tag_id_by_name(name) for name in exclusive_names if _fold_tag(name) != _fold_tag(tag_name)}
+        others.discard(None)
+        current = self._request("GET", f"/api/opportunities/{opportunity_id}")
+        record = current.get("data") if isinstance(current, dict) and isinstance(current.get("data"), dict) else current
+        raw = record.get("tagIds") if isinstance(record, dict) else None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raw = []
+        existing: list[int] = []
+        for item in raw or []:
+            try:
+                existing.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        wanted = [item for item in existing if item not in others]
+        if tag_id not in wanted:
+            wanted.append(tag_id)
+        if wanted == existing:
+            return True
+        self._request("PATCH", f"/api/opportunities/{opportunity_id}", json_body={"tagIds": wanted})
+        LOG.info("crm_promo_tag_set opportunity=%s tag_id=%s", opportunity_id, tag_id)
+        return True
+
     def get_opportunity(self, opportunity_id: int) -> dict[str, Any]:
         # Preferir o endpoint genérico: ele traz product_info completo.
         try:
@@ -1421,6 +1455,7 @@ class SulnetCRMClient:
                         "monthlyValue": row.get("monthlyValue", row.get("monthly_value")),
                         "categoryId": row.get("categoryId", row.get("category_id")),
                         "categoryName": row.get("categoryName", row.get("category_name")),
+                        "active": row.get("active", True),
                     }
                 )
                 continue
@@ -1456,6 +1491,7 @@ class SulnetCRMClient:
                             "categoryName",
                             product.get("category_name", category_name),
                         ),
+                        "active": product.get("active", True),
                     }
                 )
 

@@ -1818,6 +1818,53 @@ def _advance_with_playbook(
     return _prompt_for_step(state, collected)
 
 
+RESID_FIBER_SPEEDS = (650, 800)
+
+
+def _resid_fiber_speed(label: str | None) -> int:
+    """650 ou 800 quando o plano da conversa é fibra residencial; 0 nos demais.
+
+    Aceita o rótulo comercial ("Fibra 650 Mega") e o código interno do SDR
+    ("FTTH_650"), que não existe no catálogo do CRM e travava o fechamento.
+    """
+    wanted = _norm(str(label or "")).replace(" ", "")
+    if not wanted or any(word in wanted for word in ("movel", "corp", "empresa")) or re.search(r"\d+gb", wanted):
+        return 0
+    match = re.search(r"ftth_?(\d{3})", wanted) or (
+        re.search(r"(\d{3})(?:mega|mb)", wanted) if ("fibra" in wanted or "mega" in wanted or "mb" in wanted) else None
+    )
+    speed = int(match.group(1)) if match else 0
+    return speed if speed in RESID_FIBER_SPEEDS else 0
+
+
+def _resid_fiber_product(products: list[dict[str, Any]], speed: int) -> dict[str, Any] | None:
+    """Produto de fibra residencial do catálogo do CRM (regra do comercial, 15/11).
+
+    Ativo, nome com RESID + FIBRA + 650MB/800MB, sem MOVEL/SULMOVEL/CORP. Combo,
+    corporativo e nomes "com N mensalidades" nunca valem: desconto é tag.
+    """
+    if speed not in RESID_FIBER_SPEEDS:
+        return None
+    matches = []
+    for item in products:
+        if item.get("active", True) in (False, 0, "false", "0"):
+            continue
+        name = _norm(str(item.get("name") or "")).replace(" ", "")
+        if "resid" not in name or "fibra" not in name or f"{speed}mb" not in name:
+            continue
+        if any(word in name for word in ("movel", "corp", "mensalidade")):
+            continue
+        matches.append(item)
+    if len(matches) == 1:
+        return matches[0]
+    exact = [item for item in matches if name_is_current_resid(str(item.get("name") or ""), speed)]
+    return exact[0] if len(exact) == 1 else None
+
+
+def name_is_current_resid(name: str, speed: int) -> bool:
+    return _norm(name).replace(" ", "") == f"sulnetresidfibra-{speed}mb-2-25"
+
+
 def _plan_matches_label(product: dict[str, Any], label: str) -> bool:
     """O produto do CRM corresponde ao plano escolhido na conversa?
 
@@ -1833,14 +1880,16 @@ def _plan_matches_label(product: dict[str, Any], label: str) -> bool:
     product_is_mobile = "movel" in category or "movel" in name or bool(re.search(r"\d+gb", name))
     capacity = re.search(r"(\d{1,3})gb", wanted)
     wanted_is_mobile = "movel" in wanted or bool(capacity)
-    wanted_is_fiber = ("fibra" in wanted or "mega" in wanted or bool(re.search(r"\d{3,4}mb", wanted))) and not wanted_is_mobile
+    wanted_is_fiber = (
+        "fibra" in wanted or "mega" in wanted or "ftth" in wanted or bool(re.search(r"\d{3,4}mb", wanted))
+    ) and not wanted_is_mobile
     if wanted_is_mobile and not product_is_mobile:
         return False
     if wanted_is_fiber and product_is_mobile:
         return False
     if capacity and f"{capacity.group(1)}gb" not in name:
         return False
-    speed = re.search(r"(\d{3,4})(?:mega|mb)", wanted)
+    speed = re.search(r"(\d{3,4})(?:mega|mb)", wanted) or re.search(r"ftth_?(\d{3,4})", wanted)
     if wanted_is_fiber and speed and speed.group(1) not in name:
         return False
     return True
@@ -1878,6 +1927,13 @@ def _sync_plan_context(
             plan_id,
         )
         selected = None
+        plan_corrected = True
+
+    # Fibra residencial 650/800: o produto certo é sempre o RESID FIBRA do
+    # catálogo, nunca o corporativo nem o combo com móvel.
+    resid = _resid_fiber_product(products, _resid_fiber_speed(state.plan_label))
+    if resid and (not selected or int(selected.get("id") or 0) != int(resid.get("id") or 0)):
+        selected = resid
         plan_corrected = True
 
     # O nome comercial usado no WhatsApp pode não ser o nome interno do ERP.
@@ -3953,6 +4009,15 @@ def _apply_black_tag(client: SulnetCRMClient, state: AIClosingState) -> None:
         LOG.warning("crm_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
 
 
+# O CRM aceita só uma destas por oportunidade; a Black tem prioridade sobre as demais.
+PROMO_TAGS = (
+    "Desconto 1 mensalidade",
+    "Desconto 2 mensalidades",
+    "Desconto 3 mensalidades",
+    black_campaign.CAMPAIGN_TAG,
+)
+
+
 def _discount_tag_for(state: AIClosingState, collected: dict[str, Any]) -> str:
     """Tag "Desconto N mensalidade(s)" para fibra 650/800 Mega com mensalidades grátis.
 
@@ -3960,8 +4025,7 @@ def _discount_tag_for(state: AIClosingState, collected: dict[str, Any]) -> str:
     """
     if black_campaign.has_marker(getattr(state, "handoff_summary", "")):
         return ""
-    label = _norm(str(getattr(state, "plan_label", "") or ""))
-    if "fibra" not in label or not any(speed in label for speed in ("650", "800")):
+    if not _resid_fiber_speed(getattr(state, "plan_label", "")):
         return ""
     try:
         months = int(collected.get("freeMonths") or 0)
@@ -3976,7 +4040,13 @@ def _apply_discount_tag(client: SulnetCRMClient, state: AIClosingState, collecte
     if not tag or not state.opportunity_id:
         return
     try:
-        if not client.add_opportunity_tag(state.opportunity_id, tag):
+        set_promo = getattr(client, "set_promo_tag", None)
+        applied = (
+            set_promo(state.opportunity_id, tag, PROMO_TAGS)
+            if callable(set_promo)
+            else client.add_opportunity_tag(state.opportunity_id, tag)
+        )
+        if not applied:
             LOG.warning("crm_discount_tag_missing opportunity=%s tag=%s", state.opportunity_id, tag)
     except CRMIntegrationError as exc:
         LOG.warning("crm_discount_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
@@ -4623,6 +4693,10 @@ def start_closing_from_sdr(
     ).strip()
     if plan_label.isdigit():
         plan_label += " Mega"
+    code_speed = re.fullmatch(r"FTTH_?(\d{3,4})", plan_label, flags=re.IGNORECASE)
+    if code_speed:
+        # Código interno do SDR: o cliente e o CRM conhecem o plano pelo nome.
+        plan_label = f"Fibra {code_speed.group(1)} Mega"
     if not plan_label:
         plan_label = "plano combinado"
 
