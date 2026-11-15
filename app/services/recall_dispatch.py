@@ -22,6 +22,7 @@ from app.models import (
     Campaign,
     CampaignDispatch,
     CampaignDispatchRecipient,
+    Contact,
     Conversation,
     ConversationQueueLink,
     Lead,
@@ -85,7 +86,64 @@ def _already_in_recall(db, campaign: Campaign | None) -> set[str]:
     }
 
 
-def _exclusion(db, conversation: Conversation, lead: Lead | None, queue: ServiceQueue | None) -> str:
+def _history(db, conversation_id: int) -> list[dict]:
+    rows = db.execute(
+        select(Message.direction, Message.body)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.id)
+    ).all()
+    return [{"direction": direction, "body": body} for direction, body in rows]
+
+
+def _lead_for(db, conversation: Conversation, contact: Contact | None, phone: str) -> Lead | None:
+    """Lead da conversa. Quem escreveu primeiro costuma ter só o contato, sem lead."""
+    for lead_id in (conversation.lead_id, contact.lead_id if contact else None):
+        lead = db.get(Lead, lead_id) if lead_id else None
+        if lead:
+            return lead
+    if not phone:
+        return None
+    return db.scalar(
+        select(Lead).where(Lead.phone == phone).order_by(Lead.updated_at.desc(), Lead.id.desc()).limit(1)
+    )
+
+
+def _create_lead(db, conversation: Conversation, contact: Contact, phone: str, queue: ServiceQueue) -> Lead:
+    name = (contact.name or contact.business_name or "").strip()
+    lead = Lead(
+        business_name=name or phone,
+        contact_name=name,
+        phone=phone,
+        segment="Não informado",
+        # Cidade desconhecida de propósito: a IA pergunta antes de fechar o 800 Mega.
+        city="Não informado",
+        source="IMPORTACAO",
+        origin_channel="WHATSAPP",
+        team=queue.team,
+        stage="CONTATO_REALIZADO",
+        score=0,
+        temperature="FRIO",
+        priority="NORMAL",
+        branch_id=queue.branch_id,
+        notes="Lead criada a partir de conversa atendida pela IA (rechamada).",
+        raw_data=json.dumps({"import_source": "recall_ia"}, ensure_ascii=False),
+    )
+    db.add(lead)
+    db.flush()
+    if not contact.lead_id:
+        contact.lead_id = lead.id
+    if not conversation.lead_id:
+        conversation.lead_id = lead.id
+    return lead
+
+
+def _exclusion(
+    db,
+    conversation: Conversation,
+    lead: Lead | None,
+    phone: str,
+    queue: ServiceQueue | None,
+) -> str:
     from app.services.ai_sdr import (  # noqa: PLC0415
         _confirmed_customer_type_from_lead,
         _confirmed_existing_customer_from_lead,
@@ -96,18 +154,23 @@ def _exclusion(db, conversation: Conversation, lead: Lead | None, queue: Service
         human_stepped_in,
         queue_ai_binding,
     )
+    from app.services.ai_sdr_policies import _existing_customer_from_context  # noqa: PLC0415
 
-    if not lead or not normalize_phone(lead.phone):
-        return "sem_lead_ou_telefone"
-    if lead.do_not_contact or lead.stage == "NAO_CONTATAR":
-        return "nao_contatar"
-    if lead.stage == "GANHO":
-        return "ja_fechou"
-    if lead.stage == "PERDIDO":
-        return "perdido"
+    if not phone:
+        return "sem_telefone"
+    if lead:
+        if lead.do_not_contact or lead.stage == "NAO_CONTATAR":
+            return "nao_contatar"
+        if lead.stage == "GANHO":
+            return "ja_fechou"
+        if lead.stage == "PERDIDO":
+            return "perdido"
     if conversation.status == "BLOQUEADO":
         return "conversa_bloqueada"
-    if _confirmed_existing_customer_from_lead(lead) == "CLIENTE":
+    if (
+        _confirmed_existing_customer_from_lead(lead) == "CLIENTE"
+        or _existing_customer_from_context({"history": _history(db, conversation.id)}) == "CLIENTE"
+    ):
         return "ja_e_cliente"
     if _confirmed_customer_type_from_lead(lead) == "EMPRESA":
         return "empresa"
@@ -120,7 +183,7 @@ def _exclusion(db, conversation: Conversation, lead: Lead | None, queue: Service
         return "vendedor_humano_atendendo"
     if not queue or not queue.active or not queue_ai_binding(db, queue.id):
         return "fila_sem_ia"
-    city = _service_city_in_text(lead.city or "")
+    city = _service_city_in_text(lead.city or "") if lead else ""
     plan = _ftth_plan_by_speed(recall.PLAN_SPEED)
     if city and plan and not _plan_available_in_city(plan, city):
         return "cidade_sem_800_mega"
@@ -154,45 +217,66 @@ def prepare_recall_dispatches(db, *, dry_run: bool = True, auto_start: bool = Fa
     excluded: Counter[str] = Counter()
     by_queue: dict[int, list[Lead]] = {}
     queues: dict[int, ServiceQueue] = {}
-    candidates: list[tuple[str, ServiceQueue, Lead]] = []
+    candidates: list[tuple[str, ServiceQueue, Lead | None, Conversation, Contact | None]] = []
+    counts_only: dict[int, int] = {}
     blocked_phones: set[str] = set()
 
     for conversation_id in conversation_ids:
         conversation = db.get(Conversation, conversation_id)
         if not conversation:
             continue
-        lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
+        contact = db.get(Contact, conversation.contact_id) if conversation.contact_id else None
+        phone = normalize_phone(contact.phone if contact else None) or ""
+        lead = _lead_for(db, conversation, contact, phone)
+        if not phone and lead:
+            phone = normalize_phone(lead.phone) or ""
         queue_id = db.scalar(
             select(ConversationQueueLink.queue_id).where(ConversationQueueLink.conversation_id == conversation.id)
         )
         queue = db.get(ServiceQueue, queue_id) if queue_id else None
-        reason = _exclusion(db, conversation, lead, queue)
-        phone = normalize_phone(lead.phone) if lead else ""
+        reason = _exclusion(db, conversation, lead, phone, queue)
         if reason:
             # Um motivo em qualquer conversa do mesmo telefone tira o cliente da lista.
             excluded[reason] += 1
             if phone:
                 blocked_phones.add(phone)
             continue
-        candidates.append((phone, queue, lead))
+        candidates.append((phone, queue, lead, conversation, contact))
 
-    for phone, queue, lead in candidates:
+    without_lead = 0
+    for phone, queue, lead, conversation, contact in candidates:
         if phone in blocked_phones:
             continue
         if phone in seen:
             excluded["ja_esta_na_rechamada_ou_repetido"] += 1
             continue
         seen.add(phone)
+        if not lead:
+            without_lead += 1
+            if dry_run or not contact:
+                # No dry_run só conta; o lead é criado quando o disparo é montado.
+                by_queue.setdefault(queue.id, [])
+                queues[queue.id] = queue
+                counts_only[queue.id] = counts_only.get(queue.id, 0) + 1
+                continue
+            lead = _create_lead(db, conversation, contact, phone, queue)
+        elif not normalize_phone(lead.phone):
+            lead.phone = phone
         queues[queue.id] = queue
         by_queue.setdefault(queue.id, []).append(lead)
 
-    result["elegiveis"] = sum(len(items) for items in by_queue.values())
+    result["elegiveis"] = sum(len(items) for items in by_queue.values()) + sum(counts_only.values())
+    result["sem_lead"] = without_lead
     result["excluidos"] = dict(excluded)
-    result["por_fila"] = {queues[queue_id].name: len(items) for queue_id, items in by_queue.items()}
+    result["por_fila"] = {
+        queues[queue_id].name: len(items) + counts_only.get(queue_id, 0) for queue_id, items in by_queue.items()
+    }
     if dry_run or not campaign:
         return result
 
     for queue_id, leads in by_queue.items():
+        if not leads:
+            continue
         dispatch, summary = create_dispatch_from_leads(
             db,
             campaign=campaign,
@@ -226,10 +310,11 @@ def run_recall_from_settings(db, mode: str) -> None:
     result = prepare_recall_dispatches(db, dry_run=mode == "dry_run", auto_start=mode == "start")
     db.commit()
     LOG.info(
-        "recall_dispatch mode=%s conversas=%s elegiveis=%s por_fila=%s excluidos=%s disparos=%s",
+        "recall_dispatch mode=%s conversas=%s elegiveis=%s sem_lead=%s por_fila=%s excluidos=%s disparos=%s",
         mode,
         result["conversas"],
         result["elegiveis"],
+        result.get("sem_lead", 0),
         result.get("por_fila", {}),
         result["excluidos"],
         result["disparos"],
