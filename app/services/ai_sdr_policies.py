@@ -1436,6 +1436,21 @@ def _apply_black_entry(decision: AIDecision, context: dict, status: str, *, just
     return None
 
 
+_EXISTING_CUSTOMER_QUESTION_RE = re.compile(
+    r"\bja\s+(?:e|possui|tem)\b[^?]{0,40}\b(?:cliente|servico|assinante)\b[^?]{0,20}\bsulnet\b"
+)
+
+
+def _existing_customer_question_already_asked(context: dict) -> bool:
+    """A IA já perguntou "você já é cliente Sulnet?" (em qualquer redação) nesta conversa."""
+    for row in context.get("history") or []:
+        if str(row.get("direction") or "").upper() != "OUTBOUND":
+            continue
+        if _EXISTING_CUSTOMER_QUESTION_RE.search(_fold_sales_text(str(row.get("body") or ""))):
+            return True
+    return False
+
+
 def _apply_prospecting_entry_policy(
     decision: AIDecision,
     context: dict,
@@ -1453,6 +1468,11 @@ def _apply_prospecting_entry_policy(
     status = _existing_customer_from_context(context)
 
     if not status:
+        # Já perguntou e o cliente não respondeu sim/não (falou de plano, preço, cidade...):
+        # repetir a pergunta travava a conversa (REPEATED_QUESTION + resposta genérica).
+        # Segue com o que o cliente trouxe; a pergunta fica pendente sem ser repetida.
+        if latest and _existing_customer_question_already_asked(context):
+            return decision
         return _show_existing_customer_question(decision)
 
     decision.qualification.existing_customer = status

@@ -31,4 +31,4 @@ def test_cliente_de_verdade_nao_e_resposta_automatica():
 
 
 def test_limite_de_follow_up_sem_resposta():
-    assert ai_followups.MAX_UNANSWERED_FOLLOWUPS == 3
+    assert ai_followups.MAX_UNANSWERED_FOLLOWUPS == 2

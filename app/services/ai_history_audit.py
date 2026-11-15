@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from sqlalchemy import func, select
 
-from app.models import AIAgentProfile, AIRun, Conversation, Message
+from app.models import AIAgentProfile, AIRun, Conversation, Lead, Message
 from app.timeutils import utcnow
 
 LOG = logging.getLogger("uvicorn.error")
@@ -61,6 +61,35 @@ def log_ai_history_audit(db) -> None:
         select(Conversation.status, func.count()).where(Conversation.id.in_(select(Message.conversation_id).where(ai_messages))).group_by(Conversation.status)
     ):
         LOG.info("ai_audit conversas_status status=%s qty=%s", status, qty)
+
+    # Conversão: etapa do lead nas conversas atendidas pela IA e funil por etapa da conversa.
+    ai_conversations = select(Message.conversation_id).where(ai_messages)
+    for stage, qty in db.execute(
+        select(Lead.stage, func.count(func.distinct(Conversation.id)))
+        .join(Conversation, Conversation.lead_id == Lead.id)
+        .where(Conversation.id.in_(ai_conversations))
+        .group_by(Lead.stage)
+        .order_by(func.count(func.distinct(Conversation.id)).desc())
+    ):
+        LOG.info("ai_audit conversao_lead_stage stage=%s conversas=%s", stage, qty)
+    for label, term in (
+        ("plano_apresentado", "%R$%"),
+        ("pediu_cpf", "%CPF%"),
+        ("pediu_cep", "%CEP%"),
+        ("pediu_email", "%e-mail%"),
+        ("contrato_assinatura", "%assinatura%"),
+    ):
+        qty = db.scalar(
+            select(func.count(func.distinct(Message.conversation_id))).where(ai_messages, Message.body.ilike(term))
+        ) or 0
+        LOG.info("ai_audit funil etapa=%s conversas=%s de=%s", label, qty, convs)
+    for week, qty in db.execute(
+        select(func.date_trunc("week", Message.created_at), func.count(func.distinct(Message.conversation_id)))
+        .where(ai_messages)
+        .group_by(func.date_trunc("week", Message.created_at))
+        .order_by(func.date_trunc("week", Message.created_at))
+    ):
+        LOG.info("ai_audit conversas_por_semana semana=%s conversas=%s", str(week)[:10], qty)
 
     bodies = Counter()
     for body in db.scalars(select(Message.body).where(ai_messages)):

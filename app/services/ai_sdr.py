@@ -1693,6 +1693,24 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
                 [QuickReply(id="ver_planos", label="Ver planos"), QuickReply(id="duvida", label="Tenho uma dúvida")],
             )
         )
+    # Último recurso: em vez de um "me conta com suas palavras" solto (a frase mais repetida
+    # do histórico), oferece caminhos com botão e varia o texto se já foi enviado.
+    product_buttons = [
+        QuickReply(id="prospeccao_internet", label="Internet"),
+        QuickReply(id="prospeccao_movel", label="Telefonia Móvel"),
+    ]
+    candidates.append(
+        (
+            f"{prefix}Para eu te ajudar mais rápido: você quer ver planos de internet ou de Telefonia Móvel?",
+            product_buttons,
+        )
+    )
+    candidates.append(
+        (
+            "Posso te mostrar a melhor opção em poucos passos. Qual desses você quer ver agora?",
+            product_buttons,
+        )
+    )
     candidates.append(
         (
             f"{prefix}Me conta com suas palavras o que você precisa que eu resolvo por aqui.",
