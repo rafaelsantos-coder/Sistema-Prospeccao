@@ -134,11 +134,25 @@ def log_recent_prospecting_jobs() -> None:
         db.close()
 
 
+def log_ai_history() -> None:
+    """Auditoria somente leitura do histórico da IA (agregados + amostra mascarada) por log."""
+    from app.services.ai_history_audit import log_ai_history_audit
+
+    db = SessionLocal()
+    try:
+        log_ai_history_audit(db)
+    except Exception:  # diagnóstico nunca pode impedir a subida
+        LOG.warning("ai_audit_failed", exc_info=True)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_production_settings()
     await initialize_database()
     log_recent_prospecting_jobs()
+    log_ai_history()
     await configure_zapi_webhooks()
     yield
 
