@@ -4004,3 +4004,34 @@ def test_sdr_debounce_is_short_for_button_like_replies(monkeypatch):
         "porque hoje pago caro e a internet cai toda hora no escritório."
     ) == 6
     assert sdr_debounce_seconds_for_message("linha1\nlinha2") == 6
+
+
+def test_existing_customer_question_is_not_repeated_after_it_was_asked():
+    """Auditoria 15/11: a pergunta "já é cliente?" voltava a cada resposta livre do lead."""
+    decision = _base_prospecting_entry_decision()
+    decision.reply_text = "Temos 800 Mega e 650 Mega em Santa Rosa. Qual você prefere?"
+    context = {
+        "latest_customer_message": "Quanto custa a internet?",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": ""},
+        "history": [
+            {"direction": "OUTBOUND", "body": "Você já possui algum serviço da Sulnet?"},
+            {"direction": "INBOUND", "body": "Quanto custa a internet?"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.reply_text == "Temos 800 Mega e 650 Mega em Santa Rosa. Qual você prefere?"
+
+
+def test_existing_customer_question_is_asked_once_when_never_asked():
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Oi, quero internet",
+        "lead": {"city": "Santa Rosa", "confirmed_existing_customer": ""},
+        "history": [{"direction": "INBOUND", "body": "Oi, quero internet"}],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert "já é cliente Sulnet" in result.reply_text

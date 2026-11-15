@@ -398,7 +398,8 @@ _CUSTOMER_STOP_EXACT = {"nao obrigado", "nao obrigada", "prefiro nao", "nao quer
 # Intervalo mínimo entre uma mensagem nossa e um follow-up (pedido do comercial).
 FOLLOWUP_MIN_GAP = timedelta(hours=2)
 # Conversa Leonardo (10/11): oito mensagens seguidas sem resposta do cliente.
-MAX_UNANSWERED_FOLLOWUPS = 3
+# Auditoria 15/11: 63% das conversas ficaram sem resposta; 2 tentativas bastam, insistir arrisca o número.
+MAX_UNANSWERED_FOLLOWUPS = 2
 
 
 def _latest_inbound_at(db: Session, conversation_id: int):
