@@ -228,7 +228,6 @@ def check_sales_and_escalations(db: Session) -> int:
 
 STUCK_SALE_AFTER = timedelta(minutes=10)
 STUCK_SALE_WINDOW = timedelta(hours=24)
-STUCK_SALE_COOLDOWN = timedelta(hours=6)
 _SALE_DONE_STEPS = {"COMPLETED", "ESCALATED"}
 _LONG_DIGITS = re.compile(r"\d{6,}")
 
@@ -295,7 +294,8 @@ def check_stuck_sales(db: Session) -> int:
         # A chave leva o erro, não a etapa: um erro antigo que ficou gravado não gera
         # aviso novo a cada etapa que a venda avança (venda 27, 15/11).
         reason = hashlib.sha256((error or state.step).encode()).hexdigest()[:12]
-        if send_ops_alert(db, key=f"stuck-sale:{state.id}:{reason}", text=text, cooldown=STUCK_SALE_COOLDOWN):
+        # Mesmo cliente com o mesmo erro: avisa uma vez só (pedido do gestor, 15/11).
+        if send_ops_alert(db, key=f"stuck-sale:{state.id}:{reason}", text=text):
             sent += 1
     return sent
 
