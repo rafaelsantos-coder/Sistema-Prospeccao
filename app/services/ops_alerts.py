@@ -16,6 +16,7 @@ os demais levam identificadores técnicos, plano e valor. CPF nunca é enviado.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -291,7 +292,10 @@ def check_stuck_sales(db: Session) -> int:
             conversation_id=state.conversation_id,
             opportunity_id=state.opportunity_id,
         )
-        if send_ops_alert(db, key=f"stuck-sale:{state.id}:{state.step}", text=text, cooldown=STUCK_SALE_COOLDOWN):
+        # A chave leva o erro, não a etapa: um erro antigo que ficou gravado não gera
+        # aviso novo a cada etapa que a venda avança (venda 27, 15/11).
+        reason = hashlib.sha256((error or state.step).encode()).hexdigest()[:12]
+        if send_ops_alert(db, key=f"stuck-sale:{state.id}:{reason}", text=text, cooldown=STUCK_SALE_COOLDOWN):
             sent += 1
     return sent
 
