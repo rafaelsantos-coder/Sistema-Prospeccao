@@ -1929,6 +1929,185 @@ def _try_fast_purchase_path(
 
 
 
+def _recall_city(context: dict, *, from_reply: bool) -> str:
+    """Cidade atendida já conhecida (ou respondida agora) para a rechamada."""
+    if from_reply:
+        return _service_city_in_text(str(context.get("latest_customer_message") or ""))
+    known = _known_city_for_fast_path(context)
+    return _service_city_in_text(known) if known else ""
+
+
+def _recall_decision(action: str, city: str) -> AIDecision:
+    from app.services import ai_campaign_recall as recall  # noqa: PLC0415
+
+    plan = _ftth_plan_by_speed(recall.PLAN_SPEED) or {}
+    handoff = action == "CLOSE"
+    decision = _fast_purchase_decision(plan, city, handoff=handoff)
+    if handoff:
+        decision.free_months = recall.FREE_MONTHS
+        decision.concession_level = 3
+        decision.summary = recall.with_marker(
+            f"Rechamada: cliente aceitou {recall.PLAN_LABEL} com {recall.FREE_MONTHS} mensalidades grátis"
+            + (f" em {city}." if city else ".")
+        )
+        return decision
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    decision.qualification.desired_product = None
+    decision.customer_commitment = False
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.handoff_target = "NONE"
+    if action == "OFFER":
+        decision.reply_text = recall.offer_text()
+        decision.quick_replies = [QuickReply(**item) for item in recall.OFFER_BUTTONS]
+        decision.intent = "INTEREST"
+        decision.sales_state = "OFFERING"
+        decision.recommended_stage = "PROPOSTA"
+        decision.journey_state = "CONFIRM_PURCHASE"
+        decision.journey_pending_action = "Cliente confirmar o fechamento da promoção."
+        decision.summary = "Rechamada: cliente quis conhecer a promoção; SulIA apresentou 800 Mega com 3 meses grátis."
+        decision.next_action = "Cliente confirmar se fecha a promoção agora."
+        decision.proposal_summary = (
+            f"{recall.PLAN_LABEL} com {recall.FREE_MONTHS} mensalidades grátis (economia de R$ {recall.SAVINGS_LABEL})."
+        )
+    elif action == "INSIST":
+        decision.reply_text = recall.INSIST_TEXT
+        decision.quick_replies = [QuickReply(**item) for item in recall.QUESTION_BUTTONS]
+        decision.intent = "NOT_INTERESTED"
+        decision.objection = "NO_INTEREST"
+        decision.temperature = "FRIO"
+        decision.qualification_score = 20
+        decision.sales_state = "WAITING_CUSTOMER"
+        decision.recommended_stage = "CONTATO_REALIZADO"
+        decision.journey_state = "HANDLE_OBJECTION"
+        decision.journey_pending_action = "Cliente confirmar se quer conhecer a promoção."
+        decision.followup_needed = False
+        decision.summary = "Rechamada: cliente respondeu não; SulIA insistiu uma vez."
+        decision.next_action = "Aguardar a resposta do cliente à insistência."
+    elif action == "END":
+        decision.reply_text = recall.END_TEXT
+        decision.quick_replies = []
+        decision.intent = "NOT_INTERESTED"
+        decision.objection = "NO_INTEREST"
+        decision.temperature = "FRIO"
+        decision.qualification_score = 10
+        decision.sales_state = "WAITING_CUSTOMER"
+        decision.recommended_stage = "CONTATO_REALIZADO"
+        decision.journey_state = "HANDLE_OBJECTION"
+        decision.journey_pending_action = ""
+        decision.followup_needed = False
+        decision.summary = "Rechamada: cliente recusou duas vezes; SulIA encerrou sem novo follow-up."
+        decision.next_action = "Nenhuma: conversa encerrada pela recusa."
+    else:  # ASK_CITY
+        decision.reply_text = recall.CITY_TEXT
+        decision.quick_replies = []
+        decision.summary = "Rechamada: cliente aceitou a promoção; aguardando a cidade da instalação."
+        decision.journey_pending_action = "Confirmar a cidade para validar a disponibilidade do plano."
+    return decision
+
+
+def _try_recall_path(
+    db: Session,
+    *,
+    agent: AIAgentProfile,
+    job: AIJob,
+    run: AIRun,
+    context: dict,
+) -> str | None:
+    """Roteiro fixo da rechamada (ai_campaign_recall): responde sem chamar o modelo.
+
+    Devolve None quando a conversa não está no roteiro ou a resposta é livre;
+    nesse caso o fluxo normal da IA segue.
+    """
+    from app.services import ai_campaign_recall as recall  # noqa: PLC0415
+
+    action = recall.next_action(
+        _last_outbound_text(context),
+        str(context.get("latest_customer_message") or ""),
+    )
+    if not action:
+        return None
+    plan = _ftth_plan_by_speed(recall.PLAN_SPEED)
+    if not plan:
+        return None
+
+    city = ""
+    if action in {"CLOSE", "CITY"}:
+        city = _recall_city(context, from_reply=action == "CITY")
+        if city and not _plan_available_in_city(plan, city):
+            # Cidade sem o 800 Mega: o fluxo normal apresenta o que existe lá.
+            return None
+        if not city:
+            if action == "CITY":
+                return None
+            action = "ASK_CITY"
+        else:
+            action = "CLOSE"
+
+    from app.services.ai_followups import cancel_pending_followups, schedule_followup  # noqa: PLC0415
+    from app.services.ai_seller import start_closing_from_sdr  # noqa: PLC0415
+
+    decision = _recall_decision(action, city)
+    try:
+        with db.begin_nested():
+            if action == "CLOSE":
+                if not start_closing_from_sdr(db, sdr_agent=agent, job=job, decision=decision):
+                    raise AIConfigurationError("Vendedor IA indisponível para a rechamada.")
+            else:
+                _apply_crm_decision(db, agent=agent, job=job, decision=decision)
+                _send_autonomous_reply(db, agent=agent, job=job, decision=decision)
+                if action in {"INSIST", "END"}:
+                    cancel_pending_followups(db, job.conversation_id, reason="RECHAMADA_RECUSADA")
+                else:
+                    schedule_followup(
+                        db,
+                        agent_id=agent.id,
+                        queue_id=job.queue_id,
+                        conversation_id=job.conversation_id,
+                        source_message_id=job.message_id,
+                        step=1,
+                        pending_action=decision.journey_pending_action,
+                    )
+    except Exception as exc:
+        # Qualquer falha devolve a mensagem ao fluxo normal, sem estado parcial.
+        LOG.warning(
+            "ai_sdr_recall_fallback job=%s conversation=%s action=%s error=%s",
+            job.id,
+            job.conversation_id,
+            action,
+            exc,
+        )
+        return None
+
+    run.status = "CONCLUIDO"
+    run.intent = decision.intent
+    run.qualification_score = decision.qualification_score
+    run.temperature = decision.temperature
+    run.confidence = decision.confidence
+    run.handoff_recommended = decision.handoff_recommended
+    run.handoff_reason = decision.handoff_reason
+    run.reply_text = "" if action == "CLOSE" else decision.reply_text
+    run.summary = decision.summary
+    run.output_json = json.dumps(
+        {**decision.model_dump(), "recall_path": action},
+        ensure_ascii=False,
+        default=str,
+    )
+    run.finished_at = utcnow()
+    job.status = "CONCLUIDO"
+    job.error = None
+    LOG.info(
+        "ai_sdr_recall job=%s conversation=%s action=%s city=%s",
+        job.id,
+        job.conversation_id,
+        action,
+        city or "-",
+    )
+    return f"recall_{action.lower()}"
+
+
+
 def ai_reply_limit_reached(db: Session, conversation_id: int) -> bool:
     """Trava de custo/abuso: mensagens enviadas na última hora nesta conversa."""
     since = utcnow() - timedelta(hours=1)
@@ -2033,6 +2212,15 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     db.flush()
 
     if effective_mode == "AUTO":
+        recall_outcome = _try_recall_path(
+            db,
+            agent=agent,
+            job=job,
+            run=run,
+            context=context,
+        )
+        if recall_outcome:
+            return recall_outcome
         fast_outcome = _try_fast_purchase_path(
             db,
             agent=agent,

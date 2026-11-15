@@ -33,6 +33,7 @@ from app.services.ai_guardian import GuardianBlockedError, guard_outbound_messag
 from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE, UNTRUSTED_INPUT_NOTICE
 from app.services.audit import write_audit
 from app.services import ai_campaign_black as black_campaign
+from app.services import ai_campaign_recall as recall_campaign
 from app.services import crm_notes
 from app.services import crm_prospect_sync as prospect_sync
 from app.services.crm_sulnet import (
@@ -3120,6 +3121,13 @@ def _sale_acceptance_prompt(
     due_day = collected.get("dueDay") or form.get("vencimento")
     if black_campaign.has_marker(getattr(state, "handoff_summary", "")):
         lines.append(f"• Promoção Black: 1ª mensalidade em {black_campaign.FIRST_DUE_DATE}")
+    elif price is not None and _discount_tag_for(state, collected):
+        months = int(collected.get("freeMonths") or 0)
+        lines.append(
+            f"• Promoção: {months} "
+            + ("primeira mensalidade grátis" if months == 1 else "primeiras mensalidades grátis")
+            + f" (economia de R$ {_seller_brl(price * months)})"
+        )
     if payment:
         lines.append(f"• Pagamento: {payment}")
     if due_day:
@@ -3877,6 +3885,7 @@ def _create_crm_if_ready(
                 LOG.warning("crm_prospect_rename_failed opportunity=%s status=%s", synced_id, exc.status_code)
         if black_campaign.has_marker(state.handoff_summary):
             _apply_black_tag(client, state)
+        _apply_discount_tag(client, state, collected)
         return
     payload: dict[str, Any] = {
         "externalId": state.external_id,
@@ -3927,6 +3936,7 @@ def _create_crm_if_ready(
             )
     if black_campaign.has_marker(state.handoff_summary):
         _apply_black_tag(client, state)
+    _apply_discount_tag(client, state, collected)
     try:
         client.add_opportunity_tag(state.opportunity_id, "IA")
     except CRMIntegrationError as exc:
@@ -3941,6 +3951,35 @@ def _apply_black_tag(client: SulnetCRMClient, state: AIClosingState) -> None:
         client.add_opportunity_tag(state.opportunity_id, black_campaign.CAMPAIGN_TAG)
     except CRMIntegrationError as exc:
         LOG.warning("crm_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
+
+
+def _discount_tag_for(state: AIClosingState, collected: dict[str, Any]) -> str:
+    """Tag "Desconto N mensalidade(s)" para fibra 650/800 Mega com mensalidades grátis.
+
+    O CRM escolhe o contrato pela tag; a Black tem prioridade e não se mistura.
+    """
+    if black_campaign.has_marker(getattr(state, "handoff_summary", "")):
+        return ""
+    label = _norm(str(getattr(state, "plan_label", "") or ""))
+    if "fibra" not in label or not any(speed in label for speed in ("650", "800")):
+        return ""
+    try:
+        months = int(collected.get("freeMonths") or 0)
+    except (TypeError, ValueError):
+        return ""
+    return recall_campaign.discount_tag(months)
+
+
+def _apply_discount_tag(client: SulnetCRMClient, state: AIClosingState, collected: dict[str, Any]) -> None:
+    """Falha da tag nunca trava a venda; fica registrada no log para conferência."""
+    tag = _discount_tag_for(state, collected)
+    if not tag or not state.opportunity_id:
+        return
+    try:
+        if not client.add_opportunity_tag(state.opportunity_id, tag):
+            LOG.warning("crm_discount_tag_missing opportunity=%s tag=%s", state.opportunity_id, tag)
+    except CRMIntegrationError as exc:
+        LOG.warning("crm_discount_tag_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
 
 
 COMBO_MOBILE_STEP = "COMBO_MOBILE_PLAN"
@@ -4622,7 +4661,9 @@ def start_closing_from_sdr(
             )[-5000:]
 
     black_combo = False
-    if _black_campaign_accepted(db, conversation.id):
+    # Rechamada com mensalidades grátis: a tag da Black tem prioridade no CRM e
+    # trocaria o contrato prometido, então a Black não entra nesta venda.
+    if not recall_campaign.has_marker(state.handoff_summary) and _black_campaign_accepted(db, conversation.id):
         state.handoff_summary = black_campaign.with_marker(state.handoff_summary)[-5000:]
         black_combo = _black_campaign_choice(db, conversation.id) == "COMBO"
 
