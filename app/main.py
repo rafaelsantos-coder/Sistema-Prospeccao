@@ -147,12 +147,29 @@ def log_ai_history() -> None:
         db.close()
 
 
+def prepare_recall_dispatch() -> None:
+    """Rechamada da IA: conta ou cria os disparos em rascunho (RECALL_IA_DISPATCH)."""
+    if not settings.recall_ia_dispatch.strip():
+        return
+    from app.services.recall_dispatch import run_recall_from_settings
+
+    db = SessionLocal()
+    try:
+        run_recall_from_settings(db, settings.recall_ia_dispatch)
+    except Exception:  # preparação nunca pode impedir a subida
+        db.rollback()
+        LOG.warning("recall_dispatch_failed", exc_info=True)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_production_settings()
     await initialize_database()
     log_recent_prospecting_jobs()
     log_ai_history()
+    prepare_recall_dispatch()
     await configure_zapi_webhooks()
     yield
 
