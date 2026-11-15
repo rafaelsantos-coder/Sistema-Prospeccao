@@ -77,7 +77,7 @@ class Settings:
         "AI_SDR_OBSERVE_POLICIES", "unavailable_plan,router_information"
     )
     # Rechamada dos clientes atendidos pela IA: "dry_run" só conta no log,
-    # "prepare" cria os disparos em rascunho (services/recall_dispatch.py).
+    # "prepare" cria os disparos em rascunho, "start" cria e inicia (services/recall_dispatch.py).
     recall_ia_dispatch: str = os.getenv("RECALL_IA_DISPATCH", "")
     ai_weekly_analyst_enabled: bool = os.getenv("AI_WEEKLY_ANALYST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     ai_sdr_tools_enabled: bool = os.getenv("AI_SDR_TOOLS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}

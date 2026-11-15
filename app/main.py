@@ -148,7 +148,7 @@ def log_ai_history() -> None:
 
 
 def prepare_recall_dispatch() -> None:
-    """Rechamada da IA: conta ou cria os disparos em rascunho (RECALL_IA_DISPATCH). Nunca envia."""
+    """Rechamada da IA: conta ou cria os disparos em rascunho (RECALL_IA_DISPATCH)."""
     if not settings.recall_ia_dispatch.strip():
         return
     from app.services.recall_dispatch import run_recall_from_settings

@@ -1,8 +1,9 @@
 """Monta o disparo da rechamada (ai_campaign_recall) para quem a IA atendeu.
 
 O disparo nasce em RASCUNHO, um por fila, para o gestor conferir e iniciar na
-tela de Disparos. Nada é enviado aqui. Controlado por RECALL_IA_DISPATCH:
-"dry_run" só registra as contagens no log; "prepare" cria os rascunhos.
+tela de Disparos. Controlado por RECALL_IA_DISPATCH: "dry_run" só registra as
+contagens no log; "prepare" cria os rascunhos; "start" cria e já inicia o envio
+(autorizado pelo gestor em 15/11), no intervalo e na janela definidos abaixo.
 Rodar de novo não duplica: quem já está num disparo da rechamada fica de fora.
 """
 
@@ -126,7 +127,7 @@ def _exclusion(db, conversation: Conversation, lead: Lead | None, queue: Service
     return ""
 
 
-def prepare_recall_dispatches(db, *, dry_run: bool = True) -> dict:
+def prepare_recall_dispatches(db, *, dry_run: bool = True, auto_start: bool = False) -> dict:
     """Seleciona os clientes e, fora do dry_run, cria um disparo em rascunho por fila."""
     from app.services.dispatch_queue import create_dispatch_from_leads  # noqa: PLC0415
 
@@ -202,7 +203,7 @@ def prepare_recall_dispatches(db, *, dry_run: bool = True) -> dict:
             daily_limit=DAILY_LIMIT,
             window_start=WINDOW_START,
             window_end=WINDOW_END,
-            auto_start=False,
+            auto_start=auto_start,
             source="RECALL_IA",
         )
         if dispatch:
@@ -213,16 +214,16 @@ def prepare_recall_dispatches(db, *, dry_run: bool = True) -> dict:
 
 
 def run_recall_from_settings(db, mode: str) -> None:
-    """Chamado na subida do web. Nunca envia mensagem e nunca impede a subida."""
+    """Chamado na subida do web. Só o modo "start" inicia o envio; nunca impede a subida."""
     mode = (mode or "").strip().lower()
-    if mode not in {"dry_run", "prepare"}:
+    if mode not in {"dry_run", "prepare", "start"}:
         return
     if db.get_bind().dialect.name == "postgresql":
         # Duas réplicas subindo juntas não podem criar o mesmo rascunho duas vezes.
         if not db.scalar(text("SELECT pg_try_advisory_xact_lock(:lock_id)"), {"lock_id": _LOCK_ID}):
             LOG.info("recall_dispatch skipped=lock")
             return
-    result = prepare_recall_dispatches(db, dry_run=mode != "prepare")
+    result = prepare_recall_dispatches(db, dry_run=mode == "dry_run", auto_start=mode == "start")
     db.commit()
     LOG.info(
         "recall_dispatch mode=%s conversas=%s elegiveis=%s por_fila=%s excluidos=%s disparos=%s",
