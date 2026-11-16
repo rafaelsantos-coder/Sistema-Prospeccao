@@ -17,7 +17,7 @@
     signed_rate: {label: 'Conversão', unit:'%', short:'conversão em contrato'},
     total: {label: 'Consultas', unit:'', short:'consultas'},
   };
-  const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0, mode:'approved', heatLayer:null, streetHeatRows:[], gpsHeatRows:[], triangleFittedFor:''};
+  const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0, mode:'approved', heatLayer:null, streetHeatRows:[], gpsHeatRows:[], triangleFittedFor:'', heatGpsFittedFor:''};
   // L is Leaflet normally; on Google Maps we supply only the small surface used by this panel.
   let L = window.L;
   let activeMapProvider = 'osm';
@@ -173,7 +173,7 @@
           if(!data) return;
         }
       }
-      state.data = data; state.streetHeatRows = []; state.gpsHeatRows = []; state.triangleFittedFor = ''; state.revision += 1; updateHoodOptions(); sync('Dados agregados carregados'); drawAll();
+      state.data = data; state.streetHeatRows = []; state.gpsHeatRows = []; state.triangleFittedFor = ''; state.heatGpsFittedFor = ''; state.revision += 1; updateHoodOptions(); sync('Dados agregados carregados'); drawAll();
     } catch(err) { showMessage('Não foi possível carregar os indicadores: ' + err.message); sync('Erro ao carregar'); }
     finally { $('cm-apply').disabled = false; }
   }
@@ -438,6 +438,7 @@
     clearLayers();
     state.streetHeatRows = [];
     state.gpsHeatRows = [];
+    state.heatGpsFittedFor = '';
     state.positions = new Map();
     const rows = visibleRows();
 
@@ -461,6 +462,10 @@
       if (addressGroup) addressGroup.clearLayers();
       return;
     }
+    // Calor verde pode surgir imediatamente da coluna Q; nao precisa aguardar
+    // a geocodificacao dos bairros para apresentar os pontos aprovados.
+    const gpsStarted = state.mode === 'approved' && !state.data.all;
+    if (gpsStarted) drawDetailLayers(ticket);
     const bounds = [], centers = [], positions = new Map();
     const cities = state.data.all ? (state.data.cities || []) : [$('cm-city').value];
     let pending = false;
@@ -495,7 +500,7 @@
       if (addressGroup) addressGroup.clearLayers();
       $('cm-streets-status').textContent = '';
       $('cm-address-status').textContent = '';
-    } else drawDetailLayers(ticket);
+    } else if (!gpsStarted) drawDetailLayers(ticket);
   }
   // Ruas e endereços são localizados em rodadas alternadas (o serviço público de endereços aceita
   // uma consulta por segundo), para os triângulos aparecerem desde o começo, sem esperar as ruas.
@@ -531,7 +536,16 @@
     const gpsRows = (data.addresses || []).filter(row =>
       !selectedHood() || folded(row.neighborhood) === folded(selectedHood()));
     state.gpsHeatRows = gpsRows.filter(row => row.source_coordinates);
-    if (needsHeat) renderHeat();
+    if (needsHeat) {
+      renderHeat();
+      const gpsKey = query.toString() + selectedHood();
+      if (state.positions.size === 0 && gpsRows.length && state.heatGpsFittedFor !== gpsKey) {
+        const coords = gpsRows.filter(row => row.source_coordinates).map(row => [row.lat, row.lng]);
+        if (coords.length >= 2) state.map.fitBounds(coords, {padding:[50, 50], maxZoom:13});
+        else if (coords.length) state.map.setView(coords[0], 13);
+        state.heatGpsFittedFor = gpsKey;
+      }
+    }
     for (const row of spread($('cm-addresses').checked ? gpsRows : [])) {
       const where = row.street ? esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)') : 'Coordenada registrada';
       const status = row.signed ? 'Aprovado · contrato assinado' : 'Aprovado · sem contrato';
