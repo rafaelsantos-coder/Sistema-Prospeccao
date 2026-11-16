@@ -118,3 +118,17 @@ def test_codigo_ftth_tambem_recebe_a_tag_de_desconto():
     state = SimpleNamespace(plan_label="FTTH_800", handoff_summary="")
     assert _discount_tag_for(state, {"freeMonths": 3}) == "Desconto 3 mensalidades"
     assert "Promoção Black 2027" in PROMO_TAGS and len(PROMO_TAGS) == 4
+
+
+def test_rechamada_ampliada_tem_os_modos_e_as_regras_do_gestor():
+    import inspect
+
+    from app.services import recall_dispatch
+
+    assert recall_dispatch.WIDE_SELLER_QUIET_DAYS == 3
+    assert recall_dispatch._OPEN_DEAL_STAGES == {"PROPOSTA", "NEGOCIACAO"}
+    source = inspect.getsource(recall_dispatch.run_recall_from_settings)
+    assert "wide_dry_run" in source and "wide_start" in source
+    wide = inspect.getsource(recall_dispatch.prepare_wide_recall)
+    assert "negociacao_aberta_fica_com_vendedor" in wide
+    assert "pediu_para_sair_ou_concluido" in wide
