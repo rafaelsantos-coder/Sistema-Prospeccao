@@ -239,7 +239,7 @@ def stuck_sale_text(*, name: str, phone: str, plan: str, step: str, error: str, 
     opportunity = f" · oportunidade {opportunity_id}" if opportunity_id else ""
     link = f"\nAbrir conversa: {settings.app_public_url.rstrip('/')}/conversations/{conversation_id}" if settings.app_public_url else ""
     return (
-        "⚠️ ERRO NO FECHAMENTO — AÇÃO NECESSÁRIA\n"
+        "⚠️ Venda parada na IA — ERRO NO FECHAMENTO — AÇÃO NECESSÁRIA\n"
         "A IA não conseguiu concluir a venda. Verifique a integração/CRM e assuma este caso.\n"
         f"Cliente: {name or 'não informado'}\n"
         f"Telefone: {phone or 'não informado'}\n"
