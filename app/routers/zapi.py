@@ -11,7 +11,16 @@ from starlette.responses import RedirectResponse
 
 from app.config import settings
 from app.database import SessionLocal, get_db
-from app.models import Activity, ConversationAssignment, Lead, Message, ZApiInstance
+from app.models import (
+    Activity,
+    ConversationAssignment,
+    ConversationZApiInstance,
+    Lead,
+    Message,
+    ServiceQueue,
+    ServiceQueueZApiInstance,
+    ZApiInstance,
+)
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.conversation_engine import (
@@ -33,6 +42,7 @@ from app.services.queue_routing import (
     set_lead_queue_preference,
 )
 from app.services.scoring import normalize_phone
+from app.services.secret_store import encrypt_secret
 from app.services.whatsapp_presence import is_user_whatsapp_online
 from app.services.zapi import ZApiError, ZApiService
 from app.services.zapi_instances import (
@@ -49,7 +59,7 @@ from app.services.zapi_instances import (
     service_for_queue,
 )
 from app.timeutils import utcnow
-from app.web import flash
+from app.web import flash, render
 
 
 router = APIRouter()
@@ -470,19 +480,37 @@ def create_zapi_instance_route(
     validate_csrf(request, csrf_token)
     require_roles(user, "ADMIN", "GESTOR")
     clean_instance_id = instance_id.strip()
-    if db.scalar(select(ZApiInstance.id).where(ZApiInstance.instance_id == clean_instance_id)):
+    existing = db.scalar(
+        select(ZApiInstance).where(ZApiInstance.instance_id == clean_instance_id)
+    )
+    if existing and (existing.active or existing.source_type == "ENV"):
         flash(request, "Esta instância Z-API já está cadastrada.", "warning")
         return RedirectResponse("/settings/whatsapp", status_code=303)
-    item = create_zapi_instance(
-        db,
-        name=name,
-        phone_label=phone_label,
-        base_url=base_url,
-        instance_id=clean_instance_id,
-        instance_token=instance_token,
-        client_token=client_token,
-        created_by_id=user.id,
-    )
+
+    # Instancias excluidas com historico sao arquivadas, nunca apagadas
+    # fisicamente. Um novo cadastro do mesmo ID reativa o registro, com
+    # credenciais novas e webhook rotacionado, preservando o historico.
+    reactivated = existing is not None
+    if existing:
+        item = existing
+        item.name = name.strip()
+        item.phone_label = phone_label.strip()
+        item.base_url = (base_url.strip() or settings.zapi_base_url).rstrip("/")
+        item.instance_token_encrypted = encrypt_secret(instance_token)
+        item.client_token_encrypted = encrypt_secret(client_token)
+        item.webhook_key = secrets.token_urlsafe(36)
+        item.active = True
+    else:
+        item = create_zapi_instance(
+            db,
+            name=name,
+            phone_label=phone_label,
+            base_url=base_url,
+            instance_id=clean_instance_id,
+            instance_token=instance_token,
+            client_token=client_token,
+            created_by_id=user.id,
+        )
     device_info: dict[str, Any] = {}
     try:
         service = service_for_instance(item)
@@ -499,7 +527,7 @@ def create_zapi_instance_route(
     write_audit(
         db,
         user=user,
-        action="ZAPI_INSTANCE_CREATED",
+        action="ZAPI_INSTANCE_REACTIVATED" if reactivated else "ZAPI_INSTANCE_CREATED",
         entity_type="zapi_instance",
         entity_id=item.id,
         payload={
@@ -511,7 +539,112 @@ def create_zapi_instance_route(
         },
     )
     db.commit()
-    flash(request, f"Instância {item.name} cadastrada e webhook configurado.")
+    verb = "reativada" if reactivated else "cadastrada"
+    flash(request, f"Instância {item.name} {verb} e webhook configurado.")
+    return RedirectResponse("/settings/whatsapp", status_code=303)
+
+
+def _queues_bound_to_zapi_instance(db: Session, instance_db_id: int) -> list[ServiceQueue]:
+    # Bloquear tambem filas inativas: o vinculo historico pode ser reativado.
+    return list(
+        db.scalars(
+            select(ServiceQueue)
+            .join(
+                ServiceQueueZApiInstance,
+                ServiceQueueZApiInstance.queue_id == ServiceQueue.id,
+            )
+            .where(ServiceQueueZApiInstance.zapi_instance_id == instance_db_id)
+            .order_by(ServiceQueue.name)
+        )
+    )
+
+
+@router.get("/settings/zapi/instances/{instance_db_id}/delete")
+def confirm_delete_zapi_instance(
+    instance_db_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    require_roles(user, "ADMIN", "GESTOR")
+    instance = get_zapi_instance(db, instance_db_id)
+    if not instance or not instance.active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return render(
+        request,
+        "settings_zapi_delete.html",
+        user=user,
+        active_nav="settings",
+        settings_section="whatsapp",
+        page_title="Excluir instância WhatsApp",
+        instance=instance,
+        bound_queues=_queues_bound_to_zapi_instance(db, instance_db_id),
+    )
+
+
+@router.post("/settings/zapi/instances/{instance_db_id}/delete")
+def delete_zapi_instance(
+    instance_db_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR")
+
+    instance = get_zapi_instance(db, instance_db_id)
+    if not instance or not instance.active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # A instancia principal do Railway e recriada no bootstrap;
+    # excluir seu cadastro nao removia a origem real da configuracao.
+    if instance.source_type == "ENV":
+        flash(request, "Esta instância é gerenciada pelo Railway e não pode ser excluída aqui.", "warning")
+        return RedirectResponse("/settings/whatsapp", status_code=303)
+
+    # Nao alterar silenciosamente o numero de nenhuma fila e nem
+    # interromper conversas em andamento.
+    queues = _queues_bound_to_zapi_instance(db, instance_db_id)
+    if queues:
+        names = ", ".join(queue.name for queue in queues[:3])
+        more = " e outras" if len(queues) > 3 else ""
+        flash(
+            request,
+            f"Exclusão bloqueada: a instância está vinculada à(s) fila(s) {names}{more}. "
+            "Altere a instância dessas filas em Configurações > Filas de atendimento.",
+            "warning",
+        )
+        return RedirectResponse(
+            f"/settings/zapi/instances/{instance_db_id}/delete", status_code=303
+        )
+
+    history_exists = db.scalar(
+        select(ConversationZApiInstance.id)
+        .where(ConversationZApiInstance.zapi_instance_id == instance_db_id)
+        .limit(1)
+    ) is not None
+    name = instance.name
+    if history_exists:
+        # Preservar as referencias de conversas antigas e impedir novos
+        # webhooks/envios usando este registro arquivado.
+        instance.active = False
+    else:
+        db.delete(instance)
+    write_audit(
+        db,
+        user=user,
+        action="ZAPI_INSTANCE_DELETED",
+        entity_type="zapi_instance",
+        entity_id=instance_db_id,
+        payload={"name": name, "historical_record_preserved": history_exists},
+    )
+    db.commit()
+    flash(request, f"Instância {name} excluída do cadastro. Histórico preservado.")
     return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
