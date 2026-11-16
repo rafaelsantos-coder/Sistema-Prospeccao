@@ -90,6 +90,7 @@
                   <button class="button button-ghost" type="submit">Atualizar webhook</button>
                 </form>
                 {% if instance.source_type != 'ENV' %}
+                  <a class="button button-secondary" href="/settings/zapi/instances/{{ instance.id }}/edit" aria-label="Editar a instância {{ instance.name }}">Editar</a>
                   <a class="button button-danger" href="/settings/zapi/instances/{{ instance.id }}/delete" aria-label="Excluir a instância {{ instance.name }}">Excluir</a>
                 {% else %}
                   <span class="table-subline">Gerenciada pelo Railway</span>
@@ -115,9 +116,9 @@
           <label class="field"><span>Nome da instância</span><input name="name" required placeholder="Ex.: WhatsApp B2B"></label>
           <div class="field"><span>Número / identificação</span><div class="readonly-field">Identificado automaticamente após validar a instância</div><input type="hidden" name="phone_label" value=""></div>
           <label class="field field-span-2"><span>URL da Z-API</span><input name="base_url" value="https://api.z-api.io" required></label>
-          <label class="field"><span>Instance ID</span><input name="instance_id" required autocomplete="off"></label>
-          <label class="field"><span>Instance Token</span><input name="instance_token" type="password" required autocomplete="new-password"></label>
-          <label class="field field-span-2"><span>Client Token</span><input name="client_token" type="password" autocomplete="new-password"><small>Preencha quando sua conta Z-API utilizar Client-Token.</small></label>
+          <label class="field"><span>Instance ID</span><input name="instance_id" required autocomplete="off"><small>Copie do painel da instância Z-API correspondente ao WhatsApp conectado.</small></label>
+          <label class="field"><span>Token da Instância</span><input name="instance_token" type="password" required autocomplete="new-password"><small>Copie da mesma tela do Instance ID. Não é o token de segurança da conta.</small></label>
+          <label class="field field-span-2"><span>Client-Token da conta (segurança)</span><input name="client_token" type="password" autocomplete="new-password"><small>Copie da aba Segurança da Z-API, se estiver ativado. É diferente do Token da Instância.</small></label>
         </div>
         <button class="button button-primary" type="submit">Validar e cadastrar instância</button>
       </form>
