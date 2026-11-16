@@ -132,3 +132,4 @@ def test_rechamada_ampliada_tem_os_modos_e_as_regras_do_gestor():
     wide = inspect.getsource(recall_dispatch.prepare_wide_recall)
     assert "negociacao_aberta_fica_com_vendedor" in wide
     assert "pediu_para_sair_ou_concluido" in wide
+    assert "transferido_para_vendedor" in wide

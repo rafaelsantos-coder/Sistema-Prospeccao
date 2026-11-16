@@ -422,13 +422,20 @@ def prepare_wide_recall(db, *, dry_run: bool = True, auto_start: bool = False) -
         )
         target = _ai_target_queue(db, own_queue)
         reason = _exclusion(db, conversation, lead, phone, target)
-        if reason in {"vendedor_humano_atendendo", "em_fechamento_ou_fora_da_ia"}:
+        if reason == "vendedor_humano_atendendo":
+            reason = ""  # a regra dos 3 dias decide logo abaixo
+        elif reason == "em_fechamento_ou_fora_da_ia":
             ai_state = db.scalar(
                 select(AIConversationState.state).where(AIConversationState.conversation_id == conversation.id)
             )
-            # Quem pediu para sair ou já concluiu continua de fora; o resto passa
-            # pela regra dos 3 dias e da negociação aberta logo abaixo.
-            reason = "pediu_para_sair_ou_concluido" if ai_state in {"OPT_OUT", "COMPLETED"} else ""
+            if ai_state in {"OPT_OUT", "COMPLETED"}:
+                reason = "pediu_para_sair_ou_concluido"
+            elif ai_state == "CLOSING":
+                reason = "negociacao_aberta_fica_com_vendedor"
+            else:
+                # Transferido da IA para um vendedor: a IA não responde mais
+                # essa conversa, então o "Sim" ficaria sem resposta.
+                reason = "transferido_para_vendedor"
         sellers = _seller_messages(db, conversation.id, ai_user_ids)
         if not reason and any(created_at and created_at >= quiet_since for _, created_at in sellers):
             reason = "vendedor_falou_ultimos_3_dias"
