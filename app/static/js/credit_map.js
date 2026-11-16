@@ -490,10 +490,14 @@
     if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [40, 40], maxZoom: state.data.all ? 11 : 14});
     else if (bounds.length === 1) state.map.setView(bounds[0], 12);
     else if (centers.length) state.map.setView(centers[0], 12);
-    let status = located + ' de ' + rows.length + ' bairros posicionados · calor aproximado por bairro/rua';
+    let status = located + ' de ' + rows.length + ' bairros posicionados · ' +
+      (state.mode === 'approved' ? 'aprovações por GPS e saldo aproximado por bairro'
+        : state.mode === 'rejected' ? 'reprovações agregadas por rua/bairro'
+        : 'comparativo aproximado por bairro');
     if (state.mode === 'compare') status += ' · mínimo 20 decisões por bairro';
     if (pending) status += ' · alguns locais ainda não foram encontrados.';
-    else if (!centers.length) status = 'Não foi possível localizar a cidade. Ranking e indicadores continuam disponíveis.';
+    else if (!centers.length && !state.gpsHeatRows.length)
+      status = 'Não foi possível localizar a cidade. Ranking e indicadores continuam disponíveis.';
     $('cm-geocode-status').textContent = status;
     if (state.data.all) {
       if (streetGroup) streetGroup.clearLayers();
