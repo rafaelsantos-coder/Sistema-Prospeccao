@@ -511,19 +511,48 @@ def create_zapi_instance_route(
             client_token=client_token,
             created_by_id=user.id,
         )
+    # A validacao de credenciais e obrigatoria; os endpoints /device
+    # e de webhook podem falhar temporariamente mesmo quando /status
+    # valida as credenciais. Nesses casos o cadastro deve ser preservado,
+    # com aviso explicito de que a integracao esta incompleta.
     device_info: dict[str, Any] = {}
+    device_error: str | None = None
+    webhook_error: str | None = None
     try:
         service = service_for_instance(item)
         status_result = service.status()
-        if status_result.get("connected"):
-            device_info = refresh_instance_device_info(item)
-        webhook_url = instance_webhook_url(item)
-        if webhook_url:
-            service.configure_webhooks(webhook_url)
     except ZApiError as exc:
         db.rollback()
-        flash(request, f"Não foi possível validar a instância: {exc}", "error")
+        reason = str(exc)
+        if "client-token" in reason.casefold():
+            flash(
+                request,
+                "A Z-API rejeitou o Client-Token. Copie o token de segurança "
+                "da conta na área Segurança da Z-API; ele é diferente do "
+                "Token da Instância. Verifique também se está ativado.",
+                "error",
+            )
+        else:
+            flash(
+                request,
+                f"Não foi possível validar as credenciais da instância na Z-API: {reason}",
+                "error",
+            )
         return RedirectResponse("/settings/whatsapp", status_code=303)
+    if status_result.get("connected"):
+        try:
+            device_info = refresh_instance_device_info(item)
+        except ZApiError as exc:
+            device_error = str(exc)
+    webhook_url = instance_webhook_url(item)
+    if webhook_url:
+        try:
+            service.configure_webhooks(webhook_url)
+        except ZApiError as exc:
+            webhook_error = str(exc)
+    else:
+        webhook_error = "URL pública de webhook não configurada no Prospecta."
+
     write_audit(
         db,
         user=user,
@@ -536,11 +565,40 @@ def create_zapi_instance_route(
             "phone_label": item.phone_label,
             "device_name": device_info.get("name"),
             "connected": bool(status_result.get("connected")),
+            "webhook_configured": webhook_error is None,
+            "device_lookup_ok": device_error is None,
         },
     )
     db.commit()
     verb = "reativada" if reactivated else "cadastrada"
-    flash(request, f"Instância {item.name} {verb} e webhook configurado.")
+    if webhook_error:
+        hint = (
+            " Verifique o Client-Token na área Segurança da Z-API."
+            if "client-token" in webhook_error.casefold()
+            else ""
+        )
+        flash(
+            request,
+            f"Instância {item.name} {verb}, mas o webhook não foi configurado: "
+            f"{webhook_error}.{hint} Corrija a credencial e atualize o webhook "
+            "antes de utilizar a fila para receber mensagens.",
+            "warning",
+        )
+    elif device_error:
+        flash(
+            request,
+            f"Instância {item.name} {verb} e webhook configurado. "
+            "A consulta do telefone conectado falhou; revise o número no painel Z-API.",
+            "warning",
+        )
+    elif not status_result.get("connected"):
+        flash(
+            request,
+            f"Instância {item.name} {verb}, mas o WhatsApp não está conectado.",
+            "warning",
+        )
+    else:
+        flash(request, f"Instância {item.name} {verb} e webhook configurado.")
     return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
