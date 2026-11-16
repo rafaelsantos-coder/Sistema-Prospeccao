@@ -29,15 +29,40 @@
       </div>
     {% elif bound_queues %}
       <div class="info-box top-space">
-        <strong>Exclusão bloqueada: instância vinculada a filas</strong>
-        <p>Para não interromper os atendimentos nem alterar o número de saída sem autorização, primeiro selecione outra instância nas filas abaixo:</p>
+        <strong>Esta instância atende {{ bound_queues|length }} fila(s)</strong>
+        <p>Ao confirmar, o Sulnet Prospecta mudará o WhatsApp das filas abaixo para a instância que você escolher:</p>
         <ul>
           {% for queue in bound_queues %}
             <li><a href="/settings/queues/{{ queue.id }}">{{ queue.name }}</a>{% if not queue.active %} (inativa){% endif %}</li>
           {% endfor %}
         </ul>
-        <p>Depois de atualizar os vínculos, retorne a esta página e confirme a exclusão.</p>
+        <p>As conversas anteriores serão mantidas, mas novas mensagens dessas filas sairão pelo número substituto. Respostas enviadas ao número antigo não serão mais recebidas nesta integração depois da exclusão. A assinatura na Z-API não será cancelada.</p>
       </div>
+      {% if replacement_instances %}
+        <form action="/settings/zapi/instances/{{ instance.id }}/delete" method="post" class="stack-form top-space">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="field">
+            <span>Qual WhatsApp deve assumir as filas?</span>
+            <select name="replacement_instance_id" required>
+              <option value="" selected disabled>Selecione o número substituto</option>
+              {% for replacement in replacement_instances %}
+                <option value="{{ replacement.id }}">{{ replacement.name }} · {{ replacement.phone_label or 'Número não identificado' }}</option>
+              {% endfor %}
+            </select>
+            <small>A exclusão só será concluída se a Z-API confirmar que a instância escolhida está conectada.</small>
+          </label>
+          <div class="settings-action-row">
+            <button class="button button-danger" type="submit">Confirmar exclusão e transferir filas</button>
+            <a class="button button-secondary" href="/settings/whatsapp">Cancelar</a>
+          </div>
+        </form>
+      {% else %}
+        <div class="info-box top-space">
+          <strong>É necessário outro WhatsApp para continuar atendendo</strong>
+          <p>Cadastre uma nova instância WhatsApp antes de confirmar a exclusão.</p>
+          <a class="button button-secondary" href="/settings/whatsapp">Cadastrar outra instância</a>
+        </div>
+      {% endif %}
     {% else %}
       <div class="info-box top-space">
         <strong>Esta operação remove a instância do Sulnet Prospecta</strong>

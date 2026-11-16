@@ -581,6 +581,10 @@ def confirm_delete_zapi_instance(
         page_title="Excluir instância WhatsApp",
         instance=instance,
         bound_queues=_queues_bound_to_zapi_instance(db, instance_db_id),
+        replacement_instances=[
+            item for item in list_zapi_instances(db)
+            if item.id != instance_db_id
+        ],
     )
 
 
@@ -589,6 +593,7 @@ def delete_zapi_instance(
     instance_db_id: int,
     request: Request,
     csrf_token: str = Form(...),
+    replacement_instance_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ):
     user, redirect = _current_user_or_redirect(request, db)
@@ -607,21 +612,64 @@ def delete_zapi_instance(
         flash(request, "Esta instância é gerenciada pelo Railway e não pode ser excluída aqui.", "warning")
         return RedirectResponse("/settings/whatsapp", status_code=303)
 
-    # Nao alterar silenciosamente o numero de nenhuma fila e nem
-    # interromper conversas em andamento.
+    # A exclusao pode reatribuir todas as filas vinculadas, mas SOMENTE
+    # depois da escolha explicita de outra instancia pelo gestor.
     queues = _queues_bound_to_zapi_instance(db, instance_db_id)
+    replacement = None
     if queues:
-        names = ", ".join(queue.name for queue in queues[:3])
-        more = " e outras" if len(queues) > 3 else ""
-        flash(
-            request,
-            f"Exclusão bloqueada: a instância está vinculada à(s) fila(s) {names}{more}. "
-            "Altere a instância dessas filas em Configurações > Filas de atendimento.",
-            "warning",
+        if replacement_instance_id is None or replacement_instance_id == instance_db_id:
+            flash(request, "Escolha outra instância WhatsApp para assumir as filas antes de excluir.", "warning")
+            return RedirectResponse(
+                f"/settings/zapi/instances/{instance_db_id}/delete", status_code=303
+            )
+        replacement = get_zapi_instance(db, replacement_instance_id)
+        if not replacement or not replacement.active:
+            flash(request, "A instância de substituição não está ativa ou não existe.", "warning")
+            return RedirectResponse(
+                f"/settings/zapi/instances/{instance_db_id}/delete", status_code=303
+            )
+        try:
+            replacement_status = service_for_instance(replacement).status()
+        except ZApiError:
+            flash(
+                request,
+                "Não foi possível confirmar a conexão do WhatsApp substituto. Nenhuma fila foi alterada.",
+                "warning",
+            )
+            return RedirectResponse(
+                f"/settings/zapi/instances/{instance_db_id}/delete", status_code=303
+            )
+        if not replacement_status.get("connected"):
+            flash(
+                request,
+                "O WhatsApp substituto está desconectado. Escolha uma instância conectada.",
+                "warning",
+            )
+            return RedirectResponse(
+                f"/settings/zapi/instances/{instance_db_id}/delete", status_code=303
+            )
+
+    # Travar os vinculos para que a migracao e a exclusao sejam atomicas.
+    # A verificacao e repetida no POST, nao depende da tela aberta antes.
+    linked_rows = list(
+        db.scalars(
+            select(ServiceQueueZApiInstance)
+            .where(ServiceQueueZApiInstance.zapi_instance_id == instance_db_id)
+            .with_for_update()
         )
-        return RedirectResponse(
-            f"/settings/zapi/instances/{instance_db_id}/delete", status_code=303
-        )
+    )
+    moved_queue_ids: list[int] = []
+    if linked_rows:
+        if not replacement:
+            flash(request, "Os vínculos mudaram. Atualize a página e escolha a instância substituta.", "warning")
+            db.rollback()
+            return RedirectResponse(
+                f"/settings/zapi/instances/{instance_db_id}/delete", status_code=303
+            )
+        for link in linked_rows:
+            moved_queue_ids.append(link.queue_id)
+            link.zapi_instance_id = replacement.id
+        db.flush()
 
     history_exists = db.scalar(
         select(ConversationZApiInstance.id)
@@ -641,10 +689,22 @@ def delete_zapi_instance(
         action="ZAPI_INSTANCE_DELETED",
         entity_type="zapi_instance",
         entity_id=instance_db_id,
-        payload={"name": name, "historical_record_preserved": history_exists},
+        payload={
+            "name": name,
+            "historical_record_preserved": history_exists,
+            "moved_queue_ids": moved_queue_ids,
+            "replacement_instance_db_id": replacement.id if replacement else None,
+        },
     )
     db.commit()
-    flash(request, f"Instância {name} excluída do cadastro. Histórico preservado.")
+    if moved_queue_ids:
+        flash(
+            request,
+            f"Instância {name} excluída. {len(moved_queue_ids)} fila(s) transferida(s) "
+            f"para {replacement.name}. Histórico preservado.",
+        )
+    else:
+        flash(request, f"Instância {name} excluída do cadastro. Histórico preservado.")
     return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
