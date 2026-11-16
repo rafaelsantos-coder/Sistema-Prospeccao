@@ -29,6 +29,13 @@ Painel integrado ao sistema em `/reports/credit-map` com mapa OpenStreetMap (Lea
 - Quando o OpenStreetMap conhece a rua mas não o número, o triângulo fica no meio da rua e o balão avisa que a posição é aproximada. Clientes no mesmo ponto são afastados alguns metros para não ficarem um sobre o outro.
 - Os triângulos só aparecem depois de importar um CSV com as colunas Rua e Número; a primeira abertura localiza cerca de um endereço por segundo e guarda o resultado.
 
+## Exportar para o Google My Maps
+
+O botão **Arquivo para Google My Maps** (ADMIN e GESTOR) baixa um CSV com o endereço completo (rua, número, bairro, cidade) dos clientes aprovados no período e município escolhidos, com a coluna Situação (Contrato assinado / Aprovado sem contrato). O Google My Maps localiza cada endereço, inclusive o número da casa, sem chave de API nem custo. O arquivo não leva nome, CPF ou telefone, e cada download é registrado na auditoria (`CREDIT_MAP_EXPORTED_MY_MAPS`).
+
+- O My Maps não tem interface para automação: a importação do arquivo é feita na tela do Google. Mantenha o mapa **privado**, compartilhado só com as contas da equipe, porque ele lista endereços de clientes.
+- No My Maps: Criar novo mapa > Importar > escolher o arquivo > posicionar pela coluna Endereço > título pela coluna Bairro > Estilo > "Agrupar por" Situação, com verde para Contrato assinado e amarelo para Aprovado sem contrato.
+
 ## Limitações
 
 - O mapa usa círculos de intensidade sobre o OpenStreetMap. O uso dos mapas e do Nominatim públicos deve ser leve e interno; exige a atribuição "© OpenStreetMap" (já exibida no mapa).

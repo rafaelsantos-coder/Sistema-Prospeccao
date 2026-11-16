@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import delete, distinct, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -21,7 +22,8 @@ from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services import geocoding
 from app.services.credit_map import (
-    address_key, aggregate_csv_addresses, city_name, summarize, summarize_addresses, summarize_streets,
+    address_key, aggregate_csv_addresses, city_name, my_maps_csv, summarize, summarize_addresses,
+    summarize_streets,
 )
 from app.timeutils import utcnow
 from app.web import render
@@ -300,6 +302,40 @@ def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
             'signed': sum(r['count'] for r in rows if r['signed']),
             'unsigned': sum(r['count'] for r in rows if not r['signed']),
             'error': error}
+
+
+@router.get('/api/reports/credit-map/export-my-maps')
+def export_my_maps(request: Request, city: str = 'SANTO ÂNGELO',
+                   date_from: str = '2026-08', date_to: str = '2026-11',
+                   db: Session = Depends(get_db)):
+    """CSV dos endereços de clientes aprovados, pronto para importar no Google My Maps (ADMIN/GESTOR)."""
+    user = allowed(request, db, write=True)
+    if not city or len(city) > 120:
+        raise HTTPException(status_code=400, detail='Cidade inválida.')
+    if not (re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', date_from) and re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', date_to)):
+        raise HTTPException(status_code=400, detail='Período inválido.')
+    entries = list(db.scalars(select(CreditMapAddress).where(
+        CreditMapAddress.city == city_name(city),
+        CreditMapAddress.month >= date_from,
+        CreditMapAddress.month <= date_to,
+    )))
+    rows = summarize_addresses([
+        {'city': e.city, 'neighborhood': e.neighborhood, 'street': e.street, 'number': e.number,
+         'cep': e.cep, 'month': e.month, 'signed': e.signed, 'count': e.count}
+        for e in entries
+    ], city=city, start_month=date_from, end_month=date_to)
+    if not rows:
+        raise HTTPException(status_code=404, detail='Sem endereços de aprovados neste período. Importe o CSV com Rua e Número.')
+    write_audit(db, user=user, action='CREDIT_MAP_EXPORTED_MY_MAPS',
+                entity_type='report', entity_id='credit_map',
+                payload={'cidade': city_name(city), 'periodo': f'{date_from}/{date_to}', 'linhas': len(rows)})
+    db.commit()
+    return Response(
+        content=my_maps_csv(rows, city=city),
+        media_type='text/csv; charset=utf-8',
+        headers={'Content-Disposition': 'attachment; filename="mapa-credito-my-maps.csv"',
+                 'Cache-Control': 'no-store'},
+    )
 
 
 @router.get('/api/reports/credit-map/cities')

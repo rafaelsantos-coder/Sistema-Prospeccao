@@ -355,3 +355,27 @@ def summarize(
         'totals': totals, 'neighborhoods': neighborhoods, 'months': sorted(by_month.values(), key=lambda x: x['month']),
         'suppressed_neighborhoods': hidden_neighborhoods, 'min_sample': min_sample,
         'geolocation': 'Bairros no centro aproximado; os endereços de aprovados vêm de consulta separada.'}
+
+
+def _cell(value: str) -> str:
+    """Evita que uma célula comece com =, +, - ou @ (fórmula ao abrir em planilha)."""
+    return "'" + value if value[:1] in ('=', '+', '-', '@', '\t', '\r') else value
+
+
+def my_maps_csv(addresses: list[dict[str, Any]], *, city: str) -> str:
+    """CSV para importar no Google My Maps, que localiza cada endereço (com número).
+
+    A coluna Situação serve para colorir os pontos. Sem nome, CPF ou telefone.
+    """
+    city_label = city_name(city).title()
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator='\r\n')
+    writer.writerow(['Endereço', 'Situação', 'Bairro', 'Clientes'])
+    for row in addresses:
+        street = row['street'].title()
+        line = f"{street}, {row['number']}" if row['number'] else street
+        hood = row['neighborhood'].title() if row['neighborhood'] else ''
+        full = ', '.join([line] + ([hood] if hood else []) + [city_label, 'RS', 'Brasil'])
+        writer.writerow([_cell(full), 'Contrato assinado' if row['signed'] else 'Aprovado sem contrato',
+                         _cell(hood), int(row['count'])])
+    return out.getvalue()

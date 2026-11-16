@@ -12,6 +12,7 @@ from app.services.credit_map import (
     aggregate_csv_addresses,
     house_number,
     majority_color,
+    my_maps_csv,
     summarize,
     summarize_addresses,
 )
@@ -129,3 +130,43 @@ def test_endereco_usa_meio_da_rua_quando_o_mapa_nao_conhece_o_numero(monkeypatch
     monkeypatch.setattr(geocoding, "search_detail", lambda query: (-28.30, -54.26, "Rua das Flores, 100", "building"))
     assert geocoding.address_point("RUA DAS FLORES", "100", "CENTRO", "SANTO ÂNGELO", "", (-28.299, -54.263)) == (
         -28.30, -54.26, True)
+
+
+def test_csv_do_my_maps_tem_endereco_completo_e_situacao():
+    _aggregates, _streets, addresses, _stats = aggregate_csv_addresses(_csv())
+    rows = summarize_addresses(addresses, city=CITY, start_month="2026-08", end_month="2026-11")
+    lines = my_maps_csv(rows, city=CITY).strip().splitlines()
+    assert lines[0] == "Endereço,Situação,Bairro,Clientes"
+    assert len(lines) == 1 + 9
+    assert '"Rua Das Flores, 100, Centro, Cidade Teste, RS, Brasil",Contrato assinado,Centro,1' in lines
+    assert '"Rua Das Flores, 104, Centro, Cidade Teste, RS, Brasil",Aprovado sem contrato,Centro,1' in lines
+    assert "00000000191" not in "\n".join(lines)
+
+
+def test_csv_do_my_maps_neutraliza_formula():
+    rows = [{"street": "=CMD", "number": "", "neighborhood": "VILA", "signed": True, "count": 1}]
+    assert my_maps_csv(rows, city=CITY).splitlines()[1].startswith("\"'=Cmd")
+
+
+def test_endpoint_exporta_csv_so_para_quem_importa():
+    query = f"city={CITY}&date_from=2026-08&date_to=2026-11"
+    with TestClient(app) as client:
+        assert client.get("/api/reports/credit-map/export-my-maps?" + query).status_code == 401
+        _login(client)
+        page = client.get("/reports/credit-map")
+        assert 'id="cm-export-mymaps"' in page.text
+        csrf = re.search(r'data-csrf="([^"]*)"', page.text).group(1)
+        ok = client.post(
+            "/api/reports/credit-map/import",
+            files={"file": ("a.csv", _csv(), "text/csv")},
+            headers={"x-csrf-token": csrf},
+        )
+        assert ok.status_code == 200, ok.text
+        resp = client.get("/api/reports/credit-map/export-my-maps?" + query)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/csv")
+        assert "attachment" in resp.headers["content-disposition"]
+        assert len(resp.text.strip().splitlines()) == 1 + 9
+        assert "00000000191" not in resp.text
+        assert client.get("/api/reports/credit-map/export-my-maps?city=OUTRA&date_from=2026-08&date_to=2026-11").status_code == 404
+        assert client.get("/api/reports/credit-map/export-my-maps?city=X&date_from=abc&date_to=2026-11").status_code == 400
