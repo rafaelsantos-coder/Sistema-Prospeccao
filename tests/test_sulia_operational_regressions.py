@@ -64,7 +64,7 @@ def test_explicit_plan_change_is_only_case_transferring_ownership():
 
 def test_do_not_contact_pattern_does_not_confuse_plan_rejection():
     assert _NO_CONTACT_RE.search(_normalize_followup_text("não me mande mais ofertas"))
-    assert _NO_CONTACT_RE.search(_normalize_followup_text("retire meu número da lista")) is None
+    assert _NO_CONTACT_RE.search(_normalize_followup_text("retire meu número da lista"))
     assert not _NO_CONTACT_RE.search(_normalize_followup_text("não quero esse plano"))
     assert not _NO_CONTACT_RE.search(_normalize_followup_text("prefiro 650 Mega"))
 
