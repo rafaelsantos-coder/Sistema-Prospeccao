@@ -16,7 +16,7 @@ def test_pagina_do_mapa_contem_todas_as_camadas_com_avisos_de_precisao():
         assert 'id="cm-neighborhood"' in html
         assert "credit_map_heat.js" in html
         assert html.index("credit_map_heat.js") < html.index("credit_map.js")
-        assert "Calor estimado por centros de bairro e rua" in html
+        assert "Verde: GPS de aprovados + saldo por bairro" in html
         assert "Triângulos = GPS informado no CSV" in html
         assert 'id="cm-streets" checked' not in html
         assert 'id="cm-addresses" checked' not in html
