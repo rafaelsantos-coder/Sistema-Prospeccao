@@ -67,7 +67,8 @@ A visualização agora possui quatro modos alternados pelo usuário:
 ### Intensidade e precisão
 
 - O mapa usa uma camada Canvas própria, compatível com Google Maps e Leaflet, em vez do `HeatmapLayer` antigo do Google (descontinuado).
-- Cada bairro localizado contribui no seu centro aproximado. Quando há posição geográfica de uma rua agregada (mínimo de 5 consultas por rua, conforme regra do servidor), o volume dessa rua é retirado do total do bairro e representado na posição da rua; apenas o **saldo** continua no centro do bairro. Assim a quantidade não é duplicada.
+- **Aprovações:** os pontos com GPS válido da coluna Q contribuem na coordenada de origem, e somente o saldo sem GPS fica no centro aproximado do bairro. Não se reutilizam os agregados de ruas nesse modo, pois eles poderiam conter as mesmas aprovações.
+- **Reprovações:** as ruas geocodificadas (mínimo de 5 consultas totais por rua) recebem a quantidade de reprovações do local, subtraída do total do bairro. Só o saldo não localizado permanece no centro do bairro. Não há mapa de domicílios reprovados; a concentração representa agregados aproximados.
 - Os pontos de ruas e os centros de bairros **não representam limites oficiais nem endereços individuais**. A largura das manchas é visual (em pixels), não metros de cobertura.
 - Bairros com menos de 10 consultas ou sem bairro informado não são detalhados no mapa, mas continuam nos KPIs globais.
 - No comparativo, bairros com 10 a 19 decisões ficam fora do calor, evitando conclusões baseadas em pequenas amostras. Para volume de aprovações e reprovações, permanece a privacidade mínima de 10 consultas por bairro.
