@@ -32,7 +32,7 @@ def test_mapa_osm_por_padrao_sem_chave(monkeypatch):
         assert response.status_code == 200
         assert 'data-map-provider="osm"' in response.text
         assert "data-google-maps-key" not in response.text
-        assert "maps.googleapis.com" not in [urlsplit(source).hostname for source in _script_sources(response)]
+        assert all(urlsplit(source).hostname != "maps.googleapis.com" for source in _script_sources(response))
 
 
 def test_mapa_google_habilita_csp_somente_no_painel(monkeypatch):
@@ -43,11 +43,11 @@ def test_mapa_google_habilita_csp_somente_no_painel(monkeypatch):
         assert response.status_code == 200
         assert 'data-map-provider="google"' in response.text
         assert 'data-google-maps-key="test-key-not-real"' in response.text
-        assert "maps.googleapis.com" in [urlsplit(source).hostname for source in _script_sources(response)]
-        assert "maps.gstatic.com" in [urlsplit(source).hostname for source in _script_sources(response)]
+        assert any(urlsplit(source).hostname == "maps.googleapis.com" for source in _script_sources(response))
+        assert any(urlsplit(source).hostname == "maps.gstatic.com" for source in _script_sources(response))
         assert "data-google-maps-nonce=" in response.text
         other = client.get("/dashboard")
-        assert "maps.googleapis.com" not in [urlsplit(source).hostname for source in _script_sources(other)]
+        assert all(urlsplit(source).hostname != "maps.googleapis.com" for source in _script_sources(other))
 
 
 def test_google_pede_chave_sem_habilitar_por_engano(monkeypatch):
