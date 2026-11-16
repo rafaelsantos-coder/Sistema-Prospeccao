@@ -602,6 +602,130 @@ def create_zapi_instance_route(
     return RedirectResponse("/settings/whatsapp", status_code=303)
 
 
+@router.get("/settings/zapi/instances/{instance_db_id}/edit")
+def edit_zapi_instance_page(
+    instance_db_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    require_roles(user, "ADMIN", "GESTOR")
+    instance = get_zapi_instance(db, instance_db_id)
+    if not instance or not instance.active or instance.source_type == "ENV":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return render(
+        request,
+        "settings_zapi_edit.html",
+        user=user,
+        active_nav="settings",
+        settings_section="whatsapp",
+        page_title="Editar instância WhatsApp",
+        instance=instance,
+    )
+
+
+@router.post("/settings/zapi/instances/{instance_db_id}/edit")
+def update_zapi_instance_route(
+    instance_db_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(...),
+    instance_token: str = Form(""),
+    client_token_mode: str = Form("keep"),
+    client_token: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR")
+    instance = get_zapi_instance(db, instance_db_id)
+    if not instance or not instance.active or instance.source_type == "ENV":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not name.strip() or client_token_mode not in {"keep", "replace", "remove"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+    if client_token_mode == "replace" and not client_token.strip():
+        flash(request, "Informe o novo Client-Token ou selecione Manter atual.", "warning")
+        return RedirectResponse(
+            f"/settings/zapi/instances/{instance_db_id}/edit", status_code=303
+        )
+
+    instance.name = name.strip()
+    if instance_token.strip():
+        instance.instance_token_encrypted = encrypt_secret(instance_token)
+    if client_token_mode == "replace":
+        instance.client_token_encrypted = encrypt_secret(client_token)
+    elif client_token_mode == "remove":
+        instance.client_token_encrypted = ""
+    try:
+        service = service_for_instance(instance)
+        connected = bool(service.status().get("connected"))
+    except ZApiError as exc:
+        db.rollback()
+        error = str(exc)
+        if "client-token" in error.casefold():
+            error = (
+                "A Z-API rejeitou o Client-Token. Confira a área Segurança da Z-API "
+                "e a ativação do token de segurança da conta."
+            )
+        flash(request, f"Credenciais não validadas. Alterações descartadas: {error}", "error")
+        return RedirectResponse(
+            f"/settings/zapi/instances/{instance_db_id}/edit", status_code=303
+        )
+
+    device_error = None
+    if connected:
+        try:
+            refresh_instance_device_info(instance)
+        except ZApiError as exc:
+            device_error = str(exc)
+
+    webhook_error = None
+    webhook_url = instance_webhook_url(instance)
+    if webhook_url:
+        try:
+            service.configure_webhooks(webhook_url)
+        except ZApiError as exc:
+            webhook_error = str(exc)
+    else:
+        webhook_error = "URL pública da aplicação não configurada"
+
+    write_audit(
+        db,
+        user=user,
+        action="ZAPI_INSTANCE_UPDATED",
+        entity_type="zapi_instance",
+        entity_id=instance.id,
+        payload={
+            "name": instance.name,
+            "connected": connected,
+            "credentials_changed": bool(instance_token.strip() or client_token_mode != "keep"),
+            "webhook_configured": webhook_error is None,
+        },
+    )
+    db.commit()
+    if webhook_error:
+        flash(
+            request,
+            "Instância atualizada, mas o webhook continua pendente: "
+            f"{webhook_error}. Não utilize esta fila para receber mensagens até corrigir.",
+            "warning",
+        )
+    elif device_error:
+        flash(
+            request,
+            f"Instância {instance.name} atualizada e webhook registrado. "
+            "Não foi possível identificar o número conectado.",
+            "warning",
+        )
+    else:
+        flash(request, f"Instância {instance.name} atualizada e webhook registrado.")
+    return RedirectResponse("/settings/whatsapp", status_code=303)
+
+
 def _queues_bound_to_zapi_instance(db: Session, instance_db_id: int) -> list[ServiceQueue]:
     # Bloquear tambem filas inativas: o vinculo historico pode ser reativado.
     return list(
