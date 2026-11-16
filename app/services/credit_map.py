@@ -11,6 +11,7 @@ import hashlib
 import io
 import re
 import unicodedata
+import math
 from collections import Counter
 from datetime import datetime
 from typing import Any
@@ -22,6 +23,7 @@ REQUIRED_COLUMNS = {
 STREET_MIN_SAMPLE = 5
 STREET_HEADERS = ('Rua', 'Logradouro', 'Endereço', 'Endereco')
 ADDRESS_HEADERS = ('Endereço', 'Endereco')
+COORDINATE_HEADERS = ('Coordenadas', 'Coordenada')
 CEP_HEADERS = ('CEP',)
 NUMBER_HEADERS = ('Número', 'Numero', 'Nº', 'N°', 'Num')
 NO_NEIGHBORHOOD = 'SEM BAIRRO INFORMADO'
@@ -112,6 +114,43 @@ def _first_value(line: dict[str, Any], names: tuple[str, ...]) -> str:
     return ''
 
 
+def parse_coordinates(value: str) -> tuple[float, float] | None:
+    """Converte a coluna Coordenadas do CRM em latitude/longitude WGS84.
+
+    Aceita decimais, altitude opcional e DMS (28°08'52.7"S 54°44'28.2"W).
+    Zeros, texto livre e coordenadas fora do RS nao geram marcadores.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return None
+    pair = re.search(
+        r'(?<![\d.])(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{2,3}\.\d{3,})(?![\d.])',
+        text,
+    )
+    if pair:
+        lat, lng = map(float, pair.groups())
+    else:
+        dms = re.search(
+            r'(\d{1,2})\s*[°º]\s*(\d{1,2})\s*[\'′’]\s*(\d{1,2}(?:[.,]\d+)?)\s*["″]?\s*([NS])'
+            r'\s+(\d{1,3})\s*[°º]\s*(\d{1,2})\s*[\'′’]\s*(\d{1,2}(?:[.,]\d+)?)\s*["″]?\s*([EWOL])',
+            text, flags=re.IGNORECASE,
+        )
+        if not dms:
+            return None
+        a, b, c, h1, d, e, f, h2 = dms.groups()
+        seconds_lat, seconds_lon = float(c.replace(',', '.')), float(f.replace(',', '.'))
+        if int(b) >= 60 or int(e) >= 60 or seconds_lat >= 60 or seconds_lon >= 60:
+            return None
+        lat = (int(a) + int(b) / 60 + seconds_lat / 3600) * (-1 if h1.upper() == 'S' else 1)
+        lng = (int(d) + int(e) / 60 + seconds_lon / 3600) * (-1 if h2.upper() in ('W', 'O') else 1)
+    if not math.isfinite(lat) or not math.isfinite(lng):
+        return None
+    # Delimitacao ampla do RS; nao garante GPS da porta do imovel.
+    if not (-34.5 <= lat <= -27.0 and -58.5 <= lng <= -49.0):
+        return None
+    return round(lat, 7), round(lng, 7)
+
+
 def credit_decision(value: str) -> str:
     name = fold(value)
     if name.startswith('REPROVADO') or name == 'REPROVACAO MANTIDA':
@@ -172,10 +211,11 @@ def aggregate_csv_addresses(
     missing = REQUIRED_COLUMNS.difference(headers)
     if missing:
         raise ValueError('Colunas obrigatórias ausentes: ' + ', '.join(sorted(missing)))
+    coordinates_available = bool(headers.intersection(COORDINATE_HEADERS))
 
     counts: Counter[tuple[str, str, str, str, bool]] = Counter()
     street_counts: Counter[tuple[str, str, str, str, str, str, bool]] = Counter()
-    address_counts: Counter[tuple[str, str, str, str, str, str, bool]] = Counter()
+    address_counts: Counter[tuple[str, str, str, str, str, str, bool, float | None, float | None]] = Counter()
     seen: set[str] = set()
     stats = Counter()
     for line in reader:
@@ -209,19 +249,34 @@ def aggregate_csv_addresses(
         street_field = _first_value(line, STREET_HEADERS)
         address_field = _first_value(line, ADDRESS_HEADERS)
         street = street_name(street_field)
+        cep = cep_digits(_first_value(line, CEP_HEADERS))
         if street:
-            cep = cep_digits(_first_value(line, CEP_HEADERS))
             street_counts[(city, neighborhood, street, cep, month, decision, signed)] += 1
             stats['com_rua'] += 1
-            if decision == APPROVED:
-                explicit = _first_value(line, NUMBER_HEADERS)
-                # Em muitos CSVs "Rua" e "Endereco" coexistem: extrair o numero
-                # de Endereco mesmo quando o logradouro veio da coluna Rua.
-                number = house_number(explicit, address_field or street_field)
-                if not number and not explicit and address_field:
-                    number = house_number('', street_field)
-                address_counts[(city, neighborhood, street, number, cep, month, signed)] += 1
-                stats['enderecos_aprovados'] += 1
+
+        if decision == APPROVED:
+            raw_coord = _first_value(line, COORDINATE_HEADERS)
+            coord = parse_coordinates(raw_coord) if coordinates_available else None
+            if coordinates_available:
+                if coord:
+                    stats['aprovados_com_coordenadas_validas'] += 1
+                elif raw_coord.strip():
+                    stats['aprovados_coordenadas_invalidas'] += 1
+                else:
+                    stats['aprovados_sem_coordenadas'] += 1
+            # CSVs com a coluna Q: somente aprovados com GPS valido entram
+            # nos triangulos. Sem a coluna, preserva-se o modo legado.
+            if coordinates_available and not coord:
+                continue
+            if not street and not coord:
+                continue
+            explicit = _first_value(line, NUMBER_HEADERS)
+            number = house_number(explicit, address_field or street_field)
+            if not number and not explicit and address_field:
+                number = house_number('', street_field)
+            lat, lng = coord if coord else (None, None)
+            address_counts[(city, neighborhood, street, number, cep, month, signed, lat, lng)] += 1
+            stats['enderecos_aprovados'] += 1
 
     aggregates = [
         {'city': city, 'neighborhood': bairro, 'month': month,
@@ -235,8 +290,9 @@ def aggregate_csv_addresses(
     ]
     addresses = [
         {'city': city, 'neighborhood': bairro, 'street': street, 'number': number, 'cep': cep,
-         'month': month, 'signed': signed, 'count': count}
-        for (city, bairro, street, number, cep, month, signed), count in sorted(address_counts.items())
+         'month': month, 'signed': signed, 'count': count, 'lat': lat, 'lng': lng}
+        for (city, bairro, street, number, cep, month, signed, lat, lng), count in sorted(
+            address_counts.items(), key=lambda item: tuple(str(x) for x in item[0]))
     ]
     return aggregates, streets, addresses, dict(stats)
 
@@ -258,17 +314,19 @@ def summarize_addresses(
 ) -> list[dict[str, Any]]:
     """Endereços de clientes aprovados no período, separados em assinou / não assinou contrato."""
     city = city_name(city)
-    groups: dict[tuple[str, str, str, str, bool], dict[str, Any]] = {}
+    groups: dict[tuple[str, str, str, str, bool, float | None, float | None], dict[str, Any]] = {}
     for item in items:
         if city_name(item['city']) != city or not (start_month <= item['month'] <= end_month):
             continue
         signed = bool(item['signed'])
         hood = neighborhood_name(item['neighborhood'])
         cep = cep_digits(item.get('cep') or '')
-        key = (item['street'], item.get('number') or '', hood, cep, signed)
+        lat, lng = item.get('lat'), item.get('lng')
+        key = (item['street'], item.get('number') or '', hood, cep, signed, lat, lng)
         row = groups.setdefault(key, {
             'street': key[0], 'number': key[1], 'signed': signed, 'count': 0,
             'neighborhood': '' if hood == NO_NEIGHBORHOOD else hood, 'cep': cep,
+            'lat': lat, 'lng': lng,
             'key': address_key(key[0], key[1], hood, cep),
             'street_key': street_key(key[0], hood, cep)})
         row['count'] += int(item['count'])
