@@ -194,6 +194,34 @@ def schedule_followup(
     # Fila pausada: o backfill recriava a cadência a cada ciclo só para ser cancelada.
     if agent and _queue_ai_paused(db, conversation_id):
         return None
+    # Antes de criar um novo lembrete, executar os MESMOS limites de envio.
+    # Sem isso o backfill recriava dezenas de jobs que seriam cancelados no worker.
+    candidate = AIFollowupJob(
+        agent_id=agent_id,
+        queue_id=queue_id,
+        conversation_id=conversation_id,
+        source_message_id=source_message_id,
+        step=max(1, step),
+        status="PENDENTE",
+        due_at=utcnow(),
+    )
+    allowed, reason = _followup_allowed(db, candidate)
+    if not allowed:
+        if reason == "CLIENTE_DESISTIU":
+            _persist_explicit_no_contact(db, conversation_id)
+        return None
+    last_terminal = db.scalar(
+        select(AIFollowupJob).where(
+            AIFollowupJob.conversation_id == conversation_id,
+            AIFollowupJob.source_message_id == source_message_id,
+            AIFollowupJob.status == "CANCELADO",
+            AIFollowupJob.error.in_(
+                ("GUARDIAN_OPT_OUT", "CLIENTE_DESISTIU", "LIMITE_SEM_RESPOSTA")
+            ),
+        ).order_by(AIFollowupJob.id.desc()).limit(1)
+    )
+    if last_terminal:
+        return None
 
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
     delay, theme = followup_spec(step)
@@ -444,6 +472,51 @@ _CUSTOMER_STOP_RE = re.compile(
 )
 # Mensagem inteira (não trecho): "não, obrigado" depois de uma oferta.
 _CUSTOMER_STOP_EXACT = {"nao obrigado", "nao obrigada", "prefiro nao", "nao quero"}
+# Pedido explícito para NÃO SER CONTATADO é diferente de "não quero este plano".
+_NO_CONTACT_RE = re.compile(
+    r"\b(?:nao me (?:mande|manda|envie|chame|contate)|"
+    r"nao entre em contato|par(?:a|e|em) de (?:mandar|enviar|me)|"
+    r"me remova|remover meu numero|sair da lista|descadastrar|"
+    r"nao quero receber (?:mensagens|ofertas)|nao quero mais contato)\b"
+)
+_GUARDIAN_OPT_OUT_ISSUES = {
+    "IGNORES_EXPLICIT_OPT_OUT", "IGNORED_OPT_OUT", "OPT_OUT_IGNORED",
+    "CUSTOMER_OPTED_OUT", "CUSTOMER_DECLINED", "DO_NOT_RECONTACT",
+    "CLIENT_DECLINED", "CUSTOMER_REFUSAL", "REPEATED_CONTACT_AFTER_REFUSAL",
+    "REPEATED_UNWANTED_FOLLOWUP", "UNWANTED_FOLLOWUP",
+}
+
+
+def _persist_explicit_no_contact(db: Session, conversation_id: int) -> bool:
+    """Grava opt-out permanente SOMENTE quando o cliente pediu para não contatá-lo."""
+    latest = db.scalar(
+        select(Message.body).where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "INBOUND",
+        ).order_by(Message.id.desc()).limit(1)
+    )
+    if not _NO_CONTACT_RE.search(_normalize_followup_text(latest)):
+        return False
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        return False
+    if conversation.lead:
+        conversation.lead.do_not_contact = True
+        conversation.lead.stage = "NAO_CONTATAR"
+        conversation.lead.next_action_at = None
+    state = db.scalar(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id == conversation_id,
+        )
+    )
+    if state:
+        state.state = "OPT_OUT"
+        state.last_intent = "DO_NOT_CONTACT"
+    conversation.status = "ENCERRADO"
+    conversation.closed_at = utcnow()
+    cancel_pending_followups(db, conversation_id, reason="OPT_OUT_EXPLICITO")
+    LOG.info("ai_opt_out_persisted conversation=%s", conversation_id)
+    return True
 # Intervalo mínimo entre uma mensagem nossa e um follow-up (pedido do comercial).
 FOLLOWUP_MIN_GAP = timedelta(hours=2)
 # Conversa Leonardo (10/11): oito mensagens seguidas sem resposta do cliente.
@@ -781,6 +854,8 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
     if not allowed:
         job.status = "CANCELADO"
         job.error = reason
+        if reason == "CLIENTE_DESISTIU":
+            _persist_explicit_no_contact(db, job.conversation_id)
         return "cancelled"
 
     # Reagendamentos internos (+5, +15, +30 min) não podiam sair de madrugada:
@@ -878,6 +953,13 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
             proposed_state="AI_ACTIVE",
             metadata={"followup_step": job.step, "theme": job.theme},
         )
+        if _GUARDIAN_OPT_OUT_ISSUES.intersection(guardian.issue_codes):
+            # Regra bloqueante: jamais transformar recusa em nova proposta.
+            job.status = "CANCELADO"
+            job.error = "GUARDIAN_OPT_OUT"
+            _persist_explicit_no_contact(db, job.conversation_id)
+            LOG.warning("ai_followup_opt_out_cancelled conversation=%s job=%s", job.conversation_id, job.id)
+            return "cancelled"
         if not guardian.should_send:
             first_blocked = decision.reply_text
             decision = _generate_followup(
@@ -897,6 +979,12 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                 metadata={"followup_step": job.step, "theme": job.theme},
             )
 
+        if _GUARDIAN_OPT_OUT_ISSUES.intersection(guardian.issue_codes):
+            job.status = "CANCELADO"
+            job.error = "GUARDIAN_OPT_OUT"
+            _persist_explicit_no_contact(db, job.conversation_id)
+            return "cancelled"
+
         if not guardian.should_send:
             job.status = "PENDENTE"
             job.locked_at = None
@@ -913,6 +1001,16 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                 QuickReply.model_validate(item)
                 for item in guardian.buttons
             ]
+
+        # Guardião pode reescrever após uma checagem anterior; verificar de novo
+        # se o cliente respondeu, desistiu ou alterou o dono da conversa.
+        allowed_after_guard, stop_reason = _followup_allowed(db, job)
+        if not allowed_after_guard:
+            job.status = "CANCELADO"
+            job.error = stop_reason
+            if stop_reason == "CLIENTE_DESISTIU":
+                _persist_explicit_no_contact(db, job.conversation_id)
+            return "cancelled"
 
         if _followup_exposes_internal_handoff(decision.reply_text):
             job.status = "CANCELADO"
