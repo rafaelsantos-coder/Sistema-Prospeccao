@@ -4777,6 +4777,7 @@ def _customer_confirmed_city(history: list[dict[str, Any]]) -> str:
         if not city:
             continue
         normalized = _norm(body)
+        normalized = re.sub(r"^\[(audio|áudio) transcrito\]\s*", "", normalized)
         if normalized.startswith(_norm(city)) or re.search(
             r"\b(cidade|instal|moro|sou de|fica em|sera em|é em)\b", normalized,
         ):
