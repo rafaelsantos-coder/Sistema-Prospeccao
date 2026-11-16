@@ -1522,7 +1522,9 @@ def _apply_prospecting_entry_policy(
 
     decision.qualification.existing_customer = status
 
-    black_result = _apply_black_entry(
+    # Produto já em conversa: a entrada da Black não interrompe (conversa 1679 recebeu
+    # "Quer conhecer nossa promoção Black?" no meio da contratação do Sulmóvel).
+    black_result = None if product_in_talk else _apply_black_entry(
         decision, context, status, just_identified=current_confirmation in {"CLIENTE", "NAO_CLIENTE"}
     )
     if black_result is not None:
