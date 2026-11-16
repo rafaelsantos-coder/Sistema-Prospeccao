@@ -23,13 +23,30 @@ const streets = [
   {neighborhood: 'CENTRO', street: 'RUA DOIS', approved: 20, rejected: 5, lat: -28.302, lng: -54.262},
 ];
 
-test('mapa verde reparte volume entre ruas e saldo do bairro sem duplicar consultas', () => {
-  const rows = heat.makePoints(hoods, positions, streets, 'approved');
+test('mapa verde usa GPS de aprovados e saldo aproximado do bairro sem duplicar consultas', () => {
+  const gpsRows = [
+    {neighborhood:'CENTRO', lat:-28.301, lng:-54.261, count:30, source_coordinates:true},
+    {neighborhood:'VILA', lat:-28.321, lng:-54.281, count:5, source_coordinates:true},
+  ];
+  const rows = heat.makePoints(hoods, positions, streets, 'approved', gpsRows);
   assert.equal(rows.length, 4);
   assert.equal(rows.reduce((sum, row) => sum + row.count, 0), 108);
-  assert.equal(rows.filter(row => row.source === 'rua').reduce((n, row) => n + row.count, 0), 50);
-  assert.equal(rows.find(row => row.label === 'CENTRO').count, 50);
-  assert.equal(rows.find(row => row.label === 'VILA').count, 8);
+  assert.equal(rows.filter(row => row.source === 'gps').reduce((n, row) => n + row.count, 0), 35);
+  assert.equal(rows.find(row => row.source === 'bairro' && row.label === 'CENTRO').count, 70);
+  assert.equal(rows.find(row => row.source === 'bairro' && row.label === 'VILA').count, 3);
+  assert.equal(rows.filter(row => row.source === 'rua').length, 0);
+});
+
+test('GPS de aprovados pode gerar calor mesmo sem centro de bairro localizado', () => {
+  const rows = heat.makePoints([hoods[0]], new Map(), [], 'approved', [
+    {neighborhood:'CENTRO', lat:-28.301, lng:-54.261, count:6, source_coordinates:true},
+    {neighborhood:'CENTRO', lat:-28.302, lng:-54.262, count:5, source_coordinates:false},
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].count, 6);
+  assert.equal(rows[0].source, 'gps');
+  const refused = heat.makePoints([hoods[0]], new Map(), [], 'rejected');
+  assert.equal(refused.length, 0);
 });
 
 test('mapa vermelho conta reprovacoes das mesmas regioes sem geolocalizar clientes', () => {
