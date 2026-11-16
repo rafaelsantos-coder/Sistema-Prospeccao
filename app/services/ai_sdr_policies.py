@@ -1451,6 +1451,43 @@ def _existing_customer_question_already_asked(context: dict) -> bool:
     return False
 
 
+_CUSTOMER_QUESTION_RE = re.compile(
+    r"\b(qual|quais|como|quanto|quantos|quando|onde|pega|funciona|precisa|preciso ter|aceita|inclui|cobertura|"
+    r"documento|documentos|doc|docs)\b"
+)
+
+
+def _product_already_in_talk(context: dict) -> str:
+    """Produto que já estava na conversa antes desta mensagem (fatos e memória da jornada).
+
+    Não usa a proposta nova do modelo: no primeiro contato a pergunta "já é cliente?"
+    continua vindo antes de qualquer oferta.
+    """
+    facts = context.get("confirmed_facts") or {}
+    fact_kind = str(facts.get("product_kind") or "").upper()
+    if fact_kind in {"INTERNET", "MOBILE"}:
+        return fact_kind
+    memory = _journey_memory_from_context(context)
+    combined = _fold_sales_text(
+        " ".join([str(memory.get("desired_product") or ""), str(memory.get("offer_plan_code") or "")])
+    )
+    if any(token in combined for token in ("sulmovel", "telefonia movel", "mobile", "movel")):
+        return "MOBILE"
+    if any(token in combined for token in ("internet", "fibra", "ftth", "corp", "corporativo", "conexao")):
+        return "INTERNET"
+    return ""
+
+
+def _customer_asked_question(text: str | None) -> bool:
+    """A última mensagem do cliente é uma pergunta (ou um "?" cobrando a anterior)."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if "?" in raw:
+        return True
+    return bool(_CUSTOMER_QUESTION_RE.search(_fold_sales_text(raw)))
+
+
 def _apply_prospecting_entry_policy(
     decision: AIDecision,
     context: dict,
@@ -1467,25 +1504,39 @@ def _apply_prospecting_entry_policy(
     )
     status = _existing_customer_from_context(context)
 
+    # Produto já em conversa (plano apresentado ou escolhido): a resposta do modelo não
+    # volta para o roteiro de entrada. Conversa 1679 (16/11): o cliente perguntou se o
+    # Sulmóvel "pega em todo o estado" e recebeu "você já possui algum serviço da Sulnet?";
+    # depois do "Não", recebeu "Internet ou Telefonia Móvel?", com o 5GB já oferecido.
+    product_in_talk = _product_already_in_talk(context)
+
     if not status:
         # Já perguntou e o cliente não respondeu sim/não (falou de plano, preço, cidade...):
         # repetir a pergunta travava a conversa (REPEATED_QUESTION + resposta genérica).
         # Segue com o que o cliente trouxe; a pergunta fica pendente sem ser repetida.
         if latest and _existing_customer_question_already_asked(context):
             return decision
+        if product_in_talk and _customer_asked_question(latest_raw):
+            return decision
         return _show_existing_customer_question(decision)
 
     decision.qualification.existing_customer = status
 
-    black_result = _apply_black_entry(
+    # Produto já em conversa: a entrada da Black não interrompe (conversa 1679 recebeu
+    # "Quer conhecer nossa promoção Black?" no meio da contratação do Sulmóvel).
+    black_result = None if product_in_talk else _apply_black_entry(
         decision, context, status, just_identified=current_confirmation in {"CLIENTE", "NAO_CLIENTE"}
     )
     if black_result is not None:
         return black_result
 
     if current_confirmation == "CLIENTE":
+        if product_in_talk == "MOBILE":
+            return decision
         return _show_existing_customer_product_question(decision)
     if current_confirmation == "NAO_CLIENTE":
+        if product_in_talk:
+            return decision
         return _show_new_customer_product_question(decision)
 
     mobile_choices = {

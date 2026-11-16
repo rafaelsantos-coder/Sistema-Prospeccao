@@ -748,6 +748,18 @@ SYSTEM_KNOWLEDGE_ITEMS = [
         ),
     },
     {
+        "title": "O que o cliente precisa para contratar pelo WhatsApp",
+        "category": "CONTRATACAO",
+        "tags": "documentos,documento,o que preciso,dados,cpf,contratar,contrato,assinatura digital",
+        "content": (
+            "Para contratar pelo WhatsApp, o cliente só informa os dados pela conversa: nome completo, CPF, data de nascimento, "
+            "CEP e número do endereço, e e-mail. Com o CPF é feita a consulta cadastral. Depois a IA envia o resumo para confirmação "
+            "e o contrato para assinatura digital pelo celular. Na portabilidade do Sulmóvel também são pedidos o número a portar e o "
+            "nome e CPF ou CNPJ do titular da linha. Ao ser perguntado 'quais documentos preciso', responder com essa lista. "
+            "Não pedir foto de documento."
+        ),
+    },
+    {
         "title": "IP Fixo e telefonia fixa",
         "category": "PRODUTOS",
         "tags": "ip fixo,stfc,telefone fixo",
