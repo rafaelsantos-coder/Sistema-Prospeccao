@@ -147,6 +147,19 @@ def log_ai_history() -> None:
         db.close()
 
 
+def log_closing_state() -> None:
+    """Diagnóstico somente leitura dos fechamentos que esperam o cliente."""
+    from app.services.closing_diagnostics import log_closing_diagnostics
+
+    db = SessionLocal()
+    try:
+        log_closing_diagnostics(db)
+    except Exception:  # diagnóstico nunca pode impedir a subida
+        LOG.warning("closing_diag_failed", exc_info=True)
+    finally:
+        db.close()
+
+
 def prepare_recall_dispatch() -> None:
     """Rechamada da IA: conta ou cria os disparos em rascunho (RECALL_IA_DISPATCH)."""
     if not settings.recall_ia_dispatch.strip():
@@ -169,6 +182,7 @@ async def lifespan(_: FastAPI):
     await initialize_database()
     log_recent_prospecting_jobs()
     log_ai_history()
+    log_closing_state()
     prepare_recall_dispatch()
     await configure_zapi_webhooks()
     yield
