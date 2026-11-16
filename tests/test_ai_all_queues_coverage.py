@@ -8,7 +8,6 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.config import settings
 from app.database import Base
 from app.models import (
     AIAgentProfile,
@@ -152,7 +151,6 @@ def test_unanswered_human_chat_is_requeued_once_after_coverage(monkeypatch):
             msg_id = message.id
         monkeypatch.setattr(ai_sdr_worker, "SessionLocal", factory)
         monkeypatch.setattr(ai_sdr_worker, "_real_mode_cutoff", lambda: None)
-        monkeypatch.setattr(settings, "ai_sdr_enabled", True)
         count = ai_sdr_worker._takeover_unanswered_human_conversations()
         assert count == 1
         with factory() as db:
@@ -205,7 +203,6 @@ def test_reuses_ignored_job_instead_of_creating_duplicate(monkeypatch):
             msg_id = msg.id
         monkeypatch.setattr(ai_sdr_worker, "SessionLocal", factory)
         monkeypatch.setattr(ai_sdr_worker, "_real_mode_cutoff", lambda: None)
-        monkeypatch.setattr(settings, "ai_sdr_enabled", True)
         assert ai_sdr_worker._takeover_unanswered_human_conversations() == 1
         with factory() as db:
             jobs = list(db.scalars(select(AIJob).where(AIJob.message_id == msg_id)))
