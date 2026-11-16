@@ -1091,3 +1091,6 @@ class CreditMapAddress(Base):
     month: Mapped[str] = mapped_column(String(12), nullable=False)
     signed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Coordenadas informadas pelo CRM na coluna Q (nunca derivadas do endereco).
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
