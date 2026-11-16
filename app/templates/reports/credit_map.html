@@ -2,7 +2,7 @@
 {% block page_content_class %}credit-map-page{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="{{ url_for('static', path='/css/credit_map.css') }}">
-<div class="cm-shell" id="credit-map-app" data-csrf="{{ csrf_token|e }}" data-import="{{ 'true' if can_import else 'false' }}">
+<div class="cm-shell" id="credit-map-app" data-csrf="{{ csrf_token|e }}" data-import="{{ 'true' if can_import else 'false' }}" data-map-provider="{{ 'google' if google_maps_enabled else 'osm' }}"{% if google_maps_enabled %} data-google-maps-key="{{ google_maps_key|e }}" data-google-map-id="{{ google_map_id|e }}" data-google-maps-nonce="{{ csp_nonce|e }}"{% endif %}>
   <div class="cm-hero">
     <div class="cm-hero-copy">
       <div class="cm-overline"><span class="cm-overline-dot"></span> INTELIGÊNCIA TERRITORIAL <span class="cm-overline-sep">/</span> SULNET PROSPECTA</div>
@@ -34,7 +34,7 @@
 
   <div class="cm-main-grid">
     <section class="cm-map-card">
-      <div class="cm-card-heading"><div><span class="cm-section-label">VISÃO GEOGRÁFICA</span><h3 id="cm-map-title">Intensidade por bairro</h3></div><div class="cm-map-head-right"><label class="cm-street-toggle"><input type="checkbox" id="cm-streets" checked> Ruas (5+ consultas)</label><label class="cm-street-toggle"><input type="checkbox" id="cm-addresses" checked> Endereços de aprovados</label><span class="cm-tag">OpenStreetMap</span></div></div>
+      <div class="cm-card-heading"><div><span class="cm-section-label">VISÃO GEOGRÁFICA</span><h3 id="cm-map-title">Intensidade por bairro</h3></div><div class="cm-map-head-right"><label class="cm-street-toggle"><input type="checkbox" id="cm-streets" checked> Ruas (5+ consultas)</label><label class="cm-street-toggle"><input type="checkbox" id="cm-addresses" checked> Endereços de aprovados</label><span class="cm-tag" id="cm-map-provider-label">{{ 'Google Maps' if google_maps_enabled else 'OpenStreetMap' }}</span></div></div>
       <div class="cm-map-wrap">
         <button type="button" id="cm-fullscreen" class="cm-fs-btn" title="Mapa em tela cheia">⛶ Tela cheia</button>
         <div id="cm-map" class="cm-map" aria-label="Mapa de bairros em verde ou vermelho e endereços de clientes aprovados"></div>
