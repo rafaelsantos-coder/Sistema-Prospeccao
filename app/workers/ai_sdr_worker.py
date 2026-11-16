@@ -854,6 +854,16 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                 )
             )
             for conversation in conversations:
+                # Um histórico pode ter múltiplas transferências de fila.
+                # A IA atua apenas no vínculo atual, não em filas anteriores.
+                current_queue = queue_for_conversation(db, conversation.id)
+                if not current_queue or current_queue.id != binding.queue_id:
+                    continue
+                if conversation.lead and (
+                    conversation.lead.do_not_contact
+                    or conversation.lead.stage in {"GANHO", "NAO_CONTATAR"}
+                ):
+                    continue
                 state = db.scalar(
                     select(AIConversationState.state).where(
                         AIConversationState.conversation_id == conversation.id
