@@ -29,6 +29,17 @@ Painel integrado ao sistema em `/reports/credit-map` com mapa OpenStreetMap (Lea
 - Quando o OpenStreetMap conhece a rua mas não o número, o triângulo fica no meio da rua e o balão avisa que a posição é aproximada. Clientes no mesmo ponto são afastados alguns metros para não ficarem um sobre o outro.
 - Os triângulos só aparecem depois de importar um CSV com as colunas Rua e Número; a primeira abertura localiza cerca de um endereço por segundo e guarda o resultado.
 
+
+## Coordenadas do CRM — regra de triângulos (coluna Q)
+
+- Ao importar um CSV com a coluna opcional `Coordenadas`, **somente clientes aprovados com coordenadas válidas** aparecem como triângulos. Reprovados e aprovados sem GPS continuam nos indicadores agregados de bairro, rua, mês e cidade, mas não viram pinos.
+- O importador aceita latitude/longitude decimais e coordenadas em graus, minutos e segundos, rejeitando valores ausentes, textos, zeros e posições fora dos limites amplos do Rio Grande do Sul.
+- Para os triângulos com GPS, não há pesquisa de endereço no Nominatim: o sistema usa a latitude/longitude já informadas no CRM. Não desloca o ponto artificialmente para evitar sobreposição.
+- Verde: aprovado com contrato assinado; amarelo: aprovado sem contrato. Endereços são apresentados somente quando disponíveis.
+- **A coordenada pode refletir a posição do lançamento/contratação, e não a porta do imóvel.** O sistema não pode presumir precisão predial apenas pelo preenchimento do campo.
+- CSVs antigos sem coluna `Coordenadas` continuam compatíveis com a geocodificação anterior. Para ativar a nova regra nos dados já existentes, o CSV atualizado precisa ser reimportado no painel; a mudança do código não atualiza automaticamente os registros do banco.
+- CSVs brutos com CPF, nome ou telefone nunca devem ser adicionados ao repositório; o processador descarta esses dados e armazena somente agregados e localização aprovada.
+
 ## Exportar para o Google My Maps
 
 O botão **Arquivo para Google My Maps** (ADMIN e GESTOR) baixa um CSV com o endereço completo (rua, número, bairro, cidade) dos clientes aprovados no período e município escolhidos, com a coluna Situação (Contrato assinado / Aprovado sem contrato). O Google My Maps localiza cada endereço, inclusive o número da casa, sem chave de API nem custo. O arquivo não leva nome, CPF ou telefone, e cada download é registrado na auditoria (`CREDIT_MAP_EXPORTED_MY_MAPS`).
