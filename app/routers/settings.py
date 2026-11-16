@@ -220,8 +220,10 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
         return redirect
     require_roles(user, "ADMIN", "GESTOR")
 
-    zapi_instances = list_zapi_instances(db, active_only=False)
-    active_zapi_instances = [item for item in zapi_instances if item.active]
+    # Registros arquivados preservam o historico, mas nao aparecem como
+    # instancias disponiveis para configurar filas ou enviar mensagens.
+    zapi_instances = list_zapi_instances(db, active_only=True)
+    active_zapi_instances = zapi_instances
     zapi_instance_info: dict[int, dict] = {}
     phone_to_instance_ids: dict[str, list[int]] = {}
     any_connected = False
