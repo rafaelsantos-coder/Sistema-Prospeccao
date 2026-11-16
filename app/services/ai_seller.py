@@ -6687,7 +6687,10 @@ def _clear_status_poll_failures(state: AIClosingState, collected: dict) -> None:
     """Consulta ao CRM deu certo: zera a contagem de falhas da análise/assinatura."""
     had_failures = collected.pop(STATUS_POLL_FAILURES_KEY, None) is not None
     had_alert = collected.pop(STATUS_POLL_ALERT_KEY, None) is not None
-    if had_failures or had_alert:
+    # Somente resposta real do CRM remove a pendência de reconciliação.
+    had_reconciliation = collected.pop("_crm_contract_reconciliation_pending", None) is not None
+    collected.pop("_crm_contract_missing_opportunity", None)
+    if had_failures or had_alert or had_reconciliation:
         _save_collected(state, collected)
 
 
@@ -6711,9 +6714,21 @@ def _hold_status_poll_failure(
     """
     kind = _closer_failure_kind(exc)
     collected = _load_collected(state)
+    missing_404 = (
+        step == "WAITING_SIGNATURE"
+        and isinstance(exc, CRMIntegrationError)
+        and exc.status_code == 404
+    )
+    if missing_404:
+        collected["_crm_contract_reconciliation_pending"] = True
+        collected["_crm_contract_missing_opportunity"] = state.opportunity_id
+        # Não marcar venda ganha nem gerar segundo contrato ao perder a referência.
+        # A assinatura local só pode ser reconciliada mediante registro CRM válido.
     failures = int(collected.get(STATUS_POLL_FAILURES_KEY) or 0) + 1
     collected[STATUS_POLL_FAILURES_KEY] = failures
-    hold = kind != "ownership" and ((kind != "transient" and failures >= 3) or failures >= 20)
+    hold = kind != "ownership" and (
+        missing_404 or (kind != "transient" and failures >= 3) or failures >= 20
+    )
     first_alert = hold and not collected.get(STATUS_POLL_ALERT_KEY)
     if first_alert:
         collected[STATUS_POLL_ALERT_KEY] = True
@@ -6726,7 +6741,8 @@ def _hold_status_poll_failure(
             agent=agent,
             reason=(
                 f"CRM não encontrou a venda na etapa {step} ({kind}, {failures} falhas seguidas): "
-                f"{str(exc)[:300]} Confira se o lead/oportunidade foi apagado ou recriado no CRM."
+                f"{str(exc)[:300]} Conferir a oportunidade {state.opportunity_id} no CRM, "
+                "webhook da assinatura e BKO; NÃO gerar outro contrato sem reconciliação."
             ),
         )
     if hold:
@@ -6751,7 +6767,16 @@ def _retry_job_later(job: AIJob, state: AIClosingState) -> None:
 
 _ADJUST_PAYMENT = re.compile(r"pagament|boleto|debito|forma|cartao|pix")
 _ADJUST_DUE_DAY = re.compile(r"vencimento|\bdia\b|data")
-_ADJUST_PLAN = re.compile(r"plano|mega|giga|\bgb\b|velocidade|outro|trocar|mudar|valor|preco|caro")
+# Falar sobre preço ou velocidade NÃO é pedir para reabrir a prospecção.
+# Troca de plano exige intenção explícita ou escolha inequívoca de outra oferta.
+_ADJUST_PLAN = re.compile(
+    r"(?:trocar|mudar|alterar|substituir|aumentar|reduzir) (?:o |de |meu |esse |este )?(?:plano|velocidade|internet)|"
+    r"(?:quero|prefiro|gostaria de|vou ficar com|pode ser) (?:o |a |um |uma )?(?:outro plano|plano (?:de )?\d+|\d+\s*(?:mega|giga|gb))|"
+    r"outro plano|plano diferente"
+)
+_ADJUST_PRICE_QUESTION = re.compile(
+    r"\b(?:valor|preco|mensalidade|custa|quanto fica|mais barato|caro)\b"
+)
 _ADJUST_ONLY_INTERNET = re.compile(r"so (a )?internet|sem (o )?(movel|celular|chip)|so com a internet")
 _ADJUST_QUIT = re.compile(r"desist|cancel|encerr|deixa pra la|nao quero mais|nao vou (mais )?contratar|nao quero contratar")
 _ADJUST_NOTHING = re.compile(r"^(nada|ta certo|esta certo|pode gerar|confirmo|sim|ok|tudo certo)\b")
@@ -6792,9 +6817,17 @@ def _handle_sale_adjustment(
         _save_collected(state, collected)
         return _prompt_for_step(state, collected)
     if _ADJUST_PLAN.search(folded):
-        # A troca de dono para o SDR acontece depois do envio desta resposta.
+        # Só retorna ao SDR quando o cliente pediu de fato outro produto.
+        # Perguntar preço ou fidelidade não reabre uma venda já em fechamento.
+        collected["_explicit_plan_change"] = True
         state.step = PLAN_CHANGE_STEP
         return "Combinado! Me diz qual plano você prefere que eu ajusto a proposta por aqui."
+    if _ADJUST_PRICE_QUESTION.search(folded) and state.offer_price is not None:
+        return (
+            f"O valor mensal combinado para {state.plan_label} é "
+            f"R$ {_money_for_display(state.offer_price)}. "
+            "Deseja manter essa oferta e seguir com a contratação?"
+        )
     if _ADJUST_NOTHING.search(folded):
         state.step = SALE_ACCEPTANCE_STEP
         _save_collected(state, collected)
@@ -6812,15 +6845,33 @@ def _return_to_sdr_for_plan_change(
 
     from app.services.ai_followups import cancel_pending_followups  # noqa: PLC0415
 
+    collected = _load_collected(state)
+    # A alteração de ownership exige prova de uma solicitação explícita.
+    if not collected.pop("_explicit_plan_change", False):
+        LOG.warning(
+            "seller_plan_change_without_customer_intent conversation=%s",
+            conversation.id,
+        )
+        state.step = SALE_ACCEPTANCE_STEP
+        return
+    _save_collected(state, collected)
     binding = binding_for_conversation(db, conversation.id)
     cancel_pending_followups(db, conversation.id, reason="TROCA_DE_PLANO_SDR")
     ai_state = db.scalar(
         select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
     )
-    if ai_state and binding and binding.agent:
-        # A próxima resposta do cliente vai para o SDR (enqueue_ai_job olha o estado).
+    if ai_state and binding and binding.agent and binding.agent.active:
+        # A próxima resposta do cliente vai para o SDR somente após pedido real.
         ai_state.state = "AI_ACTIVE"
         ai_state.agent_id = binding.agent_id
+        LOG.info(
+            "seller_explicit_plan_change_handoff conversation=%s closer=%s sdr=%s",
+            conversation.id, state.agent_id, binding.agent_id,
+        )
+    else:
+        # SDR indisponível: manter closer, preço e desconto, sem abandonar.
+        state.step = SALE_ACCEPTANCE_STEP
+        LOG.warning("seller_plan_change_sdr_unavailable conversation=%s", conversation.id)
 
 
 SALE_DECLINE_NOTICE = (
