@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import re
 import time
+import unicodedata
 from typing import Any
 
 import httpx
@@ -129,7 +130,11 @@ def address_point(
     approx: tuple[float, float] | None = None
     # So aceitar candidatos que contenham pelo menos o nome central da rua.
     common = {'RUA', 'AVENIDA', 'TRAVESSA', 'PRACA', 'ESTRADA', 'DO', 'DA', 'DOS', 'DAS', 'DE', 'RODOVIA'}
-    words = [word for word in street.upper().split() if len(word) >= 3 and word not in common]
+    def plain(value: str) -> str:
+        return ''.join(c for c in unicodedata.normalize('NFKD', str(value).upper())
+                       if not unicodedata.combining(c))
+
+    words = [word for word in plain(street).split() if len(word) >= 3 and word not in common]
     for query in dict.fromkeys(candidates):
         found = search_detail(query)
         if not found:
@@ -137,14 +142,14 @@ def address_point(
         point = (found[0], found[1])
         if distance_km(point, center) > MAX_DISTANCE_KM:
             continue
-        display = str(found[2] or '').upper()
+        display = plain(str(found[2] or ''))
         # Uma resposta apenas do municipio nao prova que o endereco foi localizado.
         if words and not any(word in display for word in words):
             continue
         if approx is None:
             approx = point
         # Classe do retorno + confirmacao textual do numero (nao apenas "building").
-        house_in_result = bool(number and re.search(r'(?<!\\d)' + re.escape(number.upper()) + r'(?!\\d)', display))
+        house_in_result = bool(number and re.search(r'(?<!\d)' + re.escape(number.upper()) + r'(?!\d)', display))
         if house_in_result and found[3] not in ('highway', 'boundary', ''):
             return point[0], point[1], True
     if approx is not None:
