@@ -4927,6 +4927,14 @@ def start_closing_from_sdr(
         if new_price is not None:
             state.offer_price = new_price
         collected.pop("_sale_accepted", None)
+        collected.pop("_sale_intent_confirmed", None)
+        collected.pop("planId", None)
+        # Mudou o produto: a promoção anterior não deve ser aplicada ao novo
+        # plano sem aprovação explícita do catálogo comercial.
+        state.handoff_summary = state.handoff_summary.replace(
+            recall_campaign.SUMMARY_MARKER, "",
+        ).strip()
+        collected["freeMonths"] = 0
         state.step = "PLAN_CONFIRM"
         state.last_error = ""
         _save_collected(state, collected)
@@ -4944,6 +4952,8 @@ def start_closing_from_sdr(
     if not plan_change:
         collected["_sale_intent_confirmed"] = True
     offered_months = max(0, min(3, int(getattr(decision, "free_months", 0) or 0)))
+    if plan_change:
+        offered_months = 0
     if recall_accepted:
         offered_months = max(offered_months, recall_campaign.FREE_MONTHS)
     collected["freeMonths"] = max(
