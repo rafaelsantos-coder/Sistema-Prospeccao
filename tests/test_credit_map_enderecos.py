@@ -170,3 +170,50 @@ def test_endpoint_exporta_csv_so_para_quem_importa():
         assert "00000000191" not in resp.text
         assert client.get("/api/reports/credit-map/export-my-maps?city=OUTRA&date_from=2026-08&date_to=2026-11").status_code == 404
         assert client.get("/api/reports/credit-map/export-my-maps?city=X&date_from=abc&date_to=2026-11").status_code == 400
+
+
+def test_csv_usa_endereco_completo_mesmo_quando_rua_e_coluna_separada():
+    header = ("Protocolo;Documento;Cidade;Bairro;Rua;Endereço;CEP;"
+              "Data da consulta;Status;Contrato assinado")
+    rows = [
+        header,
+        "A-1;00000000191;CIDADE TESTE;CENTRO;Rua das Flores;Rua das Flores, 123, Centro;98900-000;05/09/2026;Aprovado;Não",
+        "A-2;00000000191;CIDADE TESTE;VILA;Rua das Flores;Rua das Flores, 123, Vila;98900-100;05/09/2026;Aprovado;Sim",
+        "A-3;00000000191;CIDADE TESTE;CENTRO;Rua das Flores;Rua das Flores, 123;98900-000;05/09/2026;Reprovado;Não",
+    ]
+    _groups, streets, addresses, _stats = aggregate_csv_addresses(("\n".join(rows) + "\n").encode())
+    assert len(addresses) == 2
+    assert {row["number"] for row in addresses} == {"123"}
+    assert {row["cep"] for row in addresses} == {"98900000", "98900100"}
+    result = summarize_addresses(addresses, city=CITY, start_month="2026-08", end_month="2026-11")
+    assert len(result) == 2, "Rua e numero iguais de bairros diferentes sao enderecos distintos"
+    assert len({row["key"] for row in result}) == 2
+    assert len({row["street_key"] for row in result}) == 2
+    assert len(streets) == 3
+
+
+def test_geocodificacao_de_endereco_consulta_numero_bairro_cidade_e_cep(monkeypatch):
+    calls = []
+
+    def fake(query):
+        calls.append(query)
+        return (-28.30, -54.26, "Rua das Flores, 123, Centro, Santo Ângelo", "building")
+
+    monkeypatch.setattr(geocoding, "search_detail", fake)
+    found = geocoding.address_point("RUA DAS FLORES", "123", "CENTRO", "SANTO ÂNGELO",
+                                   "98800000", (-28.299, -54.263))
+    assert found == (-28.30, -54.26, True)
+    assert len(calls) == 1
+    assert "RUA DAS FLORES, 123, CENTRO" in calls[0]
+    assert "98800-000" in calls[0]
+
+
+def test_geocodificador_nao_marca_centro_da_cidade_como_imovel_exato(monkeypatch):
+    monkeypatch.setattr(
+        geocoding, "search_detail",
+        lambda _query: (-28.30, -54.26, "Centro, Santo Ângelo", "place"),
+    )
+    monkeypatch.setattr(geocoding, "street_point", lambda *_args: (-28.301, -54.262))
+    found = geocoding.address_point("RUA DAS FLORES", "123", "CENTRO", "SANTO ÂNGELO",
+                                   "98800000", (-28.299, -54.263))
+    assert found == (-28.301, -54.262, False)

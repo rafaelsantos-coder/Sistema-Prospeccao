@@ -268,7 +268,7 @@ def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
             if not usable(cached.get(row['key'])) and row['key'] not in {t['key'] for t in todo}:
                 todo.append(row)
         for row in todo[:ADDRESS_BATCH]:
-            street_cache = cached.get(f"RUA|{row['street']}"[:180])
+            street_cache = cached.get(row['street_key'])
             try:
                 if not row['number'] and street_cache is not None and street_cache.status == 'FOUND' \
                         and street_cache.lat is not None:
@@ -371,7 +371,7 @@ async def import_file(request: Request, file: UploadFile = File(...), db: Sessio
     db.execute(delete(CreditMapAddress))
     db.execute(delete(CreditMapGeocode).where(CreditMapGeocode.neighborhood.like('RUA|%')))
     # Posição de endereço é reaproveitada entre importações; a de quem saiu da base é apagada.
-    kept = {(row['city'], address_key(row['street'], row['number'])) for row in address_rows}
+    kept = {(row['city'], address_key(row['street'], row['number'], row['neighborhood'], row['cep'])) for row in address_rows}
     for item in db.scalars(select(CreditMapGeocode).where(CreditMapGeocode.neighborhood.like('END|%'))):
         if (item.city, item.neighborhood) not in kept:
             db.delete(item)
