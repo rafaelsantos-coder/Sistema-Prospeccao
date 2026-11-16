@@ -207,9 +207,12 @@ def _process_zapi_payload(
     # Atualizar o numero e registrar o estado evita perder a confirmacao
     # quando o endpoint /status da Z-API estiver temporariamente indisponivel.
     if raw_type in {"ConnectedCallback", "DisconnectedCallback"}:
-        connected = raw_type == "ConnectedCallback" and payload.get("connected") is True
-        disconnected = raw_type == "DisconnectedCallback" and payload.get("disconnected") is True
-        if not (connected or disconnected):
+        connected = raw_type == "ConnectedCallback"
+        # Tipo de callback determina o evento; campos opcionais nao sao
+        # exigidos, mas valores explicitamente contraditorios sao rejeitados.
+        if connected and payload.get("connected") is False:
+            return {"ok": True, "ignored": "invalid_connection_event"}
+        if not connected and payload.get("disconnected") is False:
             return {"ok": True, "ignored": "invalid_connection_event"}
         if zapi_instance_id is None:
             return {"ok": True, "ignored": "unbound_connection_event"}
