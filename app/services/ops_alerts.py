@@ -300,6 +300,67 @@ def check_stuck_sales(db: Session) -> int:
     return sent
 
 
+def check_silent_closings(db: Session) -> int:
+    """Cliente parou no fechamento e não respondeu aos lembretes: um vendedor liga.
+
+    Avisa uma vez por cliente e por silêncio (a chave muda quando ele volta a responder).
+    """
+    from app.models import AIFollowupJob  # noqa: PLC0415
+    from app.services.ai_followups import (  # noqa: PLC0415
+        MAX_UNANSWERED_CLOSING_FOLLOWUPS,
+        closing_awaits_customer,
+    )
+
+    sent = 0
+    now = utcnow()
+    states = db.scalars(
+        select(AIClosingState).where(
+            AIClosingState.completed_at.is_(None),
+            AIClosingState.updated_at >= now - timedelta(days=7),
+        )
+    )
+    for state in list(states):
+        if not closing_awaits_customer(db, state.conversation_id):
+            continue
+        last_inbound = db.scalar(
+            select(Message)
+            .where(Message.conversation_id == state.conversation_id, Message.direction == "INBOUND")
+            .order_by(Message.id.desc())
+            .limit(1)
+        )
+        reminders = select(AIFollowupJob.sent_at).where(
+            AIFollowupJob.conversation_id == state.conversation_id,
+            AIFollowupJob.status == "ENVIADO",
+            AIFollowupJob.sent_at.is_not(None),
+        )
+        if last_inbound is not None:
+            reminders = reminders.where(AIFollowupJob.sent_at > last_inbound.created_at)
+        sent_at = [value for value in db.scalars(reminders) if value]
+        if len(sent_at) < MAX_UNANSWERED_CLOSING_FOLLOWUPS:
+            continue
+        try:
+            collected = json.loads(state.collected_json or "{}")
+        except ValueError:
+            collected = {}
+        conversation = db.get(Conversation, state.conversation_id)
+        contact = db.get(Contact, conversation.contact_id) if conversation and conversation.contact_id else None
+        name = str(collected.get("name") or (contact.name if contact else "") or "").strip()
+        phone = _digits(str(collected.get("phone") or (contact.phone if contact else "") or ""))
+        text = (
+            "📞 Cliente parou no fechamento e não respondeu aos lembretes da IA. Um vendedor precisa ligar.\n"
+            f"Cliente: {name or 'não informado'}\n"
+            f"Telefone: {phone or 'não informado'}\n"
+            f"Plano: {state.plan_label or 'não informado'}\n"
+            f"Etapa: {state.step}\n"
+            f"Conversa {state.conversation_id}"
+            + (f" · oportunidade {state.opportunity_id}" if state.opportunity_id else "")
+        )
+        key = f"closing-silent:{state.id}:{last_inbound.id if last_inbound is not None else 0}"
+        if send_ops_alert(db, key=key, text=text):
+            sent += 1
+    return sent
+
+
 UNANSWERED_AFTER = timedelta(minutes=10)
 UNANSWERED_WINDOW = timedelta(hours=6)
 _CLOSED_STATUSES = {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
@@ -522,7 +583,7 @@ def check_daily_funnel(db: Session) -> int:
 
 def run_ops_alert_checks(db: Session) -> int:
     sent = check_instances(db) + check_sales_and_escalations(db)
-    for check in (check_stuck_sales, check_unanswered_customers, check_daily_funnel):
+    for check in (check_stuck_sales, check_silent_closings, check_unanswered_customers, check_daily_funnel):
         try:
             sent += check(db)
         except Exception:  # noqa: BLE001 - um aviso com erro não pode parar os outros
