@@ -17,7 +17,7 @@
     signed_rate: {label: 'Conversão', unit:'%', short:'conversão em contrato'},
     total: {label: 'Consultas', unit:'', short:'consultas'},
   };
-  const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0};
+  const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0, mode:'approved', heatLayer:null, streetHeatRows:[], gpsHeatRows:[], triangleFittedFor:'', heatGpsFittedFor:''};
   // L is Leaflet normally; on Google Maps we supply only the small surface used by this panel.
   let L = window.L;
   let activeMapProvider = 'osm';
@@ -27,12 +27,20 @@
   // Cor única por território: verde se aprovados >= reprovados (empate fica verde), senão vermelho.
   const GREEN = '#16a66f', RED = '#e35b53', YELLOW = '#f5c518';
   const layerColor = (row) => Number(row.approved || 0) >= Number(row.rejected || 0) ? GREEN : RED;
+  const rankColor = (row) => state.mode === 'rejected' ? RED
+    : state.mode === 'approved' ? GREEN
+    : state.mode === 'compare' ? window.SulnetCreditHeat.modeColor('compare', row.approval_rate)
+    : layerColor(row);
+  const selectedHood = () => $('cm-neighborhood')?.value || '';
+  const visibleRows = () => (state.data?.neighborhoods || []).filter(row =>
+    (!selectedHood() || row.name === selectedHood()) &&
+    (state.mode !== 'compare' || Number(row.approved || 0) + Number(row.rejected || 0) >= 20));
   const showMessage = (message) => { const el = $('cm-message'); el.textContent = message; el.hidden = !message; };
   const showMapPlaceholder = (message) => { $('cm-map-empty').hidden = false; if(message) $('cm-map-empty').querySelector('p').textContent = message; };
   const sync = (message) => { $('cm-sync').innerHTML = `<span></span>${esc(message)}`; };
 
   function sortedRows() {
-    const rows = [...(state.data?.neighborhoods || [])];
+    const rows = [...visibleRows()];
     const q = folded($('cm-search').value);
     const selected = metric();
     rows.sort((a,b) => (Number(b[selected] || 0) - Number(a[selected] || 0)) || (b.total - a.total) || a.name.localeCompare(b.name));
@@ -44,7 +52,7 @@
     $('cm-rank-col').textContent = metrics[metric()]?.label.toUpperCase() || 'RESULTADO';
     $('cm-ranking').innerHTML = total ? rows.map((row,i) => {
       const progress = Math.max(3, Math.round(Number(metricValue(row) || 0) / max * 100));
-      return `<button class="cm-rank-row" type="button" data-bairro="${esc(row.name)}" title="Localizar ${esc(row.name)} no mapa"><span class="cm-rank-pos">${String(i+1).padStart(2,'0')}</span><span><span class="cm-rank-name">${esc(row.name)}</span><span class="cm-rank-sub"><span class="cm-rank-track"><span class="cm-rank-progress" style="display:block;width:${progress}%;background:${layerColor(row)}"></span></span><span class="cm-rank-detail">${fmt(row.total)} cons.</span></span></span><span class="cm-rank-value">${metricDisplay(row)}<small>${metric()==='approval_rate' ? fmt(row.approved)+' aprov.' : pct(row.approval_rate)+' aprov.'}</small></span></button>`;
+      return `<button class="cm-rank-row" type="button" data-bairro="${esc(row.name)}" title="Localizar ${esc(row.name)} no mapa"><span class="cm-rank-pos">${String(i+1).padStart(2,'0')}</span><span><span class="cm-rank-name">${esc(row.name)}</span><span class="cm-rank-sub"><span class="cm-rank-track"><span class="cm-rank-progress" style="display:block;width:${progress}%;background:${rankColor(row)}"></span></span><span class="cm-rank-detail">${fmt(row.total)} cons.</span></span></span><span class="cm-rank-value">${metricDisplay(row)}<small>${metric()==='approval_rate' ? fmt(row.approved)+' aprov.' : pct(row.approval_rate)+' aprov.'}</small></span></button>`;
     }).join('') : '<div class="cm-loading">Nenhum bairro encontrado neste filtro.</div>';
     $('cm-rank-foot').textContent = `${fmt(total)} bairros · ${fmt(state.data?.suppressed_neighborhoods || 0)} pequenos/sem bairro não detalhados`;
     $('cm-ranking').querySelectorAll('button[data-bairro]').forEach(button => button.addEventListener('click', () => locateRow(button.dataset.bairro)));
@@ -78,9 +86,34 @@
     if(t.signed_rejected_inconsistent) warnings.push(`${fmt(t.signed_rejected_inconsistent)} registros reprovados estão marcados como assinados (verificar no sistema).`);
     if(t.pending) warnings.push(`${fmt(t.pending)} registro(s) ainda sem decisão.`);
     showMessage(warnings.join(' '));
-    $('cm-map-title').textContent = `Intensidade de ${metrics[metric()]?.short || 'consultas'}`;
+    const titles = {approved:'Calor de aprovações', rejected:'Calor de reprovações',
+      compare:'Comparativo de crédito por bairro', triangles:'Aprovados com GPS do CRM'};
+    $('cm-map-title').textContent = titles[state.mode] || 'Inteligência territorial';
   }
-  function drawAll() { drawKPIs(); drawRanking(); drawMonths(); refreshMap(); }
+  function updateHoodOptions() {
+    const el = $('cm-neighborhood'); if (!el) return;
+    const previous = el.value;
+    el.replaceChildren(new Option('Todos os bairros', ''));
+    for (const row of [...(state.data?.neighborhoods || [])].sort((a,b)=>a.name.localeCompare(b.name))) {
+      el.add(new Option(row.name, row.name));
+    }
+    el.value = [...el.options].some(o=>o.value===previous) ? previous : '';
+  }
+  function updateLegend() {
+    const legend = $('cm-map-legend'); if (!legend) return;
+    const legends = {
+      approved: '<span><i class="cm-dot cm-dot-green"></i> Verde mais intenso = mais aprovações</span>',
+      rejected: '<span><i class="cm-dot cm-dot-red"></i> Vermelho mais intenso = mais reprovações</span>',
+      compare: '<span><i class="cm-dot cm-dot-green"></i> Taxa ≥75%</span><span><i class="cm-dot cm-dot-amber"></i> 50–74,9%</span><span><i class="cm-dot cm-dot-red"></i> Abaixo de 50% (mín. 20 decisões)</span>',
+      triangles: '<span><i class="cm-tri-key cm-tri-green"></i> Aprovado com contrato</span><span><i class="cm-tri-key cm-tri-yellow"></i> Aprovado sem contrato</span>',
+    };
+    const gps = '<span><i class="cm-tri-key cm-tri-green"></i> GPS aprovado</span>';
+    legend.innerHTML = (legends[state.mode] || '') +
+      (state.mode !== 'triangles' && $('cm-addresses').checked ? gps : '');
+    document.querySelectorAll('[data-map-mode]').forEach(button =>
+      button.setAttribute('aria-pressed', String(button.dataset.mapMode === state.mode)));
+  }
+  function drawAll() { drawKPIs(); drawRanking(); drawMonths(); updateLegend(); refreshMap(); }
 
   const ALL_CITIES = '__ALL__';
   const cityLabel = (name) => name.toLowerCase().replace(/(^|\s)\S/g, ch => ch.toUpperCase());
@@ -140,7 +173,7 @@
           if(!data) return;
         }
       }
-      state.data = data; state.revision += 1; sync('Dados agregados carregados'); drawAll();
+      state.data = data; state.streetHeatRows = []; state.gpsHeatRows = []; state.triangleFittedFor = ''; state.heatGpsFittedFor = ''; state.revision += 1; updateHoodOptions(); sync('Dados agregados carregados'); drawAll();
     } catch(err) { showMessage('Não foi possível carregar os indicadores: ' + err.message); sync('Erro ao carregar'); }
     finally { $('cm-apply').disabled = false; }
   }
@@ -346,6 +379,9 @@
       }
       $('cm-map-provider-label').textContent = activeMapProvider === 'google' ? 'Google Maps' : 'OpenStreetMap';
       state.layerGroup = L.layerGroup().addTo(state.map);
+      if (window.SulnetCreditHeat) {
+        state.heatLayer = window.SulnetCreditHeat.attach(state.map, activeMapProvider, $('cm-map'));
+      }
       state.mapReady = true;
       $('cm-map-empty').hidden = true;
     } catch (err) {
@@ -354,19 +390,18 @@
     }
     state.mapLoading = false;
   }
-  function clearLayers() { if (state.layerGroup) state.layerGroup.clearLayers(); state.layers = []; }
+  function clearLayers() { if (state.layerGroup) state.layerGroup.clearLayers(); state.heatLayer?.clear(); state.layers = []; }
   function infoHtml(row) {
     return `<div class="cm-map-info"><strong>${esc(row.name)}</strong><br><small>${fmt(row.total)} consultas no período</small><br>Aprovados: <b>${fmt(row.approved)}</b> · ${pct(row.approval_rate)}<br>Reprovados: <b>${fmt(row.rejected)}</b><br>Contratos assinados: <b>${fmt(row.signed_approved)}</b> · ${pct(row.signed_rate)}</div>`;
   }
-  function plotRow(row, point, max) {
-    const v = Number(metricValue(row) || 0);
-    const intensity = Math.sqrt(v / Math.max(1, max));
-    const radius = 130 + 580 * intensity;
-    const color = layerColor(row);
-    const outer = L.circle([point.lat, point.lng], {radius, color, weight: 1, opacity: .25, fillColor: color, fillOpacity: .20});
-    const inner = L.circle([point.lat, point.lng], {radius: Math.max(70, radius * .45), stroke: false, fillColor: color, fillOpacity: .38});
-    for (const circle of [outer, inner]) { circle.bindPopup(infoHtml(row)); circle.addTo(state.layerGroup); state.layers.push(circle); }
+  function renderHeat() {
+    if (!state.heatLayer || !window.SulnetCreditHeat) return;
+    const points = window.SulnetCreditHeat.makePoints(
+      visibleRows(), state.positions, state.data?.all ? [] : state.streetHeatRows, state.mode,
+      state.data?.all ? [] : state.gpsHeatRows);
+    state.heatLayer.set(points, state.mode);
   }
+
   async function fetchGeo(ticket, cityName) {
     // O servidor localiza alguns bairros por chamada (limite de 1 consulta/s do serviço público) e guarda o resultado.
     const city = cityName || $('cm-city').value, from = $('cm-from').value, to = $('cm-to').value;
@@ -401,39 +436,75 @@
     if (!state.mapReady) return;
     const ticket = ++state.revision;
     clearLayers();
-    const rows = state.data.neighborhoods || [];
-    if (!rows.length) { $('cm-geocode-status').textContent = 'Nenhum bairro com amostra suficiente neste período.'; return; }
-    let geo;
-    const bounds = [];
-    let located = 0;
-    const positions = new Map();
+    state.streetHeatRows = [];
+    state.gpsHeatRows = [];
+    state.heatGpsFittedFor = '';
+    state.positions = new Map();
+    const rows = visibleRows();
+
+    if (state.mode === 'triangles') {
+      $('cm-geocode-status').textContent = state.data.all
+        ? 'Escolha um município para ver os triângulos com coordenadas do CRM.'
+        : 'Triângulos posicionados no GPS informado na coluna Q, sem deslocamento artificial.';
+      if (state.data.all) {
+        if (streetGroup) streetGroup.clearLayers();
+        if (addressGroup) addressGroup.clearLayers();
+        $('cm-address-status').textContent = 'Selecione uma cidade para exibir os pontos aprovados.';
+      } else drawDetailLayers(ticket);
+      return;
+    }
+
+    if (!rows.length) {
+      $('cm-geocode-status').textContent = state.mode === 'compare'
+        ? 'Nenhum bairro atingiu o mínimo de 20 decisões nesse filtro.'
+        : 'Nenhum bairro com amostra suficiente neste período.';
+      if (streetGroup) streetGroup.clearLayers();
+      if (addressGroup) addressGroup.clearLayers();
+      return;
+    }
+    // Calor verde pode surgir imediatamente da coluna Q; nao precisa aguardar
+    // a geocodificacao dos bairros para apresentar os pontos aprovados.
+    const gpsStarted = state.mode === 'approved' && !state.data.all;
+    if (gpsStarted) drawDetailLayers(ticket);
+    const bounds = [], centers = [], positions = new Map();
     const cities = state.data.all ? (state.data.cities || []) : [$('cm-city').value];
-    const centers = [];
     let pending = false;
     for (const city of cities) {
-      try { geo = await fetchGeo(ticket, city); } catch (err) { $('cm-geocode-status').textContent = err.message; return; }
+      let geo;
+      try { geo = await fetchGeo(ticket, city); }
+      catch (err) { $('cm-geocode-status').textContent = err.message; return; }
       if (!geo || ticket !== state.revision) return;
       if (geo.city_center) centers.push([geo.city_center.lat, geo.city_center.lng]);
       if (geo.error && geo.pending) pending = true;
       for (const [name, point] of Object.entries(geo.positions || {})) {
-        positions.set(state.data.all ? `${name} · ${cityLabel(city)}` : name, point);
+        positions.set(state.data.all ? name + ' · ' + cityLabel(city) : name, point);
       }
-      // Desenha cada cidade assim que fica pronta (sem esperar as demais).
       state.positions = positions;
     }
-    const max = Math.max(1, ...rows.map(r => Number(metricValue(r) || 0)));
+    let located = 0;
     for (const row of rows) {
       const point = positions.get(row.name);
-      if (point) { plotRow(row, point, max); bounds.push([point.lat, point.lng]); located += 1; }
+      if (point) { bounds.push([point.lat, point.lng]); located++; }
     }
+    renderHeat();
     if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [40, 40], maxZoom: state.data.all ? 11 : 14});
+    else if (bounds.length === 1) state.map.setView(bounds[0], 12);
     else if (centers.length) state.map.setView(centers[0], 12);
-    let status = `${located} de ${rows.length} bairros localizados · círculos no centro aproximado do bairro`;
-    if (pending) status += ' · alguns bairros ainda não foram localizados; atualize a página para continuar.';
-    else if (!centers.length) status = 'Não foi possível localizar a cidade no mapa. O ranking continua válido.';
+    let status = located + ' de ' + rows.length + ' bairros posicionados · ' +
+      (state.mode === 'approved' ? 'aprovações por GPS e saldo aproximado por bairro'
+        : state.mode === 'rejected' ? 'reprovações agregadas por rua/bairro'
+        : 'comparativo aproximado por bairro');
+    if (state.mode === 'compare') status += ' · mínimo 20 decisões por bairro';
+    if (pending) status += ' · alguns locais ainda não foram encontrados.';
+    else if (!centers.length && !state.gpsHeatRows.length)
+      status = 'Não foi possível localizar a cidade. Ranking e indicadores continuam disponíveis.';
     $('cm-geocode-status').textContent = status;
-    if (state.data.all) { if (streetGroup) streetGroup.clearLayers(); if (addressGroup) addressGroup.clearLayers(); $('cm-address-status').textContent = ''; }
-    else drawDetailLayers(ticket);
+    if (state.data.all) {
+      if (streetGroup) streetGroup.clearLayers();
+      if (addressGroup) addressGroup.clearLayers();
+      $('cm-streets-status').textContent = '';
+      $('cm-address-status').textContent = '';
+    } else if (!gpsStarted) drawDetailLayers(ticket);
   }
   // Ruas e endereços são localizados em rodadas alternadas (o serviço público de endereços aceita
   // uma consulta por segundo), para os triângulos aparecerem desde o começo, sem esperar as ruas.
@@ -463,9 +534,23 @@
     const r = await fetch('/api/reports/credit-map/addresses?' + query, {credentials: 'same-origin', cache: 'no-store'});
     if (!r.ok) return 'done';
     const data = await r.json();
-    if (ticket !== state.revision || !$('cm-addresses').checked) return 'stale';
+    const needsHeat = state.mode === 'approved';
+    if (ticket !== state.revision || (!needsHeat && !$('cm-addresses').checked)) return 'stale';
     addressGroup.clearLayers();
-    for (const row of spread(data.addresses || [])) {
+    const gpsRows = (data.addresses || []).filter(row =>
+      !selectedHood() || folded(row.neighborhood) === folded(selectedHood()));
+    state.gpsHeatRows = gpsRows.filter(row => row.source_coordinates);
+    if (needsHeat) {
+      renderHeat();
+      const gpsKey = query.toString() + selectedHood();
+      if (state.positions.size === 0 && gpsRows.length && state.heatGpsFittedFor !== gpsKey) {
+        const coords = gpsRows.filter(row => row.source_coordinates).map(row => [row.lat, row.lng]);
+        if (coords.length >= 2) state.map.fitBounds(coords, {padding:[50, 50], maxZoom:13});
+        else if (coords.length) state.map.setView(coords[0], 13);
+        state.heatGpsFittedFor = gpsKey;
+      }
+    }
+    for (const row of spread($('cm-addresses').checked ? gpsRows : [])) {
       const where = row.street ? esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)') : 'Coordenada registrada';
       const status = row.signed ? 'Aprovado · contrato assinado' : 'Aprovado · sem contrato';
       const many = row.count > 1 ? `<br>${fmt(row.count)} registros neste ponto` : '';
@@ -476,21 +561,34 @@
         .bindPopup(`<div class="cm-map-info"><strong>${where}</strong><br><small>${esc(row.neighborhood)}</small><br>${status}${many}${approx}</div>`)
         .addTo(addressGroup);
     }
-    if (!data.total) { $('cm-address-status').textContent = 'Sem marcadores com coordenadas nesta base. Importe o CSV atualizado com a coluna Coordenadas (Q).'; return 'done'; }
-    const found = (data.addresses || []).length;
+    if (state.mode === 'triangles' && gpsRows.length && state.triangleFittedFor !== query.toString() + selectedHood()) {
+      const bounds = gpsRows.map(row => [row.lat, row.lng]);
+      if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [55, 55], maxZoom: 15});
+      else state.map.setView(bounds[0], 15);
+      state.triangleFittedFor = query.toString() + selectedHood();
+    }
+    if (!data.total) { $('cm-address-status').textContent = 'Sem triângulos GPS neste período. Verifique a coluna Coordenadas (Q).'; return 'done'; }
+    const found = gpsRows.length;
     const gps = Number(data.source_coordinates || 0);
     const suffix = gps ? ` · ${fmt(gps)} coordenadas recebidas do CRM` : '';
-    $('cm-address-status').textContent = `${fmt(found)} de ${fmt(data.total)} pontos aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato` + suffix + (data.pending ? ' · localizando os demais, pode levar alguns minutos…' : '');
+    $('cm-address-status').textContent = (state.mode === 'approved' && !$('cm-addresses').checked
+      ? `${fmt(found)} pontos GPS incorporados ao calor de aprovações`
+      : `${fmt(found)} de ${fmt(data.total)} pontos aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato`) + suffix + (data.pending ? ' · localizando os demais, pode levar alguns minutos…' : '');
     return !data.pending ? 'done' : data.error ? 'busy' : 'more';
   }
   async function streetStep(query, ticket) {
     const r = await fetch('/api/reports/credit-map/streets?' + query, {credentials: 'same-origin', cache: 'no-store'});
     if (!r.ok) return 'done';
     const data = await r.json();
-    if (ticket !== state.revision || !$('cm-streets').checked) return 'stale';
+    const needsHeat = state.mode === 'rejected';
+    if (ticket !== state.revision || (!needsHeat && !$('cm-streets').checked)) return 'stale';
+    state.streetHeatRows = data.streets || [];
+    if (needsHeat) renderHeat();
     streetGroup.clearLayers();
     for (const row of data.streets || []) {
-      const color = layerColor(row);
+      if (!$('cm-streets').checked) break;
+      if (selectedHood() && folded(row.neighborhood) !== folded(selectedHood())) continue;
+      const color = state.mode === 'rejected' ? RED : layerColor(row);
       const dot = L.circleMarker([row.lat, row.lng], {radius: 7, color: '#fff', weight: 1.5, fillColor: color, fillOpacity: .9});
       dot.bindPopup(`<div class="cm-map-info"><strong>${esc(row.street)}</strong><br><small>${esc(row.neighborhood)}${row.cep ? ' · CEP ' + esc(row.cep.slice(0,5) + '-' + row.cep.slice(5)) : ''}</small><br>${fmt(row.total)} consultas · aprovados <b>${fmt(row.approved)}</b> (${pct(row.approval_rate)})<br>Assinados: <b>${fmt(row.signed_approved)}</b></div>`);
       dot.addTo(streetGroup);
@@ -506,10 +604,14 @@
     streetGroup.clearLayers(); addressGroup.clearLayers();
     const query = new URLSearchParams({city: $('cm-city').value, date_from: $('cm-from').value, date_to: $('cm-to').value});
     const layers = [
-      {toggle: $('cm-addresses'), step: addressStep, status: 'cm-address-status', done: false},
-      {toggle: $('cm-streets'), step: streetStep, status: 'cm-streets-status', done: false},
+      {kind:'addresses', step: addressStep, status:'cm-address-status', done: false},
+      {kind:'streets', step: streetStep, status:'cm-streets-status', done: false},
     ];
-    for (const layer of layers) if (!layer.toggle || !layer.toggle.checked) { layer.done = true; if (layer.toggle) $(layer.status).textContent = ''; }
+    for (const layer of layers) {
+      const enabled = layer.kind === 'addresses' ? ($('cm-addresses').checked || state.mode === 'approved')
+        : $('cm-streets').checked || state.mode === 'rejected';
+      if (!enabled) {layer.done = true; $(layer.status).textContent = '';}
+    }
     let errors = 0;
     for (let round = 0; round < 900 && layers.some(layer => !layer.done); round += 1) {
       let busy = false;
@@ -543,7 +645,7 @@
       button.textContent = open ? '✕ Sair da tela cheia' : '⛶ Tela cheia';
       if (state.map) {
         if (open) state.map.scrollWheelZoom.enable(); else state.map.scrollWheelZoom.disable();
-        setTimeout(() => state.map.invalidateSize(), 150);
+        setTimeout(() => {state.map.invalidateSize();state.heatLayer?.redraw();}, 150);
       }
     };
     button.addEventListener('click', async () => {
@@ -603,8 +705,27 @@
   }
   $('cm-apply').addEventListener('click',fetchData);
   ['cm-city','cm-from','cm-to'].forEach(id => $(id).addEventListener('change', fetchData));
-  ['cm-streets','cm-addresses'].forEach(id => { if ($(id)) $(id).addEventListener('change', () => { if (state.data?.all) return; state.revision += 1; drawDetailLayers(state.revision); }); });
-  $('cm-metric').addEventListener('change',()=>{if(state.data)drawAll();});
+  ['cm-streets','cm-addresses'].forEach(id => { if ($(id)) $(id).addEventListener('change', () => {
+    updateLegend();
+    if (state.data?.all) return;
+    state.revision += 1;
+    drawDetailLayers(state.revision);
+  }); });
+  document.querySelectorAll('button[data-map-mode]').forEach(button => button.addEventListener('click', () => {
+    const mode = button.dataset.mapMode;
+    if (state.mode === mode || !['approved','rejected','compare','triangles'].includes(mode)) return;
+    state.mode = mode;
+    $('cm-metric').value = {approved:'approved',rejected:'rejected',compare:'approval_rate',triangles:'signed_approved'}[mode];
+    $('cm-addresses').checked = mode === 'triangles';
+    state.triangleFittedFor = '';
+    if (state.data) drawAll();
+  }));
+  $('cm-neighborhood').addEventListener('change', () => {
+    state.triangleFittedFor = '';
+    if (state.data) {drawRanking(); refreshMap();}
+  });
+  $('cm-metric').addEventListener('change',()=>{if(state.data){drawKPIs();drawRanking();}});
+
   $('cm-search').addEventListener('input',drawRanking);
   $('cm-export').addEventListener('click',exportRanking);
   initImport();

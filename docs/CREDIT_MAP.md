@@ -53,3 +53,26 @@ O botão **Arquivo para Google My Maps** (ADMIN e GESTOR) baixa um CSV com o end
 - Filtro por mês, não por dia. A mesma consulta pode repetir um CPF com outro protocolo; totais são consultas, não pessoas únicas.
 - A geocodificação pode falhar ou cair só na rua. Resultados incompletos não devem ser interpretados como ausência de consultas.
 - Não houve publicação automática no sistema de produção nesta entrega.
+
+
+## Modos territoriais do painel (Google Maps e OpenStreetMap)
+
+A visualização agora possui quatro modos alternados pelo usuário:
+
+1. **Aprovações:** manchas verdes com intensidade proporcional ao número de decisões aprovadas no período.
+2. **Reprovações:** manchas vermelhas com intensidade proporcional às negativas. **Não marca domicílios reprovados:** os dados são agregados e localizados por centro de rua ou de bairro, quando disponível.
+3. **Comparativo:** bairros com pelo menos **20 decisões concluídas** (aprovadas + reprovadas), usando a taxa `aprovados / (aprovados + reprovados)`. Verde >=75%, amarelo 50% a 74,9% e vermelho abaixo de 50%. A cor representa **resultado histórico da amostra, não risco individual**.
+4. **Triângulos GPS:** mostra somente os registros aprovados que já foram armazenados com coordenadas válidas da coluna Q. Verde = contrato assinado; amarelo = aprovado sem contrato. A coordenação de origem pode ter sido capturada na contratação e não na frente da casa.
+
+### Intensidade e precisão
+
+- O mapa usa uma camada Canvas própria, compatível com Google Maps e Leaflet, em vez do `HeatmapLayer` antigo do Google (descontinuado).
+- **Aprovações:** os pontos com GPS válido da coluna Q contribuem na coordenada de origem, e somente o saldo sem GPS fica no centro aproximado do bairro. Não se reutilizam os agregados de ruas nesse modo, pois eles poderiam conter as mesmas aprovações.
+- **Reprovações:** as ruas geocodificadas (mínimo de 5 consultas totais por rua) recebem a quantidade de reprovações do local, subtraída do total do bairro. Só o saldo não localizado permanece no centro do bairro. Não há mapa de domicílios reprovados; a concentração representa agregados aproximados.
+- Os pontos de ruas e os centros de bairros **não representam limites oficiais nem endereços individuais**. A largura das manchas é visual (em pixels), não metros de cobertura.
+- Bairros com menos de 10 consultas ou sem bairro informado não são detalhados no mapa, mas continuam nos KPIs globais.
+- No comparativo, bairros com 10 a 19 decisões ficam fora do calor, evitando conclusões baseadas em pequenas amostras. Para volume de aprovações e reprovações, permanece a privacidade mínima de 10 consultas por bairro.
+- Uma linha do mapa ou ranking que não foi geocodificada permanece nos indicadores, mas **não recebe uma posição inventada** no mapa.
+- Nas opções do mapa, o usuário pode destacar um bairro (o total do KPI continua sendo da cidade/período), alternar os pontos agregados de rua e optar por sobrepor os triângulos GPS. Com "Todas as cidades" o comparativo usa bairros de cada cidade separadamente.
+- A renderização Canvas recalcula coordenadas ao aproximar, deslocar, redimensionar ou colocar o mapa em tela cheia.
+- Não é necessário reimportar o CSV para esta melhoria: os agregados e coordenadas GPS já existentes continuam sendo usados.

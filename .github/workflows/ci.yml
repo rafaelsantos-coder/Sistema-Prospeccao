@@ -63,6 +63,12 @@ jobs:
       - name: Compilar módulos
         run: python -m compileall -q app alembic
 
+      - name: Validar JavaScript e mapa de calor territorial
+        run: |
+          node --check app/static/js/credit_map.js
+          node --check app/static/js/credit_map_heat.js
+          node --test tests/js/credit_map_heat.test.cjs
+
       - name: Lint crítico
         run: ruff check app tests --select E9,F63,F7,F82,B --ignore B008
 
