@@ -1076,3 +1076,18 @@ class CreditMapStreetAggregate(Base):
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
     signed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class CreditMapAddress(Base):
+    """Endereço (rua e número) de cliente aprovado, sem nome nem CPF, para os marcadores do mapa."""
+    __tablename__ = 'credit_map_addresses'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    city: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    neighborhood: Mapped[str] = mapped_column(String(180), nullable=False)
+    street: Mapped[str] = mapped_column(String(100), nullable=False)
+    number: Mapped[str] = mapped_column(String(12), nullable=False, default='')
+    cep: Mapped[str] = mapped_column(String(8), nullable=False, default='')
+    month: Mapped[str] = mapped_column(String(12), nullable=False)
+    signed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)

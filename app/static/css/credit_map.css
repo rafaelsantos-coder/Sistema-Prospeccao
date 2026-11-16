@@ -6,3 +6,8 @@
 
 .cm-street-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; margin-right: 12px; cursor: pointer; }
 .cm-streets-status { display: block; font-size: 12px; opacity: .8; }
+.cm-tri { background: none; border: 0; }
+.cm-tri-key { display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 10px solid #16a66f; }
+.cm-tri-key.cm-tri-yellow { border-top-color: #f5c518; }
+.cm-map-legend { flex-wrap: wrap; max-width: calc(100% - 24px); }
+.cm-address-footer { padding-top: 0; }
