@@ -379,6 +379,9 @@
       }
       $('cm-map-provider-label').textContent = activeMapProvider === 'google' ? 'Google Maps' : 'OpenStreetMap';
       state.layerGroup = L.layerGroup().addTo(state.map);
+      if (window.SulnetCreditHeat) {
+        state.heatLayer = window.SulnetCreditHeat.attach(state.map, activeMapProvider, $('cm-map'));
+      }
       state.mapReady = true;
       $('cm-map-empty').hidden = true;
     } catch (err) {
@@ -387,19 +390,17 @@
     }
     state.mapLoading = false;
   }
-  function clearLayers() { if (state.layerGroup) state.layerGroup.clearLayers(); state.layers = []; }
+  function clearLayers() { if (state.layerGroup) state.layerGroup.clearLayers(); state.heatLayer?.clear(); state.layers = []; }
   function infoHtml(row) {
     return `<div class="cm-map-info"><strong>${esc(row.name)}</strong><br><small>${fmt(row.total)} consultas no período</small><br>Aprovados: <b>${fmt(row.approved)}</b> · ${pct(row.approval_rate)}<br>Reprovados: <b>${fmt(row.rejected)}</b><br>Contratos assinados: <b>${fmt(row.signed_approved)}</b> · ${pct(row.signed_rate)}</div>`;
   }
-  function plotRow(row, point, max) {
-    const v = Number(metricValue(row) || 0);
-    const intensity = Math.sqrt(v / Math.max(1, max));
-    const radius = 130 + 580 * intensity;
-    const color = layerColor(row);
-    const outer = L.circle([point.lat, point.lng], {radius, color, weight: 1, opacity: .25, fillColor: color, fillOpacity: .20});
-    const inner = L.circle([point.lat, point.lng], {radius: Math.max(70, radius * .45), stroke: false, fillColor: color, fillOpacity: .38});
-    for (const circle of [outer, inner]) { circle.bindPopup(infoHtml(row)); circle.addTo(state.layerGroup); state.layers.push(circle); }
+  function renderHeat() {
+    if (!state.heatLayer || !window.SulnetCreditHeat) return;
+    const points = window.SulnetCreditHeat.makePoints(
+      visibleRows(), state.positions, state.data?.all ? [] : state.streetHeatRows, state.mode);
+    state.heatLayer.set(points, state.mode);
   }
+
   async function fetchGeo(ticket, cityName) {
     // O servidor localiza alguns bairros por chamada (limite de 1 consulta/s do serviço público) e guarda o resultado.
     const city = cityName || $('cm-city').value, from = $('cm-from').value, to = $('cm-to').value;
@@ -434,39 +435,65 @@
     if (!state.mapReady) return;
     const ticket = ++state.revision;
     clearLayers();
-    const rows = state.data.neighborhoods || [];
-    if (!rows.length) { $('cm-geocode-status').textContent = 'Nenhum bairro com amostra suficiente neste período.'; return; }
-    let geo;
-    const bounds = [];
-    let located = 0;
-    const positions = new Map();
+    state.streetHeatRows = [];
+    state.positions = new Map();
+    const rows = visibleRows();
+
+    if (state.mode === 'triangles') {
+      $('cm-geocode-status').textContent = state.data.all
+        ? 'Escolha um município para ver os triângulos com coordenadas do CRM.'
+        : 'Triângulos posicionados no GPS informado na coluna Q, sem deslocamento artificial.';
+      if (state.data.all) {
+        if (streetGroup) streetGroup.clearLayers();
+        if (addressGroup) addressGroup.clearLayers();
+        $('cm-address-status').textContent = 'Selecione uma cidade para exibir os pontos aprovados.';
+      } else drawDetailLayers(ticket);
+      return;
+    }
+
+    if (!rows.length) {
+      $('cm-geocode-status').textContent = state.mode === 'compare'
+        ? 'Nenhum bairro atingiu o mínimo de 20 decisões nesse filtro.'
+        : 'Nenhum bairro com amostra suficiente neste período.';
+      if (streetGroup) streetGroup.clearLayers();
+      if (addressGroup) addressGroup.clearLayers();
+      return;
+    }
+    const bounds = [], centers = [], positions = new Map();
     const cities = state.data.all ? (state.data.cities || []) : [$('cm-city').value];
-    const centers = [];
     let pending = false;
     for (const city of cities) {
-      try { geo = await fetchGeo(ticket, city); } catch (err) { $('cm-geocode-status').textContent = err.message; return; }
+      let geo;
+      try { geo = await fetchGeo(ticket, city); }
+      catch (err) { $('cm-geocode-status').textContent = err.message; return; }
       if (!geo || ticket !== state.revision) return;
       if (geo.city_center) centers.push([geo.city_center.lat, geo.city_center.lng]);
       if (geo.error && geo.pending) pending = true;
       for (const [name, point] of Object.entries(geo.positions || {})) {
-        positions.set(state.data.all ? `${name} · ${cityLabel(city)}` : name, point);
+        positions.set(state.data.all ? name + ' · ' + cityLabel(city) : name, point);
       }
-      // Desenha cada cidade assim que fica pronta (sem esperar as demais).
       state.positions = positions;
     }
-    const max = Math.max(1, ...rows.map(r => Number(metricValue(r) || 0)));
+    let located = 0;
     for (const row of rows) {
       const point = positions.get(row.name);
-      if (point) { plotRow(row, point, max); bounds.push([point.lat, point.lng]); located += 1; }
+      if (point) { bounds.push([point.lat, point.lng]); located++; }
     }
+    renderHeat();
     if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [40, 40], maxZoom: state.data.all ? 11 : 14});
+    else if (bounds.length === 1) state.map.setView(bounds[0], 12);
     else if (centers.length) state.map.setView(centers[0], 12);
-    let status = `${located} de ${rows.length} bairros localizados · círculos no centro aproximado do bairro`;
-    if (pending) status += ' · alguns bairros ainda não foram localizados; atualize a página para continuar.';
-    else if (!centers.length) status = 'Não foi possível localizar a cidade no mapa. O ranking continua válido.';
+    let status = located + ' de ' + rows.length + ' bairros posicionados · calor aproximado por bairro/rua';
+    if (state.mode === 'compare') status += ' · mínimo 20 decisões por bairro';
+    if (pending) status += ' · alguns locais ainda não foram encontrados.';
+    else if (!centers.length) status = 'Não foi possível localizar a cidade. Ranking e indicadores continuam disponíveis.';
     $('cm-geocode-status').textContent = status;
-    if (state.data.all) { if (streetGroup) streetGroup.clearLayers(); if (addressGroup) addressGroup.clearLayers(); $('cm-address-status').textContent = ''; }
-    else drawDetailLayers(ticket);
+    if (state.data.all) {
+      if (streetGroup) streetGroup.clearLayers();
+      if (addressGroup) addressGroup.clearLayers();
+      $('cm-streets-status').textContent = '';
+      $('cm-address-status').textContent = '';
+    } else drawDetailLayers(ticket);
   }
   // Ruas e endereços são localizados em rodadas alternadas (o serviço público de endereços aceita
   // uma consulta por segundo), para os triângulos aparecerem desde o começo, sem esperar as ruas.
