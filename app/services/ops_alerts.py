@@ -237,11 +237,11 @@ def stuck_sale_text(*, name: str, phone: str, plan: str, step: str, error: str, 
     reason = _LONG_DIGITS.sub("<número>", " ".join((error or "").split()))[:240]
     reason = reason or "A venda está aguardando o CRM e não avançou."
     opportunity = f" · oportunidade {opportunity_id}" if opportunity_id else ""
-    link = f"\\nAbrir conversa: {settings.app_public_url.rstrip('/')}/conversations/{conversation_id}" if settings.app_public_url else ""
+    link = f"\nAbrir conversa: {settings.app_public_url.rstrip('/')}/conversations/{conversation_id}" if settings.app_public_url else ""
     return (
-        "⚠️ ERRO NO FECHAMENTO — AÇÃO NECESSÁRIA\\n"
-        "A IA não conseguiu concluir a venda. Verifique a integração/CRM e assuma este caso.\\n"
-        f"Cliente: {name or 'não informado'}\\n"
+        "⚠️ ERRO NO FECHAMENTO — AÇÃO NECESSÁRIA\n"
+        "A IA não conseguiu concluir a venda. Verifique a integração/CRM e assuma este caso.\n"
+        f"Cliente: {name or 'não informado'}\n"
         f"Telefone: {phone or 'não informado'}\n"
         f"Plano: {plan or 'não informado'}\n"
         f"Etapa: {step}\n"
@@ -376,9 +376,9 @@ def unanswered_customers(db: Session) -> list[dict]:
     """Conversas abertas em que a última mensagem é do cliente há mais de 10 minutos.
 
     Em 09/11 a fila 1 ficou sem vínculo de IA e dois clientes esperaram sem
-    ninguém saber. Fila em modo somente humano fica de fora.
+    ninguém saber. Inclui filas sem IA e vendedor offline.
     """
-    from app.models import AIConversationState, AIQueueBinding, Conversation  # noqa: PLC0415
+    from app.models import AIConversationState, Conversation  # noqa: PLC0415
     from app.services.queue_routing import queue_for_conversation, usable_ai_binding, human_online_in_queue  # noqa: PLC0415
 
     now = utcnow()
@@ -471,7 +471,7 @@ def check_unanswered_customers(db: Session) -> int:
     )
     severe = any(item.get("age_minutes", 0) >= 30 for item in waiting)
     text = (
-        f"🔔 MENSAGENS NÃO LIDAS — {len(waiting)} cliente(s) aguardando atendimento "
+        f"🔔 MENSAGENS NÃO LIDAS — {len(waiting)} cliente(s) sem resposta "
         "há mais de 10 minutos. "
         f"{'URGENTE: espera de 30min ou mais. ' if severe else ''}"
         f"Prioridades: {cases}."
@@ -538,12 +538,12 @@ def check_failed_ai_jobs(db: Session) -> int:
         return 0
     digest = hashlib.sha256("|".join(cases).encode("utf-8")).hexdigest()[:12]
     text = (
-        "⚠️ ERRO DE ATENDIMENTO IA — AÇÃO DO GESTOR\\n"
-        "A IA não conseguiu responder às conversas abaixo; revisar o motivo e continuar o atendimento.\\n"
-        + "\\n".join(cases)
+        "⚠️ ERRO DE ATENDIMENTO IA — AÇÃO DO GESTOR\n"
+        "A IA não conseguiu responder às conversas abaixo; revisar o motivo e continuar o atendimento.\n"
+        + "\n".join(cases)
     )
     if settings.app_public_url:
-        text += f"\\nCaixa de entrada: {settings.app_public_url.rstrip('/')}/conversations?view=unread"
+        text += f"\nCaixa de entrada: {settings.app_public_url.rstrip('/')}/conversations?view=unread"
     key = f"ai-job-errors:{utcnow():%Y%m%d}:{digest}"
     return 1 if send_ops_alert(db, key=key, text=text) else 0
 
