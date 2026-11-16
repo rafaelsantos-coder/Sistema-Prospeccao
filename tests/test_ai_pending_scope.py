@@ -78,7 +78,7 @@ def test_mutirao_ignora_ontem_e_17h59_e_pega_apenas_18h_em_diante(monkeypatch):
         assert ai_sdr_worker._takeover_unanswered_human_conversations() == 1
         assert ai_sdr_worker._takeover_unanswered_human_conversations() == 0
         with factory() as db:
-            for conv_id, message_id in (old_yesterday, old_today):
+            for _, message_id in (old_yesterday, old_today):
                 assert db.scalar(
                     select(AIJob.id).where(AIJob.message_id == message_id)
                 ) is None
