@@ -6825,7 +6825,7 @@ def _handle_sale_adjustment(
     if _ADJUST_PRICE_QUESTION.search(folded) and state.offer_price is not None:
         return (
             f"O valor mensal combinado para {state.plan_label} é "
-            f"R$ {_money_for_display(state.offer_price)}. "
+            f"R$ {state.offer_price:.2f}. ".replace(".", ",")
             "Deseja manter essa oferta e seguir com a contratação?"
         )
     if _ADJUST_NOTHING.search(folded):
