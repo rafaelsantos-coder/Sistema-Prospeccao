@@ -525,7 +525,9 @@
     const data = await r.json();
     if (ticket !== state.revision || !$('cm-addresses').checked) return 'stale';
     addressGroup.clearLayers();
-    for (const row of spread(data.addresses || [])) {
+    const gpsRows = (data.addresses || []).filter(row =>
+      !selectedHood() || folded(row.neighborhood) === folded(selectedHood()));
+    for (const row of spread(gpsRows)) {
       const where = row.street ? esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)') : 'Coordenada registrada';
       const status = row.signed ? 'Aprovado · contrato assinado' : 'Aprovado · sem contrato';
       const many = row.count > 1 ? `<br>${fmt(row.count)} registros neste ponto` : '';
@@ -536,8 +538,14 @@
         .bindPopup(`<div class="cm-map-info"><strong>${where}</strong><br><small>${esc(row.neighborhood)}</small><br>${status}${many}${approx}</div>`)
         .addTo(addressGroup);
     }
-    if (!data.total) { $('cm-address-status').textContent = 'Sem marcadores com coordenadas nesta base. Importe o CSV atualizado com a coluna Coordenadas (Q).'; return 'done'; }
-    const found = (data.addresses || []).length;
+    if (state.mode === 'triangles' && gpsRows.length && state.triangleFittedFor !== query.toString() + selectedHood()) {
+      const bounds = gpsRows.map(row => [row.lat, row.lng]);
+      if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [55, 55], maxZoom: 15});
+      else state.map.setView(bounds[0], 15);
+      state.triangleFittedFor = query.toString() + selectedHood();
+    }
+    if (!data.total) { $('cm-address-status').textContent = 'Sem triângulos GPS neste período. Verifique a coluna Coordenadas (Q).'; return 'done'; }
+    const found = gpsRows.length;
     const gps = Number(data.source_coordinates || 0);
     const suffix = gps ? ` · ${fmt(gps)} coordenadas recebidas do CRM` : '';
     $('cm-address-status').textContent = `${fmt(found)} de ${fmt(data.total)} pontos aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato` + suffix + (data.pending ? ' · localizando os demais, pode levar alguns minutos…' : '');
@@ -547,10 +555,15 @@
     const r = await fetch('/api/reports/credit-map/streets?' + query, {credentials: 'same-origin', cache: 'no-store'});
     if (!r.ok) return 'done';
     const data = await r.json();
-    if (ticket !== state.revision || !$('cm-streets').checked) return 'stale';
+    const needsHeat = state.mode === 'approved' || state.mode === 'rejected';
+    if (ticket !== state.revision || (!needsHeat && !$('cm-streets').checked)) return 'stale';
+    state.streetHeatRows = data.streets || [];
+    if (needsHeat) renderHeat();
     streetGroup.clearLayers();
     for (const row of data.streets || []) {
-      const color = layerColor(row);
+      if (!$('cm-streets').checked) break;
+      if (selectedHood() && folded(row.neighborhood) !== folded(selectedHood())) continue;
+      const color = state.mode === 'rejected' ? RED : layerColor(row);
       const dot = L.circleMarker([row.lat, row.lng], {radius: 7, color: '#fff', weight: 1.5, fillColor: color, fillOpacity: .9});
       dot.bindPopup(`<div class="cm-map-info"><strong>${esc(row.street)}</strong><br><small>${esc(row.neighborhood)}${row.cep ? ' · CEP ' + esc(row.cep.slice(0,5) + '-' + row.cep.slice(5)) : ''}</small><br>${fmt(row.total)} consultas · aprovados <b>${fmt(row.approved)}</b> (${pct(row.approval_rate)})<br>Assinados: <b>${fmt(row.signed_approved)}</b></div>`);
       dot.addTo(streetGroup);
@@ -566,10 +579,14 @@
     streetGroup.clearLayers(); addressGroup.clearLayers();
     const query = new URLSearchParams({city: $('cm-city').value, date_from: $('cm-from').value, date_to: $('cm-to').value});
     const layers = [
-      {toggle: $('cm-addresses'), step: addressStep, status: 'cm-address-status', done: false},
-      {toggle: $('cm-streets'), step: streetStep, status: 'cm-streets-status', done: false},
+      {kind:'addresses', step: addressStep, status:'cm-address-status', done: false},
+      {kind:'streets', step: streetStep, status:'cm-streets-status', done: false},
     ];
-    for (const layer of layers) if (!layer.toggle || !layer.toggle.checked) { layer.done = true; if (layer.toggle) $(layer.status).textContent = ''; }
+    for (const layer of layers) {
+      const enabled = layer.kind === 'addresses' ? $('cm-addresses').checked
+        : $('cm-streets').checked || state.mode === 'approved' || state.mode === 'rejected';
+      if (!enabled) {layer.done = true; $(layer.status).textContent = '';}
+    }
     let errors = 0;
     for (let round = 0; round < 900 && layers.some(layer => !layer.done); round += 1) {
       let busy = false;
@@ -603,7 +620,7 @@
       button.textContent = open ? '✕ Sair da tela cheia' : '⛶ Tela cheia';
       if (state.map) {
         if (open) state.map.scrollWheelZoom.enable(); else state.map.scrollWheelZoom.disable();
-        setTimeout(() => state.map.invalidateSize(), 150);
+        setTimeout(() => {state.map.invalidateSize();state.heatLayer?.redraw();}, 150);
       }
     };
     button.addEventListener('click', async () => {
@@ -663,8 +680,27 @@
   }
   $('cm-apply').addEventListener('click',fetchData);
   ['cm-city','cm-from','cm-to'].forEach(id => $(id).addEventListener('change', fetchData));
-  ['cm-streets','cm-addresses'].forEach(id => { if ($(id)) $(id).addEventListener('change', () => { if (state.data?.all) return; state.revision += 1; drawDetailLayers(state.revision); }); });
-  $('cm-metric').addEventListener('change',()=>{if(state.data)drawAll();});
+  ['cm-streets','cm-addresses'].forEach(id => { if ($(id)) $(id).addEventListener('change', () => {
+    updateLegend();
+    if (state.data?.all) return;
+    state.revision += 1;
+    drawDetailLayers(state.revision);
+  }); });
+  document.querySelectorAll('button[data-map-mode]').forEach(button => button.addEventListener('click', () => {
+    const mode = button.dataset.mapMode;
+    if (state.mode === mode || !['approved','rejected','compare','triangles'].includes(mode)) return;
+    state.mode = mode;
+    $('cm-metric').value = {approved:'approved',rejected:'rejected',compare:'approval_rate',triangles:'signed_approved'}[mode];
+    $('cm-addresses').checked = mode === 'triangles';
+    state.triangleFittedFor = '';
+    if (state.data) drawAll();
+  }));
+  $('cm-neighborhood').addEventListener('change', () => {
+    state.triangleFittedFor = '';
+    if (state.data) {drawRanking(); refreshMap();}
+  });
+  $('cm-metric').addEventListener('change',()=>{if(state.data){drawKPIs();drawRanking();}});
+
   $('cm-search').addEventListener('input',drawRanking);
   $('cm-export').addEventListener('click',exportRanking);
   initImport();
