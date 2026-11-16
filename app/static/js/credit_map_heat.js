@@ -26,7 +26,7 @@
       const rejected = Math.max(0, Number(row.rejected) || 0);
       const decided = approved + rejected;
       if (mode === 'compare' && decided < MIN_COMPARE_DECISIONS) continue;
-      eligible.set(normalized(row.hood || row.name), {
+      eligible.set(normalized(row.city ? row.name : (row.hood || row.name)), {
         position: point, approved, rejected, decided, name: row.name,
         rate: decided ? approved / decided * 100 : 0,
         remaining: mode === 'rejected' ? rejected : approved,
