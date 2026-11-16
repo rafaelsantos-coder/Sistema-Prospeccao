@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from sqlalchemy import select, text
 
@@ -307,6 +307,13 @@ WIDE_SELLER_QUIET_DAYS = 3
 _OPEN_DEAL_STAGES = {"PROPOSTA", "NEGOCIACAO"}
 
 
+def _aware(value):
+    """Datas antigas podem vir sem fuso do banco; trata como UTC para comparar."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _seller_messages(db, conversation_id: int, ai_user_ids: set[int]) -> list[tuple[int, object]]:
     """(vendedor, data) das mensagens escritas por uma pessoa; disparos não contam."""
     from app.models import CampaignRecipient  # noqa: PLC0415
@@ -325,7 +332,7 @@ def _seller_messages(db, conversation_id: int, ai_user_ids: set[int]) -> list[tu
         )
     ).all()
     return [
-        (user_id, created_at)
+        (user_id, _aware(created_at))
         for user_id, created_at, body in rows
         if user_id not in ai_user_ids and (body or "").strip() and (body or "").strip() not in automated
     ]
@@ -372,7 +379,7 @@ def prepare_wide_recall(db, *, dry_run: bool = True, auto_start: bool = False) -
     from app.models import User  # noqa: PLC0415
     from app.services.dispatch_queue import create_dispatch_from_leads  # noqa: PLC0415
 
-    now = utcnow()
+    now = _aware(utcnow())
     since = now - timedelta(days=DAYS)
     quiet_since = now - timedelta(days=WIDE_SELLER_QUIET_DAYS)
     ai_user_ids = {row for row in db.scalars(select(AIAgentProfile.user_id)) if row}
