@@ -76,6 +76,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             policy = policy.replace(
                 f"script-src 'self' 'nonce-{nonce}'", f"script-src 'self' 'nonce-{nonce}' {external}"
             ).replace("style-src 'self' 'unsafe-inline'", f"style-src 'self' 'unsafe-inline' {external}")
+            if settings.credit_map_provider == "google" and settings.google_maps_browser_key:
+                # Somente o painel de mapa precisa desses dominios; o CSP do restante do CRM permanece fechado.
+                # A API dinamica do Google herda o nonce definido no carregador da pagina.
+                policy = policy.replace(
+                    f"script-src 'self' 'nonce-{nonce}' {external}",
+                    f"script-src 'self' 'nonce-{nonce}' {external} "
+                    "https://maps.googleapis.com https://maps.gstatic.com "
+                    "https://mapsresources-pa.googleapis.com 'unsafe-eval' blob:",
+                )
+                policy += "; frame-src https://*.google.com; worker-src blob:"
             response.headers["Content-Security-Policy"] = policy
         if settings.is_production:
             response.headers.setdefault(
