@@ -70,7 +70,7 @@
     </div>
     <div class="data-table-wrap top-space">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>Número / identificação</th><th>Instância</th><th>Origem</th><th>Status</th><th>Webhook</th></tr></thead>
+        <thead><tr><th>Nome</th><th>Número / identificação</th><th>Instância</th><th>Origem</th><th>Status</th><th>Ações</th></tr></thead>
         <tbody>
         {% for instance in zapi_instances %}
           {% set zi = zapi_instance_info.get(instance.id, {}) %}
@@ -84,12 +84,17 @@
             <td>{{ 'Railway / atual' if instance.source_type == 'ENV' else 'Cadastro interno' }}</td>
             <td><span class="connection-status {% if zi.get('connected') is sameas true %}on{% endif %}">{% if not instance.active %}Inativa{% elif zi.get('connected') is sameas true %}Conectada{% elif zi.get('connected') is sameas false %}Desconectada{% else %}Não confirmado{% endif %}</span>{% if zi.get('status_source') == 'webhook' %}<span class="table-subline">Último evento Z-API (até 15 min)</span>{% elif zi.get('connected') is none %}<span class="table-subline">Consulta de status indisponível</span>{% endif %}</td>
             <td>
-              {% if instance.active %}
-              <form action="/settings/zapi/instances/{{ instance.id }}/configure-webhook" method="post">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button class="button button-ghost" type="submit">Atualizar webhook</button>
-              </form>
-              {% else %}—{% endif %}
+              <div class="settings-action-row">
+                <form action="/settings/zapi/instances/{{ instance.id }}/configure-webhook" method="post">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="button button-ghost" type="submit">Atualizar webhook</button>
+                </form>
+                {% if instance.source_type != 'ENV' %}
+                  <a class="button button-danger" href="/settings/zapi/instances/{{ instance.id }}/delete" aria-label="Excluir a instância {{ instance.name }}">Excluir</a>
+                {% else %}
+                  <span class="table-subline">Gerenciada pelo Railway</span>
+                {% endif %}
+              </div>
             </td>
           </tr>
         {% else %}
