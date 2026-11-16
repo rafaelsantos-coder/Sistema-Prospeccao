@@ -460,16 +460,16 @@ def check_unanswered_customers(db: Session) -> int:
     )
     # Casos mais antigos primeiro: o time sabe exatamente onde agir e quem está
     # designado, sem abrir logs técnicos. Não expõe dados pessoais no alerta.
-    waiting.sort(key=lambda item: item["age_minutes"], reverse=True)
+    waiting.sort(key=lambda item: item.get("age_minutes", 0), reverse=True)
     cases = ", ".join(
-        f"#{item['conversation_id']} ({item['age_minutes']}min; "
+        f"#{item['conversation_id']} ({item.get('age_minutes', 0)}min; "
         f"fila {item['queue_id'] or '-'}; "
-        f"responsável {item['assigned_user_id'] or 'sem atribuição'})"
+        f"responsável {item.get('assigned_user_id') or 'sem atribuição'})"
         for item in waiting[:12]
     )
-    severe = any(item["age_minutes"] >= 30 for item in waiting)
+    severe = any(item.get("age_minutes", 0) >= 30 for item in waiting)
     text = (
-        f"⚠️ {len(waiting)} atendimento(s) aguardando resposta. "
+        f"⚠️ {len(waiting)} cliente(s) sem resposta há mais de 10 minutos. "
         f"{'URGENTE: espera de 30min ou mais. ' if severe else ''}"
         f"Prioridades: {cases}."
     )
