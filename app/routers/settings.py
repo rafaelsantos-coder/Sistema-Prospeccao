@@ -268,8 +268,8 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
             )
             if event is not None:
                 created_at = event.created_at
-                if created_at.tzinfo is None:
-                    created_at = created_at.replace(tzinfo=timezone.utc)
+                if created_at.tzinfo is not None:
+                    created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
                 age = utcnow() - created_at
                 if timedelta(0) <= age <= timedelta(minutes=15):
                     try:
