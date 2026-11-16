@@ -4885,6 +4885,7 @@ def start_closing_from_sdr(
         state.handoff_summary = black_campaign.with_marker(state.handoff_summary)[-5000:]
         black_combo = _black_campaign_choice(db, conversation.id) == "COMBO"
 
+    plan_change = state.step == PLAN_CHANGE_STEP
     collected = _load_collected(state)
     customer_history = _conversation_history_rows(db, conversation.id)
     confirmed_city = (
@@ -4911,7 +4912,6 @@ def start_closing_from_sdr(
         state.handoff_summary = recall_campaign.with_marker(state.handoff_summary)
     if black_combo and "_black_combo" not in collected:
         collected["_black_combo"] = {"stage": black_campaign.COMBO_STAGE_FIBER}
-    plan_change = state.step == PLAN_CHANGE_STEP
     if state.step == "ESCALATED":
         # Não existe mais transferência para humano: vendas antigas paradas em
         # ESCALATED voltam para a IA do ponto em que estavam.
