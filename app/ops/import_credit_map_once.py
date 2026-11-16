@@ -18,7 +18,6 @@ import gzip
 import hashlib
 import json
 import os
-import sys
 
 from sqlalchemy import delete, func, select, text
 
@@ -53,7 +52,8 @@ def fetch_payload() -> bytes:
 
 
 def main() -> None:
-    if os.getenv("CREDIT_MAP_IMPORT_MODE") != "APPLY":
+    mode = os.getenv("CREDIT_MAP_IMPORT_MODE")
+    if mode not in ("VALIDATE", "APPLY"):
         print(json.dumps({"ok": False, "skipped": "not_authorized_for_this_deployment"}), flush=True)
         return
     data = fetch_payload()
@@ -76,6 +76,12 @@ def main() -> None:
     if any(row["lat"] is None or row["lng"] is None for row in addresses):
         fail("unexpected_approximate_coordinates")
     sha = hashlib.sha256(data).hexdigest()
+    if mode == "VALIDATE":
+        print(json.dumps({
+            "ok": True, "validated": True, "source_sha256_prefix": sha[:16],
+            "stats": stats, "planned": {"aggregates": len(aggregates), "streets": len(streets), "addresses": len(addresses)},
+        }, ensure_ascii=False), flush=True)
+        return
 
     # Evita a importacao concorrente de duas instancias da tarefa.
     db = SessionLocal()
