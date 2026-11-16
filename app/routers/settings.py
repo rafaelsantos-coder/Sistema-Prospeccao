@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import secrets
+from datetime import timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from sqlalchemy import select
@@ -16,6 +18,7 @@ from app.services.audit import write_audit
 from app.services.legacy_adapter import legacy_modules_available, rate_status
 from app.services.queue_routing import queue_summary
 from app.services.zapi import ZApiError
+from app.timeutils import utcnow
 from app.services.zapi_instances import (
     list_zapi_instances,
     queue_instance,
@@ -227,26 +230,59 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
 
     for instance in active_zapi_instances:
         info = {
-            "connected": False,
+            "connected": None,
             "smartphone_connected": False,
             "error": None,
+            "device_error": None,
+            "status_source": None,
             "phone_raw": "",
             "phone_label": instance.phone_label or "",
             "device_name": "",
             "is_business": False,
             "duplicate_phone": False,
         }
+        service = service_for_instance(instance)
         try:
-            service = service_for_instance(instance)
             current_status = service.status()
             info["connected"] = bool(current_status.get("connected"))
             info["smartphone_connected"] = bool(
                 current_status.get("smartphone_connected")
             )
-            any_connected = any_connected or info["connected"]
-            any_smartphone_connected = (
-                any_smartphone_connected or info["smartphone_connected"]
+            info["status_source"] = "api"
+        except ZApiError as exc:
+            info["error"] = str(exc)
+            if first_error is None:
+                first_error = str(exc)
+            # Uma falha na consulta nao equivale a desconexao.
+            # Callback recente e confirmado pode atestar a ultima conexao,
+            # mas um evento antigo nao justifica status online.
+            event = db.scalar(
+                select(AuditLog)
+                .where(
+                    AuditLog.action == "ZAPI_CONNECTION_EVENT",
+                    AuditLog.entity_type == "zapi_instance",
+                    AuditLog.entity_id == str(instance.id),
+                )
+                .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                .limit(1)
             )
+            if event is not None:
+                created_at = event.created_at
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                age = utcnow() - created_at
+                if timedelta(0) <= age <= timedelta(minutes=15):
+                    try:
+                        event_payload = json.loads(event.payload_json or "{}")
+                    except (ValueError, TypeError):
+                        event_payload = {}
+                    if type(event_payload.get("connected")) is bool:
+                        info["connected"] = event_payload["connected"]
+                        info["status_source"] = "webhook"
+
+        # A consulta de dispositivo e independente da consulta de status.
+        # Mesmo se /device falhar, nao sobrescrever um status ja confirmado.
+        try:
             device_info = refresh_instance_device_info(instance)
             info["phone_raw"] = str(device_info.get("phone_raw") or "")
             info["phone_label"] = (
@@ -256,15 +292,17 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
             )
             info["device_name"] = str(device_info.get("name") or "")
             info["is_business"] = bool(device_info.get("is_business"))
-            phone_key = "".join(
-                ch for ch in info["phone_raw"] if ch.isdigit()
-            )
-            if phone_key:
-                phone_to_instance_ids.setdefault(phone_key, []).append(instance.id)
         except ZApiError as exc:
-            info["error"] = str(exc)
+            info["device_error"] = str(exc)
             if first_error is None:
                 first_error = str(exc)
+        phone_key = "".join(
+            ch for ch in (info["phone_raw"] or info["phone_label"]) if ch.isdigit()
+        )
+        if phone_key:
+            phone_to_instance_ids.setdefault(phone_key, []).append(instance.id)
+        any_connected = any_connected or info["connected"] is True
+        any_smartphone_connected = any_smartphone_connected or info["smartphone_connected"]
         zapi_instance_info[instance.id] = info
 
     duplicate_instance_ids = {
