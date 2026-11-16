@@ -11,8 +11,13 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import Base, SessionLocal, engine
-from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, Conversation, ConversationQueueLink, Message
+from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, AuditLog, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
+from app.services.ai_queue_coverage import (
+    COVERAGE_ACTION,
+    COVERAGE_CAMPAIGN_KEY,
+    ensure_unanswered_coverage_all_queues,
+)
 from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import (
     active_closer,
@@ -796,27 +801,32 @@ def _recover_recent_unqueued_inbounds() -> int:
 # Fila "IA quando não houver vendedor online": se o vendedor online não responder
 # o cliente em 10 minutos, a IA assume (pedido do comercial, 05/11).
 UNANSWERED_TAKEOVER_AFTER = timedelta(minutes=10)
-UNANSWERED_TAKEOVER_WINDOW = timedelta(hours=3)
+UNANSWERED_TAKEOVER_WINDOW = timedelta(hours=24)
 _TAKEOVER_BLOCKED_STATES = {
     "AI_ACTIVE",
     "CLOSING",
-    "HANDOFF",
-    "HANDOFF_HUMAN",
-    "HUMAN_ACTIVE",
     "OPT_OUT",
-    "ESCALATED",
     "COMPLETED",
+    "SHADOW_REVIEW",
 }
 
 
 def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
     from app.models import ConversationAssignment, ConversationQueueLink
-    from app.services.queue_routing import AI_WHEN_OFFLINE_MODES
+    from app.services.queue_routing import AI_WHEN_OFFLINE_MODES, human_online_in_queue
+    from app.services.audit import write_audit
 
     db = SessionLocal()
     taken = 0
     try:
         now = utcnow()
+        cutoff = _real_mode_cutoff()
+        all_queues_recovery = bool(db.scalar(
+            select(AuditLog.id).where(
+                AuditLog.action == COVERAGE_ACTION,
+                AuditLog.entity_id == COVERAGE_CAMPAIGN_KEY,
+            ).limit(1)
+        ))
         bindings = list(
             db.scalars(
                 select(AIQueueBinding).where(
@@ -828,6 +838,8 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
         ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
         for binding in bindings:
             enabled_at = utc_naive(binding.updated_at)
+            human_online = human_online_in_queue(db, binding.queue_id)
+            threshold = UNANSWERED_TAKEOVER_AFTER if human_online else timedelta(minutes=2)
             conversations = list(
                 db.scalars(
                     select(Conversation)
@@ -849,6 +861,16 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                 )
                 if state in _TAKEOVER_BLOCKED_STATES:
                     continue
+                # Fechamentos já iniciados continuam com o Vendedor IA;
+                # falhas comerciais são notificadas à gestão, nunca reiniciadas no SDR.
+                closing = db.scalar(
+                    select(AIClosingState.id).where(
+                        AIClosingState.conversation_id == conversation.id,
+                        AIClosingState.completed_at.is_(None),
+                    ).limit(1)
+                )
+                if closing:
+                    continue
                 latest = db.scalar(
                     select(Message)
                     .where(
@@ -861,20 +883,25 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                 if not latest or latest.direction != "INBOUND" or latest.message_type != "TEXT":
                     continue
                 received_at = utc_naive(latest.created_at)
-                if not received_at or now - received_at < UNANSWERED_TAKEOVER_AFTER:
+                if not received_at or now - received_at < threshold:
                     continue
                 if now - received_at > UNANSWERED_TAKEOVER_WINDOW:
                     continue
-                if enabled_at and received_at < enabled_at:
+                if cutoff and received_at < cutoff:
+                    continue
+                # Recuperação extraordinária pedida pela gestão: inclui mensagens
+                # não lidas recebidas antes do vínculo novo, até 24h atrás.
+                if enabled_at and received_at < enabled_at and not all_queues_recovery:
                     continue
                 # Job ignorado (ex.: "humano atendendo") não conta como resposta: se a
                 # pessoa não respondeu em 10 min, a IA assume (conversa Claudia, 10/11:
                 # cliente ficou 2h19 sem resposta).
-                if db.scalar(
-                    select(AIJob.id)
-                    .where(AIJob.message_id == latest.id, AIJob.status.not_in(["IGNORADO", "CANCELADO"]))
-                    .limit(1)
-                ):
+                existing_job = db.scalar(
+                    select(AIJob).where(AIJob.message_id == latest.id).limit(1)
+                )
+                if existing_job and existing_job.status in {"PENDENTE", "PROCESSANDO", "CONCLUIDO"}:
+                    continue
+                if existing_job and "AI_OFFLINE_RECOVERY" in (existing_job.error or ""):
                     continue
                 previous_owner = conversation.assigned_user_id
                 if previous_owner and previous_owner not in ai_users:
@@ -909,7 +936,19 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                     ai_state.state = "AI_ACTIVE"
                     ai_state.agent_id = binding.agent_id
                 db.flush()
-                job = enqueue_ai_job(db, conversation=conversation, message=latest, takeover=True)
+                if existing_job:
+                    # O enfileirador retorna jobs IGNORADOS já existentes sem
+                    # reativá-los. Recuperar o registro único explicitamente.
+                    existing_job.status = "PENDENTE"
+                    existing_job.agent_id = binding.agent_id
+                    existing_job.queue_id = binding.queue_id
+                    existing_job.available_at = now
+                    existing_job.locked_at = None
+                    existing_job.attempts = 0
+                    existing_job.error = "AI_OFFLINE_RECOVERY"
+                    job = existing_job
+                else:
+                    job = enqueue_ai_job(db, conversation=conversation, message=latest, takeover=True)
                 if not job:
                     if created_state:
                         db.delete(ai_state)
@@ -918,11 +957,25 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                         ai_state.agent_id = previous_agent
                 if job:
                     taken += 1
+                    write_audit(
+                        db,
+                        user=None,
+                        action="AI_UNREAD_TAKEOVER",
+                        entity_type="conversation",
+                        entity_id=conversation.id,
+                        payload={
+                            "queue_id": binding.queue_id,
+                            "message_id": latest.id,
+                            "previous_owner": previous_owner,
+                            "human_online": human_online,
+                        },
+                    )
                     LOG.info(
-                        "ai_takeover_unanswered conversation=%s message=%s previous_owner=%s",
+                        "ai_takeover_unanswered conversation=%s message=%s queue=%s human_online=%s",
                         conversation.id,
                         latest.id,
-                        previous_owner,
+                        binding.queue_id,
+                        human_online,
                     )
                 elif previous_owner and conversation.assigned_user_id is None:
                     # A IA não pôde assumir: devolve para quem estava.
@@ -1106,6 +1159,14 @@ def run() -> None:
     activated_agents = _ensure_bound_ai_agents_active()
     if activated_agents:
         LOG.warning("Agentes IA vinculados reativados=%s", activated_agents)
+    if settings.ai_sdr_enabled and settings.ai_autonomous_enabled:
+        try:
+            with SessionLocal() as coverage_db:
+                coverage_result = ensure_unanswered_coverage_all_queues(coverage_db)
+                if coverage_result.get("error"):
+                    LOG.error("Cobertura de IA indisponível: %s", coverage_result["error"])
+        except Exception:
+            LOG.exception("Falha ao preparar cobertura IA de todas as filas.")
     cancelled_jobs, cancelled_followups = _cancel_pre_real_mode_work()
     if cancelled_jobs or cancelled_followups:
         LOG.warning("Modo real ativado: jobs antigos cancelados=%s followups antigos cancelados=%s cutoff=%s", cancelled_jobs, cancelled_followups, _real_mode_cutoff())
@@ -1133,6 +1194,12 @@ def run() -> None:
     recovered_recent = _recover_recent_unqueued_inbounds()
     if recovered_recent:
         LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
+    if settings.ai_sdr_enabled and settings.ai_autonomous_enabled:
+        try:
+            claimed = _takeover_unanswered_human_conversations()
+            LOG.warning("Pendências assumidas na inicialização=%s", claimed)
+        except Exception:
+            LOG.exception("Falha na recuperação inicial de mensagens não lidas.")
     backfilled_followups = _backfill_missing_followups()
     if backfilled_followups:
         LOG.info("Follow-ups ausentes reconstruidos=%s", backfilled_followups)
