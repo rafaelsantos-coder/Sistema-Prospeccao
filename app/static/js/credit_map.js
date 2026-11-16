@@ -450,7 +450,8 @@
     return rows.map(row => {
       const key = row.lat.toFixed(6) + ',' + row.lng.toFixed(6);
       const i = seen.get(key) || 0; seen.set(key, i + 1);
-      if (!i) return row;
+      // Pontos capturados pelo CRM nao devem ser deslocados artificialmente.
+      if (!i || row.source_coordinates) return row;
       const meters = 9 * Math.sqrt(i), angle = i * 2.39996;
       return {...row, lat: row.lat + meters * Math.cos(angle) / 111320,
         lng: row.lng + meters * Math.sin(angle) / (111320 * Math.cos(row.lat * Math.PI / 180))};
@@ -465,17 +466,21 @@
     if (ticket !== state.revision || !$('cm-addresses').checked) return 'stale';
     addressGroup.clearLayers();
     for (const row of spread(data.addresses || [])) {
-      const where = esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)');
+      const where = row.street ? esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)') : 'Coordenada registrada';
       const status = row.signed ? 'Aprovado · contrato assinado' : 'Aprovado · sem contrato';
-      const many = row.count > 1 ? `<br>${fmt(row.count)} clientes neste endereço` : '';
-      const approx = row.exact ? '' : '<br><small>Posição aproximada: o mapa achou a rua, não o número.</small>';
+      const many = row.count > 1 ? `<br>${fmt(row.count)} registros neste ponto` : '';
+      const approx = row.source_coordinates
+        ? '<br><small>Coordenada informada pelo sistema de origem; pode representar o local da contratação e não a porta do imóvel.</small>'
+        : row.exact ? '' : '<br><small>Posição aproximada: o mapa achou a rua, não o número.</small>';
       L.marker([row.lat, row.lng], {icon: triangleIcon(row.signed), keyboard: false})
         .bindPopup(`<div class="cm-map-info"><strong>${where}</strong><br><small>${esc(row.neighborhood)}</small><br>${status}${many}${approx}</div>`)
         .addTo(addressGroup);
     }
-    if (!data.total) { $('cm-address-status').textContent = 'Sem endereços de aprovados na base (importe o CSV com Rua e Número).'; return 'done'; }
+    if (!data.total) { $('cm-address-status').textContent = 'Sem marcadores com coordenadas nesta base. Importe o CSV atualizado com a coluna Coordenadas (Q).'; return 'done'; }
     const found = (data.addresses || []).length;
-    $('cm-address-status').textContent = `${fmt(found)} de ${fmt(data.total)} endereços de aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato` + (data.pending ? ' · localizando os demais, pode levar alguns minutos…' : '');
+    const gps = Number(data.source_coordinates || 0);
+    const suffix = gps ? ` · ${fmt(gps)} coordenadas recebidas do CRM` : '';
+    $('cm-address-status').textContent = `${fmt(found)} de ${fmt(data.total)} pontos aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato` + suffix + (data.pending ? ' · localizando os demais, pode levar alguns minutos…' : '');
     return !data.pending ? 'done' : data.error ? 'busy' : 'more';
   }
   async function streetStep(query, ticket) {
