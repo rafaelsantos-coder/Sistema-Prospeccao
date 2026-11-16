@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, AuditLog, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
+from app.services.ai_pending_scope import UNREAD_RECOVERY_SINCE_UTC, in_unread_recovery_window
 from app.services.ai_queue_coverage import (
     COVERAGE_ACTION,
     COVERAGE_CAMPAIGN_KEY,
@@ -654,7 +655,7 @@ def _recover_recent_unqueued_inbounds() -> int:
     try:
         cutoff = _real_mode_cutoff()
         # Só mensagem nova: a IA não vai atrás de mensagem antiga não lida na fila.
-        threshold = utcnow() - timedelta(minutes=10)
+        threshold = max(utcnow() - timedelta(minutes=10), UNREAD_RECOVERY_SINCE_UTC)
         if cutoff and cutoff > threshold:
             threshold = cutoff
         messages = list(
@@ -820,7 +821,7 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
     taken = 0
     try:
         now = utcnow()
-        cutoff = _real_mode_cutoff()
+        cutoff = max(_real_mode_cutoff() or UNREAD_RECOVERY_SINCE_UTC, UNREAD_RECOVERY_SINCE_UTC)
         all_queues_recovery = bool(db.scalar(
             select(AuditLog.id).where(
                 AuditLog.action == COVERAGE_ACTION,
@@ -847,7 +848,7 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                     .where(
                         ConversationQueueLink.queue_id == binding.queue_id,
                         Conversation.status.not_in(["RESOLVIDO", "ENCERRADO", "BLOQUEADO"]),
-                        Conversation.updated_at >= now - UNANSWERED_TAKEOVER_WINDOW,
+                        Conversation.updated_at >= max(now - UNANSWERED_TAKEOVER_WINDOW, cutoff),
                     )
                     .order_by(Conversation.updated_at.desc())
                     .limit(limit)
@@ -897,10 +898,10 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                     continue
                 if now - received_at > UNANSWERED_TAKEOVER_WINDOW:
                     continue
-                if cutoff and received_at < cutoff:
+                if not in_unread_recovery_window(received_at, now=now) or received_at < cutoff:
                     continue
-                # Recuperação extraordinária pedida pela gestão: inclui mensagens
-                # não lidas recebidas antes do vínculo novo, até 24h atrás.
+                # Mutirão autorizado: somente mensagens desde 18h de 16/11/2026,
+                # mesmo que a IA tenha sido vinculada à fila depois disso.
                 if enabled_at and received_at < enabled_at and not all_queues_recovery:
                     continue
                 # Job ignorado (ex.: "humano atendendo") não conta como resposta: se a
@@ -1019,7 +1020,7 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
     try:
         now = utcnow()
         cutoff = _real_mode_cutoff()
-        since = now - STALLED_WINDOW
+        since = max(now - STALLED_WINDOW, UNREAD_RECOVERY_SINCE_UTC)
         if cutoff and cutoff > since:
             since = cutoff
         latest_ids = list(
