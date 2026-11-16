@@ -16,29 +16,43 @@
 
   /* Cada agregado entra uma vez: ruas localizadas nos seus pontos e o saldo
    * no centro aproximado do bairro. Comparativo exige 20+ decisoes. */
-  function makePoints(neighborhoods, positions, streets, mode) {
+  function makePoints(neighborhoods, positions, streets, mode, gpsRows = []) {
     if (mode === 'triangles') return [];
     const eligible = new Map();
     for (const row of neighborhoods || []) {
       const point = positions.get(row.name);
-      if (!point || !Number.isFinite(+point.lat) || !Number.isFinite(+point.lng)) continue;
+      const located = point && Number.isFinite(+point.lat) && Number.isFinite(+point.lng);
+      // Aprovados com GPS valido independem da geocodificacao do centro do bairro.
+      if (!located && mode !== 'approved') continue;
       const approved = Math.max(0, Number(row.approved) || 0);
       const rejected = Math.max(0, Number(row.rejected) || 0);
       const decided = approved + rejected;
       if (mode === 'compare' && decided < MIN_COMPARE_DECISIONS) continue;
       eligible.set(normalized(row.city ? row.name : (row.hood || row.name)), {
-        position: point, approved, rejected, decided, name: row.name,
+        position: located ? point : null, approved, rejected, decided, name: row.name,
         rate: decided ? approved / decided * 100 : 0,
         remaining: mode === 'rejected' ? rejected : approved,
       });
     }
     const points = [];
-    if (mode !== 'compare') {
+    if (mode === 'approved') {
+      // GPS da coluna Q tem prioridade: nao usar, em paralelo, os agregados
+      // de rua que incluem os mesmos clientes e poderiam distorcer a posicao.
+      for (const gps of gpsRows || []) {
+        if (!gps.source_coordinates || !Number.isFinite(+gps.lat) || !Number.isFinite(+gps.lng)) continue;
+        const hood = eligible.get(normalized(gps.neighborhood));
+        if (!hood) continue;
+        const count = Math.min(hood.remaining, Math.max(0, Number(gps.count) || 0));
+        if (!count) continue;
+        hood.remaining -= count;
+        points.push({lat: +gps.lat, lng: +gps.lng, count,
+          rate: hood.rate, source: 'gps', label: hood.name});
+      }
+    } else if (mode === 'rejected') {
       for (const street of streets || []) {
         const hood = eligible.get(normalized(street.neighborhood));
         if (!hood || !Number.isFinite(+street.lat) || !Number.isFinite(+street.lng)) continue;
-        const value = Math.max(0, Number(street[mode]) || 0);
-        const count = Math.min(hood.remaining, value);
+        const count = Math.min(hood.remaining, Math.max(0, Number(street.rejected) || 0));
         if (!count) continue;
         hood.remaining -= count;
         points.push({lat: +street.lat, lng: +street.lng, count,
@@ -47,7 +61,7 @@
     }
     for (const hood of eligible.values()) {
       const count = mode === 'compare' ? hood.decided : hood.remaining;
-      if (!count) continue;
+      if (!count || !hood.position) continue;
       points.push({lat: +hood.position.lat, lng: +hood.position.lng, count,
         rate: hood.rate, source: 'bairro', label: hood.name});
     }
