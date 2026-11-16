@@ -14,8 +14,8 @@
     return '#e35b53';
   }
 
-  /* Cada agregado entra uma vez: ruas localizadas nos seus pontos e o saldo
-   * no centro aproximado do bairro. Comparativo exige 20+ decisoes. */
+  /* Verde: GPS de aprovados + saldo de bairro. Vermelho: ruas localizadas + saldo
+   * de bairro. Nunca duplicar consultas. Comparativo exige 20+ decisoes. */
   function makePoints(neighborhoods, positions, streets, mode, gpsRows = []) {
     if (mode === 'triangles') return [];
     const eligible = new Map();
