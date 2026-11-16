@@ -476,7 +476,7 @@ _CUSTOMER_STOP_EXACT = {"nao obrigado", "nao obrigada", "prefiro nao", "nao quer
 _NO_CONTACT_RE = re.compile(
     r"\b(?:nao me (?:mande|manda|envie|chame|contate)|"
     r"nao entre em contato|par(?:a|e|em) de (?:mandar|enviar|me)|"
-    r"me remova|remover meu numero|sair da lista|descadastrar|"
+    r"me remova|remover meu numero|retire meu numero da lista|sair da lista|descadastrar|"
     r"nao quero receber (?:mensagens|ofertas)|nao quero mais contato)\b"
 )
 _GUARDIAN_OPT_OUT_ISSUES = {
