@@ -47,3 +47,19 @@ def test_cliente_que_parou_no_fechamento_gera_aviso_para_ligar():
     from app.services import ops_alerts
 
     assert "check_silent_closings" in inspect.getsource(ops_alerts.run_ops_alert_checks)
+
+
+def test_lembrete_da_confirmacao_e_texto_fixo_e_nao_passa_pelo_guardiao():
+    from app.services.ai_seller import _confirm_sale_followup_text, _is_fixed_closing_text
+
+    state = SimpleNamespace(
+        step="CONFIRM_SALE",
+        plan_label="Internet Fibra 650 Mega",
+        sign_url="",
+        contract_status="",
+        collected_json='{"name": "Ricardo Feiten"}',
+    )
+    for step in (1, 2, 3):
+        text = _confirm_sale_followup_text(state, {"name": "Ricardo Feiten"}, step)
+        assert _is_fixed_closing_text(state, text)
+    assert not _is_fixed_closing_text(state, "Texto livre gerado pelo modelo.")
