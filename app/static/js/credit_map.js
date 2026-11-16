@@ -289,9 +289,10 @@
     if (state.data.all) { if (streetGroup) streetGroup.clearLayers(); if (addressGroup) addressGroup.clearLayers(); $('cm-address-status').textContent = ''; }
     else drawDetailLayers(ticket);
   }
-  // Ruas primeiro, endereços depois: o serviço público de endereços aceita uma consulta por segundo.
-  async function drawDetailLayers(ticket) { await drawStreets(ticket); await drawAddresses(ticket); }
+  // Ruas e endereços são localizados em rodadas alternadas (o serviço público de endereços aceita
+  // uma consulta por segundo), para os triângulos aparecerem desde o começo, sem esperar as ruas.
   let addressGroup = null;
+  let streetGroup = null;
   function triangleIcon(signed) {
     const fill = signed ? GREEN : YELLOW, edge = signed ? '#0b5c3c' : '#7a5a00';
     return L.divIcon({className: 'cm-tri', iconSize: [18, 16], iconAnchor: [9, 16], popupAnchor: [0, -14],
@@ -309,62 +310,68 @@
         lng: row.lng + meters * Math.sin(angle) / (111320 * Math.cos(row.lat * Math.PI / 180))};
     });
   }
-  async function drawAddresses(ticket) {
-    if (addressGroup) addressGroup.clearLayers();
-    const toggle = $('cm-addresses');
-    if (!toggle || !state.mapReady) return;
-    if (!toggle.checked) { $('cm-address-status').textContent = ''; return; }
-    addressGroup = addressGroup || L.layerGroup().addTo(state.map);
-    const query = new URLSearchParams({city: $('cm-city').value, date_from: $('cm-from').value, date_to: $('cm-to').value});
-    let errors = 0;
-    for (let round = 0; round < 600; round += 1) {
-      if (ticket !== state.revision || !toggle.checked) return;
-      const r = await fetch('/api/reports/credit-map/addresses?' + query, {credentials: 'same-origin', cache: 'no-store'});
-      if (!r.ok) return;
-      const data = await r.json();
-      if (ticket !== state.revision || !toggle.checked) return;
-      addressGroup.clearLayers();
-      for (const row of spread(data.addresses || [])) {
-        const where = esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)');
-        const status = row.signed ? 'Aprovado · contrato assinado' : 'Aprovado · sem contrato';
-        const many = row.count > 1 ? `<br>${fmt(row.count)} clientes neste endereço` : '';
-        const approx = row.exact ? '' : '<br><small>Posição aproximada: o mapa achou a rua, não o número.</small>';
-        L.marker([row.lat, row.lng], {icon: triangleIcon(row.signed), keyboard: false})
-          .bindPopup(`<div class="cm-map-info"><strong>${where}</strong><br><small>${esc(row.neighborhood)}</small><br>${status}${many}${approx}</div>`)
-          .addTo(addressGroup);
-      }
-      if (!data.total) { $('cm-address-status').textContent = 'Sem endereços de aprovados na base (importe o CSV com Rua e Número).'; return; }
-      const found = (data.addresses || []).length;
-      $('cm-address-status').textContent = `${fmt(found)} de ${fmt(data.total)} endereços de aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato` + (data.pending ? ' · localizando os demais…' : '');
-      if (!data.pending) return;
-      if (data.error) { errors += 1; if (errors > 8) return; await new Promise(res => setTimeout(res, 10000)); } else errors = 0;
+  // Cada passo faz uma chamada e devolve 'done' (acabou), 'more' (ainda há o que localizar),
+  // 'busy' (serviço de endereços ocupado) ou 'stale' (o filtro mudou no meio da chamada).
+  async function addressStep(query, ticket) {
+    const r = await fetch('/api/reports/credit-map/addresses?' + query, {credentials: 'same-origin', cache: 'no-store'});
+    if (!r.ok) return 'done';
+    const data = await r.json();
+    if (ticket !== state.revision || !$('cm-addresses').checked) return 'stale';
+    addressGroup.clearLayers();
+    for (const row of spread(data.addresses || [])) {
+      const where = esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)');
+      const status = row.signed ? 'Aprovado · contrato assinado' : 'Aprovado · sem contrato';
+      const many = row.count > 1 ? `<br>${fmt(row.count)} clientes neste endereço` : '';
+      const approx = row.exact ? '' : '<br><small>Posição aproximada: o mapa achou a rua, não o número.</small>';
+      L.marker([row.lat, row.lng], {icon: triangleIcon(row.signed), keyboard: false})
+        .bindPopup(`<div class="cm-map-info"><strong>${where}</strong><br><small>${esc(row.neighborhood)}</small><br>${status}${many}${approx}</div>`)
+        .addTo(addressGroup);
     }
+    if (!data.total) { $('cm-address-status').textContent = 'Sem endereços de aprovados na base (importe o CSV com Rua e Número).'; return 'done'; }
+    const found = (data.addresses || []).length;
+    $('cm-address-status').textContent = `${fmt(found)} de ${fmt(data.total)} endereços de aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato` + (data.pending ? ' · localizando os demais, pode levar alguns minutos…' : '');
+    return !data.pending ? 'done' : data.error ? 'busy' : 'more';
   }
-  let streetGroup = null;
-  async function drawStreets(ticket) {
-    if (streetGroup) { streetGroup.clearLayers(); }
-    const toggle = $('cm-streets');
-    if (!toggle || !toggle.checked || !state.mapReady) return;
+  async function streetStep(query, ticket) {
+    const r = await fetch('/api/reports/credit-map/streets?' + query, {credentials: 'same-origin', cache: 'no-store'});
+    if (!r.ok) return 'done';
+    const data = await r.json();
+    if (ticket !== state.revision || !$('cm-streets').checked) return 'stale';
+    streetGroup.clearLayers();
+    for (const row of data.streets || []) {
+      const color = layerColor(row);
+      const dot = L.circleMarker([row.lat, row.lng], {radius: 7, color: '#fff', weight: 1.5, fillColor: color, fillOpacity: .9});
+      dot.bindPopup(`<div class="cm-map-info"><strong>${esc(row.street)}</strong><br><small>${esc(row.neighborhood)}${row.cep ? ' · CEP ' + esc(row.cep.slice(0,5) + '-' + row.cep.slice(5)) : ''}</small><br>${fmt(row.total)} consultas · aprovados <b>${fmt(row.approved)}</b> (${pct(row.approval_rate)})<br>Assinados: <b>${fmt(row.signed_approved)}</b></div>`);
+      dot.addTo(streetGroup);
+    }
+    if (!data.total) { $('cm-streets-status').textContent = 'Sem ruas na base (importe o CSV com Rua/CEP).'; return 'done'; }
+    $('cm-streets-status').textContent = `${(data.streets || []).length} de ${data.total} ruas com 5+ consultas localizadas`;
+    return !data.pending ? 'done' : data.error ? 'busy' : 'more';
+  }
+  async function drawDetailLayers(ticket) {
+    if (!state.mapReady) return;
     streetGroup = streetGroup || L.layerGroup().addTo(state.map);
+    addressGroup = addressGroup || L.layerGroup().addTo(state.map);
+    streetGroup.clearLayers(); addressGroup.clearLayers();
     const query = new URLSearchParams({city: $('cm-city').value, date_from: $('cm-from').value, date_to: $('cm-to').value});
+    const layers = [
+      {toggle: $('cm-addresses'), step: addressStep, status: 'cm-address-status', done: false},
+      {toggle: $('cm-streets'), step: streetStep, status: 'cm-streets-status', done: false},
+    ];
+    for (const layer of layers) if (!layer.toggle || !layer.toggle.checked) { layer.done = true; if (layer.toggle) $(layer.status).textContent = ''; }
     let errors = 0;
-    for (let round = 0; round < 80; round += 1) {
-      if (ticket !== state.revision || !toggle.checked) return;
-      const r = await fetch('/api/reports/credit-map/streets?' + query, {credentials: 'same-origin', cache: 'no-store'});
-      if (!r.ok) return;
-      const data = await r.json();
-      streetGroup.clearLayers();
-      for (const row of data.streets || []) {
-        const color = layerColor(row);
-        const dot = L.circleMarker([row.lat, row.lng], {radius: 7, color: '#fff', weight: 1.5, fillColor: color, fillOpacity: .9});
-        dot.bindPopup(`<div class="cm-map-info"><strong>${esc(row.street)}</strong><br><small>${esc(row.neighborhood)}${row.cep ? ' · CEP ' + esc(row.cep.slice(0,5) + '-' + row.cep.slice(5)) : ''}</small><br>${fmt(row.total)} consultas · aprovados <b>${fmt(row.approved)}</b> (${pct(row.approval_rate)})<br>Assinados: <b>${fmt(row.signed_approved)}</b></div>`);
-        dot.addTo(streetGroup);
+    for (let round = 0; round < 900 && layers.some(layer => !layer.done); round += 1) {
+      let busy = false;
+      for (const layer of layers) {
+        if (layer.done) continue;
+        if (ticket !== state.revision) return;
+        let result;
+        try { result = await layer.step(query, ticket); } catch { result = 'busy'; }
+        if (result === 'stale') return;
+        if (result === 'done') layer.done = true;
+        if (result === 'busy') busy = true;
       }
-      const note = `${(data.streets || []).length} de ${data.total} ruas com 5+ consultas localizadas`;
-      if (!data.total) { $('cm-streets-status').textContent = 'Sem ruas na base (importe o CSV com Rua/CEP).'; return; }
-      $('cm-streets-status').textContent = note;
-      if (!data.pending) return;
-      if (data.error) { errors += 1; if (errors > 6) return; await new Promise(res => setTimeout(res, 10000)); }
+      if (busy) { errors += 1; if (errors > 8) return; await new Promise(res => setTimeout(res, 10000)); } else errors = 0;
     }
   }
   function locateRow(name) {
