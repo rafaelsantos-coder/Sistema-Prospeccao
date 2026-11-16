@@ -250,7 +250,8 @@ def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
     )))
     rows = summarize_addresses([
         {'city': e.city, 'neighborhood': e.neighborhood, 'street': e.street, 'number': e.number,
-         'cep': e.cep, 'month': e.month, 'signed': e.signed, 'count': e.count}
+         'cep': e.cep, 'month': e.month, 'signed': e.signed, 'count': e.count,
+         'lat': e.lat, 'lng': e.lng}
         for e in entries
     ], city=city, start_month=date_from, end_month=date_to)[:MAX_ADDRESSES]
     cached = {g.neighborhood: g for g in db.scalars(
@@ -265,6 +266,8 @@ def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
     if base is not None and base.lat is not None:
         todo: list[dict] = []
         for row in rows:
+            if row['lat'] is not None and row['lng'] is not None:
+                continue  # O GPS de origem dispensa geocodificacao.
             if not usable(cached.get(row['key'])) and row['key'] not in {t['key'] for t in todo}:
                 todo.append(row)
         for row in todo[:ADDRESS_BATCH]:
@@ -293,6 +296,13 @@ def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
     addresses = []
     pending = 0
     for row in rows:
+        if row['lat'] is not None and row['lng'] is not None:
+            addresses.append({
+                'street': row['street'], 'number': row['number'], 'neighborhood': row['neighborhood'],
+                'signed': row['signed'], 'count': row['count'], 'lat': row['lat'], 'lng': row['lng'],
+                'exact': False, 'source_coordinates': True,
+            })
+            continue
         item = cached.get(row['key'])
         if item is not None and item.status in ('FOUND', 'STREET') and item.lat is not None:
             addresses.append({
@@ -305,6 +315,7 @@ def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
             'total': len(rows),
             'signed': sum(r['count'] for r in rows if r['signed']),
             'unsigned': sum(r['count'] for r in rows if not r['signed']),
+            'source_coordinates': sum(r['count'] for r in rows if r['lat'] is not None and r['lng'] is not None),
             'error': error}
 
 
@@ -385,6 +396,9 @@ async def import_file(request: Request, file: UploadFile = File(...), db: Sessio
                          'sem_data': stats.get('sem_data', 0),
                          'protocolos_duplicados': stats.get('protocolos_duplicados', 0),
                          'com_rua': stats.get('com_rua', 0),
-                         'enderecos_aprovados': stats.get('enderecos_aprovados', 0)})
+                         'enderecos_aprovados': stats.get('enderecos_aprovados', 0),
+                         'aprovados_com_coordenadas_validas': stats.get('aprovados_com_coordenadas_validas', 0),
+                         'aprovados_sem_coordenadas': stats.get('aprovados_sem_coordenadas', 0),
+                         'aprovados_coordenadas_invalidas': stats.get('aprovados_coordenadas_invalidas', 0)})
     db.commit()
     return {'ok': True, 'stats': stats, 'aggregates': len(aggregates)}
