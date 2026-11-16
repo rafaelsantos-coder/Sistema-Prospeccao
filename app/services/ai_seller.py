@@ -230,10 +230,15 @@ def _seller_free_months(state: AIClosingState, collected: dict[str, Any]) -> int
     for key in ("freeMonths", "free_months", "mesesGratis", "meses_gratis"):
         if key in collected:
             try:
-                return max(0, min(3, int(collected.get(key) or 0)))
+                months = max(0, min(3, int(collected.get(key) or 0)))
+                if months or not recall_campaign.has_marker(str(state.handoff_summary or "")):
+                    return months
             except (TypeError, ValueError):
                 pass
 
+    # Não perder a promoção quando uma decisão intermediária grava freeMonths=0.
+    if recall_campaign.has_marker(str(state.handoff_summary or "")):
+        return recall_campaign.FREE_MONTHS
     summary = _norm(str(getattr(state, "handoff_summary", "") or ""))
     match = re.search(r"meses? gratis\s*[=:]?\s*([0-3])", summary)
     if match:
@@ -1054,6 +1059,40 @@ def _playbook_code_key(value: str) -> str:
     return compact
 
 
+_NONINTERACTIVE_BIRTH_CODES = {"clientbirthdate", "birthdate", "datanascimento"}
+
+
+def _sync_birth_date_from_crm(
+    client: SulnetCRMClient,
+    state: AIClosingState,
+    item: CRMPlaybookMissingItem,
+) -> bool:
+    """Sincroniza somente nascimento já existente no CRM; não pede ao cliente."""
+    if not state.opportunity_id:
+        return False
+    try:
+        opportunity = client.get_opportunity(state.opportunity_id)
+    except CRMIntegrationError as exc:
+        LOG.warning(
+            "seller_crm_birth_lookup_failed opportunity=%s status=%s",
+            state.opportunity_id, exc.status_code,
+        )
+        return False
+    for field in ("clientBirthDate", "birthDate", "dataNascimento"):
+        value = _find_nested(opportunity, field)
+        birth_date = _extract_birth_date(str(value or ""))
+        if not birth_date:
+            continue
+        if item.patch_key:
+            client.update_playbook_field(
+                state.opportunity_id, patch_key=item.patch_key, value=birth_date,
+            )
+        else:
+            client.update_opportunity(state.opportunity_id, {"clientBirthDate": birth_date})
+        return True
+    return False
+
+
 def _playbook_category(
     state: AIClosingState,
     collected: dict[str, Any],
@@ -1543,6 +1582,15 @@ def _query_playbook_guidance(
             raise
 
         _playbook_store_snapshot(collected, result)
+        birth_field_still_missing = any(
+            _playbook_code_key(item.code) in _NONINTERACTIVE_BIRTH_CODES
+            for item in result.missing
+        )
+        if not birth_field_still_missing and (
+            result.ready_for_win or result.credit_approved
+        ):
+            collected.pop("_crm_birth_date_blocked", None)
+            collected.pop("_crm_birth_date_alerted", None)
         if result.credit_status:
             state.credit_status = result.credit_status
 
@@ -1600,6 +1648,41 @@ def _query_playbook_guidance(
         while actionable:
             first = actionable[0]
             first_key = _playbook_code_key(first.code)
+            if first_key in _NONINTERACTIVE_BIRTH_CODES:
+                if first_key not in synced_codes:
+                    synced_codes.add(first_key)
+                    if _sync_birth_date_from_crm(client, state, first):
+                        selected = None
+                        break
+                _playbook_clear_question(collected)
+                collected["_crm_birth_date_blocked"] = True
+                state.last_error = (
+                    "CRM exige data de nascimento ausente do cadastro; "
+                    "corrigir internamente sem solicitar ao cliente."
+                )
+                LOG.warning(
+                    "seller_crm_birth_internal_block opportunity=%s code=%s",
+                    state.opportunity_id, first.code,
+                )
+                return "WAITING_CRM_READY", None
+            if (
+                first_key in {"productid", "planid", "produto"}
+                and collected.get("_sale_intent_confirmed")
+                and not collected.get("planId")
+            ):
+                try:
+                    _sync_plan_context(client, state, collected)
+                except CRMIntegrationError as exc:
+                    LOG.warning(
+                        "seller_accepted_plan_sync_pending opportunity=%s status=%s",
+                        state.opportunity_id, exc.status_code,
+                    )
+                if not collected.get("planId"):
+                    _playbook_clear_question(collected)
+                    state.last_error = (
+                        "Plano já aceito pelo cliente não pôde ser resolvido no catálogo CRM."
+                    )
+                    return "WAITING_CRM_READY", None
             known_locally = _playbook_known_value(first, state, collected)
             if known_locally and first_key not in synced_codes:
                 synced = _sync_known_playbook_missing(
@@ -3667,7 +3750,6 @@ def _seller_step_buttons(
     free_text_steps = {
         "NAME",
         "CPF",
-        "BIRTH_DATE",
         "CEP",
         "ADDRESS_DETAILS",
         "ADDRESS_NUMBER",
@@ -4165,7 +4247,7 @@ def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
             "Para começar, me envia seu CPF para eu fazer a consulta cadastral?"
         )
     if state.step == "BIRTH_DATE":
-        return "Para concluir a consulta cadastral, preciso também da sua data de nascimento. Pode me enviar no formato DD/MM/AAAA?"
+        return "Estou verificando uma informação cadastral diretamente no sistema para continuar."
     if state.step == "CEP":
         if _is_mobile_plan(state, collected):
             return "Consulta aprovada! Qual é o CEP do seu endereço de cadastro?"
@@ -4277,7 +4359,6 @@ SELLER_CUSTOMER_INPUT_STEPS = {
     "SALE_ADJUST",
     "NAME",
     "CPF",
-    "BIRTH_DATE",
     "CEP",
     "ADDRESS_DETAILS",
     "ADDRESS_NUMBER",
@@ -4353,7 +4434,6 @@ def _seller_followup_prompt(
     prompts = {
         "NAME": "me envie seu nome completo para eu iniciar o cadastro.",
         "CPF": "me envie seu CPF para eu continuar a consulta cadastral.",
-        "BIRTH_DATE": "me envie sua data de nascimento no formato DD/MM/AAAA.",
         "CEP": "me envie o CEP do endereço para eu continuar a contratação.",
         "ADDRESS_DETAILS": "me informe a rua ou o bairro que ficou faltando.",
         "ADDRESS_NUMBER": "me informe o número do imóvel e, se houver, o complemento.",
@@ -4688,6 +4768,45 @@ def _conversation_history_rows(db: Session, conversation_id: int) -> list[dict[s
     return [{"direction": direction, "body": body} for direction, body in rows]
 
 
+def _customer_confirmed_city(history: list[dict[str, Any]]) -> str:
+    """Cidade atendida mais recente confirmada pelo cliente (inclusive áudio)."""
+    from app.services.ai_sdr_policies import _service_city_in_text
+
+    for row in reversed(history):
+        if str(row.get("direction") or "").upper() != "INBOUND":
+            continue
+        body = str(row.get("body") or "")
+        city = _service_city_in_text(body)
+        if not city:
+            continue
+        normalized = _norm(body)
+        normalized = re.sub(r"^\[(audio|áudio) transcrito\]\s*", "", normalized)
+        if normalized.startswith(_norm(city)) or re.search(
+            r"\b(cidade|instal|moro|sou de|fica em|sera em|é em)\b", normalized,
+        ):
+            return city
+    return ""
+
+
+def _recall_offer_accepted(history: list[dict[str, Any]]) -> bool:
+    """Aceite explícito da campanha; citar oferta não equivale a aceitá-la."""
+    offered = False
+    accepted = False
+    for row in history:
+        direction = str(row.get("direction") or "").upper()
+        body = str(row.get("body") or "")
+        if direction == "OUTBOUND" and recall_campaign.OFFER_MARK in recall_campaign.fold(body):
+            offered = True
+        elif direction == "INBOUND" and offered:
+            answer = recall_campaign.answer(body)
+            if answer == "YES":
+                accepted = True
+            elif answer == "NO":
+                offered = False
+                accepted = False
+    return accepted
+
+
 def _black_campaign_accepted(db: Session, conversation_id: int) -> bool:
     return black_campaign.black_accepted(_conversation_history_rows(db, conversation_id))
 
@@ -4769,10 +4888,33 @@ def start_closing_from_sdr(
         state.handoff_summary = black_campaign.with_marker(state.handoff_summary)[-5000:]
         black_combo = _black_campaign_choice(db, conversation.id) == "COMBO"
 
+    plan_change = state.step == PLAN_CHANGE_STEP
     collected = _load_collected(state)
+    customer_history = _conversation_history_rows(db, conversation.id)
+    confirmed_city = (
+        _customer_confirmed_city(customer_history)
+        or str(getattr(getattr(decision, "qualification", None), "city", "") or "").strip()
+    )
+    if not confirmed_city and conversation.lead:
+        confirmed_city = str(conversation.lead.city or "").strip()
+    if confirmed_city:
+        from app.services.ai_sdr_policies import _service_city_in_text
+        confirmed_city = _service_city_in_text(confirmed_city)
+        if confirmed_city:
+            collected["city"] = confirmed_city
+            if conversation.lead:
+                conversation.lead.city = confirmed_city
+    recall_accepted = (
+        not plan_change
+        and (
+            recall_campaign.has_marker(state.handoff_summary)
+            or (_recall_offer_accepted(customer_history) and "800" in state.plan_label)
+        )
+    )
+    if recall_accepted:
+        state.handoff_summary = recall_campaign.with_marker(state.handoff_summary)
     if black_combo and "_black_combo" not in collected:
         collected["_black_combo"] = {"stage": black_campaign.COMBO_STAGE_FIBER}
-    plan_change = state.step == PLAN_CHANGE_STEP
     if state.step == "ESCALATED":
         # Não existe mais transferência para humano: vendas antigas paradas em
         # ESCALATED voltam para a IA do ponto em que estavam.
@@ -4789,6 +4931,14 @@ def start_closing_from_sdr(
         if new_price is not None:
             state.offer_price = new_price
         collected.pop("_sale_accepted", None)
+        collected.pop("_sale_intent_confirmed", None)
+        collected.pop("planId", None)
+        # Mudou o produto: a promoção anterior não deve ser aplicada ao novo
+        # plano sem aprovação explícita do catálogo comercial.
+        state.handoff_summary = state.handoff_summary.replace(
+            recall_campaign.SUMMARY_MARKER, "",
+        ).strip()
+        collected["freeMonths"] = 0
         state.step = "PLAN_CONFIRM"
         state.last_error = ""
         _save_collected(state, collected)
@@ -4803,9 +4953,16 @@ def start_closing_from_sdr(
     if known_name:
         collected["name"] = known_name
     collected["handoffReason"] = str(getattr(decision, "handoff_reason", "") or "")
+    if not plan_change:
+        collected["_sale_intent_confirmed"] = True
+    offered_months = max(0, min(3, int(getattr(decision, "free_months", 0) or 0)))
+    if plan_change:
+        offered_months = 0
+    if recall_accepted:
+        offered_months = max(offered_months, recall_campaign.FREE_MONTHS)
     collected["freeMonths"] = max(
-        0,
-        min(3, int(getattr(decision, "free_months", 0) or 0)),
+        0 if plan_change else int(collected.get("freeMonths") or 0),
+        offered_months,
     )
     collected["concessionLevel"] = max(
         0,
@@ -5132,6 +5289,11 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     raw_text = (message.body or "").strip()
     audio_unreadable = raw_text == UNREADABLE_BODY
     text = strip_transcription_prefix(raw_text)
+    customer_city = _customer_confirmed_city([{"direction": "INBOUND", "body": text}])
+    if customer_city:
+        collected["city"] = customer_city
+        if conversation.lead:
+            conversation.lead.city = customer_city
     reply = ""
     output: dict[str, Any] = {"step_before": state.step}
     client = SulnetCRMClient.from_settings()
@@ -5251,8 +5413,15 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 except CRMIntegrationError as exc:
                     error_key = _norm(str(exc))
                     if "nascimento" in error_key or "birth" in error_key:
-                        state.step = "BIRTH_DATE"
-                        reply = _prompt_for_step(state, collected)
+                        state.step = "WAITING_CRM_READY"
+                        collected["_crm_birth_date_blocked"] = True
+                        state.last_error = (
+                            "Consulta por CPF bloqueada por exigência de nascimento no CRM."
+                        )
+                        reply = (
+                            "Recebi seu CPF! Estou conferindo uma informação cadastral "
+                            "no sistema e continuo sua contratação assim que for validada."
+                        )
                         credit = None
                     else:
                         raise
@@ -5281,31 +5450,14 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         reply = "Sua consulta ficou em análise. Vou manter a contratação aberta e sigo assim que o CRM liberar o resultado."
 
         elif state.step == "BIRTH_DATE":
-            birth_date = _extract_birth_date(text)
-            if not birth_date:
-                reply = "Preciso da data de nascimento no formato DD/MM/AAAA para concluir a consulta cadastral."
-            else:
-                credit = client.consult_credit(
-                    state.opportunity_id or 0,
-                    birth_date=birth_date,
-                )
-                state.credit_status = str(credit.get("status") or "")
-                state.credit_analysis_id = int(credit.get("analysisId") or 0) or None
-                collected["creditStatus"] = state.credit_status
-                _save_collected(state, collected)
-                if credit.get("approved"):
-                    reply = _advance_with_playbook(
-                        client,
-                        state,
-                        collected,
-                        fallback_step="CEP",
-                    )
-                elif credit.get("rejected"):
-                    state.step = "CREDIT_REJECTED"
-                    reply = _prompt_for_step(state, collected)
-                else:
-                    state.step = "CREDIT_REVIEW"
-                    reply = "Sua consulta ficou em análise. Vou manter a contratação aberta e sigo assim que o CRM liberar o resultado."
+            # Recuperação de estados antigos sem jamais coletar nascimento.
+            state.step = "WAITING_CRM_READY"
+            collected["_crm_birth_date_blocked"] = True
+            state.last_error = "Etapa BIRTH_DATE removida do atendimento ao cliente."
+            reply = (
+                "Estou conferindo uma informação cadastral no sistema para "
+                "continuar sua contratação."
+            )
 
         elif state.step == "CREDIT_REVIEW":
             status = client.get_status(state.opportunity_id or 0)
@@ -6535,7 +6687,10 @@ def _clear_status_poll_failures(state: AIClosingState, collected: dict) -> None:
     """Consulta ao CRM deu certo: zera a contagem de falhas da análise/assinatura."""
     had_failures = collected.pop(STATUS_POLL_FAILURES_KEY, None) is not None
     had_alert = collected.pop(STATUS_POLL_ALERT_KEY, None) is not None
-    if had_failures or had_alert:
+    # Somente resposta real do CRM remove a pendência de reconciliação.
+    had_reconciliation = collected.pop("_crm_contract_reconciliation_pending", None) is not None
+    collected.pop("_crm_contract_missing_opportunity", None)
+    if had_failures or had_alert or had_reconciliation:
         _save_collected(state, collected)
 
 
@@ -6559,9 +6714,21 @@ def _hold_status_poll_failure(
     """
     kind = _closer_failure_kind(exc)
     collected = _load_collected(state)
+    missing_404 = (
+        step == "WAITING_SIGNATURE"
+        and isinstance(exc, CRMIntegrationError)
+        and exc.status_code == 404
+    )
+    if missing_404:
+        collected["_crm_contract_reconciliation_pending"] = True
+        collected["_crm_contract_missing_opportunity"] = state.opportunity_id
+        # Não marcar venda ganha nem gerar segundo contrato ao perder a referência.
+        # A assinatura local só pode ser reconciliada mediante registro CRM válido.
     failures = int(collected.get(STATUS_POLL_FAILURES_KEY) or 0) + 1
     collected[STATUS_POLL_FAILURES_KEY] = failures
-    hold = kind != "ownership" and ((kind != "transient" and failures >= 3) or failures >= 20)
+    hold = kind != "ownership" and (
+        missing_404 or (kind != "transient" and failures >= 3) or failures >= 20
+    )
     first_alert = hold and not collected.get(STATUS_POLL_ALERT_KEY)
     if first_alert:
         collected[STATUS_POLL_ALERT_KEY] = True
@@ -6574,7 +6741,8 @@ def _hold_status_poll_failure(
             agent=agent,
             reason=(
                 f"CRM não encontrou a venda na etapa {step} ({kind}, {failures} falhas seguidas): "
-                f"{str(exc)[:300]} Confira se o lead/oportunidade foi apagado ou recriado no CRM."
+                f"{str(exc)[:300]} Conferir a oportunidade {state.opportunity_id} no CRM, "
+                "webhook da assinatura e BKO; NÃO gerar outro contrato sem reconciliação."
             ),
         )
     if hold:
@@ -6599,7 +6767,16 @@ def _retry_job_later(job: AIJob, state: AIClosingState) -> None:
 
 _ADJUST_PAYMENT = re.compile(r"pagament|boleto|debito|forma|cartao|pix")
 _ADJUST_DUE_DAY = re.compile(r"vencimento|\bdia\b|data")
-_ADJUST_PLAN = re.compile(r"plano|mega|giga|\bgb\b|velocidade|outro|trocar|mudar|valor|preco|caro")
+# Falar sobre preço ou velocidade NÃO é pedir para reabrir a prospecção.
+# Troca de plano exige intenção explícita ou escolha inequívoca de outra oferta.
+_ADJUST_PLAN = re.compile(
+    r"(?:trocar|mudar|alterar|substituir|aumentar|reduzir) (?:o |de |meu |esse |este )?(?:plano|velocidade|internet)|"
+    r"(?:quero|prefiro|gostaria de|vou ficar com|pode ser) (?:o |a |um |uma )?(?:outro plano|plano (?:de )?\d+|\d+\s*(?:mega|giga|gb))|"
+    r"outro plano|plano diferente"
+)
+_ADJUST_PRICE_QUESTION = re.compile(
+    r"\b(?:valor|preco|mensalidade|custa|quanto fica|mais barato|caro)\b"
+)
 _ADJUST_ONLY_INTERNET = re.compile(r"so (a )?internet|sem (o )?(movel|celular|chip)|so com a internet")
 _ADJUST_QUIT = re.compile(r"desist|cancel|encerr|deixa pra la|nao quero mais|nao vou (mais )?contratar|nao quero contratar")
 _ADJUST_NOTHING = re.compile(r"^(nada|ta certo|esta certo|pode gerar|confirmo|sim|ok|tudo certo)\b")
@@ -6640,9 +6817,17 @@ def _handle_sale_adjustment(
         _save_collected(state, collected)
         return _prompt_for_step(state, collected)
     if _ADJUST_PLAN.search(folded):
-        # A troca de dono para o SDR acontece depois do envio desta resposta.
+        # Só retorna ao SDR quando o cliente pediu de fato outro produto.
+        # Perguntar preço ou fidelidade não reabre uma venda já em fechamento.
+        collected["_explicit_plan_change"] = True
         state.step = PLAN_CHANGE_STEP
         return "Combinado! Me diz qual plano você prefere que eu ajusto a proposta por aqui."
+    if _ADJUST_PRICE_QUESTION.search(folded) and state.offer_price is not None:
+        return (
+            f"O valor mensal combinado para {state.plan_label} é "
+            f"R$ {format(state.offer_price, '.2f').replace('.', ',')}. "
+            "Deseja manter essa oferta e seguir com a contratação?"
+        )
     if _ADJUST_NOTHING.search(folded):
         state.step = SALE_ACCEPTANCE_STEP
         _save_collected(state, collected)
@@ -6660,15 +6845,33 @@ def _return_to_sdr_for_plan_change(
 
     from app.services.ai_followups import cancel_pending_followups  # noqa: PLC0415
 
+    collected = _load_collected(state)
+    # A alteração de ownership exige prova de uma solicitação explícita.
+    if not collected.pop("_explicit_plan_change", False):
+        LOG.warning(
+            "seller_plan_change_without_customer_intent conversation=%s",
+            conversation.id,
+        )
+        state.step = SALE_ACCEPTANCE_STEP
+        return
+    _save_collected(state, collected)
     binding = binding_for_conversation(db, conversation.id)
     cancel_pending_followups(db, conversation.id, reason="TROCA_DE_PLANO_SDR")
     ai_state = db.scalar(
         select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
     )
-    if ai_state and binding and binding.agent:
-        # A próxima resposta do cliente vai para o SDR (enqueue_ai_job olha o estado).
+    if ai_state and binding and binding.agent and binding.agent.active:
+        # A próxima resposta do cliente vai para o SDR somente após pedido real.
         ai_state.state = "AI_ACTIVE"
         ai_state.agent_id = binding.agent_id
+        LOG.info(
+            "seller_explicit_plan_change_handoff conversation=%s closer=%s sdr=%s",
+            conversation.id, state.agent_id, binding.agent_id,
+        )
+    else:
+        # SDR indisponível: manter closer, preço e desconto, sem abandonar.
+        state.step = SALE_ACCEPTANCE_STEP
+        LOG.warning("seller_plan_change_sdr_unavailable conversation=%s", conversation.id)
 
 
 SALE_DECLINE_NOTICE = (
@@ -6946,8 +7149,23 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
                     )
                     processed += 1
                 else:
+                    if collected.get("_crm_birth_date_blocked"):
+                        if not collected.get("_crm_birth_date_alerted"):
+                            _record_ai_block(
+                                db,
+                                state=state,
+                                conversation=conversation,
+                                agent=agent,
+                                reason=(
+                                    "CRM exige nascimento ausente no cadastro. "
+                                    "Corrigir integração internamente sem perguntar ao cliente."
+                                ),
+                            )
+                            collected["_crm_birth_date_alerted"] = True
+                        state.updated_at = utcnow() + AI_HOLD_RETRY
+                    else:
+                        state.updated_at = utcnow()
                     _save_collected(state, collected)
-                    state.updated_at = utcnow()
                 continue
 
             try:

@@ -466,7 +466,15 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
             if (
                 not conversation
                 or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
+                or (conversation.lead and conversation.lead.do_not_contact)
+                or (conversation.lead and conversation.lead.stage in {"GANHO", "NAO_CONTATAR"})
             ):
+                continue
+
+            # Uma conversa já encerrada, sem permissão ou com cliente que pediu
+            # para não ser contatado não pode ser reativada pelo backfill.
+            from app.services.ai_followups import _customer_declined, _queue_ai_paused
+            if _customer_declined(db, conversation.id) or _queue_ai_paused(db, conversation.id):
                 continue
 
             if state.state == "CLOSING":
@@ -546,6 +554,52 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
                 .limit(1)
             )
             next_step = int(last_sent.step or 0) + 1 if last_sent else 1
+            # Não recriar tarefas canceladas por limite/recusa/guardião.
+            # Em 16/11 o mesmo cliente recebia 25 tarefas distintas em 2 horas,
+            # todas canceladas pelo processamento seguinte.
+            from app.services.ai_followups import (
+                MAX_UNANSWERED_CLOSING_FOLLOWUPS,
+                MAX_UNANSWERED_FOLLOWUPS,
+                closing_awaits_customer,
+                _followup_allowed,
+            )
+            limit_unanswered = (
+                MAX_UNANSWERED_CLOSING_FOLLOWUPS
+                if closing_awaits_customer(db, conversation.id)
+                else MAX_UNANSWERED_FOLLOWUPS
+            )
+            sent_since_reply = select(AIFollowupJob.id).where(
+                AIFollowupJob.conversation_id == conversation.id,
+                AIFollowupJob.status == "ENVIADO",
+                AIFollowupJob.sent_at.is_not(None),
+            )
+            last_inbound = db.scalar(
+                select(Message.created_at)
+                .where(
+                    Message.conversation_id == conversation.id,
+                    Message.direction == "INBOUND",
+                )
+                .order_by(Message.id.desc()).limit(1)
+            )
+            if last_inbound:
+                sent_since_reply = sent_since_reply.where(
+                    AIFollowupJob.sent_at > utc_naive(last_inbound)
+                )
+            sent_count = len(list(db.scalars(sent_since_reply)))
+            if sent_count >= limit_unanswered:
+                continue
+            last_stopped = db.scalar(
+                select(AIFollowupJob.id).where(
+                    AIFollowupJob.conversation_id == conversation.id,
+                    AIFollowupJob.source_message_id == source_inbound_id,
+                    AIFollowupJob.status == "CANCELADO",
+                    AIFollowupJob.error.in_(
+                        ["CLIENTE_DESISTIU", "LIMITE_SEM_RESPOSTA", "GUARDIAN_OPT_OUT"]
+                    ),
+                ).limit(1)
+            )
+            if last_stopped:
+                continue
 
             queue = queue_for_conversation(db, conversation.id)
             if not queue:
@@ -945,7 +999,20 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
                 # Sem estado = a IA nunca atendeu: fica com a recuperação normal / fila.
                 continue
             if human_is_attending(db, conversation) or human_stepped_in(db, conversation):
+                # Não sobrescrever o responsável humano. Os alertas operacionais
+                # continuam cobrando resposta, mesmo sem a IA intervir.
                 continue
+            # Em fila de IA quando humano está online, "online" sozinho não
+            # significa que alguém respondeu. Depois do prazo de retomada,
+            # ignorar a presença online e enfileirar a IA.
+            if state.state == "AI_ACTIVE":
+                from app.services.ai_sdr import binding_for_conversation
+                from app.services.queue_routing import AI_WHEN_HUMAN_IDLE
+                binding = binding_for_conversation(db, conversation.id)
+                if binding and binding.handling_mode == AI_WHEN_HUMAN_IDLE:
+                    age = now - (utc_naive(message.created_at) or now)
+                    if age < UNANSWERED_TAKEOVER_AFTER:
+                        continue
             job = db.scalar(
                 select(AIJob).where(AIJob.message_id == message.id).order_by(AIJob.id.desc()).limit(1)
             )
@@ -963,7 +1030,12 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
                     job.agent_id = state.agent_id
                 resumed = job
             else:
-                resumed = enqueue_ai_job(db, conversation=conversation, message=message)
+                resumed = enqueue_ai_job(
+                    db,
+                    conversation=conversation,
+                    message=message,
+                    takeover=True,
+                )
             if resumed:
                 answered += 1
                 LOG.warning(

@@ -305,8 +305,9 @@ def test_lead_sumido_do_crm_segura_a_consulta_e_avisa_a_supervisao_uma_vez(monke
     calls = _quiet_seller(monkeypatch)
     state = _status_state()
     not_found = _crm(404, "GET", "/api/opportunities/14370", message="Oportunidade não encontrada.")
-    assert _hold(state, not_found) is False
-    assert _hold(state, not_found) is False
+    # Lead desaparecido do CRM exige alerta imediato, sem aguardar três ciclos.
+    assert _hold(state, not_found) is True
+    assert _hold(state, not_found) is True
     assert _hold(state, not_found) is True
     assert state.updated_at > utcnow() + ai_seller.AI_HOLD_RETRY / 2
     for _ in range(5):
@@ -341,7 +342,8 @@ def test_consulta_bem_sucedida_zera_a_contagem(monkeypatch):
     ai_seller._clear_status_poll_failures(state, collected)
     assert ai_seller.STATUS_POLL_FAILURES_KEY not in ai_seller._load_collected(state)
     assert ai_seller.STATUS_POLL_ALERT_KEY not in ai_seller._load_collected(state)
-    assert _hold(state, not_found) is False
+    # Um novo 404 após consulta válida continua exigindo reconciliação.
+    assert _hold(state, not_found) is True
 
 
 def test_poller_em_analise_de_credito_para_de_consultar_a_cada_45s(monkeypatch):

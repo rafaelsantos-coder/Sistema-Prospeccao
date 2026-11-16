@@ -423,12 +423,21 @@ def unanswered_customers(db: Session) -> list[dict]:
         )
         if binding and binding.active and binding.handling_mode == "HUMAN":
             continue
+        inbound_message = db.get(Message, message_id)
+        received_at = inbound_message.created_at if inbound_message else None
+        if received_at is not None:
+            from app.timeutils import utc_naive
+            age_minutes = max(0, int((now - utc_naive(received_at)).total_seconds() / 60))
+        else:
+            age_minutes = 0
         found.append(
             {
                 "conversation_id": conversation_id,
                 "queue_id": queue.id if queue else None,
                 "queue_name": queue.name if queue else "",
                 "ai_bound": bool(binding and binding.active),
+                "age_minutes": age_minutes,
+                "assigned_user_id": conversation.assigned_user_id,
             }
         )
     return found
@@ -449,12 +458,30 @@ def check_unanswered_customers(db: Session) -> int:
     unbound = sorted(
         {f"{item['queue_name'] or 'sem fila'} (id {item['queue_id']})" for item in waiting if not item["ai_bound"]}
     )
-    ids = ", ".join(str(item["conversation_id"]) for item in waiting[:12])
-    text = f"⚠️ {len(waiting)} cliente(s) sem resposta há mais de 10 minutos. Conversas: {ids}."
+    # Casos mais antigos primeiro: o time sabe exatamente onde agir e quem está
+    # designado, sem abrir logs técnicos. Não expõe dados pessoais no alerta.
+    waiting.sort(key=lambda item: item.get("age_minutes", 0), reverse=True)
+    cases = ", ".join(
+        f"#{item['conversation_id']} ({item.get('age_minutes', 0)}min; "
+        f"fila {item['queue_id'] or '-'}; "
+        f"responsável {item.get('assigned_user_id') or 'sem atribuição'})"
+        for item in waiting[:12]
+    )
+    severe = any(item.get("age_minutes", 0) >= 30 for item in waiting)
+    text = (
+        f"⚠️ {len(waiting)} cliente(s) sem resposta há mais de 10 minutos. "
+        f"{'URGENTE: espera de 30min ou mais. ' if severe else ''}"
+        f"Prioridades: {cases}."
+    )
     if unbound:
         text += " Fila sem IA vinculada: " + "; ".join(unbound) + "."
-    stamp = utcnow().strftime("%Y%m%d%H")
-    return 1 if send_ops_alert(db, key=f"unanswered:{stamp}", text=text) else 0
+    # Agregação a cada 30 minutos quando há atraso grave; a cada hora nos
+    # demais casos. Deduplicação automática pela chave da auditoria.
+    now = utcnow()
+    stamp = now.strftime("%Y%m%d%H") + ("0" if now.minute < 30 else "1") if severe else now.strftime("%Y%m%d%H")
+    return 1 if send_ops_alert(
+        db, key=f"unanswered:{'urgent' if severe else 'normal'}:{stamp}", text=text,
+    ) else 0
 
 
 def _in_period(value, start, end) -> bool:
