@@ -7,6 +7,7 @@ sem identificação da pessoa, para os marcadores do mapa.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
 import unicodedata
@@ -20,6 +21,7 @@ REQUIRED_COLUMNS = {
 }
 STREET_MIN_SAMPLE = 5
 STREET_HEADERS = ('Rua', 'Logradouro', 'Endereço', 'Endereco')
+ADDRESS_HEADERS = ('Endereço', 'Endereco')
 CEP_HEADERS = ('CEP',)
 NUMBER_HEADERS = ('Número', 'Numero', 'Nº', 'N°', 'Num')
 NO_NEIGHBORHOOD = 'SEM BAIRRO INFORMADO'
@@ -74,13 +76,20 @@ def street_name(value: str) -> str:
 
 
 def house_number(number: str, street: str = '') -> str:
-    """Número da casa: da coluna própria ou, na falta dela, do fim do campo da rua."""
+    """Extrai o numero da coluna ou do endereco completo sem confundir CEP."""
     raw = fold(number)
     if raw in {'S/N', 'SN', 'S N', 'SEM NUMERO', '0'}:
         return ''
-    match = re.fullmatch(r'(\d{1,6})\s*([A-Z])?', raw)
-    if not match:
-        match = re.search(r'(?:,|-|\bN\b\.?|\bNUMERO\b|\bNO\b|\s)\s*(\d{1,6})\s*([A-Z])?$', fold(street)) if not raw else None
+    if raw:
+        match = re.fullmatch(r'(\d{1,6})\s*([A-Z])?', raw)
+    else:
+        full = fold(street)
+        match = re.search(
+            r'(?:,\s*|\bN(?:O|R|UMERO)?\.?\s*[:#-]?\s*)(\d{1,6})\s*([A-Z])?'
+            r'(?=\s*(?:,|/|-|$|\b(?:APTO|CASA|BLOCO|CEP)\b))', full,
+        )
+        if not match:
+            match = re.search(r'\s+(\d{1,6})\s*([A-Z])?$', full)
     if not match or int(match.group(1)) == 0:
         return ''
     return str(int(match.group(1))) + (match.group(2) or '')
@@ -197,13 +206,20 @@ def aggregate_csv_addresses(
             stats['reprovados_assinados_inconsistentes'] += 1
         counts[(city, neighborhood, month, decision, signed)] += 1
         stats['cpf_validos_formato'] += 1
-        street = street_name(_first_value(line, STREET_HEADERS))
+        street_field = _first_value(line, STREET_HEADERS)
+        address_field = _first_value(line, ADDRESS_HEADERS)
+        street = street_name(street_field)
         if street:
             cep = cep_digits(_first_value(line, CEP_HEADERS))
             street_counts[(city, neighborhood, street, cep, month, decision, signed)] += 1
             stats['com_rua'] += 1
             if decision == APPROVED:
-                number = house_number(_first_value(line, NUMBER_HEADERS), _first_value(line, STREET_HEADERS))
+                explicit = _first_value(line, NUMBER_HEADERS)
+                # Em muitos CSVs "Rua" e "Endereco" coexistem: extrair o numero
+                # de Endereco mesmo quando o logradouro veio da coluna Rua.
+                number = house_number(explicit, address_field or street_field)
+                if not number and not explicit and address_field:
+                    number = house_number('', street_field)
                 address_counts[(city, neighborhood, street, number, cep, month, signed)] += 1
                 stats['enderecos_aprovados'] += 1
 
@@ -225,9 +241,16 @@ def aggregate_csv_addresses(
     return aggregates, streets, addresses, dict(stats)
 
 
-def address_key(street: str, number: str) -> str:
-    """Chave do cache de posição de um endereço (rua + número)."""
-    return f"END|{street}|{number}"[:180]
+def address_key(street: str, number: str, neighborhood: str = '', cep: str = '') -> str:
+    """Versao 2: enderecos homonimos em bairros diferentes nao compartilham cache."""
+    token = '|'.join([fold(street), fold(number), neighborhood_name(neighborhood), cep_digits(cep)])
+    return 'END|v2|' + hashlib.sha256(token.encode('utf-8')).hexdigest()[:32]
+
+
+def street_key(street: str, neighborhood: str = '', cep: str = '') -> str:
+    """Chave da rua inclui bairro e CEP para evitar pontos em ruas homonimas."""
+    token = '|'.join([fold(street), neighborhood_name(neighborhood), cep_digits(cep)])
+    return 'RUA|v2|' + hashlib.sha256(token.encode('utf-8')).hexdigest()[:32]
 
 
 def summarize_addresses(
@@ -235,22 +258,21 @@ def summarize_addresses(
 ) -> list[dict[str, Any]]:
     """Endereços de clientes aprovados no período, separados em assinou / não assinou contrato."""
     city = city_name(city)
-    groups: dict[tuple[str, str, bool], dict[str, Any]] = {}
+    groups: dict[tuple[str, str, str, str, bool], dict[str, Any]] = {}
     for item in items:
         if city_name(item['city']) != city or not (start_month <= item['month'] <= end_month):
             continue
         signed = bool(item['signed'])
-        key = (item['street'], item.get('number') or '', signed)
+        hood = neighborhood_name(item['neighborhood'])
+        cep = cep_digits(item.get('cep') or '')
+        key = (item['street'], item.get('number') or '', hood, cep, signed)
         row = groups.setdefault(key, {
             'street': key[0], 'number': key[1], 'signed': signed, 'count': 0,
-            'neighborhood': '', 'cep': '', 'key': address_key(key[0], key[1])})
+            'neighborhood': '' if hood == NO_NEIGHBORHOOD else hood, 'cep': cep,
+            'key': address_key(key[0], key[1], hood, cep),
+            'street_key': street_key(key[0], hood, cep)})
         row['count'] += int(item['count'])
-        hood = neighborhood_name(item['neighborhood'])
-        if hood != NO_NEIGHBORHOOD and not row['neighborhood']:
-            row['neighborhood'] = hood
-        if item.get('cep') and not row['cep']:
-            row['cep'] = item['cep']
-    return sorted(groups.values(), key=lambda x: (x['street'], x['number'], not x['signed']))
+    return sorted(groups.values(), key=lambda x: (x['street'], x['number'], x['neighborhood'], x['cep'], not x['signed']))
 
 
 def summarize_streets(
@@ -259,40 +281,35 @@ def summarize_streets(
 ) -> list[dict[str, Any]]:
     """Ruas com pelo menos ``min_sample`` consultas no período (a mesma rua agrupa todos os bairros)."""
     city = city_name(city)
-    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
     for item in items:
         if city_name(item['city']) != city or not (start_month <= item['month'] <= end_month):
             continue
-        key = (item['street'], '')
-        row = groups.setdefault(key, {
-            'street': key[0], 'neighborhood': '', 'total': 0, 'approved': 0,
-            'rejected': 0, 'pending': 0, 'signed_approved': 0, 'ceps': Counter(), 'hoods': Counter()})
         hood = neighborhood_name(item['neighborhood'])
+        cep = cep_digits(item.get('cep') or '')
+        key = (item['street'], hood, cep)
+        row = groups.setdefault(key, {
+            'street': key[0], 'neighborhood': '' if hood == NO_NEIGHBORHOOD else hood,
+            'cep': cep, 'total': 0, 'approved': 0, 'rejected': 0, 'pending': 0,
+            'signed_approved': 0,
+        })
         n = int(item['count'])
         row['total'] += n
         decision = item['decision']
         row[{'APROVADO': 'approved', 'REPROVADO': 'rejected', 'PENDENTE': 'pending'}[decision]] += n
         if decision == APPROVED and bool(item['signed']):
             row['signed_approved'] += n
-        if item.get('cep'):
-            row['ceps'][item['cep']] += n
-        if hood != NO_NEIGHBORHOOD:
-            row['hoods'][hood] += n
     result = []
     for row in groups.values():
         if row['total'] < min_sample:
             continue
-        ceps = row.pop('ceps')
-        hoods = row.pop('hoods')
-        row['cep'] = ceps.most_common(1)[0][0] if ceps else ''
-        row['neighborhood'] = hoods.most_common(1)[0][0] if hoods else ''
         decided = row['approved'] + row['rejected']
         row['approval_rate'] = round(row['approved'] / decided * 100, 1) if decided else None
         row['signed_rate'] = round(row['signed_approved'] / row['approved'] * 100, 1) if row['approved'] else None
         row['color'] = majority_color(row['approved'], row['rejected'])
-        row['key'] = f"RUA|{row['street']}"[:180]
+        row['key'] = street_key(row['street'], row['neighborhood'], row['cep'])
         result.append(row)
-    result.sort(key=lambda x: (-x['total'], x['street']))
+    result.sort(key=lambda x: (-x['total'], x['street'], x['neighborhood'], x['cep']))
     return result
 
 
