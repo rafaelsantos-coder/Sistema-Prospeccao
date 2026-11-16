@@ -1,7 +1,8 @@
 """Normalização e agregação territorial de consultas de crédito.
 
-Não guarda nem publica dados pessoais: CPF, nome, telefone, score e
-informações de restrição são descartados durante o processamento.
+CPF, nome, telefone, score e informações de restrição são descartados durante
+o processamento. Dos clientes aprovados fica guardado o endereço (rua e número),
+sem identificação da pessoa, para os marcadores do mapa.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ REQUIRED_COLUMNS = {
 STREET_MIN_SAMPLE = 5
 STREET_HEADERS = ('Rua', 'Logradouro', 'Endereço', 'Endereco')
 CEP_HEADERS = ('CEP',)
+NUMBER_HEADERS = ('Número', 'Numero', 'Nº', 'N°', 'Num')
 NO_NEIGHBORHOOD = 'SEM BAIRRO INFORMADO'
 NOT_A_STREET = {'INTERIOR', 'ZONA RURAL', 'RURAL', 'SEM RUA', 'NAO INFORMADO', 'NAO INFORMADA', 'S/N'}
 NO_DATE = 'SEM_DATA'
@@ -71,6 +73,24 @@ def street_name(value: str) -> str:
     return raw[:100]
 
 
+def house_number(number: str, street: str = '') -> str:
+    """Número da casa: da coluna própria ou, na falta dela, do fim do campo da rua."""
+    raw = fold(number)
+    if raw in {'S/N', 'SN', 'S N', 'SEM NUMERO', '0'}:
+        return ''
+    match = re.fullmatch(r'(\d{1,6})\s*([A-Z])?', raw)
+    if not match:
+        match = re.search(r'(?:,|-|\bN\b\.?|\bNUMERO\b|\bNO\b|\s)\s*(\d{1,6})\s*([A-Z])?$', fold(street)) if not raw else None
+    if not match or int(match.group(1)) == 0:
+        return ''
+    return str(int(match.group(1))) + (match.group(2) or '')
+
+
+def majority_color(approved: int, rejected: int) -> str:
+    """Cor do território: verde se aprovados >= reprovados (empate fica verde), senão vermelho."""
+    return 'green' if int(approved or 0) >= int(rejected or 0) else 'red'
+
+
 def cep_digits(value: str) -> str:
     digits = re.sub(r'\D', '', value or '')
     return digits if len(digits) == 8 else ''
@@ -119,9 +139,18 @@ def aggregate_csv(raw: bytes) -> tuple[list[dict[str, Any]], dict[str, int]]:
 def aggregate_csv_full(
     raw: bytes,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
-    """Retorna agrupamentos sem PII (bairro e rua) e estatísticas da importação.
+    aggregates, streets, _addresses, stats = aggregate_csv_addresses(raw)
+    return aggregates, streets, stats
 
-    Colunas opcionais Rua/Logradouro, CEP e Número: o número da casa é ignorado.
+
+def aggregate_csv_addresses(
+    raw: bytes,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+    """Retorna agrupamentos por bairro e por rua, endereços dos aprovados e estatísticas.
+
+    Colunas opcionais Rua/Logradouro, CEP e Número. Nos agrupamentos por rua o
+    número da casa é ignorado; ele só é mantido na lista de endereços dos
+    clientes aprovados (rua, número, bairro, mês e se assinou contrato).
 
     Cada protocolo é contado uma única vez, e apenas documentos com 11
     dígitos são contabilizados. Datas sem data são mantidas em SEM_DATA.
@@ -137,6 +166,7 @@ def aggregate_csv_full(
 
     counts: Counter[tuple[str, str, str, str, bool]] = Counter()
     street_counts: Counter[tuple[str, str, str, str, str, str, bool]] = Counter()
+    address_counts: Counter[tuple[str, str, str, str, str, str, bool]] = Counter()
     seen: set[str] = set()
     stats = Counter()
     for line in reader:
@@ -172,6 +202,10 @@ def aggregate_csv_full(
             cep = cep_digits(_first_value(line, CEP_HEADERS))
             street_counts[(city, neighborhood, street, cep, month, decision, signed)] += 1
             stats['com_rua'] += 1
+            if decision == APPROVED:
+                number = house_number(_first_value(line, NUMBER_HEADERS), _first_value(line, STREET_HEADERS))
+                address_counts[(city, neighborhood, street, number, cep, month, signed)] += 1
+                stats['enderecos_aprovados'] += 1
 
     aggregates = [
         {'city': city, 'neighborhood': bairro, 'month': month,
@@ -183,7 +217,40 @@ def aggregate_csv_full(
          'decision': decision, 'signed': signed, 'count': count}
         for (city, bairro, street, cep, month, decision, signed), count in sorted(street_counts.items())
     ]
-    return aggregates, streets, dict(stats)
+    addresses = [
+        {'city': city, 'neighborhood': bairro, 'street': street, 'number': number, 'cep': cep,
+         'month': month, 'signed': signed, 'count': count}
+        for (city, bairro, street, number, cep, month, signed), count in sorted(address_counts.items())
+    ]
+    return aggregates, streets, addresses, dict(stats)
+
+
+def address_key(street: str, number: str) -> str:
+    """Chave do cache de posição de um endereço (rua + número)."""
+    return f"END|{street}|{number}"[:180]
+
+
+def summarize_addresses(
+    items: list[dict[str, Any]], *, city: str, start_month: str, end_month: str,
+) -> list[dict[str, Any]]:
+    """Endereços de clientes aprovados no período, separados em assinou / não assinou contrato."""
+    city = city_name(city)
+    groups: dict[tuple[str, str, bool], dict[str, Any]] = {}
+    for item in items:
+        if city_name(item['city']) != city or not (start_month <= item['month'] <= end_month):
+            continue
+        signed = bool(item['signed'])
+        key = (item['street'], item.get('number') or '', signed)
+        row = groups.setdefault(key, {
+            'street': key[0], 'number': key[1], 'signed': signed, 'count': 0,
+            'neighborhood': '', 'cep': '', 'key': address_key(key[0], key[1])})
+        row['count'] += int(item['count'])
+        hood = neighborhood_name(item['neighborhood'])
+        if hood != NO_NEIGHBORHOOD and not row['neighborhood']:
+            row['neighborhood'] = hood
+        if item.get('cep') and not row['cep']:
+            row['cep'] = item['cep']
+    return sorted(groups.values(), key=lambda x: (x['street'], x['number'], not x['signed']))
 
 
 def summarize_streets(
@@ -222,6 +289,7 @@ def summarize_streets(
         decided = row['approved'] + row['rejected']
         row['approval_rate'] = round(row['approved'] / decided * 100, 1) if decided else None
         row['signed_rate'] = round(row['signed_approved'] / row['approved'] * 100, 1) if row['approved'] else None
+        row['color'] = majority_color(row['approved'], row['rejected'])
         row['key'] = f"RUA|{row['street']}"[:180]
         result.append(row)
     result.sort(key=lambda x: (-x['total'], x['street']))
@@ -277,6 +345,7 @@ def summarize(
         decided = row['approved'] + row['rejected']
         row['approval_rate'] = round(row['approved'] / decided * 100, 1) if decided else None
         row['signed_rate'] = round(row['signed_approved'] / row['approved'] * 100, 1) if row['approved'] else None
+        row['color'] = majority_color(row['approved'], row['rejected'])
         neighborhoods.append(row)
     neighborhoods.sort(key=lambda x: (-x['approved'], -x['total'], x['name']))
     decided = totals['approved'] + totals['rejected']
@@ -285,4 +354,4 @@ def summarize(
     return {'city': city, 'period': {'from': start_month, 'to': end_month},
         'totals': totals, 'neighborhoods': neighborhoods, 'months': sorted(by_month.values(), key=lambda x: x['month']),
         'suppressed_neighborhoods': hidden_neighborhoods, 'min_sample': min_sample,
-        'geolocation': 'Geocodificação aproximada no centro do bairro; não representa endereços individuais.'}
+        'geolocation': 'Bairros no centro aproximado; os endereços de aprovados vêm de consulta separada.'}

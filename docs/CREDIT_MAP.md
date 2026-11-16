@@ -13,16 +13,25 @@ Painel integrado ao sistema em `/reports/credit-map` com mapa OpenStreetMap (Lea
 ## Segurança/LGPD
 
 - Nunca colocar o CSV original no GitHub ou em pasta pública. Ele contém CPF, telefone, data de nascimento e dados de crédito.
-- Importação mantém somente totais por cidade/bairro/mês/decisão/assinatura. Os dados pessoais da consulta são descartados após a agregação em memória.
+- Importação mantém os totais por cidade/bairro/rua/mês/decisão/assinatura e, **somente dos clientes aprovados**, o endereço (rua e número, bairro, mês e se assinou contrato), usado nos triângulos do mapa. CPF, nome, telefone, data de nascimento, score e restrições são descartados após o processamento em memória. A guarda do endereço dos aprovados foi autorizada pela Sulnet em 16/11/2026.
 - Perfis ADMIN e GESTOR podem substituir a base; SUPERVISOR somente consulta.
-- A API somente retorna bairros com **10 ou mais consultas** no período e não expõe nome, CPF, telefone, restrições, score, coordenadas de residências ou datas específicas.
-- O mapa usa centro aproximado dos bairros obtido por geocodificação do OpenStreetMap (Nominatim); bairros sem localização confiável ficam no ranking mas não aparecem na camada geográfica.
+- A API somente retorna bairros com **10 ou mais consultas** no período e não expõe nome, CPF, telefone, restrições, score ou datas específicas. A rota `/api/reports/credit-map/addresses` devolve rua, número e posição dos clientes aprovados (com e sem contrato) para os perfis ADMIN, GESTOR e SUPERVISOR; reprovados nunca aparecem por endereço.
+- Para localizar um endereço, o servidor envia rua, número e cidade ao Nominatim (OpenStreetMap), sem qualquer identificação do cliente, e guarda a posição em `credit_map_geocodes`.
+- Os círculos de bairro usam o centro aproximado obtido por geocodificação do OpenStreetMap (Nominatim); bairros sem localização confiável ficam no ranking mas não aparecem na camada geográfica.
 - Não usar geografia como fator para **aprovar ou rejeitar** crédito, e nem para excluir bairros de oportunidades de atendimento. O objetivo do painel é diagnosticar funil, cobertura e volume comercial agregados.
 - Retenção, acesso e base legal para consultas de crédito devem ser aprovados pelo encarregado de dados da Sulnet.
+
+## Leitura do mapa
+
+- **Bairro e rua**: verde quando aprovados ≥ reprovados (empate fica verde), vermelho quando há mais reprovados. Cor única, sem variação de tom; o tamanho do círculo segue a opção escolhida em "Visualizar".
+- **Triângulo verde**: endereço de cliente aprovado com contrato assinado.
+- **Triângulo amarelo**: endereço de cliente aprovado ainda sem contrato.
+- Quando o OpenStreetMap conhece a rua mas não o número, o triângulo fica no meio da rua e o balão avisa que a posição é aproximada. Clientes no mesmo ponto são afastados alguns metros para não ficarem um sobre o outro.
+- Os triângulos só aparecem depois de importar um CSV com as colunas Rua e Número; a primeira abertura localiza cerca de um endereço por segundo e guarda o resultado.
 
 ## Limitações
 
 - O mapa usa círculos de intensidade sobre o OpenStreetMap. O uso dos mapas e do Nominatim públicos deve ser leve e interno; exige a atribuição "© OpenStreetMap" (já exibida no mapa).
 - Filtro por mês, não por dia. A mesma consulta pode repetir um CPF com outro protocolo; totais são consultas, não pessoas únicas.
-- A geocodificação de bairro não informa posição do cliente e pode falhar. Resultados incompletos não devem ser interpretados como ausência de consultas.
+- A geocodificação pode falhar ou cair só na rua. Resultados incompletos não devem ser interpretados como ausência de consultas.
 - Não houve publicação automática no sistema de produção nesta entrega.

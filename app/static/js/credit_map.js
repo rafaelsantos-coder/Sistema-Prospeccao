@@ -1,4 +1,4 @@
-/* Sulnet Prospecta — inteligência territorial sem exposição de dados pessoais. */
+/* Sulnet Prospecta — inteligência territorial do crédito. Sem nome, CPF ou telefone; só endereço dos aprovados. */
 (() => {
   'use strict';
   const root = document.getElementById('credit-map-app');
@@ -21,8 +21,9 @@
   const metric = () => $('cm-metric').value;
   const metricValue = (row) => row[metric()] == null ? 0 : row[metric()];
   const metricDisplay = (row) => ['approval_rate','signed_rate'].includes(metric()) ? pct(row[metric()]) : fmt(row[metric()]);
-  const approvalColor = (rate) => rate >= 83 ? '#16a66f' : rate >= 70 ? '#e5a238' : '#e35b53';
-  const layerColor = (row) => metric() === 'rejected' ? '#dc655c' : ['approved','approval_rate','signed_approved','signed_rate'].includes(metric()) ? approvalColor(row.approval_rate || 0) : '#f36f21';
+  // Cor única por território: verde se aprovados >= reprovados (empate fica verde), senão vermelho.
+  const GREEN = '#16a66f', RED = '#e35b53', YELLOW = '#f5c518';
+  const layerColor = (row) => Number(row.approved || 0) >= Number(row.rejected || 0) ? GREEN : RED;
   const showMessage = (message) => { const el = $('cm-message'); el.textContent = message; el.hidden = !message; };
   const showMapPlaceholder = (message) => { $('cm-map-empty').hidden = false; if(message) $('cm-map-empty').querySelector('p').textContent = message; };
   const sync = (message) => { $('cm-sync').innerHTML = `<span></span>${esc(message)}`; };
@@ -281,11 +282,63 @@
     }
     if (bounds.length >= 2) state.map.fitBounds(bounds, {padding: [40, 40], maxZoom: state.data.all ? 11 : 14});
     else if (centers.length) state.map.setView(centers[0], 12);
-    let status = `${located} de ${rows.length} bairros localizados · centros aproximados, não indicam domicílios`;
+    let status = `${located} de ${rows.length} bairros localizados · círculos no centro aproximado do bairro`;
     if (pending) status += ' · alguns bairros ainda não foram localizados; atualize a página para continuar.';
     else if (!centers.length) status = 'Não foi possível localizar a cidade no mapa. O ranking continua válido.';
     $('cm-geocode-status').textContent = status;
-    if (!state.data.all) drawStreets(ticket);
+    if (state.data.all) { if (streetGroup) streetGroup.clearLayers(); if (addressGroup) addressGroup.clearLayers(); $('cm-address-status').textContent = ''; }
+    else drawDetailLayers(ticket);
+  }
+  // Ruas primeiro, endereços depois: o serviço público de endereços aceita uma consulta por segundo.
+  async function drawDetailLayers(ticket) { await drawStreets(ticket); await drawAddresses(ticket); }
+  let addressGroup = null;
+  function triangleIcon(signed) {
+    const fill = signed ? GREEN : YELLOW, edge = signed ? '#0b5c3c' : '#7a5a00';
+    return L.divIcon({className: 'cm-tri', iconSize: [18, 16], iconAnchor: [9, 16], popupAnchor: [0, -14],
+      html: `<svg width="18" height="16" viewBox="0 0 18 16" aria-hidden="true"><polygon points="1.5,1.5 16.5,1.5 9,14.5" fill="${fill}" stroke="${edge}" stroke-width="1.5" stroke-linejoin="round"/></svg>`});
+  }
+  function spread(rows) {
+    // Clientes no mesmo ponto (mesmo prédio, ou rua sem número localizado) abrem em espiral de poucos metros.
+    const seen = new Map();
+    return rows.map(row => {
+      const key = row.lat.toFixed(6) + ',' + row.lng.toFixed(6);
+      const i = seen.get(key) || 0; seen.set(key, i + 1);
+      if (!i) return row;
+      const meters = 9 * Math.sqrt(i), angle = i * 2.39996;
+      return {...row, lat: row.lat + meters * Math.cos(angle) / 111320,
+        lng: row.lng + meters * Math.sin(angle) / (111320 * Math.cos(row.lat * Math.PI / 180))};
+    });
+  }
+  async function drawAddresses(ticket) {
+    if (addressGroup) addressGroup.clearLayers();
+    const toggle = $('cm-addresses');
+    if (!toggle || !state.mapReady) return;
+    if (!toggle.checked) { $('cm-address-status').textContent = ''; return; }
+    addressGroup = addressGroup || L.layerGroup().addTo(state.map);
+    const query = new URLSearchParams({city: $('cm-city').value, date_from: $('cm-from').value, date_to: $('cm-to').value});
+    let errors = 0;
+    for (let round = 0; round < 600; round += 1) {
+      if (ticket !== state.revision || !toggle.checked) return;
+      const r = await fetch('/api/reports/credit-map/addresses?' + query, {credentials: 'same-origin', cache: 'no-store'});
+      if (!r.ok) return;
+      const data = await r.json();
+      if (ticket !== state.revision || !toggle.checked) return;
+      addressGroup.clearLayers();
+      for (const row of spread(data.addresses || [])) {
+        const where = esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)');
+        const status = row.signed ? 'Aprovado · contrato assinado' : 'Aprovado · sem contrato';
+        const many = row.count > 1 ? `<br>${fmt(row.count)} clientes neste endereço` : '';
+        const approx = row.exact ? '' : '<br><small>Posição aproximada: o mapa achou a rua, não o número.</small>';
+        L.marker([row.lat, row.lng], {icon: triangleIcon(row.signed), keyboard: false})
+          .bindPopup(`<div class="cm-map-info"><strong>${where}</strong><br><small>${esc(row.neighborhood)}</small><br>${status}${many}${approx}</div>`)
+          .addTo(addressGroup);
+      }
+      if (!data.total) { $('cm-address-status').textContent = 'Sem endereços de aprovados na base (importe o CSV com Rua e Número).'; return; }
+      const found = (data.addresses || []).length;
+      $('cm-address-status').textContent = `${fmt(found)} de ${fmt(data.total)} endereços de aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato` + (data.pending ? ' · localizando os demais…' : '');
+      if (!data.pending) return;
+      if (data.error) { errors += 1; if (errors > 8) return; await new Promise(res => setTimeout(res, 10000)); } else errors = 0;
+    }
   }
   let streetGroup = null;
   async function drawStreets(ticket) {
@@ -377,7 +430,7 @@
   }
   $('cm-apply').addEventListener('click',fetchData);
   ['cm-city','cm-from','cm-to'].forEach(id => $(id).addEventListener('change', fetchData));
-  if ($('cm-streets')) $('cm-streets').addEventListener('change', () => { state.revision += 1; drawStreets(state.revision); });
+  ['cm-streets','cm-addresses'].forEach(id => { if ($(id)) $(id).addEventListener('change', () => { if (state.data?.all) return; state.revision += 1; drawDetailLayers(state.revision); }); });
   $('cm-metric').addEventListener('change',()=>{if(state.data)drawAll();});
   $('cm-search').addEventListener('input',drawRanking);
   $('cm-export').addEventListener('click',exportRanking);

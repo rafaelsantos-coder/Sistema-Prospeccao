@@ -1,6 +1,6 @@
-"""Geocodificação de bairros pelo Nominatim (OpenStreetMap).
+"""Geocodificação de bairros, ruas e endereços pelo Nominatim (OpenStreetMap).
 
-Só nomes de bairro/cidade saem do sistema, nunca dado pessoal. Respeita a política
+Só bairro, cidade, rua e número saem do sistema, nunca nome, CPF ou telefone. Respeita a política
 do serviço público: identificação do app, no máximo 1 consulta por segundo e
 resultado guardado no banco (ver ``CreditMapGeocode``).
 """
@@ -48,6 +48,12 @@ def _throttle() -> None:
 
 def search(query: str) -> tuple[float, float, str] | None:
     """Primeiro resultado no Brasil, ou None se o Nominatim não achar."""
+    found = search_detail(query)
+    return (found[0], found[1], found[2]) if found else None
+
+
+def search_detail(query: str) -> tuple[float, float, str, str] | None:
+    """Como ``search``, mais a classe do resultado (``highway`` = achou só a rua)."""
     _throttle()
     try:
         with httpx.Client(timeout=15.0, headers={"User-Agent": user_agent(), "Accept-Language": "pt-BR"}) as client:
@@ -64,7 +70,8 @@ def search(query: str) -> tuple[float, float, str] | None:
     try:
         rows: list[dict[str, Any]] = response.json()
         first = rows[0]
-        return float(first["lat"]), float(first["lon"]), str(first.get("display_name") or "")
+        return (float(first["lat"]), float(first["lon"]), str(first.get("display_name") or ""),
+                str(first.get("category") or first.get("class") or ""))
     except (ValueError, KeyError, IndexError, TypeError):
         return None
 
@@ -101,3 +108,18 @@ def street_point(
         if distance_km(point, center) <= MAX_DISTANCE_KM:
             return point
     return None
+
+
+def address_point(
+    street: str, number: str, neighborhood: str, city: str, cep: str, center: tuple[float, float],
+) -> tuple[float, float, bool] | None:
+    """Posição do endereço (rua + número). O terceiro valor diz se achou o número;
+    quando o mapa só conhece a rua, devolve o meio dela com ``False``."""
+    if number:
+        found = search_detail(f"{street}, {number}, {city}, Rio Grande do Sul, Brasil")
+        if found:
+            point = (found[0], found[1])
+            if distance_km(point, center) <= MAX_DISTANCE_KM:
+                return point[0], point[1], found[3] not in ("highway", "boundary", "")
+    fallback = street_point(street, neighborhood, city, cep, center)
+    return (fallback[0], fallback[1], False) if fallback else None

@@ -1,7 +1,8 @@
 """Painel interno de inteligência territorial do crédito Sulnet.
 
-Não armazena registros pessoais de consultas, apenas somatórios por
-cidade/bairro/mês/resultado/assinatura. Autorização usa a sessão do Prospecta.
+Guarda somatórios por cidade/bairro/rua/mês/resultado/assinatura e, dos clientes
+aprovados, o endereço (rua e número) sem nome nem CPF. Autorização usa a sessão
+do Prospecta.
 """
 from __future__ import annotations
 
@@ -15,11 +16,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CreditMapAggregate, CreditMapGeocode, CreditMapStreetAggregate
+from app.models import CreditMapAddress, CreditMapAggregate, CreditMapGeocode, CreditMapStreetAggregate
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services import geocoding
-from app.services.credit_map import aggregate_csv_full, city_name, summarize, summarize_streets
+from app.services.credit_map import (
+    address_key, aggregate_csv_addresses, city_name, summarize, summarize_addresses, summarize_streets,
+)
 from app.timeutils import utcnow
 from app.web import render
 
@@ -219,6 +222,86 @@ def map_streets(request: Request, city: str = 'SANTO ÂNGELO',
             'total': len(rows), 'error': error}
 
 
+ADDRESS_BATCH = 4
+MAX_ADDRESSES = 2000
+
+
+@router.get('/api/reports/credit-map/addresses')
+def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
+                  date_from: str = '2026-08', date_to: str = '2026-11',
+                  db: Session = Depends(get_db)):
+    """Endereços (rua e número) dos clientes aprovados: com contrato assinado ou ainda sem contrato.
+
+    Não devolve nome, CPF nem telefone. A posição fica em cache no banco.
+    """
+    allowed(request, db)
+    if not city or len(city) > 120:
+        raise HTTPException(status_code=400, detail='Cidade inválida.')
+    entries = list(db.scalars(select(CreditMapAddress).where(
+        CreditMapAddress.city == city_name(city),
+        CreditMapAddress.month >= date_from,
+        CreditMapAddress.month <= date_to,
+    )))
+    rows = summarize_addresses([
+        {'city': e.city, 'neighborhood': e.neighborhood, 'street': e.street, 'number': e.number,
+         'cep': e.cep, 'month': e.month, 'signed': e.signed, 'count': e.count}
+        for e in entries
+    ], city=city, start_month=date_from, end_month=date_to)[:MAX_ADDRESSES]
+    cached = {g.neighborhood: g for g in db.scalars(
+        select(CreditMapGeocode).where(CreditMapGeocode.city == city_name(city)))}
+    base = cached.get('')
+    retry_before = utcnow().timestamp() - NOT_FOUND_RETRY_DAYS * 86400
+
+    def usable(item: CreditMapGeocode | None) -> bool:
+        return item is not None and (item.status in ('FOUND', 'STREET') or item.checked_at.timestamp() > retry_before)
+
+    error = ''
+    if base is not None and base.lat is not None:
+        todo: list[dict] = []
+        for row in rows:
+            if not usable(cached.get(row['key'])) and row['key'] not in {t['key'] for t in todo}:
+                todo.append(row)
+        for row in todo[:ADDRESS_BATCH]:
+            street_cache = cached.get(f"RUA|{row['street']}"[:180])
+            try:
+                if not row['number'] and street_cache is not None and street_cache.status == 'FOUND' \
+                        and street_cache.lat is not None:
+                    point = (street_cache.lat, street_cache.lng, False)  # sem número: usa a rua já localizada
+                else:
+                    point = geocoding.address_point(
+                        row['street'], row['number'], row['neighborhood'], city, row['cep'], (base.lat, base.lng))
+            except geocoding.GeocodingError as exc:
+                LOG.warning('credit_map_address_geocode_failed reason=%s', str(exc)[:160])
+                error = 'Serviço de endereços indisponível agora.'
+                break
+            record = cached.get(row['key']) or CreditMapGeocode(city=city_name(city), neighborhood=row['key'])
+            record.lat, record.lng = ((point[0], point[1]) if point else (None, None))
+            record.status = ('FOUND' if point[2] else 'STREET') if point else 'NOT_FOUND'
+            record.checked_at = utcnow()
+            db.add(record)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+            cached[row['key']] = record
+    addresses = []
+    pending = 0
+    for row in rows:
+        item = cached.get(row['key'])
+        if item is not None and item.status in ('FOUND', 'STREET') and item.lat is not None:
+            addresses.append({
+                'street': row['street'], 'number': row['number'], 'neighborhood': row['neighborhood'],
+                'signed': row['signed'], 'count': row['count'],
+                'lat': item.lat, 'lng': item.lng, 'exact': item.status == 'FOUND'})
+        elif not usable(item):
+            pending += 1
+    return {'addresses': addresses, 'pending': pending if base is not None and base.lat is not None else 0,
+            'total': len(rows),
+            'signed': sum(r['count'] for r in rows if r['signed']),
+            'unsigned': sum(r['count'] for r in rows if not r['signed']),
+            'error': error}
+
+
 @router.get('/api/reports/credit-map/cities')
 def map_cities(request: Request, db: Session = Depends(get_db)):
     allowed(request, db)
@@ -236,24 +319,32 @@ async def import_file(request: Request, file: UploadFile = File(...), db: Sessio
     if len(raw) > MAX_BYTES:
         raise HTTPException(status_code=413, detail='CSV excede 15 MB.')
     try:
-        aggregates, street_rows, stats = aggregate_csv_full(raw)
+        aggregates, street_rows, address_rows, stats = aggregate_csv_addresses(raw)
     except (ValueError, UnicodeError, csv.Error) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not aggregates:
         raise HTTPException(status_code=422, detail='Nenhum CPF válido encontrado na exportação.')
 
-    # Substituição atômica. Nem o CSV nem campos pessoais entram no banco.
+    # Substituição atômica. O CSV, o CPF e o nome não entram no banco; dos aprovados fica rua e número.
     db.execute(delete(CreditMapAggregate))
     db.execute(delete(CreditMapStreetAggregate))
+    db.execute(delete(CreditMapAddress))
     db.execute(delete(CreditMapGeocode).where(CreditMapGeocode.neighborhood.like('RUA|%')))
+    # Posição de endereço é reaproveitada entre importações; a de quem saiu da base é apagada.
+    kept = {(row['city'], address_key(row['street'], row['number'])) for row in address_rows}
+    for item in db.scalars(select(CreditMapGeocode).where(CreditMapGeocode.neighborhood.like('END|%'))):
+        if (item.city, item.neighborhood) not in kept:
+            db.delete(item)
     db.add_all(CreditMapAggregate(**row) for row in aggregates)
     db.add_all(CreditMapStreetAggregate(**row) for row in street_rows)
+    db.add_all(CreditMapAddress(**row) for row in address_rows)
     write_audit(db, user=user, action='CREDIT_MAP_IMPORTED',
                 entity_type='report', entity_id='credit_map',
                 payload={'cpf_validos_formato': stats.get('cpf_validos_formato', 0),
                          'agrupamentos': len(aggregates),
                          'sem_data': stats.get('sem_data', 0),
                          'protocolos_duplicados': stats.get('protocolos_duplicados', 0),
-                         'com_rua': stats.get('com_rua', 0)})
+                         'com_rua': stats.get('com_rua', 0),
+                         'enderecos_aprovados': stats.get('enderecos_aprovados', 0)})
     db.commit()
     return {'ok': True, 'stats': stats, 'aggregates': len(aggregates)}
