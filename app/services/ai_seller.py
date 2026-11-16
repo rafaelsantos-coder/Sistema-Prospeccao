@@ -4329,6 +4329,10 @@ def _seller_followup_prompt(
             "necessários para a contratação digital."
         )
 
+    if state.step == SALE_ACCEPTANCE_STEP:
+        # Antes do texto do playbook: o lembrete é curto, não o resumo inteiro de novo.
+        return _confirm_sale_followup_text(state, collected, followup_step)
+
     plan = state.plan_label or "plano combinado"
     prefix = (
         "Para continuarmos de onde paramos, "
@@ -4402,6 +4406,24 @@ def _seller_followup_prompt(
             return f"Seu contrato continua aguardando assinatura. Quando puder, assine por aqui: {state.sign_url}"
         return "Seu contrato continua aguardando assinatura. Assim que o link estiver disponível, sigo por aqui."
     return prefix + prompts.get(state.step, _prompt_for_step(state, collected))
+
+
+def _confirm_sale_followup_text(state: AIClosingState, collected: dict[str, Any], followup_step: int) -> str:
+    """Lembrete curto para quem recebeu o resumo e não confirmou (conversa Ricardo, 15/11)."""
+    first = str(collected.get("name") or "").strip().split(" ")[0].title()
+    hello = f"{first}, " if first else ""
+    plan = _friendly_plan_label(state.plan_label)
+    if followup_step <= 1:
+        return (
+            f"{hello}ficou alguma dúvida sobre o resumo da sua contratação do {plan}? "
+            "Se estiver tudo certo, é só tocar em Confirmo que eu já gero o contrato para você assinar pelo celular."
+        )
+    if followup_step == 2:
+        return f"{hello}sua contratação do {plan} está pronta, só falta a sua confirmação. Posso gerar o contrato agora?"
+    return (
+        f"{hello}sigo com a sua contratação do {plan} separada aqui. Toque em Confirmo para eu gerar o contrato, "
+        "ou em Quero ajustar se quiser mudar alguma coisa."
+    )
 
 
 def _schedule_seller_followup(

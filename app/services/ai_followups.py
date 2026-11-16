@@ -5,6 +5,7 @@ import logging
 import re
 import unicodedata
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from difflib import SequenceMatcher
 
 from pydantic import BaseModel, Field
@@ -66,6 +67,43 @@ def business_window_start(now: datetime) -> datetime:
     """
     aware = now.replace(tzinfo=UTC) if now.tzinfo is None else now
     return utc_naive(next_business_time(aware, settings.default_timezone))
+
+
+# Fechamento (Vendedor IA esperando o cliente): o cliente já disse que quer
+# contratar, então a cadência é mais curta e vale qualquer dia das 8h às 21h.
+# Conversa Ricardo (15/11): o resumo para confirmar saiu domingo 18h43 e o
+# primeiro lembrete só iria segunda 9h; com a regra geral seriam 2 no máximo.
+CLOSING_CADENCE = (timedelta(minutes=20), timedelta(hours=2), timedelta(hours=20))
+CLOSING_WINDOW_START = 8
+CLOSING_WINDOW_END = 21
+MAX_UNANSWERED_CLOSING_FOLLOWUPS = 3
+CLOSING_FOLLOWUP_GAP = timedelta(minutes=20)
+
+
+def closing_window_start(now: datetime) -> datetime:
+    """Primeiro instante (UTC sem fuso) dentro da janela do fechamento, 8h às 21h."""
+    aware = now.replace(tzinfo=UTC) if now.tzinfo is None else now
+    local = aware.astimezone(ZoneInfo(settings.default_timezone))
+    if local.hour < CLOSING_WINDOW_START:
+        local = local.replace(hour=CLOSING_WINDOW_START, minute=0, second=0, microsecond=0)
+    elif local.hour >= CLOSING_WINDOW_END:
+        local = (local + timedelta(days=1)).replace(
+            hour=CLOSING_WINDOW_START, minute=0, second=0, microsecond=0
+        )
+    return utc_naive(local.astimezone(UTC))
+
+
+def closing_awaits_customer(db: Session, conversation_id: int) -> bool:
+    """O Vendedor IA está numa etapa que depende de resposta do cliente."""
+    from app.services.ai_seller import SELLER_CUSTOMER_INPUT_STEPS  # noqa: PLC0415
+
+    state = db.scalar(
+        select(AIConversationState.state).where(AIConversationState.conversation_id == conversation_id)
+    )
+    if state != "CLOSING":
+        return False
+    step = db.scalar(select(AIClosingState.step).where(AIClosingState.conversation_id == conversation_id))
+    return bool(step) and step in SELLER_CUSTOMER_INPUT_STEPS and step not in {"ESCALATED", "COMPLETED"}
 
 
 def _limit_one_unanswered_per_day(
@@ -159,13 +197,17 @@ def schedule_followup(
 
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
     delay, theme = followup_spec(step)
-    if step <= 1 and customer_engaged(db, conversation_id):
-        delay = min(delay, ENGAGED_FOLLOWUP_DELAY)
     clean_pending = re.sub(r"\s+", " ", str(pending_action or "")).strip()
     if clean_pending:
         theme = f"{theme}. Pendência atual: {clean_pending[:500]}"
-    due = business_window_start(utcnow() + delay)
-    due = _limit_one_unanswered_per_day(db, conversation_id, due)
+    if closing_awaits_customer(db, conversation_id):
+        delay = CLOSING_CADENCE[min(max(1, step), len(CLOSING_CADENCE)) - 1]
+        due = closing_window_start(utcnow() + delay)
+    else:
+        if step <= 1 and customer_engaged(db, conversation_id):
+            delay = min(delay, ENGAGED_FOLLOWUP_DELAY)
+        due = business_window_start(utcnow() + delay)
+        due = _limit_one_unanswered_per_day(db, conversation_id, due)
     job = AIFollowupJob(
         agent_id=agent_id,
         queue_id=queue_id,
@@ -480,14 +522,16 @@ def _customer_declined(db: Session, conversation_id: int) -> bool:
     return any(cue in offer_text for cue in _OFFER_QUESTION_CUES)
 
 
-def _followup_spacing_hold(db: Session, conversation_id: int, now: datetime) -> datetime | None:
+def _followup_spacing_hold(
+    db: Session, conversation_id: int, now: datetime, *, closing: bool = False
+) -> datetime | None:
     """Nada de rajada: o follow-up só sai 2 h depois da última mensagem nossa."""
     from app.services.ai_sdr import human_stepped_in  # noqa: PLC0415
 
     conversation = db.get(Conversation, conversation_id)
     if conversation is not None and human_stepped_in(db, conversation):
         # Uma pessoa está negociando: a IA adia o follow-up em vez de atropelar.
-        return business_window_start(now + timedelta(minutes=30))
+        return (closing_window_start if closing else business_window_start)(now + timedelta(minutes=30))
     last_outbound_at = db.scalar(
         select(Message.created_at)
         .where(
@@ -498,10 +542,13 @@ def _followup_spacing_hold(db: Session, conversation_id: int, now: datetime) -> 
         .limit(1)
     )
     last = utc_naive(last_outbound_at)
-    gap = ENGAGED_FOLLOWUP_DELAY if customer_engaged(db, conversation_id, now) else FOLLOWUP_MIN_GAP
+    if closing:
+        gap = CLOSING_FOLLOWUP_GAP
+    else:
+        gap = ENGAGED_FOLLOWUP_DELAY if customer_engaged(db, conversation_id, now) else FOLLOWUP_MIN_GAP
     if not last or now - last >= gap:
         return None
-    return business_window_start(last + gap)
+    return (closing_window_start if closing else business_window_start)(last + gap)
 
 
 def _queue_ai_paused(db: Session, conversation_id: int) -> bool:
@@ -572,7 +619,12 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
     if last_inbound_at:
         sent_stmt = sent_stmt.where(AIFollowupJob.sent_at > utc_naive(last_inbound_at))
     unanswered_sent = len(list(db.scalars(sent_stmt)))
-    if unanswered_sent >= MAX_UNANSWERED_FOLLOWUPS:
+    limit = (
+        MAX_UNANSWERED_CLOSING_FOLLOWUPS
+        if closing_awaits_customer(db, conversation.id)
+        else MAX_UNANSWERED_FOLLOWUPS
+    )
+    if unanswered_sent >= limit:
         return False, "LIMITE_SEM_RESPOSTA"
     latest_inbound = _latest_inbound_id(db, conversation.id)
     if (
@@ -728,7 +780,8 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
     # houve mensagens às 00:12 e 23:40. Fora do horário, o job volta para a fila
     # no início da próxima janela, sem contar como tentativa.
     now = utcnow()
-    window_start = business_window_start(now)
+    closing = closing_awaits_customer(db, job.conversation_id)
+    window_start = (closing_window_start if closing else business_window_start)(now)
     if window_start > now:
         job.status = "PENDENTE"
         job.due_at = window_start
@@ -736,7 +789,7 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         job.attempts = max(0, int(job.attempts or 0) - 1)
         return "outside_business_hours"
 
-    hold_until = _followup_spacing_hold(db, job.conversation_id, now)
+    hold_until = _followup_spacing_hold(db, job.conversation_id, now, closing=closing)
     if hold_until and hold_until > now:
         job.status = "PENDENTE"
         job.due_at = hold_until
