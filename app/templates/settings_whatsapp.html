@@ -82,7 +82,7 @@
             </td>
             <td><span class="table-subline">…{{ instance.instance_id[-8:] }}</span></td>
             <td>{{ 'Railway / atual' if instance.source_type == 'ENV' else 'Cadastro interno' }}</td>
-            <td><span class="connection-status {% if zi.get('connected') %}on{% endif %}">{{ 'Conectada' if zi.get('connected') else ('Inativa' if not instance.active else 'Desconectada') }}</span></td>
+            <td><span class="connection-status {% if zi.get('connected') is sameas true %}on{% endif %}">{% if not instance.active %}Inativa{% elif zi.get('connected') is sameas true %}Conectada{% elif zi.get('connected') is sameas false %}Desconectada{% else %}Não confirmado{% endif %}</span>{% if zi.get('status_source') == 'webhook' %}<span class="table-subline">Último evento Z-API (até 15 min)</span>{% elif zi.get('connected') is none %}<span class="table-subline">Consulta de status indisponível</span>{% endif %}</td>
             <td>
               {% if instance.active %}
               <form action="/settings/zapi/instances/{{ instance.id }}/configure-webhook" method="post">

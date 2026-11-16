@@ -38,6 +38,7 @@ from app.services.zapi import ZApiError, ZApiService
 from app.services.zapi_instances import (
     create_zapi_instance,
     default_queue_for_instance,
+    format_device_phone,
     get_zapi_instance,
     instance_by_webhook_key,
     instance_webhook_url,
@@ -201,6 +202,43 @@ def _process_zapi_payload(
     if payload.get("isGroup") or payload.get("isNewsletter"):
         LOG.info("zapi_callback ignored=non_direct instance_db=%s queue=%s", zapi_instance_id, queue_id)
         return {"ok": True, "ignored": "non_direct"}
+
+    # Eventos de conexao sao notificacoes do aparelho, nao mensagens.
+    # Atualizar o numero e registrar o estado evita perder a confirmacao
+    # quando o endpoint /status da Z-API estiver temporariamente indisponivel.
+    if raw_type in {"ConnectedCallback", "DisconnectedCallback"}:
+        connected = raw_type == "ConnectedCallback"
+        # Tipo de callback determina o evento; campos opcionais nao sao
+        # exigidos, mas valores explicitamente contraditorios sao rejeitados.
+        if connected and payload.get("connected") is False:
+            return {"ok": True, "ignored": "invalid_connection_event"}
+        if not connected and payload.get("disconnected") is False:
+            return {"ok": True, "ignored": "invalid_connection_event"}
+        if zapi_instance_id is None:
+            return {"ok": True, "ignored": "unbound_connection_event"}
+        instance = db.get(ZApiInstance, zapi_instance_id)
+        if instance is None:
+            return {"ok": True, "ignored": "unknown_instance"}
+        if connected:
+            digits = "".join(ch for ch in str(payload.get("phone") or "") if ch.isdigit())
+            if digits.startswith("55") and len(digits) in {12, 13}:
+                instance.phone_label = format_device_phone(digits)
+        write_audit(
+            db,
+            user=None,
+            action="ZAPI_CONNECTION_EVENT",
+            entity_type="zapi_instance",
+            entity_id=instance.id,
+            payload={"connected": connected},
+        )
+        db.commit()
+        LOG.info(
+            "zapi_callback connection_event instance_db=%s queue=%s connected=%s",
+            zapi_instance_id,
+            queue_id,
+            connected,
+        )
+        return {"ok": True, "connection_updated": True, "connected": connected}
 
     if payload.get("type") == "MessageStatusCallback" or payload.get("ids"):
         updated = update_message_statuses(db, payload)
