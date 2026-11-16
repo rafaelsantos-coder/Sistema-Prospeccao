@@ -18,6 +18,9 @@
     total: {label: 'Consultas', unit:'', short:'consultas'},
   };
   const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0};
+  // L is Leaflet normally; on Google Maps we supply only the small surface used by this panel.
+  let L = window.L;
+  let activeMapProvider = 'osm';
   const metric = () => $('cm-metric').value;
   const metricValue = (row) => row[metric()] == null ? 0 : row[metric()];
   const metricDisplay = (row) => ['approval_rate','signed_rate'].includes(metric()) ? pct(row[metric()]) : fmt(row[metric()]);
@@ -189,16 +192,159 @@
       await Promise.all([loadAsset('link', LEAFLET.fallback.css), loadAsset('script', LEAFLET.fallback.js)]);
     }
   }
+  function loadGoogleMaps() {
+    const key = root.dataset.googleMapsKey;
+    if (!key) return Promise.reject(new Error('Chave de mapas não configurada.'));
+    if (window.google?.maps?.Map) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const callback = '__sulnetCreditMapInit';
+      let completed = false;
+      const finish = (error) => {
+        if (completed) return;
+        completed = true;
+        delete window[callback];
+        if (error) reject(error); else resolve();
+      };
+      window[callback] = () => finish();
+      const src = new URL('https://maps.googleapis.com/maps/api/js');
+      src.searchParams.set('key', key);
+      src.searchParams.set('v', 'weekly');
+      src.searchParams.set('loading', 'async');
+      src.searchParams.set('callback', callback);
+      const script = document.createElement('script');
+      script.src = src.toString();
+      script.async = true;
+      // CSP nonce: only the credit-map page permits Google scripts.
+      script.nonce = root.dataset.googleMapsNonce || '';
+      script.onerror = () => finish(new Error('Não foi possível carregar Google Maps.'));
+      document.head.appendChild(script);
+    });
+  }
+  function googleMapAdapter() {
+    const gm = window.google.maps;
+    const point = p => Array.isArray(p) ? {lat: Number(p[0]), lng: Number(p[1])} : p;
+    const initial = (container, config) => {
+      const map = new gm.Map(container, {
+        center: point(config.center), zoom: config.zoom, scrollwheel: false,
+        mapId: root.dataset.googleMapId || 'DEMO_MAP_ID',
+        fullscreenControl: false, mapTypeControl: true,
+      });
+      return {
+        native: map,
+        fitBounds(points, opts = {}) {
+          const bounds = new gm.LatLngBounds();
+          points.forEach(p => bounds.extend(point(p)));
+          map.fitBounds(bounds, opts.padding || 40);
+          if (opts.maxZoom != null) gm.event.addListenerOnce(map, 'idle', () => {
+            if (map.getZoom() > opts.maxZoom) map.setZoom(opts.maxZoom);
+          });
+        },
+        setView(center, zoom) { map.setCenter(point(center)); map.setZoom(zoom); },
+        getZoom() { return map.getZoom() || 12; },
+        scrollWheelZoom: {
+          enable() { map.setOptions({scrollwheel: true}); },
+          disable() { map.setOptions({scrollwheel: false}); },
+        },
+        invalidateSize() { gm.event.trigger(map, 'resize'); },
+      };
+    };
+    const group = () => {
+      const items = [];
+      return {
+        native: null,
+        addTo(map) { this.native = map.native; return this; },
+        add(item) { items.push(item); item.attach(this.native); },
+        clearLayers() { for (const item of items) item.detach(); items.length = 0; },
+      };
+    };
+    const popupFor = (coordinate) => {
+      const popup = new gm.InfoWindow();
+      return {
+        setLatLng(pos) { coordinate = point(pos); return this; },
+        setContent(content) { popup.setContent(content); return this; },
+        openOn(map) { popup.setPosition(coordinate); popup.open(map.native); return this; },
+      };
+    };
+    const markerOrCircle = (coordinates, options, type) => {
+      const position = point(coordinates);
+      let map = null, shape = null, popup = null;
+      const item = {
+        bindPopup(html) { popup = html; return this; },
+        attach(native) {
+          map = native;
+          if (type === 'marker') {
+            shape = new gm.Marker({position, map, icon: options.icon, clickable: true});
+          } else {
+            const isDot = type === 'circleMarker';
+            shape = new gm.Circle({
+              center: position, map, radius: isDot ? 30 : options.radius,
+              strokeColor: options.color || options.fillColor,
+              strokeWeight: options.weight ?? (options.stroke === false ? 0 : 1),
+              strokeOpacity: options.opacity ?? 1,
+              fillColor: options.fillColor,
+              fillOpacity: options.fillOpacity ?? 0.4,
+            });
+          }
+          if (popup) shape.addListener('click', () => {
+            const win = new gm.InfoWindow({content: popup, position});
+            win.open({map});
+          });
+        },
+        detach() { if(shape) shape.setMap(null); shape = null; map = null; },
+        addTo(layer) { layer.add(item); return item; },
+      };
+      return item;
+    };
+    return {
+      map: initial,
+      tileLayer() { return {addTo() { return this; }}; },
+      layerGroup: group,
+      circle: (coordinates, options) => markerOrCircle(coordinates, options, 'circle'),
+      circleMarker: (coordinates, options) => markerOrCircle(coordinates, options, 'circleMarker'),
+      divIcon(options) {
+        const signed = options.html.includes(GREEN);
+        return {
+          path: 'M 1.5 1.5 L 16.5 1.5 L 9 14.5 Z',
+          anchor: new gm.Point(9, 16), scaledSize: new gm.Size(18, 16),
+          fillColor: signed ? GREEN : YELLOW, fillOpacity: 1,
+          strokeColor: signed ? '#0b5c3c' : '#7a5a00', strokeWeight: 1.5,
+        };
+      },
+      marker: (coordinates, options) => markerOrCircle(coordinates, options, 'marker'),
+      popup: () => popupFor(null),
+    };
+  }
   async function loadMap() {
     if (state.mapLoading || state.mapReady) return;
     state.mapLoading = true;
     try {
-      await loadLeaflet();
-      state.map = L.map($('cm-map'), {center: [-28.30, -54.26], zoom: 12, scrollWheelZoom: false});
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 18,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
-      }).addTo(state.map);
+      if (root.dataset.mapProvider === 'google') {
+        try {
+          await loadGoogleMaps();
+          L = googleMapAdapter();
+          activeMapProvider = 'google';
+        } catch (error) {
+          // A bad demo key or an API restriction must never hide commercial indicators.
+          showMessage('Google Maps indisponível. Mapa gratuito ativado: ' + error.message);
+          await loadLeaflet();
+          L = window.L;
+          activeMapProvider = 'osm';
+        }
+      } else {
+        await loadLeaflet();
+        L = window.L;
+        activeMapProvider = 'osm';
+      }
+      if (activeMapProvider === 'google') {
+        state.map = L.map($('cm-map'), {center: [-28.30, -54.26], zoom: 12});
+      } else {
+        state.map = L.map($('cm-map'), {center: [-28.30, -54.26], zoom: 12, scrollWheelZoom: false});
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 18,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+        }).addTo(state.map);
+      }
+      $('cm-map-provider-label').textContent = activeMapProvider === 'google' ? 'Google Maps' : 'OpenStreetMap';
       state.layerGroup = L.layerGroup().addTo(state.map);
       state.mapReady = true;
       $('cm-map-empty').hidden = true;

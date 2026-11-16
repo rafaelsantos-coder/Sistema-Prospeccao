@@ -16,6 +16,7 @@ from sqlalchemy import delete, distinct, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models import CreditMapAddress, CreditMapAggregate, CreditMapGeocode, CreditMapStreetAggregate
 from app.security import get_current_user, require_roles, validate_csrf
@@ -53,6 +54,9 @@ def map_page(request: Request, db: Session = Depends(get_db)):
         request, 'reports/credit_map.html', user=user, active_nav='credit-map',
         page_title='Mapa de calor de crédito',
         can_import=user.role in WRITE_ROLES,
+        google_maps_enabled=(settings.credit_map_provider == 'google' and bool(settings.google_maps_browser_key)),
+        google_maps_key=(settings.google_maps_browser_key if settings.credit_map_provider == 'google' else ''),
+        google_map_id=settings.google_maps_map_id,
     )
 
 
