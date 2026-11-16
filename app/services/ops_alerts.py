@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import AIClosingState, AuditLog, Contact, Conversation, Message, ZApiInstance
+from app.models import AIClosingState, AIConversationState, AIJob, AuditLog, Contact, Conversation, Message, ZApiInstance
 from app.services.audit import write_audit
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import list_zapi_instances, service_for_instance
@@ -237,14 +237,17 @@ def stuck_sale_text(*, name: str, phone: str, plan: str, step: str, error: str, 
     reason = _LONG_DIGITS.sub("<número>", " ".join((error or "").split()))[:240]
     reason = reason or "A venda está aguardando o CRM e não avançou."
     opportunity = f" · oportunidade {opportunity_id}" if opportunity_id else ""
+    link = f"\nAbrir conversa: {settings.app_public_url.rstrip('/')}/conversations/{conversation_id}" if settings.app_public_url else ""
     return (
-        "⚠️ Venda parada na IA. Um vendedor precisa chamar o cliente.\n"
+        "⚠️ Venda parada na IA — ERRO NO FECHAMENTO — AÇÃO NECESSÁRIA\n"
+        "A IA não conseguiu concluir a venda. Verifique a integração/CRM e assuma este caso.\n"
         f"Cliente: {name or 'não informado'}\n"
         f"Telefone: {phone or 'não informado'}\n"
         f"Plano: {plan or 'não informado'}\n"
         f"Etapa: {step}\n"
         f"Erro: {reason}\n"
         f"Conversa {conversation_id}{opportunity}"
+        f"{link}"
     )
 
 
@@ -295,7 +298,9 @@ def check_stuck_sales(db: Session) -> int:
         # aviso novo a cada etapa que a venda avança (venda 27, 15/11).
         reason = hashlib.sha256((error or state.step).encode()).hexdigest()[:12]
         # Mesmo cliente com o mesmo erro: avisa uma vez só (pedido do gestor, 15/11).
-        if send_ops_alert(db, key=f"stuck-sale:{state.id}:{reason}", text=text):
+        # Erro persistente não pode ficar esquecido para sempre: reavisar no
+        # máximo uma vez por dia, ainda que o mesmo erro continue no CRM.
+        if send_ops_alert(db, key=f"stuck-sale:{state.id}:{reason}:{now:%Y%m%d}", text=text):
             sent += 1
     return sent
 
@@ -362,7 +367,7 @@ def check_silent_closings(db: Session) -> int:
 
 
 UNANSWERED_AFTER = timedelta(minutes=10)
-UNANSWERED_WINDOW = timedelta(hours=6)
+UNANSWERED_WINDOW = timedelta(hours=24)
 _CLOSED_STATUSES = {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}
 _QUIET_AI_STATES = {"OPT_OUT", "COMPLETED"}
 
@@ -371,17 +376,16 @@ def unanswered_customers(db: Session) -> list[dict]:
     """Conversas abertas em que a última mensagem é do cliente há mais de 10 minutos.
 
     Em 09/11 a fila 1 ficou sem vínculo de IA e dois clientes esperaram sem
-    ninguém saber. Fila em modo somente humano fica de fora.
+    ninguém saber. Inclui filas sem IA e vendedor offline.
     """
-    from app.models import AIConversationState, AIQueueBinding, Conversation  # noqa: PLC0415
-    from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
+    from app.models import AIConversationState, Conversation  # noqa: PLC0415
+    from app.services.queue_routing import queue_for_conversation, usable_ai_binding, human_online_in_queue  # noqa: PLC0415
 
     now = utcnow()
     latest_inbound = db.execute(
         select(Message.conversation_id, Message.id)
         .where(
             Message.direction == "INBOUND",
-            Message.message_type == "TEXT",
             Message.created_at >= now - UNANSWERED_WINDOW,
             Message.created_at <= now - UNANSWERED_AFTER,
         )
@@ -416,13 +420,9 @@ def unanswered_customers(db: Session) -> list[dict]:
         if ai_state in _QUIET_AI_STATES:
             continue
         queue = queue_for_conversation(db, conversation_id)
-        binding = (
-            db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id))
-            if queue
-            else None
-        )
-        if binding and binding.active and binding.handling_mode == "HUMAN":
-            continue
+        binding = usable_ai_binding(db, queue.id) if queue else None
+        # Filas somente humanas também precisam aparecer no diagnóstico:
+        # são justamente as que ficaram sem atendente online.
         inbound_message = db.get(Message, message_id)
         received_at = inbound_message.created_at if inbound_message else None
         if received_at is not None:
@@ -438,6 +438,8 @@ def unanswered_customers(db: Session) -> list[dict]:
                 "ai_bound": bool(binding and binding.active),
                 "age_minutes": age_minutes,
                 "assigned_user_id": conversation.assigned_user_id,
+                "human_online": human_online_in_queue(db, queue.id) if queue else False,
+                "message_type": inbound_message.message_type if inbound_message else "",
             }
         )
     return found
@@ -469,10 +471,16 @@ def check_unanswered_customers(db: Session) -> int:
     )
     severe = any(item.get("age_minutes", 0) >= 30 for item in waiting)
     text = (
-        f"⚠️ {len(waiting)} cliente(s) sem resposta há mais de 10 minutos. "
+        f"🔔 MENSAGENS NÃO LIDAS — {len(waiting)} cliente(s) sem resposta "
+        "há mais de 10 minutos. "
         f"{'URGENTE: espera de 30min ou mais. ' if severe else ''}"
         f"Prioridades: {cases}."
     )
+    offline_count = sum(1 for item in waiting if not item.get("human_online", False))
+    if offline_count:
+        text += f" Sem vendedor online na fila: {offline_count}."
+    if settings.app_public_url:
+        text += f" Acessar pendências: {settings.app_public_url.rstrip('/')}/conversations?view=unread."
     if unbound:
         text += " Fila sem IA vinculada: " + "; ".join(unbound) + "."
     # Agregação a cada 30 minutos quando há atraso grave; a cada hora nos
@@ -482,6 +490,62 @@ def check_unanswered_customers(db: Session) -> int:
     return 1 if send_ops_alert(
         db, key=f"unanswered:{'urgent' if severe else 'normal'}:{stamp}", text=text,
     ) else 0
+
+
+def check_failed_ai_jobs(db: Session) -> int:
+    """Alerta agregado de erros definitivos da IA ainda sem resposta ao cliente.
+
+    Casos corrigidos ou fechados não geram alerta, e IDs/etapas substituem
+    dados sensíveis. Evita notificar o cliente com detalhes técnicos.
+    """
+    since = utcnow() - timedelta(hours=24)
+    jobs = list(db.scalars(
+        select(AIJob).where(
+            AIJob.status == "FALHOU",
+            AIJob.updated_at >= since,
+        ).order_by(AIJob.id.desc()).limit(120)
+    ))
+    cases: list[str] = []
+    seen: set[int] = set()
+    for job in jobs:
+        if job.conversation_id in seen:
+            continue
+        seen.add(job.conversation_id)
+        conv = db.get(Conversation, job.conversation_id)
+        if not conv or conv.status in _CLOSED_STATUSES:
+            continue
+        state = db.scalar(
+            select(AIConversationState.state).where(
+                AIConversationState.conversation_id == job.conversation_id
+            )
+        )
+        if state in _QUIET_AI_STATES:
+            continue
+        response = db.scalar(
+            select(Message.id).where(
+                Message.conversation_id == job.conversation_id,
+                Message.direction == "OUTBOUND",
+                Message.id > job.message_id,
+            ).limit(1)
+        )
+        if response:
+            continue
+        reason = _LONG_DIGITS.sub("<número>", " ".join((job.error or "falha no processamento").split()))[:110]
+        cases.append(f"#{job.conversation_id} (fila {job.queue_id}; {reason})")
+        if len(cases) >= 10:
+            break
+    if not cases:
+        return 0
+    digest = hashlib.sha256("|".join(cases).encode("utf-8")).hexdigest()[:12]
+    text = (
+        "⚠️ ERRO DE ATENDIMENTO IA — AÇÃO DO GESTOR\n"
+        "A IA não conseguiu responder às conversas abaixo; revisar o motivo e continuar o atendimento.\n"
+        + "\n".join(cases)
+    )
+    if settings.app_public_url:
+        text += f"\nCaixa de entrada: {settings.app_public_url.rstrip('/')}/conversations?view=unread"
+    key = f"ai-job-errors:{utcnow():%Y%m%d}:{digest}"
+    return 1 if send_ops_alert(db, key=key, text=text) else 0
 
 
 def _in_period(value, start, end) -> bool:
@@ -610,7 +674,7 @@ def check_daily_funnel(db: Session) -> int:
 
 def run_ops_alert_checks(db: Session) -> int:
     sent = check_instances(db) + check_sales_and_escalations(db)
-    for check in (check_stuck_sales, check_silent_closings, check_unanswered_customers, check_daily_funnel):
+    for check in (check_stuck_sales, check_failed_ai_jobs, check_silent_closings, check_unanswered_customers, check_daily_funnel):
         try:
             sent += check(db)
         except Exception:  # noqa: BLE001 - um aviso com erro não pode parar os outros
