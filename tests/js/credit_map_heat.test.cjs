@@ -79,3 +79,83 @@ test('ruas nao podem exceder o total do bairro', () => {
   assert.equal(heat.makePoints([hoods[0]], positions, tooLarge, 'approved').reduce((a,b)=>a+b.count,0),100);
   assert.equal(heat.makePoints([hoods[0]], positions, tooLarge, 'rejected').reduce((a,b)=>a+b.count,0),25);
 });
+
+
+function fakeCanvasHarness() {
+  let arcs = 0, removed = false;
+  const queue = [];
+  const ctx = {
+    setTransform() {}, clearRect() {}, beginPath() {},
+    createRadialGradient() {return {addColorStop() {}};},
+    arc() {arcs++;}, fill() {},
+  };
+  const canvas = {
+    width: 0, height: 0, hidden: false,
+    setAttribute() {}, getContext() {return ctx;},
+    remove() {removed = true;},
+  };
+  const container = {clientWidth: 800, clientHeight: 440, appendChild() {}};
+  sandbox.window.devicePixelRatio = 1;
+  sandbox.window.requestAnimationFrame = cb => {queue.push(cb);return queue.length;};
+  sandbox.window.cancelAnimationFrame = () => {};
+  function flush() {for (const cb of queue.splice(0)) cb();}
+  return {canvas,container,flush,get arcs() {return arcs;},get removed(){return removed;}};
+}
+
+test('camada Leaflet redesenha o calor e limpa corretamente quando desativada', () => {
+  const x = fakeCanvasHarness();
+  const listeners = [];
+  sandbox.window.document = {createElement: () => x.canvas};
+  // O modulo usa document global do contexto, nao window.document.
+  sandbox.document = sandbox.window.document;
+  const code = fs.readFileSync(path.join(__dirname,'../../app/static/js/credit_map_heat.js'),'utf8');
+  const env = {window: sandbox.window, document: sandbox.document};
+  vm.runInNewContext(code, env);
+  const map = {
+    on(name, fn) {listeners.push(['on', name, fn]);},
+    off(name, fn) {listeners.push(['off', name, fn]);},
+    getZoom() {return 13;},
+    latLngToContainerPoint() {return {x:400,y:210};},
+  };
+  const layer = env.window.SulnetCreditHeat.attach(map, 'osm', x.container);
+  layer.set([{lat:-28.3,lng:-54.26,count:20,rate:90}], 'approved');
+  x.flush();
+  assert.equal(x.arcs, 1);
+  assert.ok(x.canvas.width > 0);
+  layer.clear();
+  x.flush();
+  assert.equal(x.canvas.hidden, true);
+  layer.destroy();
+  assert.equal(x.removed, true);
+  assert.ok(listeners.some(x=>x[0]==='off'));
+});
+
+test('camada Google Maps usa projeção do mapa e reage aos eventos do zoom', () => {
+  const x = fakeCanvasHarness();
+  const callbacks = new Map();
+  const api = {
+    maps: {
+      LatLng: class LatLng {constructor(lat,lng) {this.lat=lat;this.lng=lng;}},
+      event: {addListener(_map,name,fn) {callbacks.set(name,fn);return {remove(){callbacks.delete(name);}};}},
+    },
+  };
+  sandbox.window.google = api;
+  const env = {window:sandbox.window,document:{createElement:()=>x.canvas}};
+  const code = fs.readFileSync(path.join(__dirname,'../../app/static/js/credit_map_heat.js'),'utf8');
+  vm.runInNewContext(code, env);
+  const native = {
+    getZoom() {return 12;},
+    getCenter() {return {lat:-28.3,lng:-54.26};},
+    getProjection() {return {fromLatLngToPoint(p) {return {x:(p.lng||-54.26)/360+0.5,y:(p.lat||-28.3)/360+0.5};}};},
+  };
+  const layer = env.window.SulnetCreditHeat.attach({native}, 'google', x.container);
+  layer.set([{lat:-28.3,lng:-54.26,count:30,rate:25}], 'rejected');
+  x.flush();
+  assert.equal(x.arcs, 1);
+  assert.ok(callbacks.has('zoom_changed'));
+  callbacks.get('zoom_changed')();
+  x.flush();
+  assert.equal(x.arcs, 2);
+  layer.destroy();
+  assert.equal(callbacks.size,0);
+});
