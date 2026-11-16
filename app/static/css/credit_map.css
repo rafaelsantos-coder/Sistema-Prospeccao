@@ -11,3 +11,19 @@
 .cm-tri-key.cm-tri-yellow { border-top-color: #f5c518; }
 .cm-map-legend { flex-wrap: wrap; max-width: calc(100% - 24px); }
 .cm-address-footer { padding-top: 0; }
+
+/* Camadas de inteligencia territorial */
+.cm-heat-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:0 18px 14px}
+.cm-heat-modes{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:4px;background:#f3f6f4;border:1px solid #e7ece9;border-radius:11px}
+.cm-heat-modes button{border:0;background:transparent;color:#607171;font-size:11px;font-weight:800;padding:9px 12px;border-radius:8px;cursor:pointer;transition:background .15s,color .15s}
+.cm-heat-modes button:hover{background:#e9eeeb;color:#1e3030}
+.cm-heat-modes button[aria-pressed="true"]{color:white;background:#1b3034;box-shadow:0 2px 7px #1a2a2a23}
+.cm-heat-bairro{color:#839195;font-size:10px;font-weight:850;letter-spacing:.5px;display:flex;align-items:center;gap:9px}
+.cm-heat-bairro select{min-width:145px;max-width:230px;height:36px;border:1px solid #e5e9e8;background:#fcfdfb;border-radius:8px;padding:0 8px;font:600 11px Inter,system-ui,sans-serif;color:#344649}
+.cm-map-head-right{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}
+.cm-heat-canvas{position:absolute!important;inset:0;z-index:450;pointer-events:none;opacity:.92;mix-blend-mode:multiply}
+.cm-heat-canvas[hidden]{display:none!important}
+.cm-map-legend{z-index:700;line-height:1.5}
+.cm-map-footer-note{max-width:60%;text-align:right}
+@media(max-width:1180px){.cm-heat-toolbar{align-items:stretch}.cm-heat-modes{width:100%;justify-content:space-between}.cm-heat-bairro{width:100%;justify-content:flex-end}}
+@media(max-width:660px){.cm-heat-toolbar{padding:0 10px 10px}.cm-heat-modes{gap:2px}.cm-heat-modes button{font-size:10px;padding:9px 8px;flex:1}.cm-heat-bairro{justify-content:space-between}.cm-heat-bairro select{max-width:65%}.cm-card-heading{flex-wrap:wrap}.cm-map-head-right{width:100%;justify-content:space-between}.cm-map-legend{max-width:calc(100% - 12px)}}
