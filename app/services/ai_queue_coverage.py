@@ -8,8 +8,6 @@ em conversas ja atendidas por humanos. Nunca muda o cadastro da Z-API.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
