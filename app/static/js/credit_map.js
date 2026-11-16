@@ -17,7 +17,7 @@
     signed_rate: {label: 'Conversão', unit:'%', short:'conversão em contrato'},
     total: {label: 'Consultas', unit:'', short:'consultas'},
   };
-  const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0, mode:'approved', heatLayer:null, streetHeatRows:[], triangleFittedFor:''};
+  const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0, mode:'approved', heatLayer:null, streetHeatRows:[], gpsHeatRows:[], triangleFittedFor:''};
   // L is Leaflet normally; on Google Maps we supply only the small surface used by this panel.
   let L = window.L;
   let activeMapProvider = 'osm';
@@ -173,7 +173,7 @@
           if(!data) return;
         }
       }
-      state.data = data; state.streetHeatRows = []; state.triangleFittedFor = ''; state.revision += 1; updateHoodOptions(); sync('Dados agregados carregados'); drawAll();
+      state.data = data; state.streetHeatRows = []; state.gpsHeatRows = []; state.triangleFittedFor = ''; state.revision += 1; updateHoodOptions(); sync('Dados agregados carregados'); drawAll();
     } catch(err) { showMessage('Não foi possível carregar os indicadores: ' + err.message); sync('Erro ao carregar'); }
     finally { $('cm-apply').disabled = false; }
   }
@@ -397,7 +397,8 @@
   function renderHeat() {
     if (!state.heatLayer || !window.SulnetCreditHeat) return;
     const points = window.SulnetCreditHeat.makePoints(
-      visibleRows(), state.positions, state.data?.all ? [] : state.streetHeatRows, state.mode);
+      visibleRows(), state.positions, state.data?.all ? [] : state.streetHeatRows, state.mode,
+      state.data?.all ? [] : state.gpsHeatRows);
     state.heatLayer.set(points, state.mode);
   }
 
@@ -436,6 +437,7 @@
     const ticket = ++state.revision;
     clearLayers();
     state.streetHeatRows = [];
+    state.gpsHeatRows = [];
     state.positions = new Map();
     const rows = visibleRows();
 
@@ -523,11 +525,14 @@
     const r = await fetch('/api/reports/credit-map/addresses?' + query, {credentials: 'same-origin', cache: 'no-store'});
     if (!r.ok) return 'done';
     const data = await r.json();
-    if (ticket !== state.revision || !$('cm-addresses').checked) return 'stale';
+    const needsHeat = state.mode === 'approved';
+    if (ticket !== state.revision || (!needsHeat && !$('cm-addresses').checked)) return 'stale';
     addressGroup.clearLayers();
     const gpsRows = (data.addresses || []).filter(row =>
       !selectedHood() || folded(row.neighborhood) === folded(selectedHood()));
-    for (const row of spread(gpsRows)) {
+    state.gpsHeatRows = gpsRows.filter(row => row.source_coordinates);
+    if (needsHeat) renderHeat();
+    for (const row of spread($('cm-addresses').checked ? gpsRows : [])) {
       const where = row.street ? esc(row.street) + (row.number ? ', ' + esc(row.number) : ' (sem número)') : 'Coordenada registrada';
       const status = row.signed ? 'Aprovado · contrato assinado' : 'Aprovado · sem contrato';
       const many = row.count > 1 ? `<br>${fmt(row.count)} registros neste ponto` : '';
@@ -548,14 +553,16 @@
     const found = gpsRows.length;
     const gps = Number(data.source_coordinates || 0);
     const suffix = gps ? ` · ${fmt(gps)} coordenadas recebidas do CRM` : '';
-    $('cm-address-status').textContent = `${fmt(found)} de ${fmt(data.total)} pontos aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato` + suffix + (data.pending ? ' · localizando os demais, pode levar alguns minutos…' : '');
+    $('cm-address-status').textContent = (state.mode === 'approved' && !$('cm-addresses').checked
+      ? `${fmt(found)} pontos GPS incorporados ao calor de aprovações`
+      : `${fmt(found)} de ${fmt(data.total)} pontos aprovados no mapa · ${fmt(data.signed)} com contrato, ${fmt(data.unsigned)} sem contrato`) + suffix + (data.pending ? ' · localizando os demais, pode levar alguns minutos…' : '');
     return !data.pending ? 'done' : data.error ? 'busy' : 'more';
   }
   async function streetStep(query, ticket) {
     const r = await fetch('/api/reports/credit-map/streets?' + query, {credentials: 'same-origin', cache: 'no-store'});
     if (!r.ok) return 'done';
     const data = await r.json();
-    const needsHeat = state.mode === 'approved' || state.mode === 'rejected';
+    const needsHeat = state.mode === 'rejected';
     if (ticket !== state.revision || (!needsHeat && !$('cm-streets').checked)) return 'stale';
     state.streetHeatRows = data.streets || [];
     if (needsHeat) renderHeat();
@@ -583,8 +590,8 @@
       {kind:'streets', step: streetStep, status:'cm-streets-status', done: false},
     ];
     for (const layer of layers) {
-      const enabled = layer.kind === 'addresses' ? $('cm-addresses').checked
-        : $('cm-streets').checked || state.mode === 'approved' || state.mode === 'rejected';
+      const enabled = layer.kind === 'addresses' ? ($('cm-addresses').checked || state.mode === 'approved')
+        : $('cm-streets').checked || state.mode === 'rejected';
       if (!enabled) {layer.done = true; $(layer.status).textContent = '';}
     }
     let errors = 0;
