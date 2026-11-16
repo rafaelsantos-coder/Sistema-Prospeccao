@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -22,7 +23,7 @@ def _connected_instance(db):
         name="Fila Individual - Callback Status",
         phone_label="+55 (55) 93619-3138",
         base_url="https://api.z-api.io",
-        instance_id="callback-status-test-instance",
+        instance_id=f"callback-status-test-instance-{uuid4().hex}",
         instance_token="callback-status-test-token",
         client_token="callback-status-test-client",
         created_by_id=admin.id if admin else None,
