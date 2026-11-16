@@ -1582,9 +1582,12 @@ def _query_playbook_guidance(
             raise
 
         _playbook_store_snapshot(collected, result)
-        if not any(
+        birth_field_still_missing = any(
             _playbook_code_key(item.code) in _NONINTERACTIVE_BIRTH_CODES
             for item in result.missing
+        )
+        if not birth_field_still_missing and (
+            result.ready_for_win or result.credit_approved
         ):
             collected.pop("_crm_birth_date_blocked", None)
             collected.pop("_crm_birth_date_alerted", None)
