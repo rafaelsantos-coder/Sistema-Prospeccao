@@ -224,13 +224,20 @@ def schedule_followup(
 
 
 def claim_followup_job(db: Session) -> AIFollowupJob | None:
+    # Lembretes do fechamento passam na frente: em 16/11 o da conversa 1382 saiu
+    # 23 min atrasado, atrás de cerca de 50 lembretes da prospecção das 9h.
+    pending = select(AIFollowupJob).where(
+        AIFollowupJob.status == "PENDENTE",
+        AIFollowupJob.due_at <= utcnow(),
+    )
     job = db.scalar(
-        select(AIFollowupJob)
-        .where(
-            AIFollowupJob.status == "PENDENTE",
-            AIFollowupJob.due_at <= utcnow(),
-        )
+        pending.join(AIAgentProfile, AIAgentProfile.id == AIFollowupJob.agent_id)
+        .where(AIAgentProfile.role_type == "CLOSER")
         .order_by(AIFollowupJob.due_at.asc(), AIFollowupJob.id.asc())
+        .with_for_update(of=AIFollowupJob, skip_locked=True)
+        .limit(1)
+    ) or db.scalar(
+        pending.order_by(AIFollowupJob.due_at.asc(), AIFollowupJob.id.asc())
         .with_for_update(skip_locked=True)
         .limit(1)
     )
