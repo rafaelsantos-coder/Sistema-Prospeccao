@@ -417,6 +417,21 @@
     const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);
     const a=document.createElement('a');a.href=url;a.download=`mapa-credito-${$('cm-city').value.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.csv`;a.click();URL.revokeObjectURL(url);
   }
+  async function exportMyMaps(){
+    if ($('cm-city').value === ALL_CITIES) { showMessage('Escolha uma cidade para gerar o arquivo do Google My Maps.'); return; }
+    const query = new URLSearchParams({city: $('cm-city').value, date_from: $('cm-from').value, date_to: $('cm-to').value});
+    const btn = $('cm-export-mymaps'); btn.disabled = true;
+    try {
+      const r = await fetch('/api/reports/credit-map/export-my-maps?' + query, {credentials: 'same-origin', cache: 'no-store'});
+      if (r.status === 401) { window.location.assign('/login'); return; }
+      if (!r.ok) { const body = await r.json().catch(() => ({})); throw new Error(body.detail || 'Falha ao gerar o arquivo'); }
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a'); a.href = url; a.download = 'mapa-credito-my-maps.csv'; a.click(); URL.revokeObjectURL(url);
+      showMessage('Arquivo gerado. No Google My Maps: Importar > escolha este arquivo > coluna Endereço para posicionar > coluna Situação para o título.');
+    } catch (err) { showMessage('Não foi possível gerar o arquivo: ' + err.message); }
+    finally { btn.disabled = false; }
+  }
+  function initMyMapsExport(){ const btn = $('cm-export-mymaps'); if (btn) btn.addEventListener('click', exportMyMaps); }
   function initImport(){
     const dialog=$('cm-import-dialog');if(!dialog)return;
     $('cm-import-toggle').addEventListener('click',()=>dialog.showModal());
@@ -443,5 +458,6 @@
   $('cm-export').addEventListener('click',exportRanking);
   initImport();
   initFullscreen();
+  initMyMapsExport();
   (async () => {await fetchCities(); await fetchData();})();
 })();
