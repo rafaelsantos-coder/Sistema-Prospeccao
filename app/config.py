@@ -53,6 +53,11 @@ class Settings:
     bootstrap_admin_password: str = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "Sulnet@2026!")
     apify_token: str = os.getenv("APIFY_TOKEN", "")
     apify_actor_id: str = os.getenv("APIFY_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
+    # Renderizador visual do mapa de credito. Por padrao, mantem OpenStreetMap.
+    # A chave do navegador e publica por natureza: restrinja dominio e API no Google Cloud.
+    credit_map_provider: str = os.getenv("CREDIT_MAP_PROVIDER", "openstreetmap").strip().lower()
+    google_maps_browser_key: str = os.getenv("GOOGLE_MAPS_BROWSER_KEY", "").strip()
+    google_maps_map_id: str = os.getenv("GOOGLE_MAPS_MAP_ID", "DEMO_MAP_ID").strip() or "DEMO_MAP_ID"
     zapi_base_url: str = os.getenv("ZAPI_BASE_URL", "https://api.z-api.io")
     zapi_instance_id: str = os.getenv("ZAPI_INSTANCE_ID", "")
     zapi_instance_token: str = os.getenv("ZAPI_INSTANCE_TOKEN", "")
