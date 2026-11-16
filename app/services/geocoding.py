@@ -8,6 +8,7 @@ resultado guardado no banco (ver ``CreditMapGeocode``).
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Any
 
@@ -113,13 +114,41 @@ def street_point(
 def address_point(
     street: str, number: str, neighborhood: str, city: str, cep: str, center: tuple[float, float],
 ) -> tuple[float, float, bool] | None:
-    """Posição do endereço (rua + número). O terceiro valor diz se achou o número;
-    quando o mapa só conhece a rua, devolve o meio dela com ``False``."""
+    """Busca endereco completo com numero, bairro, CEP e cidade.
+
+    Quando nao existe correspondencia confiavel para o numero, a coordenada e
+    explicitamente aproximada. Nunca tratamos centro de rua como imovel exato.
+    """
+    candidates: list[str] = []
     if number:
-        found = search_detail(f"{street}, {number}, {city}, Rio Grande do Sul, Brasil")
-        if found:
-            point = (found[0], found[1])
-            if distance_km(point, center) <= MAX_DISTANCE_KM:
-                return point[0], point[1], found[3] not in ("highway", "boundary", "")
+        hood = f", {neighborhood}" if neighborhood else ""
+        zip_code = f", {cep[:5]}-{cep[5:]}" if len(cep) == 8 else ""
+        candidates.append(f"{street}, {number}{hood}, {city}, Rio Grande do Sul{zip_code}, Brasil")
+        candidates.append(f"{street}, {number}, {city}, Rio Grande do Sul, Brasil")
+
+    approx: tuple[float, float] | None = None
+    # So aceitar candidatos que contenham pelo menos o nome central da rua.
+    common = {'RUA', 'AVENIDA', 'TRAVESSA', 'PRACA', 'ESTRADA', 'DO', 'DA', 'DOS', 'DAS', 'DE', 'RODOVIA'}
+    words = [word for word in street.upper().split() if len(word) >= 3 and word not in common]
+    for query in dict.fromkeys(candidates):
+        found = search_detail(query)
+        if not found:
+            continue
+        point = (found[0], found[1])
+        if distance_km(point, center) > MAX_DISTANCE_KM:
+            continue
+        display = str(found[2] or '').upper()
+        # Uma resposta apenas do municipio nao prova que o endereco foi localizado.
+        if words and not any(word in display for word in words):
+            continue
+        if approx is None:
+            approx = point
+        # Classe do retorno + confirmacao textual do numero (nao apenas "building").
+        house_in_result = bool(number and re.search(r'(?<!\\d)' + re.escape(number.upper()) + r'(?!\\d)', display))
+        if house_in_result and found[3] not in ('highway', 'boundary', ''):
+            return point[0], point[1], True
+    if approx is not None:
+        return approx[0], approx[1], False
+
     fallback = street_point(street, neighborhood, city, cep, center)
     return (fallback[0], fallback[1], False) if fallback else None
