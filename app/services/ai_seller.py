@@ -3464,7 +3464,7 @@ def _is_fixed_closing_text(closing: AIClosingState | None, text: str) -> bool:
     if closing.step == SALE_ACCEPTANCE_STEP:
         # Lembretes da confirmação também são texto fixo: em 16/11 (conversa 3010)
         # o Guardião barrou o lembrete como "CTA repetido" e o cliente ficou sem retorno.
-        collected = _load_collected(closing)
+        collected = _load_collected(closing) if hasattr(closing, "collected_json") else {}
         if text in {_confirm_sale_followup_text(closing, collected, step) for step in (1, 2, 3)}:
             return True
     if (
