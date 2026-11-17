@@ -13,6 +13,18 @@ O menu **Prospecta VOZ** permite:
 **Não existe ainda cliente SIP em execução, registro autenticado, teste de conexão, worker que disque ou transferência real.**
 O estado `AGUARDANDO_HOMOLOGACAO` nunca dispara chamada. Nenhuma credencial real foi inserida no repositório ou na base de produção.
 
+## Navegação administrativa modular
+
+Ao clicar em **Prospecta VOZ**, o administrador acessa o **dashboard** em /voice. O menu lateral expande os submenus independentes:
+
+- **Dashboard VOZ** (/voice): indicadores de contas, grupos, campanhas e destinatários. O status de registro SIP é **Não verificado** enquanto não houver um cliente SIP e retorno real do PABX; **Ativa/Pausada** é somente um controle de seleção de contas, não prova conectividade.
+- **Contas do discador** (/voice/accounts): lista e cadastro de contas SIP; edição, troca opcional de senha criptografada, pausa/reativação e exclusão com confirmação por nome.
+- **Ramais e grupos** (/voice/groups): lista, cadastro, edição de ramais de destino e membros, pausa/reativação, exclusão com confirmação.
+- **Nova campanha** (/voice/campaigns/new): seleção da conta, grupo e modalidade AUDIO/DIRECT, janela e limites.
+- **Campanhas e preparação** (/voice/campaigns): contatos CSV, gravação WAV, revisão e status dos rascunhos.
+
+Exclusão de conta ou grupo vinculado a qualquer campanha é bloqueada para preservar histórico e integridade. Alterações exigem sessão de ADMIN e CSRF; dados de senha nunca aparecem em formulários preenchidos ou listagens. Nenhuma dessas telas inicia ligação: integração SIP depende de homologação.
+
 ## Permissões e responsabilidades
 
 **Somente o perfil `ADMIN` acessa o módulo Prospecta VOZ.** O sistema aplica o bloqueio no backend de todos os endpoints GET/POST; ocultar o menu é apenas uma melhoria de interface, não o mecanismo de segurança.
