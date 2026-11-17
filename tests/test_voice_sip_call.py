@@ -16,7 +16,7 @@ from app.main import app
 from app.models import User, VoiceSipAccount, VoiceTestAgent, VoiceTestCall
 from app.security import hash_password
 from app.services.secret_store import encrypt_secret
-from app.services.voice_sip_probe import SipProbe, _digest
+from app.services.voice_sip_probe import SipProbe, SipProbeError, _digest
 from app.services.voice_test import now_utc, validate_test_phone
 
 
@@ -70,7 +70,7 @@ def test_md5_digest_supports_proxy_and_registrar_challenges():
                   "REGISTER", "sip:sip.test", "200", "not-a-real-password")
     assert 'username="200"' in hdr
     assert "response=" in hdr and "qop=auth" in hdr
-    with pytest.raises(Exception):
+    with pytest.raises(SipProbeError):
         _digest('Bearer realm="sip.test"', "REGISTER", "sip:sip.test", "200", "abc")
 
 
