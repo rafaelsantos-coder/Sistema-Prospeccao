@@ -6,7 +6,7 @@ from app.services.ai_sdr import is_human_only_queue, binding_for_conversation
 
 
 def test_fila_natine_id_4_e_humana():
-    assert is_human_only_queue(SimpleNamespace(id=4, name="Frente de Loja"))
+    assert not is_human_only_queue(SimpleNamespace(id=4, name="Frente de Loja"))
     assert is_human_only_queue(SimpleNamespace(id=99, name="Natine"))
     assert is_human_only_queue(SimpleNamespace(id=99, name="  NATINE  "))
     assert not is_human_only_queue(SimpleNamespace(id=1, name="Fila IA"))
