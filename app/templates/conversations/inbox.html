@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block page_content_class %}conversation-page-content{% endblock %}
 {% block content %}
-<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" data-assignee="{{ assignee_id or '' }}" data-queue="{{ queue_id or '' }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
+<div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" data-assignee="{{ assignee_id or '' }}" data-queue="{{ queue_id or '' }}" data-tag="{{ tag_code }}" data-temperature="{{ temperature }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>
   <aside class="inbox-list-panel">
     <div class="inbox-list-head">
       <div>
@@ -15,6 +15,8 @@
       <input type="hidden" name="view" value="{{ view }}">
       {% if queue_id %}<input type="hidden" name="queue" value="{{ queue_id }}">{% endif %}
       {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
+      {% if tag_code %}<input type="hidden" name="tag" value="{{ tag_code }}">{% endif %}
+      {% if temperature %}<input type="hidden" name="temperature" value="{{ temperature }}">{% endif %}
       <span>⌕</span>
       <input name="q" value="{{ query }}" placeholder="Buscar empresa, pessoa ou telefone">
     </form>
@@ -24,6 +26,8 @@
       <input type="hidden" name="view" value="{{ view }}">
       {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
       {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
+      {% if tag_code %}<input type="hidden" name="tag" value="{{ tag_code }}">{% endif %}
+      {% if temperature %}<input type="hidden" name="temperature" value="{{ temperature }}">{% endif %}
       <label for="inbox-queue-select">Visualizar fila</label>
       <div class="inbox-queue-filter-controls">
         <select id="inbox-queue-select" name="queue" aria-label="Selecionar fila" >
@@ -38,8 +42,32 @@
     </form>
     {% endif %}
 
+    <form class="inbox-commercial-filter" action="/conversations" method="get" data-commercial-filter>
+      <input type="hidden" name="view" value="{{ view }}">
+      {% if queue_id %}<input type="hidden" name="queue" value="{{ queue_id }}">{% endif %}
+      {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
+      {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+      <label for="tag-filter">Etiqueta</label>
+      <select id="tag-filter" name="tag">
+        <option value="">Todas</option>
+        {% for code, name in tag_catalog.items() %}
+        <option value="{{ code }}" {% if tag_code == code %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+      <label for="temp-filter">Calor</label>
+      <select id="temp-filter" name="temperature">
+        <option value="">Todos</option>
+        {% for code, name in temperature_catalog.items() %}
+        <option value="{{ code }}" {% if temperature == code %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+    <a class="inbox-commercial-heatmap-link" href="/conversations-intelligence{% if queue_id %}?queue={{ queue_id }}{% endif %}">▦ Mapa de calor comercial</a>
+    {% endif %}
+
     <div class="inbox-tabs">
-      {% set preserved_filters = ('&queue=' ~ queue_id if queue_id else '') ~ ('&assignee=' ~ assignee_id if assignee_id else '') ~ ('&q=' ~ (query|urlencode) if query else '') %}
+      {% set preserved_filters = ('&queue=' ~ queue_id if queue_id else '') ~ ('&assignee=' ~ assignee_id if assignee_id else '') ~ ('&q=' ~ (query|urlencode) if query else '') ~ ('&tag=' ~ tag_code if tag_code else '') ~ ('&temperature=' ~ temperature if temperature else '') %}
       <a href="/conversations?view=active{{ preserved_filters }}" class="{% if view == 'active' %}active{% endif %}">Ativas <b id="count-active">{{ counts.active }}</b></a>
       <a href="/conversations?view=unread{{ preserved_filters }}" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
       {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
@@ -110,7 +138,7 @@
 
     <div class="conversation-list" id="conversation-list">
       {% for item in conversations %}
-      <a class="conversation-row {% if conversation and item.id == conversation.id %}selected{% endif %}" href="/conversations/{{ item.id }}?view={{ view }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}">
+      <a class="conversation-row {% if conversation and item.id == conversation.id %}selected{% endif %}" href="/conversations/{{ item.id }}?view={{ view }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}">
         <div class="conversation-avatar">{{ (item.contact.business_name or item.contact.name or 'C')[:2]|upper }}</div>
         <div class="conversation-row-copy">
           <div class="conversation-row-top">
@@ -122,6 +150,15 @@
             <span>{{ item.assigned_user.name if item.assigned_user else 'Fila sem responsável' }}</span>
             <span class="conversation-status status-{{ item.status|lower }}">{{ item.status.replace('_',' ') }}</span>
           </div>
+          {% set commercial = commercial_insights.get(item.id) %}
+          {% if commercial or commercial_tags.get(item.id) %}
+          <div class="commercial-list-badges">
+            {% if commercial %}<span class="commercial-temperature commercial-temperature-{{ commercial.temperature|lower }}">{{ temperature_catalog.get(commercial.temperature, 'Sem análise') }}</span>{% endif %}
+            {% for tag in commercial_tags.get(item.id, [])[:2] %}
+            <span class="commercial-tag" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
+            {% endfor %}
+          </div>
+          {% endif %>
         </div>
         {% if item.unread_count %}<span class="unread-badge">{{ item.unread_count }}</span>{% endif %}
       </a>
