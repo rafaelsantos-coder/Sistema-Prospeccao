@@ -49,7 +49,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-grid">
           <label class="field"><span>Nome</span><input name="name" required placeholder="Ex.: Comercial Digital"></label>
-          <label class="field"><span>Código</span><input name="code" required placeholder="Ex.: DIGITAL"></label>
+          <label class="field"><span>Código (opcional)</span><input name="code" maxlength="40" placeholder="Ex.: DIGITAL"><small>Se ficar vazio, será gerado a partir do nome. Caso já exista, o sistema cria um código exclusivo automaticamente.</small></label>
           <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
           <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Corporativo / todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
           <label class="field"><span>Instância WhatsApp</span><select name="zapi_instance_id" required><option value="">Selecione a instância</option>{% for instance in active_zapi_instances %}<option value="{{ instance.id }}">{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>{% endfor %}</select><small>Define qual número enviará e receberá as mensagens desta fila.</small></label>
