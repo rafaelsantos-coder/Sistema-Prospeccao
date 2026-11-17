@@ -18,6 +18,7 @@ from app.models import (
     ServiceQueueMember,
     User,
 )
+from app.services.ai_queue_scope import ai_allowed_for_queue
 from app.services.whatsapp_presence import online_user_ids
 from app.timeutils import utcnow
 
@@ -426,8 +427,8 @@ MANUAL_TRANSFER_ORIGIN = "MANUAL_TRANSFER"
 
 
 def usable_ai_binding(db: Session, queue_id: int | None):
-    """Vínculo de IA ativo, com agente ativo e que de fato responde (não HUMAN)."""
-    if not queue_id:
+    """Vínculo de IA ativo e autorizado pela política de fila exclusiva."""
+    if not queue_id or not ai_allowed_for_queue(queue_id):
         return None
     binding = db.scalar(
         select(AIQueueBinding)
