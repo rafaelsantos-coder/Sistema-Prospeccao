@@ -80,6 +80,16 @@ def _api_url(method: str) -> str:
 
 
 def _call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if method == "sendMessage" and payload.get("chat_id"):
+        from app.services.global_blacklist import (
+            BlacklistedRecipientError,
+            assert_telegram_outbound_permitted,
+        )
+        from app.services.zapi import ZApiBlacklistedRecipient
+        try:
+            assert_telegram_outbound_permitted(str(payload["chat_id"]))
+        except BlacklistedRecipientError as exc:
+            raise ZApiBlacklistedRecipient(str(exc)) from exc
     try:
         with httpx.Client(timeout=20.0) as client:
             response = client.post(_api_url(method), json=payload)
