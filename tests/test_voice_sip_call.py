@@ -206,3 +206,87 @@ def test_real_udp_probe_with_local_fake_pbx(monkeypatch):
     assert any(b"Authorization: Digest" in p for p in observed)
     assert any(p.startswith(b"INVITE") for p in observed)
     assert any(p.startswith(b"BYE") for p in observed)
+
+
+def test_admin_registration_check_requires_live_agent_and_does_not_create_call():
+    account_id = _account()
+    with TestClient(app) as client:
+        token = _login(client)
+        unavailable = client.post(
+            f"/voice/accounts/{account_id}/verify",
+            data={"csrf_token": token}, follow_redirects=False,
+        )
+        assert unavailable.status_code == 303
+        with SessionLocal() as db:
+            assert db.scalar(select(VoiceTestCall).where(VoiceTestCall.account_id == account_id)) is None
+        _worker_heartbeat()
+        accepted = client.post(
+            f"/voice/accounts/{account_id}/verify",
+            data={"csrf_token": token}, follow_redirects=False,
+        )
+        assert accepted.status_code == 303
+        assert accepted.headers["location"] == f"/voice/accounts/{account_id}/test"
+        with SessionLocal() as db:
+            tests = list(db.scalars(select(VoiceTestCall).where(
+                VoiceTestCall.account_id == account_id
+            )))
+            assert len(tests) == 1
+            assert tests[0].target_phone == "SIP_ONLY"
+            assert tests[0].status == "PENDENTE"
+        assert "Conexão SIP (sem chamada)" in client.get(
+            f"/voice/accounts/{account_id}/test"
+        ).text
+
+
+def test_registration_only_never_sends_invite(monkeypatch):
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+    server.settimeout(3)
+    port = server.getsockname()[1]
+    seen = []
+
+    def responder():
+        try:
+            for _ in range(4):
+                pkt, peer = server.recvfrom(65535)
+                content = pkt.decode("utf-8", "replace")
+                seen.append(content)
+                method = content.split()[0]
+                assert method == "REGISTER", "Registration-only must not dial."
+                callid = re.search(r"^Call-ID:\s*(.+)$", content, re.M).group(1).strip()
+                cseq = re.search(r"^CSeq:\s*(.+)$", content, re.M).group(1).strip()
+                has_auth = "Authorization:" in content
+                code = 200 if has_auth else 401
+                extra = "" if has_auth else (
+                    'WWW-Authenticate: Digest realm="sip.example.com", nonce="aabbcc", qop="auth"\r\n'
+                )
+                message = (
+                    f"SIP/2.0 {code} {'OK' if code == 200 else 'Unauthorized'}\r\n"
+                    f"Call-ID: {callid}\r\n"
+                    f"CSeq: {cseq}\r\n"
+                    f"{extra}Content-Length: 0\r\n\r\n"
+                )
+                server.sendto(message.encode(), peer)
+        except socket.timeout:
+            pass
+        finally:
+            server.close()
+
+    real_getaddrinfo = socket.getaddrinfo
+    def redirect(host, destport, family=0, type=0, proto=0, flags=0):
+        if host == "sip.example.com" and destport == 5060:
+            return real_getaddrinfo("127.0.0.1", port, family, type, proto, flags)
+        return real_getaddrinfo(host, destport, family, type, proto, flags)
+    monkeypatch.setattr(socket, "getaddrinfo", redirect)
+    thread = threading.Thread(target=responder, daemon=True)
+    thread.start()
+    result = SipProbe(
+        host="sip.example.com", username="200", password="local-fake",
+        phone=None, notify=lambda *_: None,
+    ).run_registration_only()
+    thread.join(timeout=3)
+    assert result.status == "SIP_VALIDADO"
+    assert result.register_code == 200
+    assert result.invite_code is None
+    assert seen and all(x.startswith("REGISTER") for x in seen)
+    assert any("Expires: 0" in x for x in seen)
