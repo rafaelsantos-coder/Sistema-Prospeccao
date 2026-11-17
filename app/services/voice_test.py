@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 from app.models import VoiceTestAgent, VoiceTestCall, VoiceSipAccount
 
 TERMINAL = {"TOCOU", "ATENDIDA", "OCUPADO", "FALHOU", "SEM_RESPOSTA", "EXPIRADO"}
-ACTIVE = {"PENDENTE", "REGISTRANDO", "REGISTRADO", "CHAMANDO"}
+ACTIVE = {"PENDENTE", "REGISTRANDO", "REGISTRADO", "CHAMANDO", "TOCANDO"}
+BRAZIL_DDDS = {11,12,13,14,15,16,17,18,19,21,22,24,27,28,31,32,33,34,35,37,38,
+               41,42,43,44,45,46,47,48,49,51,53,54,55,61,62,63,64,65,66,
+               67,68,69,71,73,74,75,77,79,81,82,83,84,85,86,87,88,89,
+               91,92,93,94,95,96,97,98,99}
 AGENT_MAX_AGE = timedelta(seconds=45)
 REQUEST_MAX_AGE = timedelta(seconds=90)
 
@@ -40,7 +44,7 @@ def validate_test_phone(value: str) -> str:
         national = digits[2:]
     else:
         national = digits
-    if len(national) not in (10, 11) or national[0] == "0" or national[1] == "0":
+    if len(national) not in (10, 11) or int(national[:2]) not in BRAZIL_DDDS:
         raise ValueError("Use um numero com DDD (10 ou 11 digitos), opcionalmente prefixado com 55.")
     # Envia o numero na forma digitada, sem pontuacao; o PABX determina o plano de discagem.
     return digits
