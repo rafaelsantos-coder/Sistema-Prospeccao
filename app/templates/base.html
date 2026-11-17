@@ -32,6 +32,11 @@
       <a href="/prospecting" class="nav-item {% if active_nav == 'prospecting' %}active{% endif %}">
         <span class="nav-icon">⌁</span><span>Prospecção</span>
       </a>
+      {% if current_user.role in ['ADMIN', 'GESTOR'] %}
+      <a href="/voice" class="nav-item {% if active_nav == 'voice' %}active{% endif %}">
+        <span class="nav-icon">☎</span><span>Prospecta VOZ</span>
+      </a>
+      {% endif %}
       <a href="/campaigns" class="nav-item {% if active_nav == 'campaigns' %}active{% endif %}">
         <span class="nav-icon">◈</span><span>Campanhas</span>
       </a>
