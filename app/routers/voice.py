@@ -41,6 +41,16 @@ def _actor(request: Request, db: Session):
 
 def _error(request: Request, msg: str, destination: str = "/voice"):
     flash(request, msg, "warning")
+    if destination == "/voice":
+        path = request.url.path
+        if path.startswith("/voice/accounts"):
+            destination = "/voice/accounts"
+        elif path.startswith("/voice/groups"):
+            destination = "/voice/groups"
+        elif path == "/voice/campaigns":
+            destination = "/voice/campaigns/new"
+        elif path.startswith("/voice/campaigns/"):
+            destination = "/voice/campaigns"
     return RedirectResponse(destination, status_code=303)
 
 
@@ -52,12 +62,259 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
     accounts = list(db.scalars(select(VoiceSipAccount).order_by(VoiceSipAccount.id.desc())))
     groups = list(db.scalars(select(VoiceGroup).order_by(VoiceGroup.id.desc())))
     campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
+    recipient_count = db.scalar(select(func.count(VoiceRecipient.id))) or 0
+    stats = {
+        "accounts": len(accounts),
+        "accounts_active": sum(1 for item in accounts if item.active),
+        "accounts_paused": sum(1 for item in accounts if not item.active),
+        "groups": len(groups),
+        "groups_active": sum(1 for item in groups if item.active),
+        "campaigns": len(campaigns),
+        "campaigns_draft": sum(1 for item in campaigns if item.status == "RASCUNHO"),
+        "campaigns_review": sum(1 for item in campaigns if item.status == "AGUARDANDO_HOMOLOGACAO"),
+        "recipients": recipient_count,
+    }
+    return render(
+        request, "voice/dashboard.html", user=actor, active_nav="voice",
+        voice_section="dashboard", page_title="Prospecta VOZ · Dashboard",
+        accounts=accounts, campaigns=campaigns[:5], stats=stats,
+    )
+
+
+@router.get("/accounts")
+def voice_accounts(request: Request, edit_id: int | None = None, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    accounts = list(db.scalars(select(VoiceSipAccount).order_by(VoiceSipAccount.id.desc())))
+    edit_account = db.get(VoiceSipAccount, edit_id) if edit_id else None
+    return render(
+        request, "voice/accounts.html", user=actor, active_nav="voice",
+        voice_section="accounts", page_title="Prospecta VOZ · Contas SIP",
+        accounts=accounts, edit_account=edit_account,
+    )
+
+
+@router.get("/groups")
+def voice_groups(request: Request, edit_id: int | None = None, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    groups = list(db.scalars(select(VoiceGroup).order_by(VoiceGroup.id.desc())))
+    edit_group = db.get(VoiceGroup, edit_id) if edit_id else None
+    return render(
+        request, "voice/groups.html", user=actor, active_nav="voice",
+        voice_section="groups", page_title="Prospecta VOZ · Ramais e grupos",
+        groups=groups, edit_group=edit_group,
+    )
+
+
+@router.get("/campaigns/new")
+def voice_new_campaign(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    accounts = list(db.scalars(select(VoiceSipAccount).where(VoiceSipAccount.active.is_(True)).order_by(VoiceSipAccount.name)))
+    groups = list(db.scalars(select(VoiceGroup).where(VoiceGroup.active.is_(True)).order_by(VoiceGroup.name)))
+    return render(
+        request, "voice/campaign_new.html", user=actor, active_nav="voice",
+        voice_section="new_campaign", page_title="Prospecta VOZ · Nova campanha",
+        accounts=accounts, groups=groups,
+    )
+
+
+@router.get("/campaigns")
+def voice_campaigns(request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
     counts = dict(db.execute(
         select(VoiceRecipient.campaign_id, func.count(VoiceRecipient.id)).group_by(VoiceRecipient.campaign_id)
     ).all())
-    return render(request, "voice/index.html", user=actor, active_nav="voice",
-                  page_title="Prospecta VOZ", accounts=accounts, groups=groups,
-                  campaigns=campaigns, counts=counts)
+    return render(
+        request, "voice/campaigns.html", user=actor, active_nav="voice",
+        voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
+        campaigns=campaigns, counts=counts,
+    )
+
+
+@router.get("/accounts/{account_id}/delete")
+def confirm_delete_account(account_id: int, request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    account = db.get(VoiceSipAccount, account_id)
+    if not account:
+        return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
+    campaigns_using = db.scalar(select(func.count(VoiceCampaign.id)).where(VoiceCampaign.sip_account_id == account_id)) or 0
+    return render(
+        request, "voice/confirm_delete.html", user=actor, active_nav="voice",
+        voice_section="accounts", page_title="Prospecta VOZ · Excluir conta",
+        item_name=account.name, item_kind="conta SIP", action=f"/voice/accounts/{account_id}/delete",
+        back_url="/voice/accounts", dependencies=campaigns_using,
+    )
+
+
+@router.get("/groups/{group_id}/delete")
+def confirm_delete_group(group_id: int, request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    group = db.get(VoiceGroup, group_id)
+    if not group:
+        return _error(request, "Grupo nao encontrado.", "/voice/groups")
+    campaigns_using = db.scalar(select(func.count(VoiceCampaign.id)).where(VoiceCampaign.group_id == group_id)) or 0
+    return render(
+        request, "voice/confirm_delete.html", user=actor, active_nav="voice",
+        voice_section="groups", page_title="Prospecta VOZ · Excluir grupo",
+        item_name=group.name, item_kind="grupo de ramais", action=f"/voice/groups/{group_id}/delete",
+        back_url="/voice/groups", dependencies=campaigns_using,
+    )
+
+
+
+@router.post("/accounts/{account_id}/update")
+def update_account(account_id: int, request: Request, csrf_token: str = Form(...),
+                   name: str = Form(...), domain: str = Form(...),
+                   username: str = Form(...), transport: str = Form("UDP"),
+                   password: str = Form(""), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    account = db.get(VoiceSipAccount, account_id)
+    if not account:
+        return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
+    try:
+        host, user, proto = validate_sip(domain, username, transport)
+        if not name.strip() or len(name.strip()) > 120 or len(password) > 300:
+            raise ValueError("Nome ou senha invalida.")
+    except ValueError as exc:
+        return _error(request, str(exc), "/voice/accounts")
+    account.name = name.strip()
+    account.domain = host
+    account.username = user
+    account.transport = proto
+    if password.strip():
+        account.password_encrypted = encrypt_secret(password)
+    write_audit(db, user=actor, action="VOICE_SIP_UPDATED", entity_type="voice_sip_account",
+                entity_id=account.id, payload={"domain": host, "username": user,
+                                               "credential_rotated": bool(password.strip())})
+    db.commit()
+    flash(request, "Conta SIP atualizada. O registro SIP ainda precisa de verificacao real.")
+    return RedirectResponse("/voice/accounts", status_code=303)
+
+
+@router.post("/accounts/{account_id}/toggle")
+def toggle_account(account_id: int, request: Request, csrf_token: str = Form(...),
+                   db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    account = db.get(VoiceSipAccount, account_id)
+    if not account:
+        return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
+    account.active = not account.active
+    write_audit(db, user=actor, action="VOICE_SIP_ACTIVATED" if account.active else "VOICE_SIP_PAUSED",
+                entity_type="voice_sip_account", entity_id=account.id)
+    db.commit()
+    flash(request, "Conta ativada para configuracao." if account.active else "Conta pausada para novas campanhas.")
+    return RedirectResponse("/voice/accounts", status_code=303)
+
+
+@router.post("/accounts/{account_id}/delete")
+def delete_account(account_id: int, request: Request, csrf_token: str = Form(...),
+                   confirm_value: str = Form(...), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    account = db.get(VoiceSipAccount, account_id)
+    if not account:
+        return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
+    linked = db.scalar(select(func.count(VoiceCampaign.id)).where(VoiceCampaign.sip_account_id == account_id)) or 0
+    if linked:
+        return _error(request, "Esta conta tem campanhas vinculadas. Pause-a para preservar o historico.", "/voice/accounts")
+    if confirm_value.strip() != account.name:
+        return _error(request, "Confirme a exclusao digitando exatamente o nome da conta.", f"/voice/accounts/{account_id}/delete")
+    db.delete(account)
+    write_audit(db, user=actor, action="VOICE_SIP_DELETED", entity_type="voice_sip_account",
+                entity_id=account_id)
+    db.commit()
+    flash(request, "Conta SIP excluida com seguranca.")
+    return RedirectResponse("/voice/accounts", status_code=303)
+
+
+@router.post("/groups/{group_id}/update")
+def update_group(group_id: int, request: Request, csrf_token: str = Form(...),
+                 name: str = Form(...), target_extension: str = Form(...),
+                 member_extensions: str = Form(""), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    group = db.get(VoiceGroup, group_id)
+    if not group:
+        return _error(request, "Grupo nao encontrado.", "/voice/groups")
+    try:
+        target = validate_extension(target_extension)
+        members = [validate_extension(x) for x in re.split(r"[,;\s]+", member_extensions.strip()) if x]
+        if len(members) > 50 or not name.strip() or len(name.strip()) > 120:
+            raise ValueError("Grupo invalido (maximo 50 ramais).")
+    except ValueError as exc:
+        return _error(request, str(exc), "/voice/groups")
+    group.name = name.strip()
+    group.target_extension = target
+    group.member_extensions = ",".join(sorted(set(members)))
+    write_audit(db, user=actor, action="VOICE_GROUP_UPDATED", entity_type="voice_group",
+                entity_id=group.id, payload={"target": target, "members": members})
+    db.commit()
+    flash(request, "Grupo atualizado. Verifique o destino no PABX antes das chamadas.")
+    return RedirectResponse("/voice/groups", status_code=303)
+
+
+@router.post("/groups/{group_id}/toggle")
+def toggle_group(group_id: int, request: Request, csrf_token: str = Form(...),
+                 db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    group = db.get(VoiceGroup, group_id)
+    if not group:
+        return _error(request, "Grupo nao encontrado.", "/voice/groups")
+    group.active = not group.active
+    write_audit(db, user=actor, action="VOICE_GROUP_ACTIVATED" if group.active else "VOICE_GROUP_PAUSED",
+                entity_type="voice_group", entity_id=group.id)
+    db.commit()
+    flash(request, "Grupo ativado." if group.active else "Grupo pausado para novas campanhas.")
+    return RedirectResponse("/voice/groups", status_code=303)
+
+
+@router.post("/groups/{group_id}/delete")
+def delete_group(group_id: int, request: Request, csrf_token: str = Form(...),
+                 confirm_value: str = Form(...), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    group = db.get(VoiceGroup, group_id)
+    if not group:
+        return _error(request, "Grupo nao encontrado.", "/voice/groups")
+    linked = db.scalar(select(func.count(VoiceCampaign.id)).where(VoiceCampaign.group_id == group_id)) or 0
+    if linked:
+        return _error(request, "Este grupo tem campanhas vinculadas. Pause-o para preservar o historico.", "/voice/groups")
+    if confirm_value.strip() != group.name:
+        return _error(request, "Confirme a exclusao digitando exatamente o nome do grupo.", f"/voice/groups/{group_id}/delete")
+    db.delete(group)
+    write_audit(db, user=actor, action="VOICE_GROUP_DELETED", entity_type="voice_group",
+                entity_id=group_id)
+    db.commit()
+    flash(request, "Grupo excluido com seguranca.")
+    return RedirectResponse("/voice/groups", status_code=303)
+
 
 
 @router.post("/accounts")
@@ -86,7 +343,7 @@ def add_account(request: Request, csrf_token: str = Form(...), name: str = Form(
                 entity_id=account.id, payload={"domain": host, "username": user})
     db.commit()
     flash(request, "Conta SIP protegida cadastrada. Registro na central ainda nao testado.")
-    return RedirectResponse("/voice", status_code=303)
+    return RedirectResponse("/voice/accounts", status_code=303)
 
 
 @router.post("/groups")
@@ -112,7 +369,7 @@ def add_group(request: Request, csrf_token: str = Form(...), name: str = Form(..
                 entity_id=group.id, payload={"target": target, "members": members})
     db.commit()
     flash(request, "Grupo cadastrado. Encaminhamento SIP depende de homologacao do PABX.")
-    return RedirectResponse("/voice", status_code=303)
+    return RedirectResponse("/voice/groups", status_code=303)
 
 
 @router.post("/campaigns")
@@ -152,7 +409,7 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
                 payload={"mode": clean_mode, "group_id": group.id})
     db.commit()
     flash(request, "Campanha de voz criada em rascunho; chamadas reais permanecem bloqueadas.")
-    return RedirectResponse("/voice", status_code=303)
+    return RedirectResponse("/voice/campaigns", status_code=303)
 
 
 @router.post("/campaigns/{campaign_id}/audio")
@@ -184,7 +441,7 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
                 entity_type="voice_campaign", entity_id=campaign.id)
     db.commit()
     flash(request, "Audio PCM carregado. Campanha ainda em rascunho.")
-    return RedirectResponse("/voice", status_code=303)
+    return RedirectResponse("/voice/campaigns", status_code=303)
 
 
 @router.post("/campaigns/{campaign_id}/contacts")
@@ -222,7 +479,7 @@ async def import_contacts(campaign_id: int, request: Request,
                 payload={"accepted": len(clean), "skipped": skipped, "invalid": summary["invalid"]})
     db.commit()
     flash(request, f"{len(clean)} contatos preparados; {skipped} duplicados/bloqueados ignorados. Sem chamadas.")
-    return RedirectResponse("/voice", status_code=303)
+    return RedirectResponse("/voice/campaigns", status_code=303)
 
 
 @router.post("/campaigns/{campaign_id}/review")
@@ -250,4 +507,4 @@ def request_review(campaign_id: int, request: Request, csrf_token: str = Form(..
                 payload={"contacts": count})
     db.commit()
     flash(request, "Campanha preparada para homologacao. O discador ainda nao efetua chamadas.")
-    return RedirectResponse("/voice", status_code=303)
+    return RedirectResponse("/voice/campaigns", status_code=303)
