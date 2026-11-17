@@ -395,31 +395,67 @@
       {% else %}
       <p class="commercial-observer-reason">Aguardando análise das mensagens. O vendedor pode etiquetar manualmente agora.</p>
       {% endif %}
-      <div class="commercial-selected-tags">
-        {% for tag in selected_tags %}
-        <form action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="code" value="{{ tag.code }}">
-          <input type="hidden" name="enabled" value="0">
-          <span class="commercial-tag" data-tag="{{ tag.code }}" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
-          <button type="submit" title="Remover etiqueta {{ tag.name }}" aria-label="Remover etiqueta {{ tag.name }}">×</button>
-        </form>
-        {% endfor %}
-      </div>
-      <form class="commercial-add-tag" action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="enabled" value="1">
-        <label for="commercial-tag-select">Adicionar etiqueta</label>
-        <div>
-          <select name="code" id="commercial-tag-select" required>
-            <option value="">Selecione</option>
-            {% for code, name in tag_catalog.items() %}
-            <option value="{{ code }}">{{ name }}</option>
-            {% endfor %}
-          </select>
-          <button class="button button-secondary" type="submit">Adicionar</button>
+      <div class="commercial-tag-editor">
+        <div class="commercial-tag-editor-heading">
+          <strong>Etiquetas desta conversa</strong>
+          <span>{{ selected_tags|length }} aplicada(s)</span>
         </div>
-      </form>
+        <div class="commercial-selected-tags">
+          {% for tag in selected_tags %}
+          <form action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="code" value="{{ tag.code }}">
+            <input type="hidden" name="enabled" value="0">
+            <span class="commercial-tag" data-tag="{{ tag.code }}" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
+            <button type="submit" title="Remover etiqueta {{ tag.name }}" aria-label="Remover etiqueta {{ tag.name }}">×</button>
+          </form>
+          {% else %}
+          <span class="commercial-no-tags">Nenhuma etiqueta aplicada.</span>
+          {% endfor %}
+        </div>
+        {% set selected_tag_codes = selected_tags|map(attribute='code')|list %}
+        <div class="commercial-tag-shortcuts" aria-label="Etiquetas rápidas">
+          {% for code, name in [('EM_NEGOCIACAO','Em negociação'),('ALTO_POTENCIAL','Alto potencial'),('EM_FECHAMENTO','Em fechamento'),('DOCUMENTOS_PENDENTES','Documentos pendentes')] %}
+          {% if code not in selected_tag_codes %}
+          <form action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="code" value="{{ code }}">
+            <input type="hidden" name="enabled" value="1">
+            <button class="commercial-tag" data-tag="{{ code }}" type="submit" title="Adicionar {{ name }}">+ {{ name }}</button>
+          </form>
+          {% endif %}
+          {% endfor %}
+        </div>
+        <details class="commercial-tag-picker">
+          <summary>Mais etiquetas <span aria-hidden="true">⌄</span></summary>
+          <form class="commercial-add-tag" action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="enabled" value="1">
+            <label for="commercial-tag-select">Selecione uma etiqueta</label>
+            <div>
+              <select name="code" id="commercial-tag-select" required>
+                <option value="">Escolha uma opção</option>
+                <optgroup label="Etapa comercial">
+                  {% for code in ['PRIMEIRO_CONTATO', 'EM_NEGOCIACAO', 'ALTO_POTENCIAL', 'EM_FECHAMENTO'] %}
+                  <option value="{{ code }}">{{ tag_catalog[code] }}</option>
+                  {% endfor %}
+                </optgroup>
+                <optgroup label="Documentos e contrato">
+                  {% for code in ['DOCUMENTOS_PENDENTES', 'CREDITO_PENDENTE', 'CONTRATO_ENVIADO', 'ASSINATURA_PENDENTE'] %}
+                  <option value="{{ code }}">{{ tag_catalog[code] }}</option>
+                  {% endfor %}
+                </optgroup>
+                <optgroup label="Acompanhamento e riscos">
+                  {% for code in ['CLIENTE_INDECISO', 'COMPARANDO_PRECOS', 'RETORNO_SOLICITADO', 'RISCO_PERDA'] %}
+                  <option value="{{ code }}">{{ tag_catalog[code] }}</option>
+                  {% endfor %}
+                </optgroup>
+              </select>
+              <button class="button button-secondary" type="submit">Adicionar</button>
+            </div>
+          </form>
+        </details>
+      </div>
       <small class="transfer-help">Etiquetas manuais prevalecem sobre sugestões futuras. A análise não envia mensagens ao cliente.</small>
     </div>
 
@@ -557,6 +593,27 @@
 .commercial-add-tag>div{display:flex;align-items:center;gap:5px}
 .commercial-add-tag select{flex:1;min-width:0;border:1px solid #d1d5db;border-radius:7px;padding:7px;font-size:12px}
 .commercial-add-tag button{white-space:nowrap;padding:8px;font-size:11px}
+.commercial-tag-editor{display:grid;gap:9px;margin-top:12px;border-top:1px solid #eef0f3;padding-top:12px}
+.commercial-tag-editor-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.commercial-tag-editor-heading strong{color:#334155;font-size:12px}
+.commercial-tag-editor-heading span{font-size:10px;color:#64748b}
+.commercial-selected-tags{margin:0;gap:5px}
+.commercial-selected-tags form{background:transparent;border-radius:8px;border:1px solid #e2e8f0;overflow:hidden}
+.commercial-selected-tags form .commercial-tag{border:0}
+.commercial-selected-tags form button{padding:2px 6px;font-size:16px;line-height:1.2}
+.commercial-no-tags{font-size:11px;color:#94a3b8}
+.commercial-tag-shortcuts{display:flex;gap:5px;flex-wrap:wrap}
+.commercial-tag-shortcuts form{margin:0}
+.commercial-tag-shortcuts .commercial-tag{font-family:inherit;font-size:10px;padding:6px 8px;cursor:pointer;transition:filter .15s ease}
+.commercial-tag-shortcuts .commercial-tag:hover{filter:brightness(.94)}
+.commercial-tag-shortcuts .commercial-tag:focus-visible{outline:2px solid #f97316;outline-offset:2px}
+.commercial-tag-picker{background:#f8fafc;border-radius:9px;border:1px solid #e2e8f0}
+.commercial-tag-picker>summary{padding:9px 11px;display:flex;gap:8px;align-items:center;justify-content:space-between;color:#475569;font-size:11px;font-weight:750;cursor:pointer;list-style:none}
+.commercial-tag-picker>summary::-webkit-details-marker{display:none}
+.commercial-tag-picker[open] summary{border-bottom:1px solid #e2e8f0}
+.commercial-tag-picker .commercial-add-tag{padding:11px}
+.commercial-tag-picker .commercial-add-tag button{padding:8px}
+.commercial-tag-picker summary:focus-visible{outline:2px solid #fb923c;outline-offset:2px}
 
 /* Menu enxuto: filtros não competem com a lista de conversas. */
 .inbox-list-head{padding:15px 15px 10px}
