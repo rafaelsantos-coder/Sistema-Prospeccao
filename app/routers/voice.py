@@ -573,3 +573,36 @@ def request_account_test(account_id: int, request: Request, csrf_token: str = Fo
     db.commit()
     flash(request, "Teste autorizado encaminhado ao agente SIP. Acompanhe o resultado real nesta pagina.")
     return RedirectResponse(f"/voice/accounts/{account_id}/test", status_code=303)
+
+
+@router.post("/accounts/{account_id}/verify")
+def verify_account_registration(account_id: int, request: Request,
+                                csrf_token: str = Form(...),
+                                db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    account = db.scalar(select(VoiceSipAccount).where(
+        VoiceSipAccount.id == account_id
+    ).with_for_update())
+    if not account:
+        return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
+    try:
+        verify_test_allowed(db, account, "SIP_ONLY")
+    except ValueError as exc:
+        return _error(request, str(exc), f"/voice/accounts/{account_id}/test")
+    test = VoiceTestCall(
+        account_id=account.id, account_label=account.name, target_phone="SIP_ONLY",
+        status="PENDENTE",
+        message="Verificacao manual do registro SIP solicitada; nenhuma ligacao sera feita.",
+        initiator_user_id=actor.id, created_at=now_utc(),
+    )
+    db.add(test)
+    db.flush()
+    write_audit(db, user=actor, action="VOICE_SIP_REGISTER_TEST_REQUESTED",
+                entity_type="voice_test_call", entity_id=test.id,
+                payload={"account_id": account.id, "operation": "REGISTER_ONLY"})
+    db.commit()
+    flash(request, "Verificacao SIP iniciada sem discagem. Consulte o resultado abaixo.")
+    return RedirectResponse(f"/voice/accounts/{account_id}/test", status_code=303)
