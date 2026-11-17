@@ -427,7 +427,7 @@
           {% endfor %}
         </div>
         <details class="commercial-tag-picker">
-          <summary>Mais etiquetas <span aria-hidden="true">⌄</span></summary>
+          <summary>Adicionar etiqueta <span aria-hidden="true">⌄</span></summary>
           <form class="commercial-add-tag" action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="enabled" value="1">
