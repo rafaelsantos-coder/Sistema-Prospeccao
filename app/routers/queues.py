@@ -44,6 +44,18 @@ def _clean_code(value: str) -> str:
     return clean.strip("-_")[:40]
 
 
+def _available_code(db: Session, proposed_code: str) -> str:
+    """Preserva códigos existentes e atribui um sufixo único para novas filas."""
+    candidate = proposed_code
+    number = 2
+    while db.scalar(select(ServiceQueue.id).where(ServiceQueue.code == candidate)):
+        suffix = f"-{number}"
+        prefix = proposed_code[: 40 - len(suffix)].rstrip("-_")
+        candidate = f"{prefix}{suffix}"
+        number += 1
+    return candidate
+
+
 def _queue_or_404(db: Session, queue_id: int) -> ServiceQueue:
     queue = db.scalar(
         select(ServiceQueue)
@@ -109,12 +121,12 @@ def create_queue(
     request: Request,
     csrf_token: str = Form(...),
     name: str = Form(...),
-    code: str = Form(...),
+    code: str = Form(""),
     team: str = Form("B2B"),
     branch_id: str = Form(""),
     routing_strategy: str = Form("ROUND_ROBIN"),
     is_default_inbound: bool = Form(False),
-    zapi_instance_id: int = Form(...),
+    zapi_instance_id: str = Form(""),
     member_user_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
@@ -125,17 +137,17 @@ def create_queue(
     require_roles(actor, "ADMIN", "GESTOR")
 
     clean_name = name.strip()
-    clean_code = _clean_code(code)
+    suggested_code = _clean_code(code or clean_name)
     strategy = routing_strategy.strip().upper()
-    if not clean_name or not clean_code:
-        flash(request, "Informe nome e código da fila.", "warning")
+    if not clean_name or not suggested_code:
+        flash(request, "Informe o nome da fila.", "warning")
         return RedirectResponse("/settings/queues", status_code=303)
     if strategy not in ROUTING_STRATEGIES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
-    if db.scalar(select(ServiceQueue.id).where(ServiceQueue.code == clean_code)):
-        flash(request, "Já existe uma fila com este código.", "warning")
-        return RedirectResponse("/settings/queues", status_code=303)
-    zapi_instance = get_zapi_instance(db, zapi_instance_id)
+    clean_code = _available_code(db, suggested_code)
+    # IDs inválidos ou vazios geram aviso compreensível, não erro HTTP 422.
+    selected_instance_id = int(zapi_instance_id) if zapi_instance_id.isdigit() else None
+    zapi_instance = get_zapi_instance(db, selected_instance_id)
     if not zapi_instance or not zapi_instance.active:
         flash(request, "Selecione uma instância WhatsApp ativa para a fila.", "warning")
         return RedirectResponse("/settings/queues", status_code=303)
@@ -174,7 +186,11 @@ def create_queue(
         },
     )
     db.commit()
-    flash(request, f"Fila {queue.name} criada.")
+    code_notice = (
+        f" Código {suggested_code} já utilizado; foi atribuído {clean_code}."
+        if clean_code != suggested_code else f" Código: {clean_code}."
+    )
+    flash(request, f"Fila {queue.name} criada.{code_notice}")
     return RedirectResponse(f"/settings/queues/{queue.id}", status_code=303)
 
 
