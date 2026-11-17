@@ -114,6 +114,13 @@ def test_admin_can_request_one_call_when_agent_is_online():
         overview = client.get(f"/voice/accounts/{acc_id}/test")
         assert "5555999991001" in overview.text
         assert "Aguardando agente" in overview.text
+        # A fila de teste é persistente; fechar o pedido evita interferir
+        # nos demais testes de rate-limit e de REGISTER isolado.
+        with SessionLocal() as db:
+            pending = db.get(VoiceTestCall, call.id)
+            pending.status = "EXPIRADO"
+            pending.finished_at = now_utc()
+            db.commit()
 
 
 def test_non_admin_cannot_trigger_sip_test():
@@ -236,6 +243,14 @@ def test_admin_registration_check_requires_live_agent_and_does_not_create_call()
         assert "Conexão SIP (sem chamada)" in client.get(
             f"/voice/accounts/{account_id}/test"
         ).text
+        with SessionLocal() as db:
+            for item in db.scalars(select(VoiceTestCall).where(
+                VoiceTestCall.account_id == account_id,
+                VoiceTestCall.status == "PENDENTE",
+            )):
+                item.status = "EXPIRADO"
+                item.finished_at = now_utc()
+            db.commit()
 
 
 def test_registration_only_never_sends_invite(monkeypatch):
