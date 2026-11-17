@@ -172,10 +172,11 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
         uri, _ = storage.upload_campaign_bytes(
             data=data, campaign_id=campaign.id,
             filename=f"voice-{uuid4().hex}.wav", mime_type="audio/wav")
-    except (ValueError, Exception) as exc:
+    except ValueError as exc:
+        return _error(request, str(exc))
+    except Exception:
         # Nao exibir mensagem interna do armazenamento.
-        return _error(request, str(exc) if isinstance(exc, ValueError)
-                      else "Falha ao validar ou salvar audio no armazenamento seguro.")
+        return _error(request, "Falha ao validar ou salvar audio no armazenamento seguro.")
     campaign.audio_uri = uri
     write_audit(db, user=actor, action="VOICE_AUDIO_UPDATED",
                 entity_type="voice_campaign", entity_id=campaign.id)
