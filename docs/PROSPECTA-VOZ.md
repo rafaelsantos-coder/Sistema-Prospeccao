@@ -10,7 +10,7 @@ O menu **Prospecta VOZ** permite:
 - Importar CSV de até 1 MB e 5.000 linhas, com deduplicação por campanha e exclusão de leads que solicitaram não contato.
 - Revisar campanhas sem iniciar ligações.
 
-**Não existe ainda cliente SIP em execução, registro autenticado, teste de conexão, worker que disque ou transferência real.**
+**O discador de campanhas ainda não executa ligações e não realiza transferências reais.** O agente SIP separado de diagnóstico atende somente a testes individuais autorizados, quando conectado e habilitado.
 O estado `AGUARDANDO_HOMOLOGACAO` nunca dispara chamada. Nenhuma credencial real foi inserida no repositório ou na base de produção.
 
 ## Diagnóstico de uma chamada SIP autorizada
