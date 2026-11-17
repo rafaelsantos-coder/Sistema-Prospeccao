@@ -276,6 +276,53 @@ class Conversation(Base):
     )
 
 
+
+class ConversationCommercialInsight(Base):
+    """Análise comercial silenciosa: nunca aciona WhatsApp, CRM ou distribuição."""
+    __tablename__ = "conversation_commercial_insights"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    temperature: Mapped[str] = mapped_column(String(12), default="INDEFINIDO", index=True)
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    stage: Mapped[str] = mapped_column(String(35), default="PRIMEIRO_CONTATO")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    rationale: Mapped[str] = mapped_column(String(900), default="")
+    next_action: Mapped[str] = mapped_column(String(450), default="")
+    next_action_owner: Mapped[str] = mapped_column(String(20), default="VENDEDOR")
+    source: Mapped[str] = mapped_column(String(12), default="REGRAS")
+    last_analyzed_message_id: Mapped[int] = mapped_column(Integer, default=0)
+    analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    conversation: Mapped[Conversation] = relationship()
+
+
+class ConversationCommercialTag(Base):
+    """Etiquetas com controle manual: exclusões do vendedor são respeitadas pela IA."""
+    __tablename__ = "conversation_commercial_tags"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "code", name="uq_conversation_commercial_tag"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(45), index=True)
+    source: Mapped[str] = mapped_column(String(12), default="IA")
+    suppressed: Mapped[bool] = mapped_column(Boolean, default=False)
+    changed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    conversation: Mapped[Conversation] = relationship()
+
+
+
+
 class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (

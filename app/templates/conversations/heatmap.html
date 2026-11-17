@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="commercial-dashboard">
+  <div class="commercial-dashboard-header">
+    <div>
+      <span class="eyebrow">INTELIGÊNCIA DE FECHAMENTO · SULNET PROSPECTA</span>
+      <h2>Mapa de calor comercial</h2>
+      <p>Temperatura estimada das conversas por vendedor. A IA só observa: não responde nem modifica o atendimento.</p>
+    </div>
+    <a class="button button-secondary" href="/conversations{% if selected_queue %}?queue={{ selected_queue }}{% endif %}">Voltar às conversas</a>
+  </div>
+  <form action="/conversations-intelligence" method="get" class="commercial-dashboard-controls" data-heatmap-filter>
+    <label for="heatmap-queue">Filtrar fila</label>
+    <select id="heatmap-queue" name="queue">
+      <option value="">Todas as filas visíveis</option>
+      {% for queue in queues %}
+      <option value="{{ queue.id }}" {% if queue.id == selected_queue %}selected{% endif %}>{{ queue.name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="button button-secondary">Aplicar</button>
+  </form>
+  <div class="commercial-dashboard-metrics">
+    <div><span>Conversas ativas</span><strong>{{ total_conversations }}</strong></div>
+    <div><span>Quentes</span><strong class="commercial-temp-hot">{{ totals.QUENTE }}</strong></div>
+    <div><span>Potencial ou fechamento</span><strong>{{ high_potential }}</strong></div>
+    <div><span>Com pendência</span><strong>{{ pending }}</strong></div>
+  </div>
+  <div class="commercial-heatmap-card">
+    <div class="commercial-heatmap-heading">
+      <h3>Temperatura por responsável</h3>
+      <span>Selecione um número para abrir as conversas filtradas</span>
+    </div>
+    <div class="commercial-heatmap-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Responsável</th>
+            <th>Quente</th>
+            <th>Morno</th>
+            <th>Frio</th>
+            <th>Sem análise</th>
+            <th>Pendências</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in rows %}
+          <tr>
+            <th scope="row">{{ item.name }}</th>
+            {% for code, css in [('QUENTE','hot'),('MORNO','warm'),('FRIO','cold'),('INDEFINIDO','none')] %}
+            <td>
+              {% if item.id %}
+                <a class="commercial-heat-cell commercial-heat-{{ css }}" href="/conversations?view=active&amp;temperature={{ code }}&amp;assignee={{ item.id }}{% if selected_queue %}&amp;queue={{ selected_queue }}{% endif %}">{{ item[code] }}</a>
+              {% else %}
+                <span class="commercial-heat-cell commercial-heat-{{ css }}">{{ item[code] }}</span>
+              {% endif %}
+            </td>
+            {% endfor %}
+            <td><strong>{{ item.pending }}</strong></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6">Não há conversas ativas nesta fila.</td></tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr><th>Total</th><td>{{ totals.QUENTE }}</td><td>{{ totals.MORNO }}</td><td>{{ totals.FRIO }}</td><td>{{ totals.INDEFINIDO }}</td><td>{{ pending }}</td></tr>
+        </tfoot>
+      </table>
+    </div>
+    <p class="commercial-dashboard-note">Temperatura e score são estimativas comerciais, não probabilidade estatística de compra. Conversas sem evidência suficiente permanecem sem análise ou frias.</p>
+  </div>
+  <div class="commercial-heatmap-card">
+    <div class="commercial-heatmap-heading"><h3>Etiquetas mais frequentes</h3><span>Base: conversas ativas da seleção</span></div>
+    <div class="commercial-tag-grid">
+      {% for tag in tag_totals %}
+      <a href="/conversations?view=active&amp;tag={{ tag.code }}{% if selected_queue %}&amp;queue={{ selected_queue }}{% endif %}"><span>{{ tag.name }}</span><strong>{{ tag.count }}</strong></a>
+      {% else %}
+      <p>As etiquetas atribuídas pelos vendedores e sugeridas pela análise aparecerão aqui.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+<style>
+.commercial-dashboard{display:grid;gap:16px;max-width:1250px;margin:0 auto}
+.commercial-dashboard-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.commercial-dashboard-header h2{margin:5px 0;font-size:23px}
+.commercial-dashboard-header p,.commercial-heatmap-heading span,.commercial-dashboard-note{font-size:12px;color:#64748b}
+.commercial-dashboard-controls{display:flex;gap:12px;align-items:center;background:white;border:1px solid #e5e7eb;padding:14px;border-radius:12px}
+.commercial-dashboard-controls label{font-size:12px;font-weight:700}
+.commercial-dashboard-controls select{padding:8px;border:1px solid #d1d5db;border-radius:8px;min-width:190px}
+.commercial-dashboard-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.commercial-dashboard-metrics>div{border:1px solid #e5e7eb;background:#fff;border-radius:12px;padding:16px;display:grid;gap:4px}
+.commercial-dashboard-metrics span{font-size:12px;color:#64748b}
+.commercial-dashboard-metrics strong{font-size:26px}
+.commercial-dashboard-metrics .commercial-temp-hot{color:#15803d}
+.commercial-heatmap-card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px}
+.commercial-heatmap-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.commercial-heatmap-heading h3{font-size:16px;margin:0}
+.commercial-heatmap-scroll{overflow-x:auto}
+.commercial-heatmap-scroll table{width:100%;border-collapse:collapse}
+.commercial-heatmap-scroll th,.commercial-heatmap-scroll td{text-align:center;padding:12px;border-bottom:1px solid #eef0f3;font-size:13px}
+.commercial-heatmap-scroll th:first-child{text-align:left}
+.commercial-heat-cell{display:inline-flex;min-width:48px;min-height:32px;align-items:center;justify-content:center;font-weight:750;text-decoration:none;border-radius:7px}
+.commercial-heat-hot{background:#dcfce7;color:#166534}
+.commercial-heat-warm{background:#fef3c7;color:#92400e}
+.commercial-heat-cold{background:#e0e7ff;color:#3730a3}
+.commercial-heat-none{background:#f1f5f9;color:#64748b}
+.commercial-tag-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.commercial-tag-grid a{border:1px solid #e5e7eb;border-radius:10px;padding:10px;display:flex;gap:8px;justify-content:space-between;text-decoration:none;color:#1e293b}
+.commercial-tag-grid a strong{color:#ef6c1e}
+.commercial-dashboard-note{margin:12px 0 0}
+@media(max-width:760px){.commercial-dashboard-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.commercial-dashboard-header{display:block}.commercial-dashboard-controls{flex-wrap:wrap}}
+</style>
+{% endblock %}

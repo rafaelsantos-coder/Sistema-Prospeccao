@@ -15,6 +15,8 @@ from app.models import (
     Conversation,
     ConversationAssignment,
     ConversationQueueLink,
+    ConversationCommercialInsight,
+    ConversationCommercialTag,
     Lead,
     Message,
     ServiceQueue,
@@ -23,6 +25,15 @@ from app.models import (
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.ai_sdr import enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
+from app.services.commercial_intelligence import (
+    TAG_LABELS,
+    TEMPERATURE_LABELS,
+    STAGE_LABELS,
+    OWNER_LABELS,
+    tag_map,
+    insight_map,
+    update_manual_tag,
+)
 from app.services.conversation_engine import (
     CLOSED_CONVERSATION_STATUSES,
     OPEN_CONVERSATION_STATUSES,
@@ -303,8 +314,36 @@ def _inbox_query(
     view: str,
     assignee_id: int | None = None,
     queue_id: int | None = None,
+    tag_code: str = "",
+    temperature: str = "",
 ) -> list[Conversation]:
     stmt = _conversation_stmt(user).join(Contact, Conversation.contact_id == Contact.id)
+    if tag_code:
+        if tag_code not in TAG_LABELS:
+            raise HTTPException(status_code=400, detail="Etiqueta inválida")
+        stmt = stmt.join(
+            ConversationCommercialTag,
+            ConversationCommercialTag.conversation_id == Conversation.id,
+        ).where(
+            ConversationCommercialTag.code == tag_code,
+            ConversationCommercialTag.suppressed.is_(False),
+        )
+    if temperature:
+        if temperature not in {"QUENTE", "MORNO", "FRIO", "INDEFINIDO"}:
+            raise HTTPException(status_code=400, detail="Temperatura inválida")
+        if temperature == "INDEFINIDO":
+            stmt = stmt.outerjoin(
+                ConversationCommercialInsight,
+                ConversationCommercialInsight.conversation_id == Conversation.id,
+            ).where(
+                or_(ConversationCommercialInsight.id.is_(None),
+                    ConversationCommercialInsight.temperature == "INDEFINIDO")
+            )
+        else:
+            stmt = stmt.join(
+                ConversationCommercialInsight,
+                ConversationCommercialInsight.conversation_id == Conversation.id,
+            ).where(ConversationCommercialInsight.temperature == temperature)
     if assignee_id:
         stmt = stmt.where(Conversation.assigned_user_id == assignee_id)
     if queue_id is not None:
@@ -369,9 +408,30 @@ def _inbox_counts(
     *,
     queue_id: int | None = None,
     assignee_id: int | None = None,
+    tag_code: str = "",
+    temperature: str = "",
 ) -> dict[str, int]:
     """Contadores com os mesmos filtros da caixa (sem o limite de 250 itens)."""
     stmt = apply_conversation_scope(select(Conversation), user, inbox=True)
+    if tag_code:
+        if tag_code not in TAG_LABELS:
+            raise HTTPException(status_code=400, detail="Etiqueta inválida")
+        stmt = stmt.join(ConversationCommercialTag,
+            ConversationCommercialTag.conversation_id == Conversation.id).where(
+            ConversationCommercialTag.code == tag_code,
+            ConversationCommercialTag.suppressed.is_(False))
+    if temperature:
+        if temperature not in {"QUENTE", "MORNO", "FRIO", "INDEFINIDO"}:
+            raise HTTPException(status_code=400, detail="Temperatura inválida")
+        if temperature == "INDEFINIDO":
+            stmt = stmt.outerjoin(ConversationCommercialInsight,
+                ConversationCommercialInsight.conversation_id == Conversation.id).where(
+                or_(ConversationCommercialInsight.id.is_(None),
+                    ConversationCommercialInsight.temperature == "INDEFINIDO"))
+        else:
+            stmt = stmt.join(ConversationCommercialInsight,
+                ConversationCommercialInsight.conversation_id == Conversation.id).where(
+                ConversationCommercialInsight.temperature == temperature)
     if queue_id is not None:
         stmt = stmt.join(
             ConversationQueueLink,
@@ -501,11 +561,16 @@ def _render_inbox(
     view: str = "active",
     assignee_id: int | None = None,
     queue_id: int | None = None,
+    tag_code: str = "",
+    temperature: str = "",
 ):
     queues = _queue_panel(db, user)
     _validate_queue_filter(user, queue_id, queues)
     focused_queue = next((item for item in queues if item["id"] == queue_id), None)
-    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee_id, queue_id=queue_id)
+    conversations = _inbox_query(
+        db, user, q=q, view=view, assignee_id=assignee_id, queue_id=queue_id,
+        tag_code=tag_code, temperature=temperature,
+    )
     selected = None
     if conversation_id is not None:
         selected = _get_conversation(db, user, conversation_id)
@@ -548,7 +613,15 @@ def _render_inbox(
             )
         )
 
-    counts = _inbox_counts(db, user, queue_id=queue_id, assignee_id=assignee_id)
+    counts = _inbox_counts(
+        db, user, queue_id=queue_id, assignee_id=assignee_id,
+        tag_code=tag_code, temperature=temperature,
+    )
+    visible_ids = [item.id for item in conversations]
+    if selected and selected.id not in visible_ids:
+        visible_ids.append(selected.id)
+    commercial_tags = tag_map(db, visible_ids)
+    commercial_insights = insight_map(db, visible_ids)
     return render(
         request,
         "conversations/inbox.html",
@@ -574,6 +647,16 @@ def _render_inbox(
         sellers=_seller_panel(db, user, queue_id=queue_id),
         queues=queues,
         focused_queue=focused_queue,
+        tag_code=tag_code,
+        temperature=temperature,
+        tag_catalog=TAG_LABELS,
+        temperature_catalog=TEMPERATURE_LABELS,
+        stage_catalog=STAGE_LABELS,
+        owner_catalog=OWNER_LABELS,
+        commercial_tags=commercial_tags,
+        commercial_insights=commercial_insights,
+        selected_tags=commercial_tags.get(selected.id, []) if selected else [],
+        selected_insight=commercial_insights.get(selected.id) if selected else None,
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -586,12 +669,17 @@ def inbox(
     view: str = "active",
     assignee: int | None = None,
     queue: int | None = None,
+    tag: str = "",
+    temperature: str = "",
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
     if redirect:
         return redirect
-    return _render_inbox(request, db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
+    return _render_inbox(
+        request, db, user, q=q, view=view, assignee_id=assignee, queue_id=queue,
+        tag_code=tag, temperature=temperature,
+    )
 
 
 @router.get("/conversations/{conversation_id}")
@@ -602,6 +690,8 @@ def conversation_detail(
     view: str = "active",
     assignee: int | None = None,
     queue: int | None = None,
+    tag: str = "",
+    temperature: str = "",
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
@@ -616,6 +706,8 @@ def conversation_detail(
         queue_id=queue,
         q=q,
         view=view,
+        tag_code=tag,
+        temperature=temperature,
     )
 
 
@@ -1219,6 +1311,8 @@ def conversation_inbox_api(
     view: str = "active",
     assignee: int | None = None,
     queue: int | None = None,
+    tag: str = "",
+    temperature: str = "",
     db: Session = Depends(get_db),
 ):
     user = get_current_user(request, db)
@@ -1231,9 +1325,18 @@ def conversation_inbox_api(
         )
     queues = _queue_panel(db, user) if queue is not None else []
     _validate_queue_filter(user, queue, queues)
-    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
+    conversations = _inbox_query(
+        db, user, q=q, view=view, assignee_id=assignee, queue_id=queue,
+        tag_code=tag, temperature=temperature,
+    )
+    ids = [item.id for item in conversations]
+    tags = tag_map(db, ids)
+    insights = insight_map(db, ids)
     return {
-        "counts": _inbox_counts(db, user, queue_id=queue, assignee_id=assignee),
+        "counts": _inbox_counts(
+            db, user, queue_id=queue, assignee_id=assignee,
+            tag_code=tag, temperature=temperature,
+        ),
         "items": [
             {
                 "id": item.id,
@@ -1248,6 +1351,13 @@ def conversation_inbox_api(
                 "status": item.status,
                 "unread_count": int(item.unread_count or 0),
                 "last_message_at": item.last_message_at.isoformat() if item.last_message_at else None,
+                "commercial_tags": tags.get(item.id, []),
+                "commercial_temperature": (
+                    insights[item.id].temperature if item.id in insights else "INDEFINIDO"
+                ),
+                "commercial_score": (
+                    insights[item.id].score if item.id in insights else None
+                ),
             }
             for item in conversations
         ],
@@ -1304,3 +1414,115 @@ def conversation_messages_api(
             for item in items
         ],
     }
+
+
+@router.post("/conversations/{conversation_id}/commercial-tag")
+def update_commercial_tag(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    code: str = Form(...),
+    enabled: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Operação manual, apenas etiquetas internas; nunca dispara WhatsApp."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversa indisponível.")
+    if code not in TAG_LABELS or enabled not in {"0", "1"}:
+        raise HTTPException(status_code=400, detail="Etiqueta ou ação inválida.")
+    update_manual_tag(
+        db, conversation_id=conversation.id, code=code,
+        enabled=(enabled == "1"), changed_by_id=user.id,
+    )
+    write_audit(
+        db, user=user, action="COMMERCIAL_TAG_MANUAL_UPDATED",
+        entity_type="conversation", entity_id=conversation.id,
+        payload={"code": code, "enabled": enabled == "1"},
+    )
+    db.commit()
+    return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+
+@router.get("/conversations-intelligence")
+def commercial_heatmap(
+    request: Request,
+    queue: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Mapa de calor agregado, com controle de visibilidade gerencial."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR")
+    queues = _queue_panel(db, user)
+    _validate_queue_filter(user, queue, queues)
+    scoped_stmt = apply_conversation_scope(
+        select(Conversation).options(selectinload(Conversation.assigned_user)),
+        user, inbox=True,
+    ).where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES))
+    if queue is not None:
+        scoped_stmt = scoped_stmt.join(
+            ConversationQueueLink,
+            ConversationQueueLink.conversation_id == Conversation.id,
+        ).where(ConversationQueueLink.queue_id == queue)
+    conversations = list(db.scalars(scoped_stmt))
+    ids = [row.id for row in conversations]
+    insights = insight_map(db, ids)
+    tags = tag_map(db, ids)
+    by_owner: dict[int, dict] = {}
+    total = {"QUENTE": 0, "MORNO": 0, "FRIO": 0, "INDEFINIDO": 0}
+    pending = 0
+    high_potential = 0
+    tagged_counts = {code: 0 for code in TAG_LABELS}
+    for item in conversations:
+        temp = insights[item.id].temperature if item.id in insights else "INDEFINIDO"
+        if temp not in total:
+            temp = "INDEFINIDO"
+        total[temp] += 1
+        owner_id = item.assigned_user_id or 0
+        row = by_owner.setdefault(
+            owner_id,
+            {
+                "id": item.assigned_user_id,
+                "name": (item.assigned_user.name if item.assigned_user else "Sem responsável"),
+                "QUENTE": 0, "MORNO": 0, "FRIO": 0, "INDEFINIDO": 0,
+                "pending": 0,
+            },
+        )
+        row[temp] += 1
+        if _needs_attention(item.status, item.unread_count, item.assigned_user_id):
+            pending += 1
+            row["pending"] += 1
+        codes = {tag["code"] for tag in tags.get(item.id, [])}
+        for code in codes:
+            if code in tagged_counts:
+                tagged_counts[code] += 1
+        if "ALTO_POTENCIAL" in codes or "EM_FECHAMENTO" in codes:
+            high_potential += 1
+    sorted_rows = sorted(
+        by_owner.values(),
+        key=lambda row: (-row["QUENTE"], -row["MORNO"], row["name"]),
+    )
+    sorted_tags = [
+        {"code": code, "name": TAG_LABELS[code], "count": count}
+        for code, count in sorted(tagged_counts.items(), key=lambda pair: -pair[1])
+        if count
+    ]
+    return render(
+        request, "conversations/heatmap.html",
+        user=user,
+        active_nav="conversations",
+        page_title="Inteligência comercial",
+        queues=queues, selected_queue=queue,
+        rows=sorted_rows, totals=total, pending=pending,
+        high_potential=high_potential,
+        total_conversations=len(conversations),
+        tag_totals=sorted_tags,
+        temperature_catalog=TEMPERATURE_LABELS,
+    )
