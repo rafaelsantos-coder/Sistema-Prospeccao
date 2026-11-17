@@ -5,7 +5,7 @@
     <p>Cadastre as linhas ou ramais SIP utilizados para realizar as ligações.</p></div>
   <a class="button button-secondary" href="/voice">Voltar ao dashboard</a>
 </div>
-<div class="voice-notice"><strong>Conexão SIP ainda não verificada.</strong><p>O status “Ativa” indica que a conta pode ser selecionada em novos cadastros. “Conectada” só será exibido após a integração com o servidor SIP confirmar o registro.</p></div>
+<div class="voice-notice"><strong>Status de telefonia SIP</strong><p>Conta ativa no cadastro não significa ramal conectado. Utilize o teste SIP para confirmar o registro no PABX antes de usar em qualquer campanha. {{ "Agente SIP de diagnóstico disponível." if agent_online else "Agente SIP ainda offline; teste indisponível." }}</p></div>
 
 <section class="panel voice-panel">
   <span class="eyebrow">LINHAS E RAMAIS</span><h3>Contas cadastradas</h3>
@@ -18,8 +18,17 @@
       <td><strong>{{ account.name }}</strong><small>Usuário: {{ account.username }}</small></td>
       <td>{{ account.domain }}</td><td>{{ account.transport }}</td>
       <td><span class="voice-pill {{ 'is-ready' if account.active else 'is-paused' }}">{{ 'Ativa' if account.active else 'Pausada' }}</span></td>
-      <td><span class="voice-pill is-unknown">Não verificada</span></td>
+      <td>
+        {% set latest = latest_tests.get(account.id) %}
+        {% if latest and latest.sip_register_code == 200 %}
+          <span class="voice-pill is-ready">Autenticou no teste</span>
+          <small>Registro temporário; não indica conexão permanente</small>
+        {% else %}
+          <span class="voice-pill is-unknown">Não verificada</span>
+        {% endif %}
+      </td>
       <td><div class="voice-actions">
+        <a class="button button-primary" href="/voice/accounts/{{ account.id }}/test">Testar ligação</a>
         <a class="button button-secondary" href="/voice/accounts?edit_id={{ account.id }}">Editar</a>
         <form action="/voice/accounts/{{ account.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="button button-secondary" type="submit">{{ 'Pausar' if account.active else 'Reativar' }}</button></form>
