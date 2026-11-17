@@ -27,6 +27,7 @@ from app.services.ai_seller import (
     resume_simplified_mobile_states,
 )
 from app.services.ai_supervisor import run_shadow_supervisor_loop
+from app.services.commercial_intelligence import run_commercial_observer_loop
 from app.services.ai_autocorrector import run_autocorrector_loop
 from app.services.ai_learning import run_learning_loop
 from app.services.ai_engineer import run_engineer_loop
@@ -1137,6 +1138,13 @@ def run() -> None:
             scope_result = enforce_exclusive_ai_queue(scope_db)
             scope_db.commit()
             LOG.warning("Escopo IA exclusivo preparado: %s", scope_result)
+    # Observador comercial isolado: roda sem permissão de enviar WhatsApp,
+    # independentemente do escopo de atuação do SDR/Vendedor IA.
+    threading.Thread(
+        target=run_commercial_observer_loop,
+        name="sulnet-commercial-observer",
+        daemon=True,
+    ).start()
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
         "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s maintenance=%s supervisor_shadow=%s guardian=%s autocorrect=%s learning=%s engineer=%s openai_configured=%s poll=%ss",
