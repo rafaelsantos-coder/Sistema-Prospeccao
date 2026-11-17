@@ -21,63 +21,107 @@
       <input name="q" value="{{ query }}" placeholder="Buscar empresa, pessoa ou telefone">
     </form>
 
-    {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
-    <form class="inbox-queue-filter" action="/conversations" method="get" aria-label="Filtro gerencial de filas">
-      <input type="hidden" name="view" value="{{ view }}">
-      {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
-      {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
-      {% if tag_code %}<input type="hidden" name="tag" value="{{ tag_code }}">{% endif %}
-      {% if temperature %}<input type="hidden" name="temperature" value="{{ temperature }}">{% endif %}
-      <label for="inbox-queue-select">Visualizar fila</label>
-      <div class="inbox-queue-filter-controls">
-        <select id="inbox-queue-select" name="queue" aria-label="Selecionar fila" >
+    {% set is_manager = current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
+    {% set filter_count = (1 if queue_id else 0) + (1 if assignee_id else 0) + (1 if tag_code else 0) + (1 if temperature else 0) %}
+    {% set preserved_filters = ('&queue=' ~ queue_id if queue_id else '') ~ ('&assignee=' ~ assignee_id if assignee_id else '') ~ ('&q=' ~ (query|urlencode) if query else '') ~ ('&tag=' ~ tag_code if tag_code else '') ~ ('&temperature=' ~ temperature if temperature else '') %}
+
+    <nav class="inbox-tabs" aria-label="Situação dos atendimentos">
+      <a href="/conversations?view=active{{ preserved_filters }}" class="{% if view == 'active' %}active{% endif %}" {% if view == 'active' %}aria-current="page"{% endif %}>Ativas <b id="count-active">{{ counts.active }}</b></a>
+      <a href="/conversations?view=unread{{ preserved_filters }}" class="{% if view == 'unread' %}active{% endif %}" {% if view == 'unread' %}aria-current="page"{% endif %}>Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
+      {% if is_manager %}
+      <a href="/conversations?view=pending{{ preserved_filters }}" class="{% if view == 'pending' %}active{% endif %}" {% if view == 'pending' %}aria-current="page"{% endif %}>Pendentes <b id="count-pending">{{ counts.pending }}</b></a>
+      <a href="/conversations?view=queue{{ preserved_filters }}" class="{% if view == 'queue' %}active{% endif %}" {% if view == 'queue' %}aria-current="page"{% endif %}>Sem responsável <b id="count-queue">{{ counts.queue }}</b></a>
+      {% endif %}
+      <a href="/conversations?view=closed{{ preserved_filters }}" class="{% if view == 'closed' %}active{% endif %}" {% if view == 'closed' %}aria-current="page"{% endif %}>Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
+    </nav>
+
+    <div class="inbox-control-bar">
+      {% if is_manager %}
+      <form action="/conversations" method="get" class="inbox-main-queue">
+        <input type="hidden" name="view" value="{{ view }}">
+        {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+        {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
+        {% if tag_code %}<input type="hidden" name="tag" value="{{ tag_code }}">{% endif %}
+        {% if temperature %}<input type="hidden" name="temperature" value="{{ temperature }}">{% endif %}
+        <label for="inbox-queue-select">Fila</label>
+        <select id="inbox-queue-select" name="queue" aria-label="Selecionar fila">
           <option value="">Todas as filas</option>
           {% for item in queues %}
           <option value="{{ item.id }}" {% if queue_id == item.id %}selected{% endif %}>{{ item.name }}</option>
           {% endfor %}
         </select>
-        {% if queue_id %}<a class="inbox-queue-clear" href="/conversations?view={{ view }}" title="Limpar seleção da fila">Limpar</a>{% endif %}
-      </div>
-      <small>{% if focused_queue %}Exibindo somente {{ focused_queue.name }}{% else %}Visão geral das filas permitidas ao seu perfil{% endif %}</small>
-    </form>
-    {% endif %}
-
-    <form class="inbox-commercial-filter" action="/conversations" method="get" data-commercial-filter>
-      <input type="hidden" name="view" value="{{ view }}">
-      {% if queue_id %}<input type="hidden" name="queue" value="{{ queue_id }}">{% endif %}
-      {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
-      {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
-      <label for="tag-filter">Etiqueta</label>
-      <select id="tag-filter" name="tag">
-        <option value="">Todas</option>
-        {% for code, name in tag_catalog.items() %}
-        <option value="{{ code }}" {% if tag_code == code %}selected{% endif %}>{{ name }}</option>
-        {% endfor %}
-      </select>
-      <label for="temp-filter">Calor</label>
-      <select id="temp-filter" name="temperature">
-        <option value="">Todos</option>
-        {% for code, name in temperature_catalog.items() %}
-        <option value="{{ code }}" {% if temperature == code %}selected{% endif %}>{{ name }}</option>
-        {% endfor %}
-      </select>
-    </form>
-    {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
-    <a class="inbox-commercial-heatmap-link" href="/conversations-intelligence{% if queue_id %}?queue={{ queue_id }}{% endif %}">▦ Mapa de calor comercial</a>
-    {% endif %}
-
-    <div class="inbox-tabs">
-      {% set preserved_filters = ('&queue=' ~ queue_id if queue_id else '') ~ ('&assignee=' ~ assignee_id if assignee_id else '') ~ ('&q=' ~ (query|urlencode) if query else '') ~ ('&tag=' ~ tag_code if tag_code else '') ~ ('&temperature=' ~ temperature if temperature else '') %}
-      <a href="/conversations?view=active{{ preserved_filters }}" class="{% if view == 'active' %}active{% endif %}">Ativas <b id="count-active">{{ counts.active }}</b></a>
-      <a href="/conversations?view=unread{{ preserved_filters }}" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
-      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
-      <a href="/conversations?view=pending{{ preserved_filters }}" class="{% if view == 'pending' %}active{% endif %}">Pendentes <b id="count-pending">{{ counts.pending }}</b></a>
-      <a href="/conversations?view=queue{{ preserved_filters }}" class="{% if view == 'queue' %}active{% endif %}">Sem responsável <b id="count-queue">{{ counts.queue }}</b></a>
+      </form>
+      {% else %}
+      <span class="inbox-scope-caption">Meus atendimentos</span>
       {% endif %}
-      <a href="/conversations?view=closed{{ preserved_filters }}" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
+
+      <details class="inbox-filter-drawer" data-inbox-filter-drawer>
+        <summary aria-label="Abrir filtros de conversa">
+          <span aria-hidden="true">☷</span> Filtros
+          {% if filter_count %}<b class="inbox-filter-counter">{{ filter_count }}</b>{% endif %}
+        </summary>
+        <form action="/conversations" method="get" class="inbox-filter-popup">
+          <input type="hidden" name="view" value="{{ view }}">
+          {% if queue_id %}<input type="hidden" name="queue" value="{{ queue_id }}">{% endif %}
+          {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+          <div class="inbox-filter-popup-heading">
+            <strong>Refinar conversas</strong>
+            <small>Combine os filtros para localizar oportunidades.</small>
+          </div>
+          {% if sellers %}
+          <label for="inbox-filter-seller">Responsável</label>
+          <select id="inbox-filter-seller" name="assignee">
+            <option value="">Todos os vendedores</option>
+            {% for seller in sellers %}
+            <option value="{{ seller.id }}" {% if assignee_id == seller.id %}selected{% endif %}>{{ seller.name }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+          <label for="tag-filter">Etiqueta comercial</label>
+          <select id="tag-filter" name="tag">
+            <option value="">Todas as etiquetas</option>
+            {% for code, name in tag_catalog.items() %}
+            <option value="{{ code }}" {% if tag_code == code %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+          <label for="temp-filter">Potencial de fechamento</label>
+          <select id="temp-filter" name="temperature">
+            <option value="">Todas as temperaturas</option>
+            {% for code, name in temperature_catalog.items() %}
+            <option value="{{ code }}" {% if temperature == code %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+          <div class="inbox-filter-buttons">
+            <a href="/conversations?view={{ view }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}">Limpar</a>
+            <button type="submit">Aplicar filtros</button>
+          </div>
+        </form>
+      </details>
     </div>
-    {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] and focused_queue %}
-    <div class="inbox-queue-summary" aria-label="Situação da fila selecionada">
+
+    {% if filter_count %}
+    <div class="inbox-applied-filters" aria-label="Filtros ativos">
+      {% if focused_queue %}
+      <a href="/conversations?view={{ view }}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" title="Remover filtro de fila">Fila: {{ focused_queue.name }} <span aria-hidden="true">×</span></a>
+      {% endif %}
+      {% if assignee_id %}
+      {% for seller in sellers %}
+      {% if seller.id == assignee_id %}
+      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" title="Remover filtro de vendedor">{{ seller.name }} <span aria-hidden="true">×</span></a>
+      {% endif %}
+      {% endfor %}
+      {% endif %}
+      {% if tag_code %}
+      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" title="Remover filtro de etiqueta">{{ tag_catalog.get(tag_code, tag_code) }} <span aria-hidden="true">×</span></a>
+      {% endif %}
+      {% if temperature %}
+      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" title="Remover filtro de temperatura">{{ temperature_catalog.get(temperature, temperature) }} <span aria-hidden="true">×</span></a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if is_manager and focused_queue %}
+    <div class="inbox-queue-summary" aria-label="Resumo da fila {{ focused_queue.name }}">
       <span><strong id="queue-summary-pending">{{ counts.pending }}</strong> pendentes</span>
       <span><strong id="queue-summary-unread">{{ counts.unread }}</strong> não lidas</span>
       <span><strong id="queue-summary-owner">{{ counts.queue }}</strong> sem responsável</span>
@@ -86,54 +130,45 @@
     </div>
     {% endif %}
 
-    {% if queues %}
-    <div class="seller-panel">
-      <div class="seller-panel-title">Filas ativas · pendências</div>
-      {% for item in queues %}
-      <a href="/conversations?view={{ view }}&amp;queue={{ item.id }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" class="seller-row {% if queue_id == item.id %}active{% endif %}">
-        <span>{{ item.name }}</span>
-        <small title="Pendências nessa fila">{{ item.pending }} pend.</small>
-        <b title="Conversas ativas">{{ item.open }}</b>
-      </a>
-      {% endfor %}
+    {% if is_manager %}
+    <div class="inbox-management-links">
+      <a href="/conversations-intelligence{% if queue_id %}?queue={{ queue_id }}{% endif %}"><span aria-hidden="true">▦</span> Mapa de calor comercial <span aria-hidden="true">↗</span></a>
     </div>
     {% endif %}
 
-    {% if sellers %}
-    <div class="seller-panel">
-      <div class="seller-panel-title">Vendedores</div>
-      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}" class="seller-row {% if not assignee_id %}active{% endif %}">
-        <span>Todos</span><b>{{ counts.active }}</b>
-      </a>
-      {% for seller in sellers %}
-      <a href="/conversations?view={{ view }}&amp;assignee={{ seller.id }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}" class="seller-row {% if assignee_id == seller.id %}active{% endif %}">
-        <span><i class="seller-dot {% if seller.online %}on{% endif %}"></i>{{ seller.name }}</span>
-        <small>{{ 'online' if seller.online else 'offline' }}</small>
-        <b>{{ seller.open }}</b>
-      </a>
-      {% endfor %}
+    {% if queues or sellers %}
+    <div class="inbox-shortcuts" aria-label="Acompanhamento gerencial">
+      {% if queues %}
+      <details class="inbox-shortcut-group">
+        <summary><span>Filas e pendências</span><b>{{ queues|length }}</b><span aria-hidden="true" class="inbox-shortcut-chevron">⌄</span></summary>
+        <div class="inbox-shortcut-list">
+          <a href="/conversations?view={{ view }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}" class="inbox-shortcut-row {% if not queue_id %}active{% endif %}">Todas as filas</a>
+          {% for item in queues %}
+          <a href="/conversations?view={{ view }}&amp;queue={{ item.id }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}" class="inbox-shortcut-row {% if queue_id == item.id %}active{% endif %}">
+            <span>{{ item.name }}</span>
+            <small title="Pendências">{{ item.pending }} pend.</small>
+            <b title="Conversas ativas">{{ item.open }}</b>
+          </a>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+      {% if sellers %}
+      <details class="inbox-shortcut-group">
+        <summary><span>Vendedores</span><b>{{ sellers|length }}</b><span aria-hidden="true" class="inbox-shortcut-chevron">⌄</span></summary>
+        <div class="inbox-shortcut-list">
+          <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}" class="inbox-shortcut-row {% if not assignee_id %}active{% endif %}">Todos os vendedores</a>
+          {% for seller in sellers %}
+          <a href="/conversations?view={{ view }}&amp;assignee={{ seller.id }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}" class="inbox-shortcut-row {% if assignee_id == seller.id %}active{% endif %}">
+            <span><i class="seller-dot {% if seller.online %}on{% endif %}"></i>{{ seller.name }}</span>
+            <small>{{ 'online' if seller.online else 'offline' }}</small>
+            <b title="Conversas ativas">{{ seller.open }}</b>
+          </a>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
     </div>
-    <style>
-      .seller-panel{flex:none;margin:8px 12px 4px;border:1px solid var(--line,#e5e7eb);border-radius:10px;padding:6px;max-height:210px;overflow:auto;font-size:13px}
-      .seller-panel-title{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.6;padding:4px 6px}
-      .seller-row{display:flex;align-items:center;gap:6px;padding:6px;border-radius:8px;color:inherit;text-decoration:none}
-      .seller-row span{flex:1;display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .seller-row small{opacity:.6;font-size:11px}
-      .seller-row b{min-width:22px;text-align:center;border-radius:999px;background:rgba(127,127,127,.15);padding:1px 6px}
-      .seller-row.active{background:rgba(255,122,36,.14);font-weight:600}
-      .seller-dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block;flex:none}
-      .seller-dot.on{background:#16a34a}
-      .inbox-queue-filter{flex:none;margin:10px 12px 5px;padding:10px;border:1px solid #f4c5a8;background:#fff9f5;border-radius:10px;display:grid;gap:5px}
-      .inbox-queue-filter label{font-weight:750;color:#c4500b;font-size:12px}
-      .inbox-queue-filter-controls{display:flex;align-items:center;gap:6px;min-width:0}
-      .inbox-queue-filter select{min-width:0;flex:1;width:100%;padding:7px;border:1px solid #e5d0c3;border-radius:7px;background:white;color:#17202c;font:inherit}
-      .inbox-queue-clear{flex:none;font-size:11px;text-decoration:none;color:#b94a10}
-      .inbox-queue-filter small{font-size:11px;color:#7e6355}
-      .inbox-queue-summary{display:flex;flex:none;flex-wrap:wrap;gap:5px;margin:5px 12px;font-size:11px}
-      .inbox-queue-summary span{background:#f1f3f5;border-radius:6px;padding:4px 6px;color:#475569}
-      .inbox-queue-summary strong{color:#1f2937}
-      .inbox-tabs{flex-wrap:wrap}
-    </style>
     {% endif %}
 
     <div class="conversation-list" id="conversation-list">
@@ -360,31 +395,67 @@
       {% else %}
       <p class="commercial-observer-reason">Aguardando análise das mensagens. O vendedor pode etiquetar manualmente agora.</p>
       {% endif %}
-      <div class="commercial-selected-tags">
-        {% for tag in selected_tags %}
-        <form action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="code" value="{{ tag.code }}">
-          <input type="hidden" name="enabled" value="0">
-          <span class="commercial-tag" data-tag="{{ tag.code }}" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
-          <button type="submit" title="Remover etiqueta {{ tag.name }}" aria-label="Remover etiqueta {{ tag.name }}">×</button>
-        </form>
-        {% endfor %}
-      </div>
-      <form class="commercial-add-tag" action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="enabled" value="1">
-        <label for="commercial-tag-select">Adicionar etiqueta</label>
-        <div>
-          <select name="code" id="commercial-tag-select" required>
-            <option value="">Selecione</option>
-            {% for code, name in tag_catalog.items() %}
-            <option value="{{ code }}">{{ name }}</option>
-            {% endfor %}
-          </select>
-          <button class="button button-secondary" type="submit">Adicionar</button>
+      <div class="commercial-tag-editor">
+        <div class="commercial-tag-editor-heading">
+          <strong>Etiquetas desta conversa</strong>
+          <span>{{ selected_tags|length }} aplicada(s)</span>
         </div>
-      </form>
+        <div class="commercial-selected-tags">
+          {% for tag in selected_tags %}
+          <form action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="code" value="{{ tag.code }}">
+            <input type="hidden" name="enabled" value="0">
+            <span class="commercial-tag" data-tag="{{ tag.code }}" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
+            <button type="submit" title="Remover etiqueta {{ tag.name }}" aria-label="Remover etiqueta {{ tag.name }}">×</button>
+          </form>
+          {% else %}
+          <span class="commercial-no-tags">Nenhuma etiqueta aplicada.</span>
+          {% endfor %}
+        </div>
+        {% set selected_tag_codes = selected_tags|map(attribute='code')|list %}
+        <div class="commercial-tag-shortcuts" aria-label="Etiquetas rápidas">
+          {% for code, name in [('EM_NEGOCIACAO','Em negociação'),('ALTO_POTENCIAL','Alto potencial'),('EM_FECHAMENTO','Em fechamento'),('DOCUMENTOS_PENDENTES','Documentos pendentes')] %}
+          {% if code not in selected_tag_codes %}
+          <form action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="code" value="{{ code }}">
+            <input type="hidden" name="enabled" value="1">
+            <button class="commercial-tag" data-tag="{{ code }}" type="submit" title="Adicionar {{ name }}">+ {{ name }}</button>
+          </form>
+          {% endif %}
+          {% endfor %}
+        </div>
+        <details class="commercial-tag-picker">
+          <summary>Adicionar etiqueta <span aria-hidden="true">⌄</span></summary>
+          <form class="commercial-add-tag" action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="enabled" value="1">
+            <label for="commercial-tag-select">Selecione uma etiqueta</label>
+            <div>
+              <select name="code" id="commercial-tag-select" required>
+                <option value="">Escolha uma opção</option>
+                <optgroup label="Etapa comercial">
+                  {% for code in ['PRIMEIRO_CONTATO', 'EM_NEGOCIACAO', 'ALTO_POTENCIAL', 'EM_FECHAMENTO'] %}
+                  <option value="{{ code }}">{{ tag_catalog[code] }}</option>
+                  {% endfor %}
+                </optgroup>
+                <optgroup label="Documentos e contrato">
+                  {% for code in ['DOCUMENTOS_PENDENTES', 'CREDITO_PENDENTE', 'CONTRATO_ENVIADO', 'ASSINATURA_PENDENTE'] %}
+                  <option value="{{ code }}">{{ tag_catalog[code] }}</option>
+                  {% endfor %}
+                </optgroup>
+                <optgroup label="Acompanhamento e riscos">
+                  {% for code in ['CLIENTE_INDECISO', 'COMPARANDO_PRECOS', 'RETORNO_SOLICITADO', 'RISCO_PERDA'] %}
+                  <option value="{{ code }}">{{ tag_catalog[code] }}</option>
+                  {% endfor %}
+                </optgroup>
+              </select>
+              <button class="button button-secondary" type="submit">Adicionar</button>
+            </div>
+          </form>
+        </details>
+      </div>
       <small class="transfer-help">Etiquetas manuais prevalecem sobre sugestões futuras. A análise não envia mensagens ao cliente.</small>
     </div>
 
@@ -522,6 +593,88 @@
 .commercial-add-tag>div{display:flex;align-items:center;gap:5px}
 .commercial-add-tag select{flex:1;min-width:0;border:1px solid #d1d5db;border-radius:7px;padding:7px;font-size:12px}
 .commercial-add-tag button{white-space:nowrap;padding:8px;font-size:11px}
+.commercial-tag-editor{display:grid;gap:9px;margin-top:12px;border-top:1px solid #eef0f3;padding-top:12px}
+.commercial-tag-editor-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.commercial-tag-editor-heading strong{color:#334155;font-size:12px}
+.commercial-tag-editor-heading span{font-size:10px;color:#64748b}
+.commercial-selected-tags{margin:0;gap:5px}
+.commercial-selected-tags form{background:transparent;border-radius:8px;border:1px solid #e2e8f0;overflow:hidden}
+.commercial-selected-tags form .commercial-tag{border:0}
+.commercial-selected-tags form button{padding:2px 6px;font-size:16px;line-height:1.2}
+.commercial-no-tags{font-size:11px;color:#94a3b8}
+.commercial-tag-shortcuts{display:flex;gap:5px;flex-wrap:wrap}
+.commercial-tag-shortcuts form{margin:0}
+.commercial-tag-shortcuts .commercial-tag{font-family:inherit;font-size:10px;padding:6px 8px;cursor:pointer;transition:filter .15s ease}
+.commercial-tag-shortcuts .commercial-tag:hover{filter:brightness(.94)}
+.commercial-tag-shortcuts .commercial-tag:focus-visible{outline:2px solid #f97316;outline-offset:2px}
+.commercial-tag-picker{background:#f8fafc;border-radius:9px;border:1px solid #e2e8f0}
+.commercial-tag-picker>summary{padding:9px 11px;display:flex;gap:8px;align-items:center;justify-content:space-between;color:#475569;font-size:11px;font-weight:750;cursor:pointer;list-style:none}
+.commercial-tag-picker>summary::-webkit-details-marker{display:none}
+.commercial-tag-picker[open] summary{border-bottom:1px solid #e2e8f0}
+.commercial-tag-picker .commercial-add-tag{padding:11px}
+.commercial-tag-picker .commercial-add-tag button{padding:8px}
+.commercial-tag-picker summary:focus-visible{outline:2px solid #fb923c;outline-offset:2px}
+
+/* Menu enxuto: filtros não competem com a lista de conversas. */
+.inbox-list-head{padding:15px 15px 10px}
+.inbox-list-head h2{font-size:17px}
+.inbox-search{padding:0 12px 10px}
+.inbox-tabs{flex:none;display:flex;flex-wrap:nowrap;gap:4px;padding:2px 12px 10px;scrollbar-width:thin;scrollbar-color:#d7dde4 transparent}
+.inbox-tabs::-webkit-scrollbar{display:block;height:3px}
+.inbox-tabs::-webkit-scrollbar-thumb{background:#d7dde4;border-radius:999px}
+.inbox-tabs a{font-size:10px;flex:none;padding:7px 8px;border:1px solid transparent;border-radius:8px}
+.inbox-tabs a.active{border-color:#fed7aa}
+.inbox-tabs a b{font-size:9px;min-width:18px;height:18px}
+.inbox-control-bar{position:relative;display:flex;align-items:center;gap:8px;margin:0 12px 8px;flex:none;z-index:10}
+.inbox-main-queue{min-width:0;display:flex;flex:1;align-items:center;gap:6px;border:1px solid #e5e9ee;border-radius:10px;background:white;padding:4px 7px}
+.inbox-main-queue label{flex:none;font-size:10px;font-weight:800;color:#8a5638}
+.inbox-main-queue select{flex:1;min-width:0;width:100%;height:30px;border:0;background:transparent;color:#263342;font-size:12px;font-weight:700;outline-offset:2px}
+.inbox-scope-caption{flex:1;color:#64748b;font-weight:750;font-size:12px}
+.inbox-filter-drawer{flex:none;position:static}
+.inbox-filter-drawer summary{list-style:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #e5e9ee;border-radius:10px;background:#fff;min-height:40px;padding:0 10px;font-size:11px;font-weight:800;color:#334155;cursor:pointer}
+.inbox-filter-drawer summary::-webkit-details-marker,.inbox-shortcut-group summary::-webkit-details-marker{display:none}
+.inbox-filter-drawer[open] summary{background:#fff4ec;border-color:#fdba74;color:#a74c15}
+.inbox-filter-counter{display:grid;place-items:center;min-width:19px;height:19px;padding:0 4px;border-radius:999px;background:#ffedd5;color:#9a3412;font-size:10px}
+.inbox-filter-popup{position:absolute;z-index:25;top:calc(100% + 7px);left:0;right:0;max-height:min(450px,66vh);overflow-y:auto;padding:14px;border:1px solid #ead8cd;background:#fff;box-shadow:0 18px 38px rgba(15,23,42,.19);border-radius:14px;display:grid;gap:6px}
+.inbox-filter-popup-heading{display:grid;gap:3px;padding-bottom:8px;margin-bottom:3px;border-bottom:1px solid #eef0f3}
+.inbox-filter-popup-heading strong{font-size:13px;color:#233043}
+.inbox-filter-popup-heading small{color:#64748b;font-size:10px}
+.inbox-filter-popup label{font-size:10px;font-weight:800;color:#526070;margin-top:6px}
+.inbox-filter-popup select{height:38px;width:100%;background:#fafbfc;border:1px solid #dce2e8;border-radius:8px;color:#273445;font-size:12px;padding:0 8px}
+.inbox-filter-buttons{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:12px;margin-top:7px;border-top:1px solid #eef0f3}
+.inbox-filter-buttons a{font-size:11px;color:#64748b;font-weight:750;text-decoration:underline}
+.inbox-filter-buttons button{border:0;padding:10px 14px;border-radius:8px;font-size:11px;font-weight:800;color:#fff;background:#ec6c24;cursor:pointer}
+.inbox-filter-buttons button:hover{background:#d75b16}
+.inbox-applied-filters{display:flex;gap:5px;overflow-x:auto;padding:0 12px 8px;flex:none;scrollbar-width:thin}
+.inbox-applied-filters a{display:inline-flex;align-items:center;gap:5px;max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#fff4ed;border:1px solid #fed7aa;border-radius:999px;padding:5px 8px;color:#a84b18;font-size:10px;font-weight:700;text-decoration:none;flex:none}
+.inbox-applied-filters a span{font-size:14px}
+.inbox-queue-summary{display:flex;flex:none;overflow-x:auto;flex-wrap:nowrap;gap:6px;margin:0 12px 7px;padding:0 0 4px;scrollbar-width:thin}
+.inbox-queue-summary span{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;background:#f1f5f9;border-radius:7px;padding:6px 8px;color:#475569;font-size:10px}
+.inbox-queue-summary span:first-child{background:#fff1e6;color:#a84b18}
+.inbox-queue-summary strong{font-size:12px;color:inherit}
+.inbox-management-links{padding:0 12px 6px;flex:none}
+.inbox-management-links a{display:flex;align-items:center;gap:7px;border-radius:8px;padding:7px 9px;background:#fff7ed;color:#ae5016;font-size:11px;text-decoration:none;font-weight:750}
+.inbox-management-links a span:last-child{margin-left:auto}
+.inbox-shortcuts{display:grid;gap:5px;flex:none;padding:0 12px 7px}
+.inbox-shortcut-group{border:1px solid #e5e9ee;background:#fff;border-radius:9px;min-width:0}
+.inbox-shortcut-group>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;padding:8px 10px;color:#475569;font-weight:800;font-size:11px}
+.inbox-shortcut-group>summary span:first-child{flex:1}
+.inbox-shortcut-group>summary b{font-size:10px;color:#64748b;background:#f1f5f9;border-radius:999px;padding:2px 7px}
+.inbox-shortcut-chevron{font-size:15px;transition:transform .15s}
+.inbox-shortcut-group[open] .inbox-shortcut-chevron{transform:rotate(180deg)}
+.inbox-shortcut-list{border-top:1px solid #edf0f2;overflow-y:auto;max-height:140px;padding:5px}
+.inbox-shortcut-row{display:flex;align-items:center;gap:6px;border-radius:7px;padding:7px;text-decoration:none;color:#475569;font-size:11px;min-width:0}
+.inbox-shortcut-row:hover{background:#f8fafc}
+.inbox-shortcut-row.active{background:#fff4eb;color:#ad5019;font-weight:750}
+.inbox-shortcut-row>span{flex:1;display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inbox-shortcut-row small{font-size:10px;color:#64748b;white-space:nowrap}
+.inbox-shortcut-row b{font-size:10px;min-width:22px;text-align:center;background:#f1f5f9;border-radius:999px;padding:3px 5px}
+.seller-dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:999px;background:#94a3b8}
+.seller-dot.on{background:#16a34a}
+.inbox-filter-drawer summary:focus-visible,.inbox-shortcut-group summary:focus-visible,.inbox-filter-popup select:focus-visible,.inbox-main-queue select:focus-visible{outline:2px solid #fb923c;outline-offset:2px}
+.inbox-filter-drawer[open],.inbox-shortcut-group[open]{isolation:isolate}
+.conversation-list{flex:1;min-height:80px}
+@media(max-width:760px){.inbox-filter-popup{max-height:300px}.inbox-shortcut-list{max-height:110px}}
 </style>
 {% include "conversations/_commercial_tag_colors.html" %}
 {% endblock %}
@@ -536,8 +689,15 @@
   // CSP bloqueia handlers inline; o seletor usa o script autorizado por nonce.
   const queueSelect = document.getElementById('inbox-queue-select');
   queueSelect?.addEventListener('change', () => queueSelect.form?.requestSubmit());
-  document.querySelectorAll('[data-commercial-filter] select').forEach(sel => {
-    sel.addEventListener('change', () => sel.form?.requestSubmit());
+  const filterDrawer = document.querySelector('[data-inbox-filter-drawer]');
+  document.addEventListener('click', event => {
+    if (filterDrawer?.open && !filterDrawer.contains(event.target)) filterDrawer.open = false;
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && filterDrawer?.open) {
+      filterDrawer.open = false;
+      filterDrawer.querySelector('summary')?.focus();
+    }
   });
 
   const conversationId = Number(root.dataset.conversationId || 0);
