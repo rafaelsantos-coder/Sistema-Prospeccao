@@ -16,6 +16,13 @@ IDLE_INTERVAL = max(2, int(os.getenv("CAMPAIGN_IDLE_INTERVAL_SECONDS", "5")))
 
 
 def run() -> None:
+    # Bloqueio global de emergencia solicitado pelo gestor em 17/11/2026.
+    # O atendimento receptivo de WhatsApp e os agentes IA usam outro worker.
+    # A retomada exige remover a pausa explicitamente na configuracao.
+    if os.getenv("CAMPAIGN_DISPATCH_PAUSED", "true").strip().lower() not in {"0", "false", "off", "no"}:
+        LOG.warning("SULNET_DISPAROS_PAUSADOS_POR_SOLICITACAO: nenhum envio de campanha sera processado")
+        while True:
+            time.sleep(60)
     LOG.info("Campaign worker iniciado. Intervalo entre envios: %ss", SEND_INTERVAL)
     while True:
         db = SessionLocal()
