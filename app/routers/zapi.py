@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
+from app.services.global_blacklist import block_phone
 from app.services.conversation_engine import (
     ensure_contact,
     ensure_open_conversation,
@@ -320,6 +321,12 @@ def _process_zapi_payload(
             elif lead.stage in {"NOVO", "TENTATIVA_CONTATO"}:
                 lead.stage = "CONTATO_REALIZADO"
         if opt_out:
+            block_phone(
+                db, phone=conversation.contact.phone,
+                name=conversation.contact.name,
+                reason="Solicitou não receber mensagens pelo WhatsApp",
+                source="OPT_OUT_WHATSAPP",
+            )
             conversation.status = "BLOQUEADO"
             conversation.closed_at = utcnow()
         write_audit(
