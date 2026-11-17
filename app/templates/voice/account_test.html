@@ -27,6 +27,13 @@
   {% elif not agent_online %}
     <div class="voice-notice"><strong>Agente indisponível</strong><p>O serviço independente de testes SIP não respondeu recentemente. Nenhuma ligação será colocada em fila enquanto ele estiver offline. Recarregue esta página após a conexão do agente.</p></div>
   {% endif %}
+  <form action="/voice/accounts/{{ account.id }}/verify" method="post" class="stack-form" style="margin-bottom:16px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <h4>1. Verificar autenticação SIP — sem fazer ligações</h4>
+    <p class="voice-help">Consulta o PABX e valida o usuário e a senha cadastrados. O serviço solicita registro temporário e tenta encerrá-lo após o teste. Este processo pode interferir na sessão de outro aparelho com o mesmo ramal.</p>
+    <button class="button button-secondary" type="submit" {% if not agent_online or not account.active or account.transport != 'UDP' or processing %}disabled{% endif %}>Verificar conexão SIP</button>
+  </form>
+  <h4>2. Testar uma ligação autorizada</h4>
   <form action="/voice/accounts/{{ account.id }}/test" method="post" class="stack-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
@@ -56,9 +63,9 @@
       <thead><tr><th>Número informado</th><th>Estado</th><th>Registro SIP</th><th>Ligação</th><th>Detalhes</th></tr></thead>
       <tbody>{% for item in recent %}
         <tr>
-          <td><strong>{{ item.target_phone }}</strong><small>{{ item.created_at.strftime('%d/%m/%Y %H:%M') if item.created_at else '' }} UTC</small></td>
-          <td><span class="voice-pill {{ 'is-ready' if item.status in ['TOCOU', 'ATENDIDA'] else 'is-paused' if item.status in ['FALHOU','EXPIRADO','SEM_RESPOSTA','OCUPADO'] else 'is-unknown' }}">
-            {{ {'PENDENTE':'Aguardando agente', 'REGISTRANDO':'Registrando SIP', 'REGISTRADO':'SIP autenticado', 'CHAMANDO':'Chamando', 'TOCANDO':'Sinal de toque', 'TOCOU':'Tocou (SIP 180)', 'ATENDIDA':'Atendida (SIP 200)', 'OCUPADO':'Ocupado', 'FALHOU':'Falhou', 'SEM_RESPOSTA':'Sem resposta', 'EXPIRADO':'Expirado'}.get(item.status, item.status) }}
+          <td><strong>{{ "Conexão SIP (sem chamada)" if item.target_phone == "SIP_ONLY" else item.target_phone }}</strong><small>{{ item.created_at.strftime('%d/%m/%Y %H:%M') if item.created_at else '' }} UTC</small></td>
+          <td><span class="voice-pill {{ 'is-ready' if item.status in ['TOCOU', 'ATENDIDA', 'SIP_VALIDADO'] else 'is-paused' if item.status in ['FALHOU','EXPIRADO','SEM_RESPOSTA','OCUPADO'] else 'is-unknown' }}">
+            {{ {'PENDENTE':'Aguardando agente', 'REGISTRANDO':'Registrando SIP', 'REGISTRADO':'SIP autenticado', 'CHAMANDO':'Chamando', 'TOCANDO':'Sinal de toque', 'TOCOU':'Tocou (SIP 180)', 'ATENDIDA':'Atendida (SIP 200)', 'OCUPADO':'Ocupado', 'FALHOU':'Falhou', 'SEM_RESPOSTA':'Sem resposta', 'EXPIRADO':'Expirado', 'SIP_VALIDADO':'Autenticado no PABX'}.get(item.status, item.status) }}
           </span></td>
           <td>{{ item.sip_register_code if item.sip_register_code is not none else '—' }}</td>
           <td>{{ item.sip_invite_code if item.sip_invite_code is not none else '—' }}</td>
