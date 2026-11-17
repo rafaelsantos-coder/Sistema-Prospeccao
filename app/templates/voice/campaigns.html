@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div><span class="eyebrow">PROSPECTA VOZ · OPERAÇÃO</span><h2>Campanhas e preparação</h2>
+    <p>Acompanhe campanhas criadas, importe contatos, envie áudios e prepare a homologação.</p></div>
+  <a class="button button-primary" href="/voice/campaigns/new">＋ Nova campanha</a>
+</div>
+<div class="voice-notice"><strong>Discagem de voz ainda desativada.</strong><p>Importar contatos e solicitar homologação não faz chamadas nem altera os disparos do WhatsApp.</p></div>
+
+{% if campaigns %}
+{% for campaign in campaigns %}
+<section class="panel voice-panel">
+  <div class="voice-campaign-title">
+    <div><span class="eyebrow">CAMPANHA #{{ campaign.id }}</span><h3>{{ campaign.name }}</h3>
+      <p>{{ 'Áudio automático + confirmação DTMF' if campaign.mode == 'AUDIO' else 'Transferência direta' }} · {{ counts.get(campaign.id, 0) }} contatos</p></div>
+    <span class="voice-pill is-unknown">{{ campaign.status|replace('_',' ') }}</span>
+  </div>
+  <div class="voice-campaign-meta">
+    <span><strong>Origem:</strong> {{ campaign.sip_account.name }}</span>
+    <span><strong>Destino:</strong> {{ campaign.group.name }} ({{ campaign.group.target_extension }})</span>
+    <span><strong>Janela:</strong> {{ campaign.window_start }}–{{ campaign.window_end }}</span>
+    <span><strong>Limite:</strong> {{ campaign.daily_limit }}/dia</span>
+  </div>
+  {% if campaign.status == 'RASCUNHO' %}
+  <div class="voice-preparation-grid">
+    <form method="post" action="/voice/campaigns/{{ campaign.id }}/contacts" enctype="multipart/form-data" class="stack-form voice-subpanel">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <h4>1. Importar contatos</h4>
+      <label class="field"><span>Arquivo CSV com nome e telefone</span><input name="csv_file" type="file" accept=".csv,text/csv" required></label>
+      <button class="button button-secondary" type="submit">Importar contatos</button>
+    </form>
+    {% if campaign.mode == 'AUDIO' %}
+    <form method="post" action="/voice/campaigns/{{ campaign.id }}/audio" enctype="multipart/form-data" class="stack-form voice-subpanel">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <h4>2. Áudio da campanha {% if campaign.audio_uri %}<span class="voice-pill is-ready">Carregado</span>{% else %}<span class="voice-pill is-unknown">Pendente</span>{% endif %}</h4>
+      <label class="field"><span>WAV PCM mono, 8/16 kHz (máx. 2 MB)</span><input name="audio" type="file" accept=".wav,audio/wav" required></label>
+      <button class="button button-secondary" type="submit">Salvar gravação</button>
+    </form>
+    {% endif %}
+  </div>
+  <form method="post" action="/voice/campaigns/{{ campaign.id }}/review" class="voice-review">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button button-primary" type="submit">Enviar para homologação (sem discagem)</button>
+  </form>
+  {% else %}
+    <p class="voice-help">Esta campanha está aguardando homologação técnica. Não está ligando automaticamente.</p>
+  {% endif %}
+</section>
+{% endfor %}
+{% else %}
+  <section class="panel voice-panel voice-empty"><h3>Nenhuma campanha de voz cadastrada</h3><p>Crie uma campanha para selecionar a conta de saída e o grupo de vendedores.</p><a class="button button-primary" href="/voice/campaigns/new">Criar primeira campanha</a></section>
+{% endif %}
+{% endblock %}

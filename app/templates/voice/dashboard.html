@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">CENTRAL DE CONTROLE · TELEFONIA</span>
+    <h2>Dashboard Prospecta VOZ</h2>
+    <p>Acompanhe contas SIP, grupos de destino e a preparação das campanhas de voz.</p>
+  </div>
+  <span class="environment-badge">HOMOLOGAÇÃO SIP PENDENTE</span>
+</div>
+
+<div class="voice-notice" role="status">
+  <strong>Discador ainda não conectado à central telefônica.</strong>
+  <p>Os cadastros já podem ser administrados, mas o registro SIP, a conexão dos ramais e as transferências ainda não foram homologados. O sistema não realiza chamadas. Somente o administrador pode fazer configurações.</p>
+</div>
+
+<div class="voice-metrics" aria-label="Indicadores do Prospecta VOZ">
+  <div class="voice-metric"><span>Contas SIP</span><strong>{{ stats.accounts }}</strong><small>{{ stats.accounts_active }} ativas para cadastro · {{ stats.accounts_paused }} pausadas</small></div>
+  <div class="voice-metric"><span>Grupos de ramais</span><strong>{{ stats.groups }}</strong><small>{{ stats.groups_active }} disponíveis para configurar</small></div>
+  <div class="voice-metric"><span>Campanhas de voz</span><strong>{{ stats.campaigns }}</strong><small>{{ stats.campaigns_draft }} rascunhos · {{ stats.campaigns_review }} em homologação</small></div>
+  <div class="voice-metric"><span>Contatos preparados</span><strong>{{ stats.recipients }}</strong><small>Nenhuma discagem automática ativada</small></div>
+</div>
+
+<div class="voice-dashboard-columns">
+  <section class="panel voice-panel">
+    <div class="panel-header">
+      <div><span class="eyebrow">STATUS DAS CONTAS</span><h3>Conexão SIP</h3></div>
+      <a class="button button-secondary" href="/voice/accounts">Gerenciar contas</a>
+    </div>
+    {% if accounts %}
+    <div class="voice-table-wrap">
+      <table class="voice-table">
+        <thead><tr><th>Conta</th><th>Operação</th><th>Registro SIP</th></tr></thead>
+        <tbody>
+        {% for account in accounts[:8] %}
+          <tr>
+            <td><strong>{{ account.name }}</strong><small>{{ account.username }}@{{ account.domain }}</small></td>
+            <td><span class="voice-pill {{ 'is-ready' if account.active else 'is-paused' }}">{{ 'Ativa' if account.active else 'Pausada' }}</span></td>
+            <td><span class="voice-pill is-unknown">Não verificado</span></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <div class="voice-empty"><p>Nenhuma conta SIP cadastrada.</p><a href="/voice/accounts">Cadastrar primeira conta</a></div>
+    {% endif %}
+    <p class="voice-help">“Ativa” significa disponível para configuração de campanhas. Não significa que o ramal está conectado ao PABX.</p>
+  </section>
+
+  <section class="panel voice-panel">
+    <div class="panel-header">
+      <div><span class="eyebrow">CAMPANHAS</span><h3>Preparação e status</h3></div>
+      <a class="button button-secondary" href="/voice/campaigns">Ver campanhas</a>
+    </div>
+    {% if campaigns %}
+    <div class="voice-table-wrap">
+      <table class="voice-table">
+        <thead><tr><th>Campanha</th><th>Modo</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for campaign in campaigns %}
+          <tr>
+            <td><strong>{{ campaign.name }}</strong></td>
+            <td>{{ 'Áudio + confirmação' if campaign.mode == 'AUDIO' else 'Transferência direta' }}</td>
+            <td><span class="voice-pill is-unknown">{{ campaign.status|replace('_',' ') }}</span></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <div class="voice-empty"><p>Não há campanhas de voz cadastradas.</p><a href="/voice/campaigns/new">Criar uma campanha</a></div>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel voice-panel">
+  <span class="eyebrow">CONFIGURAÇÕES DO SISTEMA</span>
+  <h3>Administração por módulos</h3>
+  <div class="voice-module-grid">
+    <a class="voice-module-card" href="/voice/accounts"><span class="voice-module-icon">☎</span><strong>Contas do discador</strong><small>Linhas, credenciais, pausa, edição e exclusão de contas SIP.</small><b>Acessar →</b></a>
+    <a class="voice-module-card" href="/voice/groups"><span class="voice-module-icon">♧</span><strong>Ramais e grupos</strong><small>Grupos de vendedores e ramais de destino para transferência.</small><b>Acessar →</b></a>
+    <a class="voice-module-card" href="/voice/campaigns/new"><span class="voice-module-icon">＋</span><strong>Nova campanha</strong><small>Escolha da conta de origem, destino, áudio ou transferência direta.</small><b>Acessar →</b></a>
+    <a class="voice-module-card" href="/voice/campaigns"><span class="voice-module-icon">◈</span><strong>Campanhas e preparação</strong><small>Listas CSV, mensagens gravadas, revisão e estado de cada campanha.</small><b>Acessar →</b></a>
+  </div>
+</section>
+{% endblock %}

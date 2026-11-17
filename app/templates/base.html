@@ -36,6 +36,15 @@
       <a href="/voice" class="nav-item {% if active_nav == 'voice' %}active{% endif %}">
         <span class="nav-icon">☎</span><span>Prospecta VOZ</span>
       </a>
+      {% if active_nav == 'voice' %}
+      <div class="nav-submenu" aria-label="Navegação do Prospecta VOZ">
+        <a href="/voice" class="{% if voice_section == 'dashboard' %}active{% endif %}">Dashboard VOZ</a>
+        <a href="/voice/accounts" class="{% if voice_section == 'accounts' %}active{% endif %}">Contas do discador</a>
+        <a href="/voice/groups" class="{% if voice_section == 'groups' %}active{% endif %}">Ramais e grupos</a>
+        <a href="/voice/campaigns/new" class="{% if voice_section == 'new_campaign' %}active{% endif %}">Nova campanha</a>
+        <a href="/voice/campaigns" class="{% if voice_section == 'campaigns' %}active{% endif %}">Campanhas e preparação</a>
+      </div>
+      {% endif %}
       {% endif %}
       <a href="/campaigns" class="nav-item {% if active_nav == 'campaigns' %}active{% endif %}">
         <span class="nav-icon">◈</span><span>Campanhas</span>
