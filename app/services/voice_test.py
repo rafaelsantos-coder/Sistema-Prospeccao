@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import VoiceTestAgent, VoiceTestCall, VoiceSipAccount
 
-TERMINAL = {"TOCOU", "ATENDIDA", "OCUPADO", "FALHOU", "SEM_RESPOSTA", "EXPIRADO"}
+TERMINAL = {"TOCOU", "ATENDIDA", "OCUPADO", "FALHOU", "SEM_RESPOSTA", "EXPIRADO", "SIP_VALIDADO"}
 ACTIVE = {"PENDENTE", "REGISTRANDO", "REGISTRADO", "CHAMANDO", "TOCANDO"}
 BRAZIL_DDDS = {11,12,13,14,15,16,17,18,19,21,22,24,27,28,31,32,33,34,35,37,38,
                41,42,43,44,45,46,47,48,49,51,53,54,55,61,62,63,64,65,66,
@@ -67,7 +67,7 @@ def verify_test_allowed(db: Session, account: VoiceSipAccount, phone: str, now: 
         VoiceTestCall.created_at >= at - timedelta(hours=1)
     )) or 0
     if count >= 3:
-        raise ValueError("Limite de seguranca: tres ligacoes de teste por conta a cada hora.")
+        raise ValueError("Limite de seguranca: tres verificacoes SIP ou ligacoes por conta a cada hora.")
     repeat = db.scalar(select(VoiceTestCall.id).where(
         VoiceTestCall.account_id == account.id,
         VoiceTestCall.target_phone == phone,
