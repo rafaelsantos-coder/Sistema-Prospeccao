@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead">
+  <div><span class="eyebrow">PROSPECTA VOZ · SEGURANÇA</span><h2>Excluir {{ item_kind }}</h2><p>Essa ação deve ser confirmada pelo administrador.</p></div>
+</div>
+<section class="panel voice-panel">
+  <h3>{{ item_name }}</h3>
+  {% if dependencies %}
+    <div class="voice-notice"><strong>Exclusão indisponível.</strong><p>Há {{ dependencies }} campanha(s) vinculada(s) a este cadastro. Para preservar o histórico, volte à lista e pause o item.</p></div>
+    <a class="button button-secondary" href="{{ back_url }}">Voltar à lista</a>
+  {% else %}
+    <p>Para confirmar a exclusão definitiva desta {{ item_kind }}, digite exatamente o nome abaixo.</p>
+    <div class="voice-delete-name"><strong>{{ item_name }}</strong></div>
+    <form method="post" action="{{ action }}" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Digite o nome para confirmar</span><input name="confirm_value" required autocomplete="off"></label>
+      <div class="voice-actions">
+        <button class="button button-primary" type="submit">Confirmar exclusão</button>
+        <a class="button button-secondary" href="{{ back_url }}">Cancelar</a>
+      </div>
+    </form>
+  {% endif %}
+</section>
+{% endblock %}
