@@ -154,6 +154,9 @@ def schedule_followup(
     step: int = 1,
     pending_action: str | None = None,
 ) -> AIFollowupJob | None:
+    from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
+    if not ai_allowed_for_conversation(db, conversation_id, fallback_queue_id=queue_id):
+        return None
     conversation = db.get(Conversation, conversation_id)
     if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
         return None
@@ -850,6 +853,11 @@ def _zapi_instance_offline(exc: Exception) -> bool:
 
 
 def process_followup_job(db: Session, job: AIFollowupJob) -> str:
+    from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
+    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id):
+        job.status = "CANCELADO"
+        job.error = "IA autorizada somente na Fila IA."
+        return "cancelled"
     from app.services.ai_sdr import is_human_only_queue  # noqa: PLC0415
     from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
     if is_human_only_queue(queue_for_conversation(db, job.conversation_id)):

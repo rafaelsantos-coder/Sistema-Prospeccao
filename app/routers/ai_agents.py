@@ -23,6 +23,7 @@ from app.models import (
     User,
 )
 from app.security import get_current_user, require_roles, validate_csrf
+from app.services.ai_queue_scope import ai_allowed_for_queue, exclusive_ai_queue_id
 from app.services.ai_sdr import ai_metrics
 from app.services.audit import write_audit
 from app.services.zapi_instances import queue_instance
@@ -169,6 +170,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         openai_configured=bool(settings.openai_api_key),
         ai_sdr_enabled=settings.ai_sdr_enabled,
         autonomous_enabled=settings.ai_autonomous_enabled,
+        exclusive_ai_queue_id=exclusive_ai_queue_id(),
     )
 
 
@@ -813,6 +815,9 @@ def bind_queue(
     if not queue or not queue.active:
         flash(request, "Fila inválida ou inativa.", "warning")
         return RedirectResponse("/ai", status_code=303)
+    if not ai_allowed_for_queue(queue.id):
+        flash(request, "A IA está autorizada somente na Fila IA. As demais filas são humanas.", "warning")
+        return RedirectResponse("/ai", status_code=303)
     if agent.role_type != "SDR":
         flash(
             request,
@@ -878,6 +883,9 @@ def toggle_queue_binding(
     )
     if not binding:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not ai_allowed_for_queue(queue_id):
+        flash(request, "A IA não pode ser ativada fora da Fila IA.", "warning")
+        return RedirectResponse("/ai", status_code=303)
     binding.active = not binding.active
     write_audit(
         db,

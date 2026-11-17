@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AIAgentProfile, AIQueueBinding, AuditLog, ServiceQueue
+from app.services.ai_queue_scope import ai_allowed_for_queue
 from app.services.audit import write_audit
 from app.services.queue_routing import AI_WHEN_HUMAN_IDLE
 from app.services.zapi_instances import queue_instance
@@ -63,6 +64,8 @@ def ensure_unanswered_coverage_all_queues(db: Session) -> dict[str, object]:
         )
     )
     for queue in queues:
+        if not ai_allowed_for_queue(queue.id):
+            continue
         if not queue_instance(db, queue.id):
             without_whatsapp.append(queue.id)
             continue

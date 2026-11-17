@@ -14,6 +14,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, AuditLog, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_pending_scope import UNREAD_RECOVERY_SINCE_UTC, in_unread_recovery_window
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, enforce_exclusive_ai_queue, exclusive_ai_queue_id
 from app.services.ai_queue_coverage import (
     COVERAGE_ACTION,
     COVERAGE_CAMPAIGN_KEY,
@@ -368,6 +369,8 @@ def _recover_closer_capture_patch_failures() -> int:
             conversation = db.get(Conversation, state.conversation_id)
             if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
                 continue
+            if not ai_allowed_for_conversation(db, conversation.id):
+                continue
 
             # A fonte da verdade é o snapshot do último run que falhou. Ele guarda
             # a etapa antes da tentativa, evitando voltar para NAME/CPF/BILLING.
@@ -693,6 +696,9 @@ def _recover_recent_unqueued_inbounds() -> int:
                 reasons["closed_conversation"] += 1
                 continue
 
+            if not ai_allowed_for_conversation(db, conversation.id):
+                reasons["exclusive_ai_queue"] += 1
+                continue
             _reset_legacy_state_for_real_inbound(db, conversation, message)
 
             state = db.scalar(
@@ -838,6 +844,8 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
         )
         ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
         for binding in bindings:
+            if not ai_allowed_for_queue(binding.queue_id):
+                continue
             enabled_at = utc_naive(binding.updated_at)
             human_online = human_online_in_queue(db, binding.queue_id)
             threshold = UNANSWERED_TAKEOVER_AFTER if human_online else timedelta(minutes=2)
@@ -1056,6 +1064,8 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
             conversation = db.get(Conversation, message.conversation_id)
             if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
                 continue
+            if not ai_allowed_for_conversation(db, conversation.id):
+                continue
             state = db.scalar(
                 select(AIConversationState).where(AIConversationState.conversation_id == conversation.id)
             )
@@ -1121,6 +1131,12 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
 def run() -> None:
     if not settings.is_production:
         Base.metadata.create_all(bind=engine)
+    # Executar a exclusividade ANTES de qualquer recuperacao ou emissao da IA.
+    if exclusive_ai_queue_id() is not None:
+        with SessionLocal() as scope_db:
+            scope_result = enforce_exclusive_ai_queue(scope_db)
+            scope_db.commit()
+            LOG.warning("Escopo IA exclusivo preparado: %s", scope_result)
     poll = max(2, int(settings.ai_sdr_poll_seconds or 3))
     LOG.info(
         "SulIA worker iniciado. sdr_enabled=%s seller_enabled=%s maintenance=%s supervisor_shadow=%s guardian=%s autocorrect=%s learning=%s engineer=%s openai_configured=%s poll=%ss",
@@ -1220,6 +1236,7 @@ def run() -> None:
     last_ops_alerts = time.monotonic() - 90
     last_crm_prospect = time.monotonic() - 100
     last_stale_recovery = time.monotonic()
+    last_scope_enforcement = time.monotonic()
     while True:
         if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
             time.sleep(max(10, poll))
@@ -1235,6 +1252,14 @@ def run() -> None:
         missing_key_logged = False
 
         now_mono = time.monotonic()
+        if exclusive_ai_queue_id() is not None and now_mono - last_scope_enforcement >= 60:
+            try:
+                with SessionLocal() as scope_db:
+                    enforce_exclusive_ai_queue(scope_db)
+                    scope_db.commit()
+            except Exception:
+                LOG.exception("Falha na reconciliacao do escopo exclusivo da Fila IA")
+            last_scope_enforcement = now_mono
         if now_mono - last_inbound_recovery >= 60:
             try:
                 recovered_recent = _recover_recent_unqueued_inbounds()

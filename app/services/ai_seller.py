@@ -4542,6 +4542,11 @@ def process_seller_followup(
     job: AIFollowupJob,
     agent: AIAgentProfile,
 ) -> str:
+    from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
+    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=getattr(job, "queue_id", None)):
+        job.status = "CANCELADO"
+        job.error = "IA autorizada somente na Fila IA."
+        return "cancelled"
     conversation = db.get(Conversation, job.conversation_id)
     state = db.scalar(
         select(AIClosingState).where(
@@ -4643,6 +4648,9 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50, since=None)
     client: SulnetCRMClient | None = None
 
     for state in states:
+        from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
+        if not ai_allowed_for_conversation(db, state.conversation_id):
+            continue
         collected = _load_collected(state)
         sdr_ia_funnel = _sdr_ia_mode(collected)
 
@@ -4822,6 +4830,9 @@ def start_closing_from_sdr(
     job: AIJob,
     decision: Any,
 ) -> bool:
+    from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
+    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=getattr(job, "queue_id", None)):
+        return False
     closer = active_closer(db)
     if not closer:
         return False
@@ -5228,6 +5239,11 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
 
 def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
+    from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
+    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=getattr(job, "queue_id", None)):
+        job.status = "CANCELADO"
+        job.error = "IA autorizada somente na Fila IA."
+        return "skipped"
     from app.services.ai_sdr import is_human_only_queue  # noqa: PLC0415
     from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
     if is_human_only_queue(queue_for_conversation(db, job.conversation_id)):
@@ -7021,6 +7037,9 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
         if not state.opportunity_id:
             continue
         conversation = db.get(Conversation, state.conversation_id)
+        from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
+        if not ai_allowed_for_conversation(db, state.conversation_id):
+            continue
         from app.services.ai_sdr import is_human_only_queue  # noqa: PLC0415
         from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
         if hasattr(db, "scalar") and is_human_only_queue(queue_for_conversation(db, state.conversation_id)):
