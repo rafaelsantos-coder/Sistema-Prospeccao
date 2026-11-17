@@ -13,6 +13,25 @@ O menu **Prospecta VOZ** permite:
 **Não existe ainda cliente SIP em execução, registro autenticado, teste de conexão, worker que disque ou transferência real.**
 O estado `AGUARDANDO_HOMOLOGACAO` nunca dispara chamada. Nenhuma credencial real foi inserida no repositório ou na base de produção.
 
+## Permissões e responsabilidades
+
+**Somente o perfil `ADMIN` acessa o módulo Prospecta VOZ.** O sistema aplica o bloqueio no backend de todos os endpoints GET/POST; ocultar o menu é apenas uma melhoria de interface, não o mecanismo de segurança.
+
+| Atividade | ADMIN | GESTOR | SUPERVISOR | CONSULTOR / VENDEDOR |
+|---|:---:|:---:|:---:|:---:|
+| Acessar o painel Prospecta VOZ | Sim | Não | Não | Não |
+| Cadastrar / editar credenciais SIP e ramais | Sim | Não | Não | Não |
+| Definir grupos e destinos no PABX | Sim | Não | Não | Não |
+| Criar campanhas e escolher AUDIO/DIRECT | Sim | Não | Não | Não |
+| Importar listas e carregar áudio | Sim | Não | Não | Não |
+| Validar, aprovar, iniciar, pausar ou encerrar campanhas (quando implementado) | Sim | Não | Não | Não |
+| Consultar resultados do módulo de voz (quando implementado) | Sim | Não | Não | Não |
+| Receber ligações transferidas no ramal telefônico do vendedor | Não depende do painel | Não depende do painel | Não depende do painel | Sim |
+
+**Separação operacional:** o administrador configura a conta de origem, a fila e as regras; o serviço discador (a implementar) executará automaticamente as instruções autorizadas; o PABX realizará o encaminhamento da chamada; os vendedores recebem a ligação no seu próprio ramal, sem permissões de alterar SIP, grupos ou campanhas. O atendente não precisa estar logado no módulo VOZ para receber a ligação na central telefônica.
+
+Não conceder acesso de configuração ao `GESTOR` ou `SUPERVISOR` por herança de permissões de outros módulos. Novas rotas e APIs do Prospecta VOZ também devem aplicar o mesmo controle no servidor antes de operar sobre os dados.
+
 ## Homologação necessária antes de habilitar voz real
 
 1. Rotacionar a senha da conta SIP que foi compartilhada em conversa e recadastrá-la por canal protegido.
