@@ -75,13 +75,13 @@ def test_block_is_global_across_queues_instances_and_message_types(monkeypatch):
                 instance_token="TESTE", client_token="TESTE",
             )
             tests = [
-                lambda: api.send_text(phone=number, message="Olá"),
-                lambda: api.send_button_list(phone=number, message="Oferta", buttons=[{"label":"Sim"}]),
-                lambda: api.send_link_button(phone=number, message="Contrato", label="Assinar", url="https://example.test"),
-                lambda: api.send_image(phone=number, image_url="https://example.test/img.png"),
-                lambda: api.send_video(phone=number, video_url="https://example.test/video.mp4"),
-                lambda: api.send_audio(phone=number, audio_url="https://example.test/audio.mp3"),
-                lambda: api.send_document(
+                lambda api=api: api.send_text(phone=number, message="Olá"),
+                lambda api=api: api.send_button_list(phone=number, message="Oferta", buttons=[{"label":"Sim"}]),
+                lambda api=api: api.send_link_button(phone=number, message="Contrato", label="Assinar", url="https://example.test"),
+                lambda api=api: api.send_image(phone=number, image_url="https://example.test/img.png"),
+                lambda api=api: api.send_video(phone=number, video_url="https://example.test/video.mp4"),
+                lambda api=api: api.send_audio(phone=number, audio_url="https://example.test/audio.mp3"),
+                lambda api=api: api.send_document(
                     phone=number, document_url="https://example.test/a.pdf",
                     extension="pdf", file_name="a.pdf",
                 ),
