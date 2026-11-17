@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">PROSPECTA VOZ · DIAGNÓSTICO SIP</span>
+    <h2>Testar ligação — {{ account.name }}</h2>
+    <p>Uma chamada de teste, feita somente para o número que você autorizar.</p>
+  </div>
+  <a class="button button-secondary" href="/voice/accounts">Voltar às contas SIP</a>
+</div>
+
+<section class="panel voice-panel">
+  <div class="voice-campaign-title">
+    <div><span class="eyebrow">CONTA DE ORIGEM</span>
+      <h3>{{ account.username }}@{{ account.domain }}</h3>
+      <p>Protocolo: {{ account.transport }} · {{ 'Ativa para configuração' if account.active else 'Pausada' }}</p>
+    </div>
+    {% if agent_online %}<span class="voice-pill is-ready">Agente SIP disponível</span>
+    {% else %}<span class="voice-pill is-paused">Agente SIP offline</span>{% endif %}
+  </div>
+  <div class="voice-notice">
+    <strong>O que este teste comprova</strong>
+    <p>O agente tenta autenticar este ramal na central e originar <strong>uma ligação</strong>. SIP 180 indica sinalização de toque; SIP 200 indica atendimento. O teste encerra automaticamente a chamada. Não confirma áudio bidirecional, atendimento humano nem transferência. O registro SIP temporário poderá interferir em outra sessão do mesmo ramal se o PABX permitir apenas uma.</p>
+  </div>
+  {% if account.transport != 'UDP' %}
+    <div class="voice-notice"><strong>Transporte ainda não homologado</strong><p>Este primeiro diagnóstico de ligação utiliza SIP UDP. A conta está em {{ account.transport }} e não poderá iniciar chamada pelo agente até que esse transporte seja implementado.</p></div>
+  {% elif not agent_online %}
+    <div class="voice-notice"><strong>Agente indisponível</strong><p>O serviço independente de testes SIP não respondeu recentemente. Nenhuma ligação será colocada em fila enquanto ele estiver offline. Recarregue esta página após a conexão do agente.</p></div>
+  {% endif %}
+  <form action="/voice/accounts/{{ account.id }}/test" method="post" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field"><span>Telefone de teste com DDD</span>
+        <input name="phone" type="tel" inputmode="tel" autocomplete="off" maxlength="24" required
+               placeholder="Ex.: 55 55 99999-9999" {% if not agent_online or not account.active or account.transport != 'UDP' %}disabled{% endif %}>
+      </label>
+      <div class="field"><span>Tempo de chamada</span><p class="voice-help">Até aproximadamente 8 segundos de sinalização de toque. O teste encerra sem transferir para vendedores.</p></div>
+    </div>
+    <label class="voice-test-confirm"><input type="checkbox" name="authorized" value="yes" required
+      {% if not agent_online or not account.active or account.transport != 'UDP' %}disabled{% endif %}>
+      Confirmo que este número é meu ou tenho autorização para receber a ligação de teste.
+    </label>
+    <div class="voice-actions">
+      <button class="button button-primary" type="submit" {% if not agent_online or not account.active or account.transport != 'UDP' or processing %}disabled{% endif %}>☎ Fazer ligação de teste</button>
+      <a class="button button-secondary" href="/voice/accounts/{{ account.id }}/test">Atualizar resultado</a>
+    </div>
+    <p class="voice-help">Limite: uma ligação em andamento por vez, no máximo três solicitações por hora por conta e intervalo mínimo de três minutos para repetir o mesmo número.</p>
+  </form>
+</section>
+
+<section class="panel voice-panel">
+  <span class="eyebrow">DIAGNÓSTICO REAL</span><h3>Histórico de testes</h3>
+  {% if recent %}
+  <div class="voice-table-wrap">
+    <table class="voice-table">
+      <thead><tr><th>Número informado</th><th>Estado</th><th>Registro SIP</th><th>Ligação</th><th>Detalhes</th></tr></thead>
+      <tbody>{% for item in recent %}
+        <tr>
+          <td><strong>{{ item.target_phone }}</strong><small>{{ item.created_at.strftime('%d/%m/%Y %H:%M') if item.created_at else '' }} UTC</small></td>
+          <td><span class="voice-pill {{ 'is-ready' if item.status in ['TOCOU', 'ATENDIDA'] else 'is-paused' if item.status in ['FALHOU','EXPIRADO','SEM_RESPOSTA','OCUPADO'] else 'is-unknown' }}">
+            {{ {'PENDENTE':'Aguardando agente', 'REGISTRANDO':'Registrando SIP', 'REGISTRADO':'SIP autenticado', 'CHAMANDO':'Chamando', 'TOCANDO':'Sinal de toque', 'TOCOU':'Tocou (SIP 180)', 'ATENDIDA':'Atendida (SIP 200)', 'OCUPADO':'Ocupado', 'FALHOU':'Falhou', 'SEM_RESPOSTA':'Sem resposta', 'EXPIRADO':'Expirado'}.get(item.status, item.status) }}
+          </span></td>
+          <td>{{ item.sip_register_code if item.sip_register_code is not none else '—' }}</td>
+          <td>{{ item.sip_invite_code if item.sip_invite_code is not none else '—' }}</td>
+          <td>{{ item.message }}</td>
+        </tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="voice-empty">Nenhum teste realizado nesta conta. O resultado só aparecerá após uma tentativa real.</div>
+  {% endif %}
+</section>
+{% if processing %}
+<script nonce="{{ csp_nonce }}">window.setTimeout(function(){window.location.reload();},5000);</script>
+{% endif %}
+{% endblock %}
