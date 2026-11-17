@@ -1,0 +1,68 @@
+{# Paleta única de etiquetas em Conversas e Mapa de Calor. Os códigos vêm do catálogo comercial. #}
+<style>
+/* Base neutra para primeiro contato, indecisão, comparação e retorno. */
+.commercial-tag {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1.25;
+  max-width: 100%;
+  border: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 700;
+  border-radius: 6px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Prioridade comercial: alto potencial e fechamento. */
+.commercial-tag[data-tag="ALTO_POTENCIAL"],
+.commercial-tag[data-tag="EM_FECHAMENTO"] {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+/* Oportunidade em discussão. */
+.commercial-tag[data-tag="EM_NEGOCIACAO"] {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-color: #93c5fd;
+}
+/* Pendências e documentos para concluir a venda. */
+.commercial-tag[data-tag="DOCUMENTOS_PENDENTES"],
+.commercial-tag[data-tag="CREDITO_PENDENTE"],
+.commercial-tag[data-tag="CONTRATO_ENVIADO"],
+.commercial-tag[data-tag="ASSINATURA_PENDENTE"] {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+/* Situação que pede atenção de recuperação. */
+.commercial-tag[data-tag="RISCO_PERDA"] {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+/* Cartões de etiquetas do mapa usam as mesmas cores. */
+.commercial-tag-grid a.commercial-tag {
+  color: #475569;
+}
+.commercial-tag-grid a.commercial-tag[data-tag="ALTO_POTENCIAL"],
+.commercial-tag-grid a.commercial-tag[data-tag="EM_FECHAMENTO"] {
+  color: #166534;
+}
+.commercial-tag-grid a.commercial-tag[data-tag="EM_NEGOCIACAO"] {
+  color: #1d4ed8;
+}
+.commercial-tag-grid a.commercial-tag[data-tag="DOCUMENTOS_PENDENTES"],
+.commercial-tag-grid a.commercial-tag[data-tag="CREDITO_PENDENTE"],
+.commercial-tag-grid a.commercial-tag[data-tag="CONTRATO_ENVIADO"],
+.commercial-tag-grid a.commercial-tag[data-tag="ASSINATURA_PENDENTE"] {
+  color: #92400e;
+}
+.commercial-tag-grid a.commercial-tag[data-tag="RISCO_PERDA"] {
+  color: #991b1b;
+}
+.commercial-tag-grid a.commercial-tag strong {
+  color: inherit;
+}
+</style>

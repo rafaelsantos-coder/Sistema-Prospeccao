@@ -53,6 +53,18 @@ def test_manager_can_open_commercial_dashboard_and_tag_conversation():
         filtered = client.get("/api/conversations/inbox?tag=ALTO_POTENCIAL")
         assert filtered.status_code == 200
         assert any(item["id"] == conversation_id for item in filtered.json()["items"])
+        # Etiquetas persistidas e recebidas pelo polling usam a mesma paleta.
+        detail_with_tag = client.get(path)
+        assert detail_with_tag.status_code == 200
+        assert 'data-tag="ALTO_POTENCIAL"' in detail_with_tag.text
+        assert '.commercial-tag[data-tag="ALTO_POTENCIAL"]' in detail_with_tag.text
+        assert '.commercial-tag[data-tag="EM_NEGOCIACAO"]' in detail_with_tag.text
+        assert '.commercial-tag[data-tag="DOCUMENTOS_PENDENTES"]' in detail_with_tag.text
+        assert '.commercial-tag[data-tag="RISCO_PERDA"]' in detail_with_tag.text
+        assert "badge.dataset.tag = t.code || ''" in detail_with_tag.text
+        board_with_tag = client.get("/conversations-intelligence")
+        assert board_with_tag.status_code == 200
+        assert 'class="commercial-tag" data-tag="ALTO_POTENCIAL"' in board_with_tag.text
         rejected = client.post(f"/conversations/{conversation_id}/commercial-tag", data={
             "csrf_token": _csrf(client.get(path).text),
             "code": "INVALIDO",

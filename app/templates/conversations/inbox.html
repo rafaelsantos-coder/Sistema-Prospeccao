@@ -155,7 +155,7 @@
           <div class="commercial-list-badges">
             {% if commercial %}<span class="commercial-temperature commercial-temperature-{{ commercial.temperature|lower }}">{{ temperature_catalog.get(commercial.temperature, 'Sem análise') }}</span>{% endif %}
             {% for tag in commercial_tags.get(item.id, [])[:2] %}
-            <span class="commercial-tag" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
+            <span class="commercial-tag" data-tag="{{ tag.code }}" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
             {% endfor %}
           </div>
           {% endif %}
@@ -366,7 +366,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="code" value="{{ tag.code }}">
           <input type="hidden" name="enabled" value="0">
-          <span class="commercial-tag" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
+          <span class="commercial-tag" data-tag="{{ tag.code }}" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
           <button type="submit" title="Remover etiqueta {{ tag.name }}" aria-label="Remover etiqueta {{ tag.name }}">×</button>
         </form>
         {% endfor %}
@@ -523,6 +523,7 @@
 .commercial-add-tag select{flex:1;min-width:0;border:1px solid #d1d5db;border-radius:7px;padding:7px;font-size:12px}
 .commercial-add-tag button{white-space:nowrap;padding:8px;font-size:11px}
 </style>
+{% include "conversations/_commercial_tag_colors.html" %}
 {% endblock %}
 
 {% block scripts %}
@@ -647,6 +648,7 @@
         for (const t of (item.commercial_tags || []).slice(0, 2)) {
           const badge = document.createElement('span');
           badge.className = 'commercial-tag';
+          badge.dataset.tag = t.code || '';
           badge.textContent = t.name;
           badge.title = t.source === 'MANUAL' ? 'Manual' : 'Sugerida pela IA';
           badges.append(badge);
