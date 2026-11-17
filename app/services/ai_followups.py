@@ -504,12 +504,18 @@ def _persist_explicit_no_contact(db: Session, conversation_id: int) -> bool:
     conversation = db.get(Conversation, conversation_id)
     if not conversation:
         return False
-    block_phone(
-        db, phone=conversation.contact.phone,
-        name=conversation.contact.name,
-        reason="Cliente solicitou não ser contatado em follow-up",
-        source="OPT_OUT_AI",
-    )
+    # Objetos legados/testes podem não ter relação de contato carregada.
+    # A conversa real do banco sempre possui contato; preservamos o opt-out
+    # do lead caso o telefone não esteja disponível.
+    contact = getattr(conversation, "contact", None)
+    phone = getattr(contact, "phone", "") or getattr(getattr(conversation, "lead", None), "phone", "")
+    if phone:
+        block_phone(
+            db, phone=phone,
+            name=getattr(contact, "name", ""),
+            reason="Cliente solicitou não ser contatado em follow-up",
+            source="OPT_OUT_AI",
+        )
     if conversation.lead:
         conversation.lead.do_not_contact = True
         conversation.lead.stage = "NAO_CONTATAR"
