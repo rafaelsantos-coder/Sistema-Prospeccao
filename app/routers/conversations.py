@@ -1414,3 +1414,115 @@ def conversation_messages_api(
             for item in items
         ],
     }
+
+
+@router.post("/conversations/{conversation_id}/commercial-tag")
+def update_commercial_tag(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    code: str = Form(...),
+    enabled: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Operação manual, apenas etiquetas internas; nunca dispara WhatsApp."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversa indisponível.")
+    if code not in TAG_LABELS or enabled not in {"0", "1"}:
+        raise HTTPException(status_code=400, detail="Etiqueta ou ação inválida.")
+    update_manual_tag(
+        db, conversation_id=conversation.id, code=code,
+        enabled=(enabled == "1"), changed_by_id=user.id,
+    )
+    write_audit(
+        db, user=user, action="COMMERCIAL_TAG_MANUAL_UPDATED",
+        entity_type="conversation", entity_id=conversation.id,
+        payload={"code": code, "enabled": enabled == "1"},
+    )
+    db.commit()
+    return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+
+@router.get("/conversations-intelligence")
+def commercial_heatmap(
+    request: Request,
+    queue: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Mapa de calor agregado, com controle de visibilidade gerencial."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR")
+    queues = _queue_panel(db, user)
+    _validate_queue_filter(user, queue, queues)
+    scoped_stmt = apply_conversation_scope(
+        select(Conversation).options(selectinload(Conversation.assigned_user)),
+        user, inbox=True,
+    ).where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES))
+    if queue is not None:
+        scoped_stmt = scoped_stmt.join(
+            ConversationQueueLink,
+            ConversationQueueLink.conversation_id == Conversation.id,
+        ).where(ConversationQueueLink.queue_id == queue)
+    conversations = list(db.scalars(scoped_stmt))
+    ids = [row.id for row in conversations]
+    insights = insight_map(db, ids)
+    tags = tag_map(db, ids)
+    by_owner: dict[int, dict] = {}
+    total = {"QUENTE": 0, "MORNO": 0, "FRIO": 0, "INDEFINIDO": 0}
+    pending = 0
+    high_potential = 0
+    tagged_counts = {code: 0 for code in TAG_LABELS}
+    for item in conversations:
+        temp = insights[item.id].temperature if item.id in insights else "INDEFINIDO"
+        if temp not in total:
+            temp = "INDEFINIDO"
+        total[temp] += 1
+        owner_id = item.assigned_user_id or 0
+        row = by_owner.setdefault(
+            owner_id,
+            {
+                "id": item.assigned_user_id,
+                "name": (item.assigned_user.name if item.assigned_user else "Sem responsável"),
+                "QUENTE": 0, "MORNO": 0, "FRIO": 0, "INDEFINIDO": 0,
+                "pending": 0,
+            },
+        )
+        row[temp] += 1
+        if _needs_attention(item.status, item.unread_count, item.assigned_user_id):
+            pending += 1
+            row["pending"] += 1
+        codes = {tag["code"] for tag in tags.get(item.id, [])}
+        for code in codes:
+            if code in tagged_counts:
+                tagged_counts[code] += 1
+        if "ALTO_POTENCIAL" in codes or "EM_FECHAMENTO" in codes:
+            high_potential += 1
+    sorted_rows = sorted(
+        by_owner.values(),
+        key=lambda row: (-row["QUENTE"], -row["MORNO"], row["name"]),
+    )
+    sorted_tags = [
+        {"code": code, "name": TAG_LABELS[code], "count": count}
+        for code, count in sorted(tagged_counts.items(), key=lambda pair: -pair[1])
+        if count
+    ]
+    return render(
+        request, "conversations/heatmap.html",
+        user=user,
+        active_nav="conversations",
+        page_title="Inteligência comercial",
+        queues=queues, selected_queue=queue,
+        rows=sorted_rows, totals=total, pending=pending,
+        high_potential=high_potential,
+        total_conversations=len(conversations),
+        tag_totals=sorted_tags,
+        temperature_catalog=TEMPERATURE_LABELS,
+    )
