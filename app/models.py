@@ -1141,3 +1141,92 @@ class CreditMapAddress(Base):
     # Coordenadas informadas pelo CRM na coluna Q (nunca derivadas do endereco).
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+# Prospecta VOZ: independente das filas WhatsApp/Z-API.
+class VoiceSipAccount(Base):
+    __tablename__ = "voice_sip_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    domain: Mapped[str] = mapped_column(String(190))
+    username: Mapped[str] = mapped_column(String(120))
+    password_encrypted: Mapped[str] = mapped_column(Text)
+    transport: Mapped[str] = mapped_column(String(10), default="UDP")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class VoiceGroup(Base):
+    __tablename__ = "voice_groups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    target_extension: Mapped[str] = mapped_column(String(30))
+    member_extensions: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class VoiceCampaign(Base):
+    __tablename__ = "voice_campaigns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(180))
+    mode: Mapped[str] = mapped_column(String(20), default="AUDIO")
+    status: Mapped[str] = mapped_column(String(20), default="RASCUNHO", index=True)
+    sip_account_id: Mapped[int] = mapped_column(ForeignKey("voice_sip_accounts.id"))
+    group_id: Mapped[int] = mapped_column(ForeignKey("voice_groups.id"))
+    audio_uri: Mapped[str] = mapped_column(Text, default="")
+    dtmf_digit: Mapped[str] = mapped_column(String(1), default="1")
+    daily_limit: Mapped[int] = mapped_column(Integer, default=30)
+    interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    window_start: Mapped[str] = mapped_column(String(5), default="09:00")
+    window_end: Mapped[str] = mapped_column(String(5), default="18:00")
+    legal_basis_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    sip_account: Mapped[VoiceSipAccount] = relationship()
+    group: Mapped[VoiceGroup] = relationship()
+
+
+class VoiceRecipient(Base):
+    __tablename__ = "voice_recipients"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "phone", name="uq_voice_campaign_phone"),
+        Index("ix_voice_recipients_campaign_status", "campaign_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("voice_campaigns.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[int | None] = mapped_column(ForeignKey("leads.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(150), default="")
+    phone: Mapped[str] = mapped_column(String(30))
+    status: Mapped[str] = mapped_column(String(25), default="PENDENTE")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    dial_token: Mapped[str | None] = mapped_column(String(40), nullable=True, unique=True)
+    external_call_id: Mapped[str] = mapped_column(String(120), default="")
+    last_event: Mapped[str] = mapped_column(String(40), default="")
+    last_error: Mapped[str] = mapped_column(String(200), default="")
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    transferred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    campaign: Mapped[VoiceCampaign] = relationship()
+    lead: Mapped[Lead | None] = relationship()
+
+
+class VoiceCallEvent(Base):
+    __tablename__ = "voice_call_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recipient_id: Mapped[int] = mapped_column(ForeignKey("voice_recipients.id", ondelete="CASCADE"), index=True)
+    event_id: Mapped[str] = mapped_column(String(80), unique=True)
+    event: Mapped[str] = mapped_column(String(35))
+    detail: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">TELEFONIA SIP · NOVO MÓDULO</span>
+    <h2>Prospecta VOZ</h2>
+    <p>Campanhas com áudio automático ou transferência direta para ramais da central existente.</p>
+  </div>
+  <span class="environment-badge">MODO HOMOLOGAÇÃO · SEM LIGAÇÕES</span>
+</div>
+
+<div class="panel" style="padding:20px;margin-bottom:18px">
+  <strong>Segurança operacional</strong>
+  <p>Somente o administrador pode cadastrar linhas e ramais SIP, definir destinos, importar contatos e preparar campanhas. Os vendedores apenas recebem a ligação nos ramais configurados; não têm acesso a este painel. O motor SIP ainda precisa ser homologado em ambiente próprio; este painel não origina chamadas e não altera as filas WhatsApp.</p>
+</div>
+
+<div class="dispatch-layout">
+<section class="panel" style="padding:20px">
+  <span class="eyebrow">1 · CONTA SIP</span><h3>Contas do discador</h3>
+  {% if accounts %}
+    {% for account in accounts %}
+    <p><strong>{{ account.name }}</strong> · {{ account.username }}@{{ account.domain }} · {{ account.transport }} · <span class="panel-note">Não testado</span></p>
+    {% endfor %}
+  {% else %}<p>Nenhuma conta SIP cadastrada.</p>{% endif %}
+  {% if current_user.role == 'ADMIN' %}
+  <form method="post" action="/voice/accounts" class="stack-form" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="field"><span>Nome da conta</span><input name="name" required maxlength="120" placeholder="Ramal discador"></label>
+    <label class="field"><span>Servidor SIP</span><input name="domain" required placeholder="sip.exemplo.com.br"></label>
+    <label class="field"><span>Usuário ou ramal SIP</span><input name="username" required placeholder="Ramal"></label>
+    <label class="field"><span>Senha SIP (criptografada)</span><input name="password" type="password" autocomplete="new-password" required></label>
+    <label class="field"><span>Transporte</span><select name="transport"><option>UDP</option><option>TCP</option><option>TLS</option></select></label>
+    <button class="button button-secondary" type="submit">Salvar conta SIP</button>
+  </form>
+  {% else %}<p>Apenas administradores cadastram credenciais SIP.</p>{% endif %}
+</section>
+<section class="panel" style="padding:20px">
+  <span class="eyebrow">2 · RAMAIS</span><h3>Grupos de vendedores</h3>
+  {% if groups %}
+  {% for group in groups %}<p><strong>{{ group.name }}</strong> · destino {{ group.target_extension }}{% if group.member_extensions %} · membros: {{ group.member_extensions }}{% endif %}</p>{% endfor %}
+  {% else %}<p>Nenhum grupo cadastrado.</p>{% endif %}
+  <form method="post" action="/voice/groups" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="field"><span>Nome do grupo</span><input name="name" required maxlength="120" placeholder="Equipe Comercial"></label>
+    <label class="field"><span>Ramal do grupo no PABX</span><input name="target_extension" required placeholder="Ex.: 700"></label>
+    <label class="field"><span>Ramais integrantes (opcional)</span><input name="member_extensions" placeholder="201, 202, 203"></label>
+    <small>O ramal do grupo deve existir na central telefônica. A lista de membros é informativa nesta etapa.</small>
+    <button class="button button-secondary" type="submit">Cadastrar grupo</button>
+  </form>
+</section>
+</div>
+
+<section class="panel" style="padding:20px;margin-top:18px">
+  <span class="eyebrow">3 · CAMPANHAS</span><h3>Nova campanha de voz</h3>
+  {% if accounts and groups %}
+  <form method="post" action="/voice/campaigns" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field field-span-2"><span>Nome</span><input name="name" required maxlength="180" placeholder="Campanha B2B Sulnet"></label>
+      <label class="field"><span>Conta SIP de origem</span><select name="sip_account_id" required>{% for a in accounts if a.active %}<option value="{{ a.id }}">{{ a.name }} · {{ a.username }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Grupo de destino</span><select name="group_id" required>{% for g in groups if g.active %}<option value="{{ g.id }}">{{ g.name }} · {{ g.target_extension }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Modo de ligação</span><select name="mode"><option value="AUDIO">Áudio automático + digite 1 + transferência</option><option value="DIRECT">Transferência direta após atender</option></select></label>
+      <label class="field"><span>Tecla de interesse (modo áudio)</span><input name="dtmf_digit" value="1" maxlength="1" required></label>
+      <label class="field"><span>Início</span><input type="time" name="window_start" value="09:00" required></label>
+      <label class="field"><span>Fim</span><input type="time" name="window_end" value="18:00" required></label>
+      <label class="field"><span>Limite diário de segurança</span><input name="daily_limit" type="number" min="1" max="300" value="30" required></label>
+      <label class="field"><span>Intervalo mínimo (segundos)</span><input name="interval_seconds" type="number" min="10" max="3600" value="30" required></label>
+    </div>
+    <button class="button button-primary" type="submit">Criar campanha em rascunho</button>
+  </form>
+  {% else %}<p>Cadastre uma conta SIP e pelo menos um grupo de destino para criar uma campanha.</p>{% endif %}
+</section>
+
+<section class="panel" style="padding:20px;margin-top:18px">
+  <span class="eyebrow">4 · PREPARAÇÃO</span><h3>Campanhas de voz cadastradas</h3>
+  {% if campaigns %}
+  {% for c in campaigns %}
+  <div style="padding:16px 0;border-bottom:1px solid var(--border-color,#ddd)">
+    <strong>{{ c.name }}</strong> · {{ 'Áudio automático' if c.mode == 'AUDIO' else 'Transferência direta' }}
+    <p>{{ counts.get(c.id, 0) }} contatos · {{ c.status|replace('_',' ') }} · destino: {{ c.group.target_extension }}</p>
+    {% if c.status == 'RASCUNHO' %}
+    <div class="form-grid">
+      <form method="post" action="/voice/campaigns/{{ c.id }}/contacts" enctype="multipart/form-data" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Importar contatos CSV</span><input type="file" name="csv_file" accept=".csv,text/csv" required></label>
+        <button class="button button-secondary" type="submit">Importar CSV</button>
+      </form>
+      {% if c.mode == 'AUDIO' %}
+      <form method="post" action="/voice/campaigns/{{ c.id }}/audio" enctype="multipart/form-data" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="field"><span>Mensagem WAV PCM mono (8/16 kHz)</span><input type="file" name="audio" accept=".wav,audio/wav" required></label>
+        <button class="button button-secondary" type="submit">Salvar áudio</button>
+      </form>
+      {% endif %}
+    </div>
+    <form method="post" action="/voice/campaigns/{{ c.id }}/review" style="margin-top:12px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-secondary" type="submit">Enviar para homologação (sem discagem)</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% else %}<p>Quando você criar uma campanha, ela aparecerá aqui para importar a lista e, no modo áudio, carregar uma gravação.</p>{% endif %}
+</section>
+{% endblock %}
