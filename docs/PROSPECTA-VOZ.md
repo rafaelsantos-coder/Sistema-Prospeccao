@@ -13,6 +13,23 @@ O menu **Prospecta VOZ** permite:
 **A configuração de campanhas não executa ligações.** O teste SIP é um serviço independente para verificações pontuais autorizadas; transferências reais seguem bloqueadas até homologação.
 O estado `EM_HOMOLOGACAO` nunca dispara chamada. Nenhuma credencial real foi inserida no repositório ou na base de produção.
 
+## Verificação de conexão SIP sem ligação
+
+O ADMIN pode acessar **Contas do discador > Testar ligação > Verificar conexão SIP**.
+Essa ação cria um registro de verificação do tipo `SIP_ONLY` (sem telefone de destino),
+e o worker tenta `REGISTER` no PABX para obter uma resposta autenticada (SIP 200).
+O estado final é `SIP_VALIDADO`, exibido como **Autenticado no PABX**. Esse sucesso
+é pontual, não equivale a conexão permanente, qualidade de áudio, disponibilidade
+dos vendedores ou permissão para campanhas em massa. Em seguida o cliente tenta
+`REGISTER Expires: 0` para finalizar a sessão temporária. Se o PABX permite apenas
+uma sessão para esse usuário, até uma verificação pode desalojar o aparelho físico;
+preferir ramal dedicado à discagem.
+
+**Nunca** converter um `SIP_VALIDADO` isolado em estado automático
+`EM_EXECUCAO` de campanha. É indispensável verificar discagem, transferência
+ao ramal do grupo, disponibilidade real dos vendedores e controles de contato antes
+de desenvolver/ativar o worker de campanhas de voz.
+
 ## Diagnóstico de uma chamada SIP autorizada
 
 Em **Prospecta VOZ > Contas do discador > Testar ligação**, o ADMIN informa somente um número autorizado com DDD e confirma consentimento para receber **uma chamada de teste**. O sistema verifica se o agente de testes SIP está online antes de enfileirar a solicitação. Não existem testes automáticos recorrentes.
