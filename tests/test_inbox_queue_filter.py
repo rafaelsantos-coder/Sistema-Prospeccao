@@ -85,7 +85,7 @@ def test_manager_queue_filter_counts_and_pending_are_isolated():
             _validate_queue_filter(manager, first.id, [{"id": first.id}])
             try:
                 _validate_queue_filter(manager, second.id, [{"id": first.id}])
-                assert False, "Acesso a fila fora do escopo deve falhar"
+                raise AssertionError("Acesso a fila fora do escopo deve falhar")
             except HTTPException as exc:
                 assert exc.status_code == 403
     finally:
