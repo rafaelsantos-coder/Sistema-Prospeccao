@@ -13,7 +13,7 @@
   <div class="voice-campaign-title">
     <div><span class="eyebrow">CAMPANHA #{{ campaign.id }}</span><h3>{{ campaign.name }}</h3>
       <p>{{ 'Áudio automático + confirmação DTMF' if campaign.mode == 'AUDIO' else 'Transferência direta' }} · {{ counts.get(campaign.id, 0) }} contatos</p></div>
-    <span class="voice-pill is-unknown">{{ campaign.status|replace('_',' ') }}</span>
+    <span class="voice-pill is-unknown">{{ 'Aguardando homologação' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}</span>
   </div>
   <div class="voice-campaign-meta">
     <span><strong>Origem:</strong> {{ campaign.sip_account.name }}</span>
