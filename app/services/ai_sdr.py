@@ -148,9 +148,14 @@ def _test_phone_binding(db: Session, conversation_id: int, queue) -> Any | None:
     )
 
 
+def is_human_only_queue(queue: ServiceQueue | None) -> bool:
+    """A fila identificada como Natine nunca recebe IA, nem em testes."""
+    return bool(queue and queue.name.strip().casefold() == "natine")
+
+
 def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBinding | None:
     queue = queue_for_conversation(db, conversation_id)
-    if not queue:
+    if not queue or is_human_only_queue(queue):
         return None
     return queue_ai_binding(db, queue.id) or _test_phone_binding(db, conversation_id, queue)
 
@@ -330,6 +335,11 @@ def enqueue_ai_job(
     message: Message,
     takeover: bool = False,
 ) -> AIJob | None:
+    # Proibicao explicita do gestor: fila Natine 100% humana, sem SDR,
+    # closer, retomada, fallback ou excecao de telefone de teste.
+    if is_human_only_queue(queue_for_conversation(db, conversation.id)):
+        LOG.info("ai_job_skipped conversation=%s reason=natine_human_only", conversation.id)
+        return None
     if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
         return None
     if message.direction != "INBOUND" or message.message_type != "TEXT":
@@ -2122,6 +2132,11 @@ def ai_reply_limit_reached(db: Session, conversation_id: int) -> bool:
 
 
 def process_ai_job(db: Session, job: AIJob) -> str:
+    if is_human_only_queue(queue_for_conversation(db, job.conversation_id)):
+        job.status = "IGNORADO"
+        job.error = "Fila Natine exclusiva de atendimento humano."
+        LOG.info("ai_job_skipped conversation=%s reason=natine_human_only", job.conversation_id)
+        return "skipped"
     agent = db.get(AIAgentProfile, job.agent_id)
     if not agent or not agent.active:
         job.status = "IGNORADO"

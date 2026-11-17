@@ -850,6 +850,12 @@ def _zapi_instance_offline(exc: Exception) -> bool:
 
 
 def process_followup_job(db: Session, job: AIFollowupJob) -> str:
+    from app.services.ai_sdr import is_human_only_queue  # noqa: PLC0415
+    from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
+    if is_human_only_queue(queue_for_conversation(db, job.conversation_id)):
+        job.status = "CANCELADO"
+        job.error = "Fila Natine exclusiva de atendimento humano."
+        return "cancelled"
     allowed, reason = _followup_allowed(db, job)
     if not allowed:
         job.status = "CANCELADO"
