@@ -11,7 +11,8 @@ from app.services.audit import write_audit
 from app.services.conversation_engine import ensure_contact, ensure_open_conversation, register_message
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.queue_routing import queue_for_campaign
-from app.services.zapi import ZApiError
+from app.services.zapi import ZApiError, ZApiBlacklistedRecipient
+from app.services.global_blacklist import is_globally_blocked
 from app.services.zapi_instances import queue_instance, service_for_queue
 from app.timeutils import local_day_start_utc, utcnow
 
@@ -109,6 +110,8 @@ def enqueue_campaign(db: Session, campaign: Campaign, *, max_leads: int = 1000) 
 
     created = 0
     for lead in leads:
+        if is_globally_blocked(db, lead.phone):
+            continue
         exists = db.scalar(
             select(CampaignRecipient.id).where(
                 CampaignRecipient.campaign_id == campaign.id,
@@ -199,7 +202,7 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         recipient.status = "PENDENTE"
         recipient.scheduled_at = utcnow() + timedelta(minutes=30)
         return "limit"
-    if lead.do_not_contact or lead.stage in {"NAO_CONTATAR", "PERDIDO", "GANHO"} or not lead.phone:
+    if lead.do_not_contact or lead.stage in {"NAO_CONTATAR", "PERDIDO", "GANHO"} or not lead.phone or is_globally_blocked(db, lead.phone):
         recipient.status = "IGNORADO"
         recipient.error = "Lead bloqueado, encerrado ou sem telefone."
         return "skipped"
@@ -223,6 +226,10 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
             )
         else:
             result = zapi.send_text(phone=lead.phone, message=recipient.message_body)
+    except ZApiBlacklistedRecipient as exc:
+        recipient.status = "IGNORADO"
+        recipient.error = str(exc)[:500]
+        return "skipped"
     except ZApiError as exc:
         recipient.error = str(exc)[:500]
         if recipient.attempts >= 3:

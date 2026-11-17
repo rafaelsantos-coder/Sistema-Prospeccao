@@ -34,7 +34,8 @@ from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.queue_routing import set_lead_queue_preference
 from app.services.scoring import normalize_phone
 from app.services.telegram import TelegramService, active_link_for_lead, invite_url_for_lead
-from app.services.zapi import ZApiError
+from app.services.zapi import ZApiError, ZApiBlacklistedRecipient
+from app.services.global_blacklist import is_globally_blocked
 from app.services.zapi_instances import queue_instance, service_for_queue
 from app.timeutils import LOCAL_TZ, local_day_start_utc, utcnow
 
@@ -313,7 +314,7 @@ def create_dispatch_from_leads(
         if phone in seen_phones:
             continue
         seen_phones.add(phone)
-        if lead.do_not_contact or lead.stage in {"NAO_CONTATAR", "PERDIDO", "GANHO"}:
+        if lead.do_not_contact or lead.stage in {"NAO_CONTATAR", "PERDIDO", "GANHO"} or is_globally_blocked(db, phone):
             skipped_blocked += 1
             continue
         message = personalize_message(template, lead)
@@ -516,6 +517,8 @@ def process_dispatch_recipient(
         lead.do_not_contact
         or lead.stage in {"NAO_CONTATAR", "PERDIDO", "GANHO"}
         or not lead.phone
+        or is_globally_blocked(db, recipient.phone)
+        or is_globally_blocked(db, lead.phone)
     ):
         recipient.status = "IGNORADO"
         recipient.error = "Lead bloqueada, encerrada ou sem telefone."
@@ -570,6 +573,11 @@ def process_dispatch_recipient(
                 phone=lead.phone,
                 message=body,
             )
+    except ZApiBlacklistedRecipient as exc:
+        recipient.status = "IGNORADO"
+        recipient.error = str(exc)[:500]
+        _finish_if_done(db, dispatch)
+        return "skipped"
     except ZApiError as exc:
         recipient.error = str(exc)[:500]
         if telegram_link and getattr(exc, "blocked", False):

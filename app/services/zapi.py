@@ -16,6 +16,10 @@ class ZApiNotConfigured(ZApiError):
     pass
 
 
+class ZApiBlacklistedRecipient(ZApiError):
+    """Bloqueio global definitivo: não reexecutar o envio."""
+
+
 class ZApiService:
     def __init__(
         self,
@@ -61,6 +65,18 @@ class ZApiService:
         if not 12 <= len(digits) <= 15:
             raise ZApiError("Informe um telefone valido com DDI e DDD.")
         return digits
+
+    @staticmethod
+    def _assert_recipient_not_blacklisted(phone: str) -> None:
+        # Defesa de ultima milha, compartilhada por todas as instancias e filas.
+        from app.services.global_blacklist import (
+            BlacklistedRecipientError,
+            assert_outbound_permitted,
+        )
+        try:
+            assert_outbound_permitted(phone)
+        except BlacklistedRecipientError as exc:
+            raise ZApiBlacklistedRecipient(str(exc)) from exc
 
     @staticmethod
     def _safe_error(response: httpx.Response) -> str:
@@ -130,6 +146,7 @@ class ZApiService:
 
     def send_text(self, *, phone: str, message: str) -> dict[str, Any]:
         normalized_phone = self.normalize_phone(phone)
+        self._assert_recipient_not_blacklisted(normalized_phone)
         clean_message = message.strip()
         if not clean_message:
             raise ZApiError("A mensagem nao pode ficar vazia.")
@@ -159,6 +176,7 @@ class ZApiService:
         buttons: list[dict[str, str]],
     ) -> dict[str, Any]:
         normalized_phone = self.normalize_phone(phone)
+        self._assert_recipient_not_blacklisted(normalized_phone)
         clean_message = message.strip()
         if not clean_message:
             raise ZApiError("A mensagem nao pode ficar vazia.")
@@ -210,6 +228,7 @@ class ZApiService:
     ) -> dict[str, Any]:
         """Mensagem com botão que abre um link (ex.: wa.me da central)."""
         normalized_phone = self.normalize_phone(phone)
+        self._assert_recipient_not_blacklisted(normalized_phone)
         clean_message = message.strip()
         if not clean_message:
             raise ZApiError("A mensagem nao pode ficar vazia.")
@@ -248,6 +267,7 @@ class ZApiService:
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_phone = self.normalize_phone(phone)
+        self._assert_recipient_not_blacklisted(normalized_phone)
         clean_url = media_url.strip()
         if not clean_url:
             raise ZApiError("A midia nao pode ficar vazia.")

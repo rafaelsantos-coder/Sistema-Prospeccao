@@ -25,6 +25,11 @@ from app.models import (
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.ai_sdr import enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
+from app.services.global_blacklist import (
+    BlacklistPhoneError,
+    block_phone,
+    is_globally_blocked,
+)
 from app.services.commercial_intelligence import (
     TAG_LABELS,
     TEMPERATURE_LABELS,
@@ -657,6 +662,7 @@ def _render_inbox(
         commercial_insights=commercial_insights,
         selected_tags=commercial_tags.get(selected.id, []) if selected else [],
         selected_insight=commercial_insights.get(selected.id) if selected else None,
+        globally_blacklisted=is_globally_blocked(db, selected.contact.phone) if selected else False,
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -771,7 +777,7 @@ def send_message(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         return _conversation_unavailable(request)
-    if conversation.lead and (conversation.lead.do_not_contact or conversation.lead.stage == "NAO_CONTATAR"):
+    if is_globally_blocked(db, conversation.contact.phone) or (conversation.lead and (conversation.lead.do_not_contact or conversation.lead.stage == "NAO_CONTATAR")):
         flash(request, "Este contato esta bloqueado para novas mensagens.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     clean_message = message.strip()
@@ -857,9 +863,11 @@ async def send_media(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         return _conversation_unavailable(request)
-    if conversation.lead and (
-        conversation.lead.do_not_contact
-        or conversation.lead.stage == "NAO_CONTATAR"
+    if is_globally_blocked(db, conversation.contact.phone) or (
+        conversation.lead and (
+            conversation.lead.do_not_contact
+            or conversation.lead.stage == "NAO_CONTATAR"
+        )
     ):
         return JSONResponse(
             {"ok": False, "error": "Este contato esta bloqueado para novas mensagens."},
@@ -1414,6 +1422,51 @@ def conversation_messages_api(
             for item in items
         ],
     }
+
+
+
+@router.post("/conversations/{conversation_id}/blacklist")
+def blacklist_conversation(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    reason: str = Form("Cliente solicitou não receber mais mensagens."),
+    db: Session = Depends(get_db),
+):
+    """Vendedor pode bloquear; remoção é exclusiva do administrador."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if conversation is None:
+        return _conversation_unavailable(request)
+    try:
+        entry, created = block_phone(
+            db,
+            phone=conversation.contact.phone,
+            name=conversation.contact.business_name or conversation.contact.name,
+            reason=reason or "Cliente solicitou não receber mensagens",
+            source="CONVERSA",
+            actor_id=user.id,
+        )
+    except BlacklistPhoneError as exc:
+        flash(request, str(exc), "warning")
+        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+    write_audit(
+        db, user=user, action="GLOBAL_BLACKLIST_ADDED_FROM_CONVERSATION",
+        entity_type="global_contact_blacklist", entity_id=entry.id,
+        payload={"conversation_id": conversation.id, "created": created},
+    )
+    db.commit()
+    flash(
+        request,
+        "Contato bloqueado globalmente: nenhuma fila ou instância poderá enviar mensagens."
+        if created else "Este número já está bloqueado em todas as filas.",
+        "success",
+    )
+    return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
 
 @router.post("/conversations/{conversation_id}/commercial-tag")

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="blacklist-page">
+  <div class="blacklist-heading">
+    <div>
+      <span class="eyebrow">PROTEÇÃO GLOBAL DE CONTATOS</span>
+      <h2>Blacklist de mensagens</h2>
+      <p>Bloqueio central, válido em todas as filas, instâncias de WhatsApp e campanhas. Nenhum envio sai pelo sistema para números bloqueados.</p>
+    </div>
+    <div class="blacklist-total"><strong>{{ total_active }}</strong><span>número(s) bloqueado(s)</span></div>
+  </div>
+  <div class="blacklist-notice">
+    <strong>Bloqueio global ativo</strong>
+    <span>Textos, botões, arquivos, campanhas, disparos e IA consultam a blacklist antes do envio. Contatos bloqueados ainda podem enviar mensagens para a Sulnet.</span>
+  </div>
+  <div class="blacklist-form-grid">
+    <section class="blacklist-card">
+      <h3>Adicionar contato</h3>
+      <p>Bloqueie um telefone imediatamente em todas as filas.</p>
+      <form method="post" action="/blacklist/add" class="blacklist-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="blacklist-number">WhatsApp / telefone *</label>
+        <input id="blacklist-number" name="phone" required placeholder="(55) 99999-9999" autocomplete="off">
+        <label for="blacklist-name">Nome ou empresa (opcional)</label>
+        <input id="blacklist-name" name="name" maxlength="150" placeholder="Identificação do contato">
+        <label for="blacklist-reason">Motivo (opcional)</label>
+        <textarea id="blacklist-reason" name="reason" maxlength="300" rows="2" placeholder="Ex.: solicitou não receber mensagens"></textarea>
+        <button class="blacklist-primary" type="submit">Bloquear número em todas as filas</button>
+      </form>
+    </section>
+    <section class="blacklist-card">
+      <h3>Importar blacklist em CSV</h3>
+      <p>Carregue até 10.000 contatos por arquivo, sem duplicar os números que já estão bloqueados.</p>
+      <form method="post" action="/blacklist/import" enctype="multipart/form-data" class="blacklist-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="blacklist-file">Arquivo CSV</label>
+        <input id="blacklist-file" name="file" required type="file" accept=".csv,text/csv">
+        <div class="blacklist-import-tip">Aceita coluna <strong>telefone</strong>, <strong>celular</strong>, <strong>numero</strong> ou <strong>whatsapp</strong>. Nome e motivo são opcionais. Também aceita um número por linha.</div>
+        <button class="blacklist-secondary" type="submit">Importar contatos para blacklist</button>
+      </form>
+      <a class="blacklist-model-link" href="/blacklist/modelo.csv">Baixar modelo CSV</a>
+    </section>
+  </div>
+  <section class="blacklist-card blacklist-results">
+    <div class="blacklist-list-header">
+      <div><h3>Contatos da blacklist</h3><p>Consulte e audite os bloqueios cadastrados.</p></div>
+      <form action="/blacklist" method="get" class="blacklist-search">
+        <input name="q" value="{{ q }}" placeholder="Buscar nome ou telefone" aria-label="Buscar contatos" maxlength="80">
+        <select name="show" aria-label="Situação"><option value="active" {% if show != 'all' %}selected{% endif %}>Ativos</option><option value="all" {% if show == 'all' %}selected{% endif %}>Todos</option></select>
+        <button type="submit">Buscar</button>
+      </form>
+    </div>
+    <div class="blacklist-table-wrap">
+      <table>
+        <thead><tr><th>Contato / número</th><th>Motivo</th><th>Origem</th><th>Data</th><th>Situação</th>{% if current_user.role == 'ADMIN' %}<th>Ação</th>{% endif %}</tr></thead>
+        <tbody>
+          {% for entry in entries %}
+          <tr>
+            <td><strong>{{ entry.name or 'Contato sem nome' }}</strong><small>{{ entry.phone|phone_br }}</small></td>
+            <td>{{ entry.reason }}</td>
+            <td>{{ entry.source }}</td>
+            <td>{{ entry.created_at|datetime_br }}</td>
+            <td>{% if entry.active %}<span class="blacklist-pill blocked">Bloqueado</span>{% else %}<span class="blacklist-pill inactive">Desativado</span>{% endif %}</td>
+            {% if current_user.role == 'ADMIN' %}
+            <td>
+              {% if entry.active %}
+              <details class="blacklist-remove"><summary>Desbloquear</summary>
+                <form method="post" action="/blacklist/{{ entry.id }}/remove">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <p>Atenção: isto permite novos envios. Digite <strong>DESBLOQUEAR</strong> para confirmar.</p>
+                  <input name="confirmation" aria-label="Confirmar desbloqueio" placeholder="DESBLOQUEAR" required autocomplete="off">
+                  <button type="submit">Confirmar desbloqueio</button>
+                </form>
+              </details>
+              {% else %}<span class="blacklist-muted">—</span>{% endif %}
+            </td>
+            {% endif %}
+          </tr>
+          {% else %}
+          <tr><td colspan="{{ 6 if current_user.role == 'ADMIN' else 5 }}" class="blacklist-empty">Nenhum contato encontrado nesta busca.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <small class="blacklist-footnote">Lista limitada a 300 registros por busca. O bloqueio é permanente até um administrador removê-lo expressamente. Mensagens de clientes continuam chegando normalmente.</small>
+  </section>
+</section>
+<style>
+.blacklist-page{display:grid;gap:16px;max-width:1360px;margin:0 auto}
+.blacklist-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.blacklist-heading h2{font-size:25px;margin:5px 0}
+.blacklist-heading p,.blacklist-card p{font-size:12px;color:#64748b;line-height:1.6}
+.blacklist-heading p{max-width:700px}
+.blacklist-total{background:#fff7ed;border:1px solid #fed7aa;border-radius:13px;padding:13px 19px;display:grid;gap:3px;min-width:140px}
+.blacklist-total strong{font-size:26px;color:#9a3412}
+.blacklist-total span{font-size:11px;color:#9a3412}
+.blacklist-notice{display:grid;gap:4px;padding:12px 16px;border:1px solid #fecaca;background:#fff1f2;color:#991b1b;border-radius:11px;font-size:12px}
+.blacklist-notice span{line-height:1.5}
+.blacklist-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.blacklist-card{border:1px solid #e5e7eb;background:white;border-radius:13px;padding:18px}
+.blacklist-card h3{font-size:17px;margin:0}
+.blacklist-card p{margin:8px 0 13px}
+.blacklist-form{display:grid;gap:8px}
+.blacklist-form label{font-size:11px;font-weight:750;color:#475569}
+.blacklist-form input,.blacklist-form textarea{width:100%;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font-size:12px;background:#fff;color:#1e293b}
+.blacklist-primary,.blacklist-secondary{border:0;padding:12px 13px;font-size:12px;font-weight:800;border-radius:8px;cursor:pointer;margin-top:5px}
+.blacklist-primary{background:#b91c1c;color:white}
+.blacklist-secondary{background:#ea580c;color:white}
+.blacklist-model-link{display:inline-block;margin-top:13px;font-size:11px;color:#c2410c}
+.blacklist-import-tip{padding:12px;border-radius:8px;background:#f8fafc;color:#64748b;font-size:11px;line-height:1.7}
+.blacklist-list-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.blacklist-list-header p{margin:5px 0 0}
+.blacklist-search{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.blacklist-search input,.blacklist-search select{border:1px solid #cbd5e1;border-radius:7px;padding:9px;font-size:11px}
+.blacklist-search button{border:0;background:#334155;color:white;border-radius:8px;padding:10px 13px;font-size:11px;cursor:pointer}
+.blacklist-table-wrap{overflow-x:auto}
+.blacklist-table-wrap table{width:100%;border-collapse:collapse;font-size:12px}
+.blacklist-table-wrap th,.blacklist-table-wrap td{padding:11px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}
+.blacklist-table-wrap th{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;background:#f8fafc}
+.blacklist-table-wrap td strong,.blacklist-table-wrap td small{display:block}
+.blacklist-table-wrap td small{color:#64748b;margin-top:4px}
+.blacklist-pill{display:inline-block;padding:5px 8px;border-radius:999px;font-size:10px;font-weight:800}
+.blacklist-pill.blocked{background:#fee2e2;color:#991b1b}
+.blacklist-pill.inactive{background:#e2e8f0;color:#475569}
+.blacklist-footnote{display:block;margin-top:11px;color:#64748b;font-size:10px;line-height:1.5}
+.blacklist-empty{text-align:center!important;padding:28px!important;color:#64748b}
+.blacklist-remove summary{cursor:pointer;list-style:none;color:#9a3412;font-size:11px;font-weight:750}
+.blacklist-remove form{display:grid;gap:7px;min-width:190px;max-width:260px}
+.blacklist-remove form p{font-size:10px;margin:5px 0}
+.blacklist-remove input{padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:11px}
+.blacklist-remove button{padding:8px;border:0;border-radius:6px;background:#991b1b;color:white;font-size:10px;cursor:pointer}
+@media(max-width:860px){.blacklist-form-grid{grid-template-columns:1fr}.blacklist-heading,.blacklist-list-header{align-items:flex-start;flex-direction:column}}
+</style>
+{% endblock %}

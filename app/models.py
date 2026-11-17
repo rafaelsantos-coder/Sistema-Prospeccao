@@ -237,6 +237,23 @@ class Contact(Base):
     conversations: Mapped[list["Conversation"]] = relationship(back_populates="contact")
 
 
+class GlobalContactBlacklist(Base):
+    """Supressão global por telefone; independente de fila, usuário ou instância."""
+    __tablename__ = "global_contact_blacklist"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    phone: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(150), default="")
+    reason: Mapped[str] = mapped_column(String(300), default="Não deseja receber mensagens")
+    source: Mapped[str] = mapped_column(String(24), default="MANUAL")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    removed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
     __table_args__ = (

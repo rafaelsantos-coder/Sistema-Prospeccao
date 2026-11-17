@@ -3577,6 +3577,8 @@ def test_central_vai_com_botao_que_abre_whatsapp(monkeypatch):
     monkeypatch.setattr(service, "_url", lambda path: f"https://zapi/{path}", raising=False)
     monkeypatch.setattr(service, "_headers", lambda json_request=False: {}, raising=False)
     monkeypatch.setattr(service, "normalize_phone", lambda phone: phone, raising=False)
+    # Este teste valida o payload do botão; blacklist é coberta por testes próprios.
+    monkeypatch.setattr(service, "_assert_recipient_not_blacklisted", lambda phone: None, raising=False)
     service.send_link_button(phone="5555999", message="Oi", label="Falar com a central", url="https://wa.me/555535208000")
     assert calls["url"].endswith("send-button-actions")
     action = calls["json"]["buttonActions"][0]

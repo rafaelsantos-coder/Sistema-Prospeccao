@@ -25,6 +25,7 @@ from app.models import (
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT, followup_spec, next_business_time
 from app.services.audit import write_audit
+from app.services.global_blacklist import block_phone
 from app.timeutils import UTC, utc_naive, utc_to_local, utcnow
 
 
@@ -503,6 +504,18 @@ def _persist_explicit_no_contact(db: Session, conversation_id: int) -> bool:
     conversation = db.get(Conversation, conversation_id)
     if not conversation:
         return False
+    # Objetos legados/testes podem não ter relação de contato carregada.
+    # A conversa real do banco sempre possui contato; preservamos o opt-out
+    # do lead caso o telefone não esteja disponível.
+    contact = getattr(conversation, "contact", None)
+    phone = getattr(contact, "phone", "") or getattr(getattr(conversation, "lead", None), "phone", "")
+    if phone:
+        block_phone(
+            db, phone=phone,
+            name=getattr(contact, "name", ""),
+            reason="Cliente solicitou não ser contatado em follow-up",
+            source="OPT_OUT_AI",
+        )
     if conversation.lead:
         conversation.lead.do_not_contact = True
         conversation.lead.stage = "NAO_CONTATAR"
@@ -647,6 +660,9 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
         return False, "CONVERSA_INEXISTENTE"
     if conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
         return False, "CONVERSA_ENCERRADA"
+    from app.services.global_blacklist import is_globally_blocked  # noqa: PLC0415
+    if is_globally_blocked(db, conversation.contact.phone):
+        return False, "BLACKLIST_GLOBAL"
     lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
     if lead and lead.do_not_contact:
         return False, "DO_NOT_CONTACT"
