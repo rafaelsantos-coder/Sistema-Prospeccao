@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div><span class="eyebrow">PROSPECTA VOZ · CONFIGURAÇÕES</span><h2>Contas do discador</h2>
+    <p>Cadastre as linhas ou ramais SIP utilizados para realizar as ligações.</p></div>
+  <a class="button button-secondary" href="/voice">Voltar ao dashboard</a>
+</div>
+<div class="voice-notice"><strong>Conexão SIP ainda não verificada.</strong><p>O status “Ativa” indica que a conta pode ser selecionada em novos cadastros. “Conectada” só será exibido após a integração com o servidor SIP confirmar o registro.</p></div>
+
+<section class="panel voice-panel">
+  <span class="eyebrow">LINHAS E RAMAIS</span><h3>Contas cadastradas</h3>
+  {% if accounts %}
+  <div class="voice-table-wrap"><table class="voice-table">
+    <thead><tr><th>Identificação</th><th>Servidor</th><th>Transporte</th><th>Situação</th><th>Conexão SIP</th><th>Ações</th></tr></thead>
+    <tbody>
+    {% for account in accounts %}
+    <tr>
+      <td><strong>{{ account.name }}</strong><small>Usuário: {{ account.username }}</small></td>
+      <td>{{ account.domain }}</td><td>{{ account.transport }}</td>
+      <td><span class="voice-pill {{ 'is-ready' if account.active else 'is-paused' }}">{{ 'Ativa' if account.active else 'Pausada' }}</span></td>
+      <td><span class="voice-pill is-unknown">Não verificada</span></td>
+      <td><div class="voice-actions">
+        <a class="button button-secondary" href="/voice/accounts?edit_id={{ account.id }}">Editar</a>
+        <form action="/voice/accounts/{{ account.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">{{ 'Pausar' if account.active else 'Reativar' }}</button></form>
+        <a class="button button-secondary" href="/voice/accounts/{{ account.id }}/delete">Excluir</a>
+      </div></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="voice-empty">Nenhuma conta SIP cadastrada. Utilize o formulário abaixo.</div>{% endif %}
+</section>
+
+{% if edit_account %}
+<section class="panel voice-panel" id="editar-conta">
+  <span class="eyebrow">EDITAR CONTA #{{ edit_account.id }}</span>
+  <h3>{{ edit_account.name }}</h3>
+  <form method="post" action="/voice/accounts/{{ edit_account.id }}/update" class="stack-form" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field"><span>Nome da conta</span><input name="name" maxlength="120" value="{{ edit_account.name }}" required></label>
+      <label class="field"><span>Servidor SIP</span><input name="domain" value="{{ edit_account.domain }}" required></label>
+      <label class="field"><span>Usuário ou ramal SIP</span><input name="username" value="{{ edit_account.username }}" required></label>
+      <label class="field"><span>Protocolo de transporte</span><select name="transport">{% for item in ['UDP','TCP','TLS'] %}<option value="{{ item }}" {% if edit_account.transport == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
+      <label class="field field-span-2"><span>Nova senha SIP (opcional)</span><input name="password" type="password" autocomplete="new-password" placeholder="Deixe em branco para manter a senha atual"></label>
+    </div>
+    <div class="voice-actions"><button class="button button-primary" type="submit">Salvar alterações</button><a class="button button-secondary" href="/voice/accounts">Cancelar edição</a></div>
+  </form>
+</section>
+{% else %}
+<section class="panel voice-panel" id="nova-conta">
+  <span class="eyebrow">NOVO CADASTRO</span><h3>Adicionar conta SIP</h3>
+  <form method="post" action="/voice/accounts" class="stack-form" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field"><span>Nome da conta</span><input name="name" maxlength="120" required placeholder="Ex.: Linha comercial principal"></label>
+      <label class="field"><span>Servidor SIP</span><input name="domain" required placeholder="sip.exemplo.com.br"></label>
+      <label class="field"><span>Usuário ou ramal SIP</span><input name="username" required placeholder="Número utilizado para registro"></label>
+      <label class="field"><span>Protocolo de transporte</span><select name="transport"><option>UDP</option><option>TCP</option><option>TLS</option></select></label>
+      <label class="field field-span-2"><span>Senha SIP (armazenada com criptografia)</span><input name="password" type="password" autocomplete="new-password" required></label>
+    </div>
+    <button class="button button-primary" type="submit">Cadastrar conta SIP</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
