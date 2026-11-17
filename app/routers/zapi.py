@@ -84,6 +84,16 @@ OPT_OUT_TERMS = (
     "me remova",
     "descadastrar",
     "sair da lista",
+    "não quero receber mensagem",
+    "nao quero receber mensagem",
+    "não quero mais receber mensagem",
+    "nao quero mais receber mensagem",
+    "não me envie mensagem",
+    "nao me envie mensagem",
+    "não me mande mensagem",
+    "nao me mande mensagem",
+    "pare de enviar mensagens",
+    "pare de mandar mensagens",
 )
 
 
