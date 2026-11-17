@@ -17,6 +17,7 @@ from app.services.dispatch_queue import parse_dispatch_csv
 from app.services.media_storage import MediaStorage
 from app.services.secret_store import encrypt_secret
 from app.services.voice import (
+    VOICE_STATUS_HOMOLOGACAO,
     normalize_voice_contacts,
     validate_campaign,
     validate_extension,
@@ -71,7 +72,7 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
         "groups_active": sum(1 for item in groups if item.active),
         "campaigns": len(campaigns),
         "campaigns_draft": sum(1 for item in campaigns if item.status == "RASCUNHO"),
-        "campaigns_review": sum(1 for item in campaigns if item.status == "AGUARDANDO_HOMOLOGACAO"),
+        "campaigns_review": sum(1 for item in campaigns if item.status == VOICE_STATUS_HOMOLOGACAO),
         "recipients": recipient_count,
     }
     return render(
@@ -501,7 +502,7 @@ def request_review(campaign_id: int, request: Request, csrf_token: str = Form(..
         VoiceRecipient.campaign_id == campaign_id)) or 0
     if not count:
         return _error(request, "Importe pelo menos um contato.")
-    campaign.status = "AGUARDANDO_HOMOLOGACAO"
+    campaign.status = VOICE_STATUS_HOMOLOGACAO
     write_audit(db, user=actor, action="VOICE_REVIEW_REQUESTED",
                 entity_type="voice_campaign", entity_id=campaign.id,
                 payload={"contacts": count})
