@@ -81,4 +81,8 @@ def test_global_blacklist_routes_and_chat_button():
             "csrf_token": _csrf(client.get("/blacklist").text),
         }, files={"file": ("contatos.csv", csv.encode("utf-8"), "text/csv")}, follow_redirects=False)
         assert upload.status_code == 303
-        assert "5555999876542" in client.get("/blacklist").text.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+        with SessionLocal() as db:
+            imported = db.scalar(select(GlobalContactBlacklist).where(
+                GlobalContactBlacklist.phone == "5555999876542"
+            ))
+            assert imported is not None and imported.active is True
