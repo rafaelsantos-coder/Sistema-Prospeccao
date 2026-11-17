@@ -62,7 +62,7 @@
           <tr>
             <td><strong>{{ campaign.name }}</strong></td>
             <td>{{ 'Áudio + confirmação' if campaign.mode == 'AUDIO' else 'Transferência direta' }}</td>
-            <td><span class="voice-pill is-unknown">{{ campaign.status|replace('_',' ') }}</span></td>
+            <td><span class="voice-pill is-unknown">{{ 'Aguardando homologação' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}</span></td>
           </tr>
         {% endfor %}
         </tbody>
