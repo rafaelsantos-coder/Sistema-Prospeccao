@@ -13,6 +13,23 @@ O menu **Prospecta VOZ** permite:
 **Não existe ainda cliente SIP em execução, registro autenticado, teste de conexão, worker que disque ou transferência real.**
 O estado `AGUARDANDO_HOMOLOGACAO` nunca dispara chamada. Nenhuma credencial real foi inserida no repositório ou na base de produção.
 
+## Diagnóstico de uma chamada SIP autorizada
+
+Em **Prospecta VOZ > Contas do discador > Testar ligação**, o ADMIN informa somente um número autorizado com DDD e confirma consentimento para receber **uma chamada de teste**. O sistema verifica se o agente de testes SIP está online antes de enfileirar a solicitação. Não existem testes automáticos recorrentes.
+
+O serviço dedicado `python -m app.workers.voice_test_worker`, habilitado somente com `VOICE_TEST_WORKER_ENABLED=true`, consulta a tabela de testes e autentica a conta via **SIP UDP REGISTER** (desafio Digest MD5/SHA-256 suportado). Depois tenta **um único SIP INVITE** para o número informado; encerra após resposta SIP 180/200 ou timeout, mediante CANCEL ou BYE. **SIP 180 indica sinalização de toque pelo PABX, não confirmação de toque físico; SIP 200 indica conexão da chamada, não qualidade de áudio.** O diagnóstico não oferece RTP bidirecional, não toca gravações e não transfere para grupos.
+
+A página distingue: PENDENTE, REGISTRANDO, REGISTRADO, CHAMANDO, TOCANDO, TOCOU, ATENDIDA, OCUPADO, SEM_RESPOSTA, FALHOU e EXPIRADO. O teste grava os códigos SIP do registro e convite, mensagens seguras e o histórico do número. Os testes não contam como campanhas.
+
+Segurança:
+- Exclusivo perfil ADMIN, com token CSRF e auditoria de solicitação; não armazenar senha em logs nem parâmetros da URL.
+- Somente destinos telefônicos brasileiros com DDD e autorização expressa, até **três testes por conta/hora**, um ativo por vez e intervalo de três minutos por destino.
+- O botão fica indisponível quando o agente não registra heartbeat, quando a conta é pausada ou se o transporte não é UDP.
+- Pedidos com mais de 90 segundos são expirados, sem discagem tardia; não há retentativas automáticas após falha.
+- **Aviso SIP:** o registro temporário da mesma conta em outro dispositivo pode desalojar uma sessão, dependendo da política do PABX; homologar primeiro com ramal exclusivo de testes.
+- Para produção do agente, configurar em serviço isolado Railway (uma réplica) `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `DATA_ENCRYPTION_KEY=${{web.DATA_ENCRYPTION_KEY}}`, `SECRET_KEY=${{web.SECRET_KEY}}`, `VOICE_TEST_WORKER_ENABLED=true`, `APP_ENV=production`. Iniciar com `python -m app.workers.voice_test_worker`. Conexão SIP UDP (porta padrão 5060) e NAT dependem da rede e da central; falhas aparecem como falha real, nunca como teste bem-sucedido simulado.
+- O recurso de discagem de campanhas continua **desativado** até a homologação de mídia RTP e transferências PABX.
+
 ## Navegação administrativa modular
 
 Ao clicar em **Prospecta VOZ**, o administrador acessa o **dashboard** em /voice. O menu lateral expande os submenus independentes:
