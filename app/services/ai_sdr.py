@@ -85,6 +85,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _show_corporate_differentials,
 )
 from app.services.ai_sdr_policy import MAX_AI_REPLIES_PER_HOUR, SULIA_SYSTEM_PROMPT, UNTRUSTED_INPUT_NOTICE
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue
 from app.services.audit import write_audit
 from app.services.queue_routing import (
     AI_WHEN_HUMAN_IDLE,
@@ -104,7 +105,7 @@ DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
 
 
 def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None:
-    if not queue_id:
+    if not queue_id or not ai_allowed_for_queue(queue_id):
         return None
     return db.scalar(
         select(AIQueueBinding)
@@ -149,8 +150,13 @@ def _test_phone_binding(db: Session, conversation_id: int, queue) -> Any | None:
 
 
 def is_human_only_queue(queue: ServiceQueue | None) -> bool:
-    """A fila identificada como Natine nunca recebe IA, nem em testes."""
-    return bool(queue and queue.name.strip().casefold() == "natine")
+    """Natine é humana; com escopo exclusivo, só a Fila IA pode receber IA."""
+    return bool(
+        queue and (
+            queue.name.strip().casefold() == "natine"
+            or not ai_allowed_for_queue(queue.id)
+        )
+    )
 
 
 def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBinding | None:
@@ -335,10 +341,12 @@ def enqueue_ai_job(
     message: Message,
     takeover: bool = False,
 ) -> AIJob | None:
-    # Proibicao explicita do gestor: fila Natine 100% humana, sem SDR,
-    # closer, retomada, fallback ou excecao de telefone de teste.
+    # Escopo comercial: somente Fila IA tem SDR e Vendedor IA.
+    if not ai_allowed_for_conversation(db, conversation.id):
+        LOG.info("ai_job_skipped conversation=%s reason=exclusive_ai_queue", conversation.id)
+        return None
     if is_human_only_queue(queue_for_conversation(db, conversation.id)):
-        LOG.info("ai_job_skipped conversation=%s reason=natine_human_only", conversation.id)
+        LOG.info("ai_job_skipped conversation=%s reason=human_only_queue", conversation.id)
         return None
     if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
         return None
@@ -2132,10 +2140,15 @@ def ai_reply_limit_reached(db: Session, conversation_id: int) -> bool:
 
 
 def process_ai_job(db: Session, job: AIJob) -> str:
+    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id):
+        job.status = "CANCELADO"
+        job.error = "IA autorizada somente na Fila IA."
+        LOG.info("ai_job_skipped conversation=%s reason=exclusive_ai_queue", job.conversation_id)
+        return "skipped"
     if is_human_only_queue(queue_for_conversation(db, job.conversation_id)):
         job.status = "IGNORADO"
-        job.error = "Fila Natine exclusiva de atendimento humano."
-        LOG.info("ai_job_skipped conversation=%s reason=natine_human_only", job.conversation_id)
+        job.error = "Fila exclusiva de atendimento humano."
+        LOG.info("ai_job_skipped conversation=%s reason=human_only_queue", job.conversation_id)
         return "skipped"
     agent = db.get(AIAgentProfile, job.agent_id)
     if not agent or not agent.active:
