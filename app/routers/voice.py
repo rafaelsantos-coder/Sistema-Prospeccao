@@ -32,7 +32,9 @@ def _actor(request: Request, db: Session):
     user = get_current_user(request, db)
     if not user:
         return None, RedirectResponse("/login", status_code=303)
-    if user.role not in {"ADMIN", "GESTOR"}:
+    # Centralizar o RBAC: TODOS os GETs e POSTs do VOZ exigem ADMIN.
+    # Gestores, supervisores e consultores nao acessam painel nem mutacoes.
+    if user.role != "ADMIN":
         return None, RedirectResponse("/dashboard", status_code=303)
     return user, None
 
