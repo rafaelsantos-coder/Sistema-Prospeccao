@@ -1247,3 +1247,32 @@ class VoiceCallEvent(Base):
     event: Mapped[str] = mapped_column(String(35))
     detail: Mapped[str] = mapped_column(String(180), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# Diagnostic SIP tests are intentionally separate from automated voice campaigns.
+class VoiceTestCall(Base):
+    __tablename__ = "voice_test_calls"
+    __table_args__ = (Index("ix_voice_test_calls_account_created", "account_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("voice_sip_accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    account_label: Mapped[str] = mapped_column(String(120))
+    target_phone: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(30), default="PENDENTE", index=True)
+    sip_register_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sip_invite_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    message: Mapped[str] = mapped_column(String(230), default="")
+    initiator_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VoiceTestAgent(Base):
+    __tablename__ = "voice_test_agent"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str] = mapped_column(String(120), default="")
