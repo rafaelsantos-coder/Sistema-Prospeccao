@@ -10,12 +10,13 @@ from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
 from app.database import get_db
-from app.models import Lead, VoiceCampaign, VoiceGroup, VoiceRecipient, VoiceSipAccount
+from app.models import Lead, VoiceCampaign, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.dispatch_queue import parse_dispatch_csv
 from app.services.media_storage import MediaStorage
 from app.services.secret_store import encrypt_secret
+from app.services.voice_test import is_agent_online, now_utc, validate_test_phone, verify_test_allowed
 from app.services.voice import (
     VOICE_STATUS_HOMOLOGACAO,
     normalize_voice_contacts,
@@ -89,10 +90,16 @@ def voice_accounts(request: Request, edit_id: int | None = None, db: Session = D
         return redirect
     accounts = list(db.scalars(select(VoiceSipAccount).order_by(VoiceSipAccount.id.desc())))
     edit_account = db.get(VoiceSipAccount, edit_id) if edit_id else None
+    recent = list(db.scalars(select(VoiceTestCall).order_by(VoiceTestCall.id.desc()).limit(150)))
+    latest_tests = {}
+    for test in recent:
+        if test.account_id is not None and test.account_id not in latest_tests:
+            latest_tests[test.account_id] = test
     return render(
         request, "voice/accounts.html", user=actor, active_nav="voice",
         voice_section="accounts", page_title="Prospecta VOZ · Contas SIP",
         accounts=accounts, edit_account=edit_account,
+        latest_tests=latest_tests, agent_online=is_agent_online(db),
     )
 
 
@@ -509,3 +516,60 @@ def request_review(campaign_id: int, request: Request, csrf_token: str = Form(..
     db.commit()
     flash(request, "Campanha preparada para homologacao. O discador ainda nao efetua chamadas.")
     return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.get("/accounts/{account_id}/test")
+def account_test_page(account_id: int, request: Request, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    account = db.get(VoiceSipAccount, account_id)
+    if not account:
+        return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
+    recent = list(db.scalars(select(VoiceTestCall).where(
+        VoiceTestCall.account_id == account_id
+    ).order_by(VoiceTestCall.id.desc()).limit(8)))
+    return render(
+        request, "voice/account_test.html", user=actor, active_nav="voice",
+        voice_section="accounts", page_title="Prospecta VOZ · Testar ligação SIP",
+        account=account, recent=recent, agent_online=is_agent_online(db),
+        processing=bool(recent and recent[0].status in {"PENDENTE","REGISTRANDO","REGISTRADO","CHAMANDO","TOCANDO"}),
+    )
+
+
+@router.post("/accounts/{account_id}/test")
+def request_account_test(account_id: int, request: Request, csrf_token: str = Form(...),
+                         phone: str = Form(...), authorized: str = Form(""),
+                         db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    # Lock the account until this request is committed: concurrent tests cannot
+    # bypass the global queue/rate limit on PostgreSQL.
+    account = db.scalar(select(VoiceSipAccount).where(
+        VoiceSipAccount.id == account_id
+    ).with_for_update())
+    if not account:
+        return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
+    if authorized != "yes":
+        return _error(request, "Confirme que o numero de teste e seu ou esta autorizado.",
+                      f"/voice/accounts/{account_id}/test")
+    try:
+        clean = validate_test_phone(phone)
+        verify_test_allowed(db, account, clean)
+    except ValueError as exc:
+        return _error(request, str(exc), f"/voice/accounts/{account_id}/test")
+    test = VoiceTestCall(
+        account_id=account.id, account_label=account.name, target_phone=clean,
+        status="PENDENTE", message="Teste solicitado; aguardando agente SIP.",
+        initiator_user_id=actor.id, created_at=now_utc(),
+    )
+    db.add(test)
+    db.flush()
+    write_audit(db, user=actor, action="VOICE_SIP_TEST_REQUESTED",
+                entity_type="voice_test_call", entity_id=test.id,
+                payload={"account_id": account.id, "target_last4": clean[-4:]})
+    db.commit()
+    flash(request, "Teste autorizado encaminhado ao agente SIP. Acompanhe o resultado real nesta pagina.")
+    return RedirectResponse(f"/voice/accounts/{account_id}/test", status_code=303)
