@@ -21,63 +21,107 @@
       <input name="q" value="{{ query }}" placeholder="Buscar empresa, pessoa ou telefone">
     </form>
 
-    {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
-    <form class="inbox-queue-filter" action="/conversations" method="get" aria-label="Filtro gerencial de filas">
-      <input type="hidden" name="view" value="{{ view }}">
-      {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
-      {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
-      {% if tag_code %}<input type="hidden" name="tag" value="{{ tag_code }}">{% endif %}
-      {% if temperature %}<input type="hidden" name="temperature" value="{{ temperature }}">{% endif %}
-      <label for="inbox-queue-select">Visualizar fila</label>
-      <div class="inbox-queue-filter-controls">
-        <select id="inbox-queue-select" name="queue" aria-label="Selecionar fila" >
+    {% set is_manager = current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
+    {% set filter_count = (1 if queue_id else 0) + (1 if assignee_id else 0) + (1 if tag_code else 0) + (1 if temperature else 0) %}
+    {% set preserved_filters = ('&queue=' ~ queue_id if queue_id else '') ~ ('&assignee=' ~ assignee_id if assignee_id else '') ~ ('&q=' ~ (query|urlencode) if query else '') ~ ('&tag=' ~ tag_code if tag_code else '') ~ ('&temperature=' ~ temperature if temperature else '') %}
+
+    <nav class="inbox-tabs" aria-label="Situação dos atendimentos">
+      <a href="/conversations?view=active{{ preserved_filters }}" class="{% if view == 'active' %}active{% endif %}" {% if view == 'active' %}aria-current="page"{% endif %}>Ativas <b id="count-active">{{ counts.active }}</b></a>
+      <a href="/conversations?view=unread{{ preserved_filters }}" class="{% if view == 'unread' %}active{% endif %}" {% if view == 'unread' %}aria-current="page"{% endif %}>Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
+      {% if is_manager %}
+      <a href="/conversations?view=pending{{ preserved_filters }}" class="{% if view == 'pending' %}active{% endif %}" {% if view == 'pending' %}aria-current="page"{% endif %}>Pendentes <b id="count-pending">{{ counts.pending }}</b></a>
+      <a href="/conversations?view=queue{{ preserved_filters }}" class="{% if view == 'queue' %}active{% endif %}" {% if view == 'queue' %}aria-current="page"{% endif %}>Sem responsável <b id="count-queue">{{ counts.queue }}</b></a>
+      {% endif %}
+      <a href="/conversations?view=closed{{ preserved_filters }}" class="{% if view == 'closed' %}active{% endif %}" {% if view == 'closed' %}aria-current="page"{% endif %}>Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
+    </nav>
+
+    <div class="inbox-control-bar">
+      {% if is_manager %}
+      <form action="/conversations" method="get" class="inbox-main-queue">
+        <input type="hidden" name="view" value="{{ view }}">
+        {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+        {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
+        {% if tag_code %}<input type="hidden" name="tag" value="{{ tag_code }}">{% endif %}
+        {% if temperature %}<input type="hidden" name="temperature" value="{{ temperature }}">{% endif %}
+        <label for="inbox-queue-select">Fila</label>
+        <select id="inbox-queue-select" name="queue" aria-label="Selecionar fila">
           <option value="">Todas as filas</option>
           {% for item in queues %}
           <option value="{{ item.id }}" {% if queue_id == item.id %}selected{% endif %}>{{ item.name }}</option>
           {% endfor %}
         </select>
-        {% if queue_id %}<a class="inbox-queue-clear" href="/conversations?view={{ view }}" title="Limpar seleção da fila">Limpar</a>{% endif %}
-      </div>
-      <small>{% if focused_queue %}Exibindo somente {{ focused_queue.name }}{% else %}Visão geral das filas permitidas ao seu perfil{% endif %}</small>
-    </form>
-    {% endif %}
-
-    <form class="inbox-commercial-filter" action="/conversations" method="get" data-commercial-filter>
-      <input type="hidden" name="view" value="{{ view }}">
-      {% if queue_id %}<input type="hidden" name="queue" value="{{ queue_id }}">{% endif %}
-      {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
-      {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
-      <label for="tag-filter">Etiqueta</label>
-      <select id="tag-filter" name="tag">
-        <option value="">Todas</option>
-        {% for code, name in tag_catalog.items() %}
-        <option value="{{ code }}" {% if tag_code == code %}selected{% endif %}>{{ name }}</option>
-        {% endfor %}
-      </select>
-      <label for="temp-filter">Calor</label>
-      <select id="temp-filter" name="temperature">
-        <option value="">Todos</option>
-        {% for code, name in temperature_catalog.items() %}
-        <option value="{{ code }}" {% if temperature == code %}selected{% endif %}>{{ name }}</option>
-        {% endfor %}
-      </select>
-    </form>
-    {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
-    <a class="inbox-commercial-heatmap-link" href="/conversations-intelligence{% if queue_id %}?queue={{ queue_id }}{% endif %}">▦ Mapa de calor comercial</a>
-    {% endif %}
-
-    <div class="inbox-tabs">
-      {% set preserved_filters = ('&queue=' ~ queue_id if queue_id else '') ~ ('&assignee=' ~ assignee_id if assignee_id else '') ~ ('&q=' ~ (query|urlencode) if query else '') ~ ('&tag=' ~ tag_code if tag_code else '') ~ ('&temperature=' ~ temperature if temperature else '') %}
-      <a href="/conversations?view=active{{ preserved_filters }}" class="{% if view == 'active' %}active{% endif %}">Ativas <b id="count-active">{{ counts.active }}</b></a>
-      <a href="/conversations?view=unread{{ preserved_filters }}" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
-      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
-      <a href="/conversations?view=pending{{ preserved_filters }}" class="{% if view == 'pending' %}active{% endif %}">Pendentes <b id="count-pending">{{ counts.pending }}</b></a>
-      <a href="/conversations?view=queue{{ preserved_filters }}" class="{% if view == 'queue' %}active{% endif %}">Sem responsável <b id="count-queue">{{ counts.queue }}</b></a>
+      </form>
+      {% else %}
+      <span class="inbox-scope-caption">Meus atendimentos</span>
       {% endif %}
-      <a href="/conversations?view=closed{{ preserved_filters }}" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
+
+      <details class="inbox-filter-drawer" data-inbox-filter-drawer>
+        <summary aria-label="Abrir filtros de conversa">
+          <span aria-hidden="true">☷</span> Filtros
+          {% if filter_count %}<b class="inbox-filter-counter">{{ filter_count }}</b>{% endif %}
+        </summary>
+        <form action="/conversations" method="get" class="inbox-filter-popup">
+          <input type="hidden" name="view" value="{{ view }}">
+          {% if queue_id %}<input type="hidden" name="queue" value="{{ queue_id }}">{% endif %}
+          {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+          <div class="inbox-filter-popup-heading">
+            <strong>Refinar conversas</strong>
+            <small>Combine os filtros para localizar oportunidades.</small>
+          </div>
+          {% if sellers %}
+          <label for="inbox-filter-seller">Responsável</label>
+          <select id="inbox-filter-seller" name="assignee">
+            <option value="">Todos os vendedores</option>
+            {% for seller in sellers %}
+            <option value="{{ seller.id }}" {% if assignee_id == seller.id %}selected{% endif %}>{{ seller.name }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+          <label for="tag-filter">Etiqueta comercial</label>
+          <select id="tag-filter" name="tag">
+            <option value="">Todas as etiquetas</option>
+            {% for code, name in tag_catalog.items() %}
+            <option value="{{ code }}" {% if tag_code == code %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+          <label for="temp-filter">Potencial de fechamento</label>
+          <select id="temp-filter" name="temperature">
+            <option value="">Todas as temperaturas</option>
+            {% for code, name in temperature_catalog.items() %}
+            <option value="{{ code }}" {% if temperature == code %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+          <div class="inbox-filter-buttons">
+            <a href="/conversations?view={{ view }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}">Limpar</a>
+            <button type="submit">Aplicar filtros</button>
+          </div>
+        </form>
+      </details>
     </div>
-    {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] and focused_queue %}
-    <div class="inbox-queue-summary" aria-label="Situação da fila selecionada">
+
+    {% if filter_count %}
+    <div class="inbox-applied-filters" aria-label="Filtros ativos">
+      {% if focused_queue %}
+      <a href="/conversations?view={{ view }}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" title="Remover filtro de fila">Fila: {{ focused_queue.name }} <span aria-hidden="true">×</span></a>
+      {% endif %}
+      {% if assignee_id %}
+      {% for seller in sellers %}
+      {% if seller.id == assignee_id %}
+      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" title="Remover filtro de vendedor">{{ seller.name }} <span aria-hidden="true">×</span></a>
+      {% endif %}
+      {% endfor %}
+      {% endif %}
+      {% if tag_code %}
+      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" title="Remover filtro de etiqueta">{{ tag_catalog.get(tag_code, tag_code) }} <span aria-hidden="true">×</span></a>
+      {% endif %}
+      {% if temperature %}
+      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" title="Remover filtro de temperatura">{{ temperature_catalog.get(temperature, temperature) }} <span aria-hidden="true">×</span></a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if is_manager and focused_queue %}
+    <div class="inbox-queue-summary" aria-label="Resumo da fila {{ focused_queue.name }}">
       <span><strong id="queue-summary-pending">{{ counts.pending }}</strong> pendentes</span>
       <span><strong id="queue-summary-unread">{{ counts.unread }}</strong> não lidas</span>
       <span><strong id="queue-summary-owner">{{ counts.queue }}</strong> sem responsável</span>
@@ -86,54 +130,45 @@
     </div>
     {% endif %}
 
-    {% if queues %}
-    <div class="seller-panel">
-      <div class="seller-panel-title">Filas ativas · pendências</div>
-      {% for item in queues %}
-      <a href="/conversations?view={{ view }}&amp;queue={{ item.id }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" class="seller-row {% if queue_id == item.id %}active{% endif %}">
-        <span>{{ item.name }}</span>
-        <small title="Pendências nessa fila">{{ item.pending }} pend.</small>
-        <b title="Conversas ativas">{{ item.open }}</b>
-      </a>
-      {% endfor %}
+    {% if is_manager %}
+    <div class="inbox-management-links">
+      <a href="/conversations-intelligence{% if queue_id %}?queue={{ queue_id }}{% endif %}"><span aria-hidden="true">▦</span> Mapa de calor comercial <span aria-hidden="true">↗</span></a>
     </div>
     {% endif %}
 
-    {% if sellers %}
-    <div class="seller-panel">
-      <div class="seller-panel-title">Vendedores</div>
-      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}" class="seller-row {% if not assignee_id %}active{% endif %}">
-        <span>Todos</span><b>{{ counts.active }}</b>
-      </a>
-      {% for seller in sellers %}
-      <a href="/conversations?view={{ view }}&amp;assignee={{ seller.id }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}" class="seller-row {% if assignee_id == seller.id %}active{% endif %}">
-        <span><i class="seller-dot {% if seller.online %}on{% endif %}"></i>{{ seller.name }}</span>
-        <small>{{ 'online' if seller.online else 'offline' }}</small>
-        <b>{{ seller.open }}</b>
-      </a>
-      {% endfor %}
+    {% if queues or sellers %}
+    <div class="inbox-shortcuts" aria-label="Acompanhamento gerencial">
+      {% if queues %}
+      <details class="inbox-shortcut-group">
+        <summary><span>Filas e pendências</span><b>{{ queues|length }}</b><span aria-hidden="true" class="inbox-shortcut-chevron">⌄</span></summary>
+        <div class="inbox-shortcut-list">
+          <a href="/conversations?view={{ view }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}" class="inbox-shortcut-row {% if not queue_id %}active{% endif %}">Todas as filas</a>
+          {% for item in queues %}
+          <a href="/conversations?view={{ view }}&amp;queue={{ item.id }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}" class="inbox-shortcut-row {% if queue_id == item.id %}active{% endif %}">
+            <span>{{ item.name }}</span>
+            <small title="Pendências">{{ item.pending }} pend.</small>
+            <b title="Conversas ativas">{{ item.open }}</b>
+          </a>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+      {% if sellers %}
+      <details class="inbox-shortcut-group">
+        <summary><span>Vendedores</span><b>{{ sellers|length }}</b><span aria-hidden="true" class="inbox-shortcut-chevron">⌄</span></summary>
+        <div class="inbox-shortcut-list">
+          <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}" class="inbox-shortcut-row {% if not assignee_id %}active{% endif %}">Todos os vendedores</a>
+          {% for seller in sellers %}
+          <a href="/conversations?view={{ view }}&amp;assignee={{ seller.id }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if tag_code %}&amp;tag={{ tag_code }}{% endif %}{% if temperature %}&amp;temperature={{ temperature }}{% endif %}" class="inbox-shortcut-row {% if assignee_id == seller.id %}active{% endif %}">
+            <span><i class="seller-dot {% if seller.online %}on{% endif %}"></i>{{ seller.name }}</span>
+            <small>{{ 'online' if seller.online else 'offline' }}</small>
+            <b title="Conversas ativas">{{ seller.open }}</b>
+          </a>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
     </div>
-    <style>
-      .seller-panel{flex:none;margin:8px 12px 4px;border:1px solid var(--line,#e5e7eb);border-radius:10px;padding:6px;max-height:210px;overflow:auto;font-size:13px}
-      .seller-panel-title{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.6;padding:4px 6px}
-      .seller-row{display:flex;align-items:center;gap:6px;padding:6px;border-radius:8px;color:inherit;text-decoration:none}
-      .seller-row span{flex:1;display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .seller-row small{opacity:.6;font-size:11px}
-      .seller-row b{min-width:22px;text-align:center;border-radius:999px;background:rgba(127,127,127,.15);padding:1px 6px}
-      .seller-row.active{background:rgba(255,122,36,.14);font-weight:600}
-      .seller-dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block;flex:none}
-      .seller-dot.on{background:#16a34a}
-      .inbox-queue-filter{flex:none;margin:10px 12px 5px;padding:10px;border:1px solid #f4c5a8;background:#fff9f5;border-radius:10px;display:grid;gap:5px}
-      .inbox-queue-filter label{font-weight:750;color:#c4500b;font-size:12px}
-      .inbox-queue-filter-controls{display:flex;align-items:center;gap:6px;min-width:0}
-      .inbox-queue-filter select{min-width:0;flex:1;width:100%;padding:7px;border:1px solid #e5d0c3;border-radius:7px;background:white;color:#17202c;font:inherit}
-      .inbox-queue-clear{flex:none;font-size:11px;text-decoration:none;color:#b94a10}
-      .inbox-queue-filter small{font-size:11px;color:#7e6355}
-      .inbox-queue-summary{display:flex;flex:none;flex-wrap:wrap;gap:5px;margin:5px 12px;font-size:11px}
-      .inbox-queue-summary span{background:#f1f3f5;border-radius:6px;padding:4px 6px;color:#475569}
-      .inbox-queue-summary strong{color:#1f2937}
-      .inbox-tabs{flex-wrap:wrap}
-    </style>
     {% endif %}
 
     <div class="conversation-list" id="conversation-list">
