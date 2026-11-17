@@ -99,12 +99,14 @@ def run_one(test_id: int, account_id: int, phone: str) -> None:
         if not password:
             _record(test_id, "FALHOU", None, None, "Credencial SIP ausente.", True)
             return
+        is_register_only = phone == "SIP_ONLY"
         probe = SipProbe(
-            host=host, username=username, password=password, phone=phone,
+            host=host, username=username, password=password,
+            phone=None if is_register_only else phone,
             notify=lambda status, register, invite, message:
                 _record(test_id, status, register, invite, message),
         )
-        result: SipDiagnostic = probe.run()
+        result: SipDiagnostic = probe.run_registration_only() if is_register_only else probe.run()
         _record(test_id, result.status, result.register_code, result.invite_code,
                 result.message, True)
     except (SecretStoreError, SipProbeError) as exc:
