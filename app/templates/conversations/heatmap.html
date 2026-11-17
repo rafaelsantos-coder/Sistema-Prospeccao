@@ -72,7 +72,7 @@
     <div class="commercial-heatmap-heading"><h3>Etiquetas mais frequentes</h3><span>Base: conversas ativas da seleção</span></div>
     <div class="commercial-tag-grid">
       {% for tag in tag_totals %}
-      <a href="/conversations?view=active&amp;tag={{ tag.code }}{% if selected_queue %}&amp;queue={{ selected_queue }}{% endif %}"><span>{{ tag.name }}</span><strong>{{ tag.count }}</strong></a>
+      <a class="commercial-tag" data-tag="{{ tag.code }}" href="/conversations?view=active&amp;tag={{ tag.code }}{% if selected_queue %}&amp;queue={{ selected_queue }}{% endif %}"><span>{{ tag.name }}</span><strong>{{ tag.count }}</strong></a>
       {% else %}
       <p>As etiquetas atribuídas pelos vendedores e sugeridas pela análise aparecerão aqui.</p>
       {% endfor %}
@@ -110,4 +110,5 @@
 .commercial-dashboard-note{margin:12px 0 0}
 @media(max-width:760px){.commercial-dashboard-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.commercial-dashboard-header{display:block}.commercial-dashboard-controls{flex-wrap:wrap}}
 </style>
+{% include "conversations/_commercial_tag_colors.html" %}
 {% endblock %}
