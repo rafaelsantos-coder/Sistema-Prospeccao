@@ -7021,6 +7021,10 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
         if not state.opportunity_id:
             continue
         conversation = db.get(Conversation, state.conversation_id)
+        from app.services.ai_sdr import is_human_only_queue  # noqa: PLC0415
+        from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
+        if is_human_only_queue(queue_for_conversation(db, state.conversation_id)):
+            continue
         agent = db.get(AIAgentProfile, state.agent_id)
         if (
             not conversation
