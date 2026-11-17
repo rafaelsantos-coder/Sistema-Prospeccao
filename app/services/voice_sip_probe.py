@@ -103,7 +103,7 @@ class SipProbe:
         self.media: socket.socket | None = None
         self.from_tag = secrets.token_hex(7)
         self.callid_prefix = secrets.token_hex(12)
-        self.local_ip = ""
+        self.local_ip = "127.0.0.1"
         self.local_port = 0
 
     def _request(self, method: str, target: str, callid: str, seq: int, branch: str,
