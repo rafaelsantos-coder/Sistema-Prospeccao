@@ -15,6 +15,8 @@ from app.models import (
     Conversation,
     ConversationAssignment,
     ConversationQueueLink,
+    ConversationCommercialInsight,
+    ConversationCommercialTag,
     Lead,
     Message,
     ServiceQueue,
@@ -23,6 +25,15 @@ from app.models import (
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.ai_sdr import enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
+from app.services.commercial_intelligence import (
+    TAG_LABELS,
+    TEMPERATURE_LABELS,
+    STAGE_LABELS,
+    OWNER_LABELS,
+    tag_map,
+    insight_map,
+    update_manual_tag,
+)
 from app.services.conversation_engine import (
     CLOSED_CONVERSATION_STATUSES,
     OPEN_CONVERSATION_STATUSES,
@@ -303,8 +314,36 @@ def _inbox_query(
     view: str,
     assignee_id: int | None = None,
     queue_id: int | None = None,
+    tag_code: str = "",
+    temperature: str = "",
 ) -> list[Conversation]:
     stmt = _conversation_stmt(user).join(Contact, Conversation.contact_id == Contact.id)
+    if tag_code:
+        if tag_code not in TAG_LABELS:
+            raise HTTPException(status_code=400, detail="Etiqueta inválida")
+        stmt = stmt.join(
+            ConversationCommercialTag,
+            ConversationCommercialTag.conversation_id == Conversation.id,
+        ).where(
+            ConversationCommercialTag.code == tag_code,
+            ConversationCommercialTag.suppressed.is_(False),
+        )
+    if temperature:
+        if temperature not in {"QUENTE", "MORNO", "FRIO", "INDEFINIDO"}:
+            raise HTTPException(status_code=400, detail="Temperatura inválida")
+        if temperature == "INDEFINIDO":
+            stmt = stmt.outerjoin(
+                ConversationCommercialInsight,
+                ConversationCommercialInsight.conversation_id == Conversation.id,
+            ).where(
+                or_(ConversationCommercialInsight.id.is_(None),
+                    ConversationCommercialInsight.temperature == "INDEFINIDO")
+            )
+        else:
+            stmt = stmt.join(
+                ConversationCommercialInsight,
+                ConversationCommercialInsight.conversation_id == Conversation.id,
+            ).where(ConversationCommercialInsight.temperature == temperature)
     if assignee_id:
         stmt = stmt.where(Conversation.assigned_user_id == assignee_id)
     if queue_id is not None:
@@ -369,9 +408,30 @@ def _inbox_counts(
     *,
     queue_id: int | None = None,
     assignee_id: int | None = None,
+    tag_code: str = "",
+    temperature: str = "",
 ) -> dict[str, int]:
     """Contadores com os mesmos filtros da caixa (sem o limite de 250 itens)."""
     stmt = apply_conversation_scope(select(Conversation), user, inbox=True)
+    if tag_code:
+        if tag_code not in TAG_LABELS:
+            raise HTTPException(status_code=400, detail="Etiqueta inválida")
+        stmt = stmt.join(ConversationCommercialTag,
+            ConversationCommercialTag.conversation_id == Conversation.id).where(
+            ConversationCommercialTag.code == tag_code,
+            ConversationCommercialTag.suppressed.is_(False))
+    if temperature:
+        if temperature not in {"QUENTE", "MORNO", "FRIO", "INDEFINIDO"}:
+            raise HTTPException(status_code=400, detail="Temperatura inválida")
+        if temperature == "INDEFINIDO":
+            stmt = stmt.outerjoin(ConversationCommercialInsight,
+                ConversationCommercialInsight.conversation_id == Conversation.id).where(
+                or_(ConversationCommercialInsight.id.is_(None),
+                    ConversationCommercialInsight.temperature == "INDEFINIDO"))
+        else:
+            stmt = stmt.join(ConversationCommercialInsight,
+                ConversationCommercialInsight.conversation_id == Conversation.id).where(
+                ConversationCommercialInsight.temperature == temperature)
     if queue_id is not None:
         stmt = stmt.join(
             ConversationQueueLink,
@@ -501,11 +561,16 @@ def _render_inbox(
     view: str = "active",
     assignee_id: int | None = None,
     queue_id: int | None = None,
+    tag_code: str = "",
+    temperature: str = "",
 ):
     queues = _queue_panel(db, user)
     _validate_queue_filter(user, queue_id, queues)
     focused_queue = next((item for item in queues if item["id"] == queue_id), None)
-    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee_id, queue_id=queue_id)
+    conversations = _inbox_query(
+        db, user, q=q, view=view, assignee_id=assignee_id, queue_id=queue_id,
+        tag_code=tag_code, temperature=temperature,
+    )
     selected = None
     if conversation_id is not None:
         selected = _get_conversation(db, user, conversation_id)
@@ -548,7 +613,15 @@ def _render_inbox(
             )
         )
 
-    counts = _inbox_counts(db, user, queue_id=queue_id, assignee_id=assignee_id)
+    counts = _inbox_counts(
+        db, user, queue_id=queue_id, assignee_id=assignee_id,
+        tag_code=tag_code, temperature=temperature,
+    )
+    visible_ids = [item.id for item in conversations]
+    if selected and selected.id not in visible_ids:
+        visible_ids.append(selected.id)
+    commercial_tags = tag_map(db, visible_ids)
+    commercial_insights = insight_map(db, visible_ids)
     return render(
         request,
         "conversations/inbox.html",
@@ -574,6 +647,16 @@ def _render_inbox(
         sellers=_seller_panel(db, user, queue_id=queue_id),
         queues=queues,
         focused_queue=focused_queue,
+        tag_code=tag_code,
+        temperature=temperature,
+        tag_catalog=TAG_LABELS,
+        temperature_catalog=TEMPERATURE_LABELS,
+        stage_catalog=STAGE_LABELS,
+        owner_catalog=OWNER_LABELS,
+        commercial_tags=commercial_tags,
+        commercial_insights=commercial_insights,
+        selected_tags=commercial_tags.get(selected.id, []) if selected else [],
+        selected_insight=commercial_insights.get(selected.id) if selected else None,
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -586,12 +669,17 @@ def inbox(
     view: str = "active",
     assignee: int | None = None,
     queue: int | None = None,
+    tag: str = "",
+    temperature: str = "",
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
     if redirect:
         return redirect
-    return _render_inbox(request, db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
+    return _render_inbox(
+        request, db, user, q=q, view=view, assignee_id=assignee, queue_id=queue,
+        tag_code=tag, temperature=temperature,
+    )
 
 
 @router.get("/conversations/{conversation_id}")
@@ -602,6 +690,8 @@ def conversation_detail(
     view: str = "active",
     assignee: int | None = None,
     queue: int | None = None,
+    tag: str = "",
+    temperature: str = "",
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
@@ -616,6 +706,8 @@ def conversation_detail(
         queue_id=queue,
         q=q,
         view=view,
+        tag_code=tag,
+        temperature=temperature,
     )
 
 
@@ -1219,6 +1311,8 @@ def conversation_inbox_api(
     view: str = "active",
     assignee: int | None = None,
     queue: int | None = None,
+    tag: str = "",
+    temperature: str = "",
     db: Session = Depends(get_db),
 ):
     user = get_current_user(request, db)
@@ -1231,9 +1325,18 @@ def conversation_inbox_api(
         )
     queues = _queue_panel(db, user) if queue is not None else []
     _validate_queue_filter(user, queue, queues)
-    conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
+    conversations = _inbox_query(
+        db, user, q=q, view=view, assignee_id=assignee, queue_id=queue,
+        tag_code=tag, temperature=temperature,
+    )
+    ids = [item.id for item in conversations]
+    tags = tag_map(db, ids)
+    insights = insight_map(db, ids)
     return {
-        "counts": _inbox_counts(db, user, queue_id=queue, assignee_id=assignee),
+        "counts": _inbox_counts(
+            db, user, queue_id=queue, assignee_id=assignee,
+            tag_code=tag, temperature=temperature,
+        ),
         "items": [
             {
                 "id": item.id,
@@ -1248,6 +1351,13 @@ def conversation_inbox_api(
                 "status": item.status,
                 "unread_count": int(item.unread_count or 0),
                 "last_message_at": item.last_message_at.isoformat() if item.last_message_at else None,
+                "commercial_tags": tags.get(item.id, []),
+                "commercial_temperature": (
+                    insights[item.id].temperature if item.id in insights else "INDEFINIDO"
+                ),
+                "commercial_score": (
+                    insights[item.id].score if item.id in insights else None
+                ),
             }
             for item in conversations
         ],
