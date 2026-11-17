@@ -391,12 +391,12 @@ def _eligible_recent(db: Session, limit: int) -> list[int]:
         .where(Message.conversation_id.in_(ids), Message.message_type == "TEXT",
                Message.direction.in_(("INBOUND", "OUTBOUND")))
         .group_by(Message.conversation_id)
-    ))
+    ).all())
     analyzed = dict(db.execute(
         select(ConversationCommercialInsight.conversation_id,
                ConversationCommercialInsight.last_analyzed_message_id)
         .where(ConversationCommercialInsight.conversation_id.in_(ids))
-    ))
+    ).all())
     return [
         c.id for c in conversations
         if last_messages.get(c.id, 0) > analyzed.get(c.id, 0)
