@@ -11,7 +11,7 @@ O menu **Prospecta VOZ** permite:
 - Revisar campanhas sem iniciar ligações.
 
 **Não existe ainda cliente SIP em execução, registro autenticado, teste de conexão, worker que disque ou transferência real.**
-O estado `AGUARDANDO_HOMOLOGACAO` nunca dispara chamada. Nenhuma credencial real foi inserida no repositório ou na base de produção.
+O estado `EM_HOMOLOGACAO` nunca dispara chamada. Nenhuma credencial real foi inserida no repositório ou na base de produção.
 
 ## Navegação administrativa modular
 
