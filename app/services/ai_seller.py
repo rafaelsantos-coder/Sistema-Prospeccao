@@ -5228,6 +5228,12 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
 
 def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
+    from app.services.ai_sdr import is_human_only_queue  # noqa: PLC0415
+    from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
+    if is_human_only_queue(queue_for_conversation(db, job.conversation_id)):
+        job.status = "IGNORADO"
+        job.error = "Fila Natine exclusiva de atendimento humano."
+        return "skipped"
     conversation = db.get(Conversation, job.conversation_id)
     message = db.get(Message, job.message_id)
     state = db.scalar(
