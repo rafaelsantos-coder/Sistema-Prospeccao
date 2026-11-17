@@ -72,6 +72,6 @@
   {% endif %}
 </section>
 {% if processing %}
-<script>window.setTimeout(function(){window.location.reload();},5000);</script>
+<script nonce="{{ csp_nonce }}">window.setTimeout(function(){window.location.reload();},5000);</script>
 {% endif %}
 {% endblock %}
