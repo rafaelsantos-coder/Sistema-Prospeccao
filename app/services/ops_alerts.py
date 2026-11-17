@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import AIClosingState, AIConversationState, AIJob, AuditLog, Contact, Conversation, Message, ZApiInstance
+from app.services.ai_pending_scope import UNREAD_RECOVERY_SINCE_UTC, in_unread_recovery_window
 from app.services.audit import write_audit
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import list_zapi_instances, service_for_instance
@@ -179,7 +180,7 @@ def check_instances(db: Session) -> int:
 def check_sales_and_escalations(db: Session) -> int:
     """Avisa vendas finalizadas e escaladas nas últimas 24 horas."""
     sent = 0
-    since = utcnow() - timedelta(hours=24)
+    since = max(utcnow() - timedelta(hours=24), UNREAD_RECOVERY_SINCE_UTC)
     states = db.scalars(
         select(AIClosingState)
         .where(
@@ -262,12 +263,22 @@ def check_stuck_sales(db: Session) -> int:
     states = db.scalars(
         select(AIClosingState).where(
             AIClosingState.completed_at.is_(None),
-            AIClosingState.updated_at >= now - STUCK_SALE_WINDOW,
+            AIClosingState.updated_at >= max(now - STUCK_SALE_WINDOW, UNREAD_RECOVERY_SINCE_UTC),
         )
     )
     for state in list(states):
         error = (state.last_error or "").strip()
         if state.step in _SALE_DONE_STEPS or not (error or state.step == "WAITING_CRM_READY"):
+            continue
+        # O mutirão não deve notificar fechamento sem qualquer interação desde as 18h.
+        scoped_message_id = db.scalar(
+            select(Message.id).where(
+                Message.conversation_id == state.conversation_id,
+                Message.created_at >= UNREAD_RECOVERY_SINCE_UTC,
+                Message.created_at <= now,
+            ).limit(1)
+        )
+        if scoped_message_id is None:
             continue
         recent = db.scalar(
             select(Message.id)
@@ -321,7 +332,7 @@ def check_silent_closings(db: Session) -> int:
     states = db.scalars(
         select(AIClosingState).where(
             AIClosingState.completed_at.is_(None),
-            AIClosingState.updated_at >= now - timedelta(days=7),
+            AIClosingState.updated_at >= UNREAD_RECOVERY_SINCE_UTC,
         )
     )
     for state in list(states):
@@ -338,8 +349,12 @@ def check_silent_closings(db: Session) -> int:
             AIFollowupJob.status == "ENVIADO",
             AIFollowupJob.sent_at.is_not(None),
         )
-        if last_inbound is not None:
-            reminders = reminders.where(AIFollowupJob.sent_at > last_inbound.created_at)
+        if not last_inbound or not in_unread_recovery_window(last_inbound.created_at, now=now):
+            continue
+        reminders = reminders.where(
+            AIFollowupJob.sent_at > last_inbound.created_at,
+            AIFollowupJob.sent_at >= UNREAD_RECOVERY_SINCE_UTC,
+        )
         sent_at = [value for value in db.scalars(reminders) if value]
         if len(sent_at) < MAX_UNANSWERED_CLOSING_FOLLOWUPS:
             continue
@@ -386,7 +401,7 @@ def unanswered_customers(db: Session) -> list[dict]:
         select(Message.conversation_id, Message.id)
         .where(
             Message.direction == "INBOUND",
-            Message.created_at >= now - UNANSWERED_WINDOW,
+            Message.created_at >= max(now - UNANSWERED_WINDOW, UNREAD_RECOVERY_SINCE_UTC),
             Message.created_at <= now - UNANSWERED_AFTER,
         )
         .order_by(Message.id.desc())
@@ -498,7 +513,7 @@ def check_failed_ai_jobs(db: Session) -> int:
     Casos corrigidos ou fechados não geram alerta, e IDs/etapas substituem
     dados sensíveis. Evita notificar o cliente com detalhes técnicos.
     """
-    since = utcnow() - timedelta(hours=24)
+    since = max(utcnow() - timedelta(hours=24), UNREAD_RECOVERY_SINCE_UTC)
     jobs = list(db.scalars(
         select(AIJob).where(
             AIJob.status == "FALHOU",
@@ -511,6 +526,9 @@ def check_failed_ai_jobs(db: Session) -> int:
         if job.conversation_id in seen:
             continue
         seen.add(job.conversation_id)
+        source_message = db.get(Message, job.message_id) if job.message_id else None
+        if not source_message or not in_unread_recovery_window(source_message.created_at, now=utcnow()):
+            continue
         conv = db.get(Conversation, job.conversation_id)
         if not conv or conv.status in _CLOSED_STATUSES:
             continue
