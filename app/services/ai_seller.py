@@ -4543,7 +4543,7 @@ def process_seller_followup(
     agent: AIAgentProfile,
 ) -> str:
     from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
-    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id):
+    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=getattr(job, "queue_id", None)):
         job.status = "CANCELADO"
         job.error = "IA autorizada somente na Fila IA."
         return "cancelled"
@@ -4831,7 +4831,7 @@ def start_closing_from_sdr(
     decision: Any,
 ) -> bool:
     from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
-    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id):
+    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=getattr(job, "queue_id", None)):
         return False
     closer = active_closer(db)
     if not closer:
@@ -5240,7 +5240,7 @@ def process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
 
 def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
-    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id):
+    if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=getattr(job, "queue_id", None)):
         job.status = "CANCELADO"
         job.error = "IA autorizada somente na Fila IA."
         return "skipped"
