@@ -341,6 +341,53 @@
     </div>
     {% endif %}
 
+    <div class="context-section commercial-context-section">
+      <div class="context-title">Inteligência comercial · observação</div>
+      {% if selected_insight %}
+      <div class="commercial-observer-top">
+        <span class="commercial-temperature commercial-temperature-{{ selected_insight.temperature|lower }}">{{ temperature_catalog.get(selected_insight.temperature, 'Sem análise') }}</span>
+        <strong>{{ selected_insight.score }}/100</strong>
+        <small>{{ stage_catalog.get(selected_insight.stage, selected_insight.stage) }}</small>
+      </div>
+      <p class="commercial-observer-reason">{{ selected_insight.rationale }}</p>
+      {% if selected_insight.next_action %}
+      <div class="commercial-next-action">
+        <strong>Próxima ação · {{ owner_catalog.get(selected_insight.next_action_owner, 'Equipe') }}</strong>
+        <p>{{ selected_insight.next_action }}</p>
+      </div>
+      {% endif %}
+      <small class="transfer-help">Fonte: {{ 'IA observadora' if selected_insight.source == 'IA' else 'Regras iniciais' }} · confiança estimada {{ '%.0f'|format(selected_insight.confidence * 100) }}%. Não é probabilidade de venda.</small>
+      {% else %}
+      <p class="commercial-observer-reason">Aguardando análise das mensagens. O vendedor pode etiquetar manualmente agora.</p>
+      {% endif %}
+      <div class="commercial-selected-tags">
+        {% for tag in selected_tags %}
+        <form action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="code" value="{{ tag.code }}">
+          <input type="hidden" name="enabled" value="0">
+          <span class="commercial-tag" title="{{ 'Manual' if tag.source == 'MANUAL' else 'Sugerida pela IA' }}">{{ tag.name }}</span>
+          <button type="submit" title="Remover etiqueta {{ tag.name }}" aria-label="Remover etiqueta {{ tag.name }}">×</button>
+        </form>
+        {% endfor %}
+      </div>
+      <form class="commercial-add-tag" action="/conversations/{{ conversation.id }}/commercial-tag" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="enabled" value="1">
+        <label for="commercial-tag-select">Adicionar etiqueta</label>
+        <div>
+          <select name="code" id="commercial-tag-select" required>
+            <option value="">Selecione</option>
+            {% for code, name in tag_catalog.items() %}
+            <option value="{{ code }}">{{ name }}</option>
+            {% endfor %}
+          </select>
+          <button class="button button-secondary" type="submit">Adicionar</button>
+        </div>
+      </form>
+      <small class="transfer-help">Etiquetas manuais prevalecem sobre sugestões futuras. A análise não envia mensagens ao cliente.</small>
+    </div>
+
     <div class="context-section">
       <div class="context-title">Atendimento</div>
       <dl class="context-list">
@@ -451,6 +498,31 @@
     {% endif %}
   </aside>
 </div>
+<style>
+.inbox-commercial-filter{flex:none;display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:11px;flex-wrap:wrap}
+.inbox-commercial-filter label{color:#64748b;font-weight:600}
+.inbox-commercial-filter select{min-width:0;max-width:108px;flex:1;border:1px solid #d1d5db;border-radius:6px;background:#fff;padding:5px 2px;font-size:11px}
+.inbox-commercial-heatmap-link{flex:none;display:block;margin:2px 12px;padding:6px 8px;border-radius:7px;background:#fff4eb;color:#c35b18;font-weight:700;font-size:11px;text-decoration:none}
+.commercial-list-badges{display:flex;gap:3px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.commercial-tag,.commercial-temperature{font-size:10px;font-weight:700;border-radius:5px;padding:3px 5px;background:#f1f5f9;color:#475569}
+.commercial-temperature-quente{background:#dcfce7;color:#166534}
+.commercial-temperature-morno{background:#fef3c7;color:#92400e}
+.commercial-temperature-frio{background:#dbeafe;color:#1d4ed8}
+.commercial-temperature-indefinido{background:#f1f5f9;color:#64748b}
+.commercial-observer-top{display:flex;align-items:center;gap:7px;font-size:12px}
+.commercial-observer-top strong{font-size:14px}
+.commercial-observer-top small{color:#64748b}
+.commercial-observer-reason{font-size:12px;color:#475569;line-height:1.5}
+.commercial-next-action{padding:9px;background:#fff7ed;border-radius:8px;border:1px solid #fed7aa;font-size:12px}
+.commercial-next-action p{margin:5px 0 0}
+.commercial-selected-tags{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin:10px 0}
+.commercial-selected-tags form{display:flex;align-items:center;background:#f1f5f9;border-radius:6px;padding-right:3px}
+.commercial-selected-tags button{border:0;background:transparent;color:#64748b;cursor:pointer}
+.commercial-add-tag label{display:block;margin-bottom:5px;font-size:11px;color:#64748b;font-weight:700}
+.commercial-add-tag>div{display:flex;align-items:center;gap:5px}
+.commercial-add-tag select{flex:1;min-width:0;border:1px solid #d1d5db;border-radius:7px;padding:7px;font-size:12px}
+.commercial-add-tag button{white-space:nowrap;padding:8px;font-size:11px}
+</style>
 {% endblock %}
 
 {% block scripts %}
