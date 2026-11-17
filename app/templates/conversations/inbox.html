@@ -26,7 +26,7 @@
       {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
       <label for="inbox-queue-select">Visualizar fila</label>
       <div class="inbox-queue-filter-controls">
-        <select id="inbox-queue-select" name="queue" aria-label="Selecionar fila" onchange="this.form.requestSubmit()">
+        <select id="inbox-queue-select" name="queue" aria-label="Selecionar fila" >
           <option value="">Todas as filas</option>
           {% for item in queues %}
           <option value="{{ item.id }}" {% if queue_id == item.id %}selected{% endif %}>{{ item.name }}</option>
@@ -422,6 +422,10 @@
   const root = document.querySelector('[data-inbox]');
   const list = document.getElementById('conversation-list');
   if (!root || !list) return;
+
+  // CSP bloqueia handlers inline; o seletor usa o script autorizado por nonce.
+  const queueSelect = document.getElementById('inbox-queue-select');
+  queueSelect?.addEventListener('change', () => queueSelect.form?.requestSubmit());
 
   const conversationId = Number(root.dataset.conversationId || 0);
   const view = root.dataset.view || 'active';
