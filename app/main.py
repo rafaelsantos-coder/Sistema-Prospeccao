@@ -13,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings, validate_production_settings
 from app.database import Base, SessionLocal, engine
-from app.routers import credit_map, voice
+from app.routers import credit_map, voice, blacklist
 from app.routers import ai_agents, api, auth, campaigns, conversations, dashboard, diagnostico, dispatches, leads, presence, prospecting, queues, reports, settings as settings_router, telegram as telegram_router, zapi, zapsign
 from app.services.seed import seed_database
 from app.services.zapi import ZApiError
@@ -228,6 +228,7 @@ app.include_router(leads.router)
 app.include_router(campaigns.router)
 app.include_router(dispatches.router)
 app.include_router(conversations.router)
+app.include_router(blacklist.router)
 app.include_router(prospecting.router)
 app.include_router(reports.router)
 app.include_router(credit_map.router)
