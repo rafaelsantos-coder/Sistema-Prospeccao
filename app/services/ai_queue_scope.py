@@ -75,6 +75,7 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
     target = db.get(ServiceQueue, target_id) if target_id > 0 else None
 
     removed_ids: list[int] = []
+    target_changed = False
     for binding in list(db.scalars(select(AIQueueBinding))):
         if binding.queue_id != target_id:
             removed_ids.append(binding.queue_id)
@@ -88,7 +89,7 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
         selected_agent = None
         if existing:
             candidate = db.get(AIAgentProfile, existing.agent_id)
-            if candidate and candidate.active and candidate.role_type == "SDR":
+            if candidate and candidate.active and candidate.role_type == "SDR" and candidate.execution_mode == "AUTO":
                 selected_agent = candidate
         if selected_agent is None:
             selected_agent = db.scalar(
@@ -97,6 +98,7 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
                     AIAgentProfile.slug == "sulia-sdr-digital",
                     AIAgentProfile.role_type == "SDR",
                     AIAgentProfile.active.is_(True),
+                    AIAgentProfile.execution_mode == "AUTO",
                 )
                 .limit(1)
             )
@@ -121,13 +123,18 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
                     fallback_to_human=True,
                 )
                 db.add(existing)
+                target_changed = True
             else:
+                if existing.agent_id != selected_agent.id or not existing.active or existing.handling_mode == "HUMAN":
+                    target_changed = True
                 existing.agent_id = selected_agent.id
                 existing.active = True
                 if existing.handling_mode == "HUMAN":
                     existing.handling_mode = "AI_FIRST"
         elif existing:
             # Sem agente válido, falhar fechado em vez de usar IA inativa.
+            if existing.active:
+                target_changed = True
             existing.active = False
             target_ready = False
         else:
@@ -197,7 +204,7 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
         state.state = "HUMAN_ACTIVE"
         state.handoff_at = datetime.now(timezone.utc).replace(tzinfo=None)
         conversation = db.get(Conversation, state.conversation_id)
-        if conversation and conversation.assigned_user_id in ai_user_ids:
+        if conversation and (conversation.assigned_user_id is None or conversation.assigned_user_id in ai_user_ids):
             conversation.assigned_user_id = None
             if conversation.status not in ("RESOLVIDO", "ENCERRADO", "BLOQUEADO"):
                 conversation.status = "EM_FILA"
@@ -205,7 +212,7 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
 
     changed = bool(
         removed_ids or cancelled_jobs or cancelled_followups or released_conversations
-        or (target_ready and target_id not in removed_ids)
+        or target_changed
     )
     summary = {
         "enabled": True,
@@ -218,7 +225,7 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
     }
     # Registrar somente quando houve alteração operacional; chamadas repetidas
     # não devem encher a auditoria nem alterar a fila permitida.
-    if removed_ids or cancelled_jobs or cancelled_followups or released_conversations:
+    if changed:
         write_audit(
             db,
             user=None,
