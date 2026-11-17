@@ -8,8 +8,6 @@ from __future__ import annotations
 import csv
 import io
 import re
-from datetime import datetime
-from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -142,6 +140,15 @@ def block_phone(
             .where(Contact.phone == number)
         ))
         if ids:
+            db.execute(
+                update(Conversation).where(
+                    Conversation.id.in_(ids),
+                    Conversation.status.in_((
+                        "NOVO", "EM_FILA", "ATRIBUIDO", "EM_ATENDIMENTO",
+                        "AGUARDANDO_CLIENTE", "AGUARDANDO_INTERNO", "FOLLOW_UP",
+                    )),
+                ).values(status="BLOQUEADO", closed_at=now)
+            )
             db.execute(
                 update(AIFollowupJob)
                 .where(
