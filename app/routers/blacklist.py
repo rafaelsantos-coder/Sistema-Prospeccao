@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 from app.database import get_db
 from app.models import GlobalContactBlacklist
@@ -61,6 +61,22 @@ def blacklist_list(
         request, "blacklist/index.html", user=user,
         active_nav="blacklist", entries=entries, q=term,
         show=show, total_active=total_active,
+    )
+
+
+@router.get("/modelo.csv")
+def blacklist_csv_template(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    payload = "\ufefftelefone;nome;motivo\n5599999999999;Empresa exemplo;Pediu para não receber mensagens\n"
+    return Response(
+        content=payload,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="modelo-blacklist.csv"'},
     )
 
 
