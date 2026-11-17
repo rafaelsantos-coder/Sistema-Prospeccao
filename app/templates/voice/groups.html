@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div><span class="eyebrow">PROSPECTA VOZ · ENCAMINHAMENTO</span><h2>Ramais e grupos de vendedores</h2>
+    <p>Defina a identificação dos grupos e o ramal de destino configurado no PABX.</p></div>
+  <a class="button button-secondary" href="/voice">Voltar ao dashboard</a>
+</div>
+<div class="voice-notice"><strong>Os grupos devem existir na central telefônica.</strong>
+  <p>O Prospecta VOZ registra os destinos escolhidos. O atendimento e a distribuição aos vendedores dependem das regras do PABX existente.</p></div>
+
+<section class="panel voice-panel">
+  <span class="eyebrow">DESTINOS</span><h3>Grupos cadastrados</h3>
+  {% if groups %}
+  <div class="voice-table-wrap"><table class="voice-table">
+    <thead><tr><th>Grupo</th><th>Ramal de destino</th><th>Ramais integrantes</th><th>Status</th><th>Ações</th></tr></thead>
+    <tbody>{% for group in groups %}
+    <tr>
+      <td><strong>{{ group.name }}</strong></td><td><strong>{{ group.target_extension }}</strong></td>
+      <td>{{ group.member_extensions or 'Não informados' }}</td>
+      <td><span class="voice-pill {{ 'is-ready' if group.active else 'is-paused' }}">{{ 'Ativo' if group.active else 'Pausado' }}</span></td>
+      <td><div class="voice-actions">
+        <a class="button button-secondary" href="/voice/groups?edit_id={{ group.id }}">Editar</a>
+        <form action="/voice/groups/{{ group.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-secondary" type="submit">{{ 'Pausar' if group.active else 'Reativar' }}</button></form>
+        <a class="button button-secondary" href="/voice/groups/{{ group.id }}/delete">Excluir</a>
+      </div></td>
+    </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="voice-empty">Nenhum grupo de ramais cadastrado.</div>{% endif %}
+</section>
+
+<section class="panel voice-panel">
+  <span class="eyebrow">{{ 'EDITAR GRUPO' if edit_group else 'NOVO GRUPO' }}</span>
+  <h3>{{ edit_group.name if edit_group else 'Cadastrar destino de transferência' }}</h3>
+  <form action="{{ '/voice/groups/' ~ edit_group.id ~ '/update' if edit_group else '/voice/groups' }}" method="post" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field"><span>Nome do grupo</span><input name="name" maxlength="120" value="{{ edit_group.name if edit_group else '' }}" placeholder="Ex.: Comercial Digital" required></label>
+      <label class="field"><span>Ramal do grupo no PABX</span><input name="target_extension" value="{{ edit_group.target_extension if edit_group else '' }}" placeholder="Ex.: 700" required></label>
+      <label class="field field-span-2"><span>Ramais integrantes (opcional)</span><input name="member_extensions" value="{{ edit_group.member_extensions if edit_group else '' }}" placeholder="Ex.: 201, 202, 203"></label>
+    </div>
+    <div class="voice-actions"><button class="button button-primary" type="submit">{{ 'Salvar alterações' if edit_group else 'Cadastrar grupo' }}</button>
+      {% if edit_group %}<a class="button button-secondary" href="/voice/groups">Cancelar edição</a>{% endif %}</div>
+  </form>
+</section>
+{% endblock %}
