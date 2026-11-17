@@ -13,7 +13,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.main import app
 from app.models import Lead, VoiceCampaign, VoiceRecipient, VoiceSipAccount
-from app.services.voice import normalize_voice_contacts, validate_campaign, validate_sip, validate_wav
+from app.services.voice import VOICE_STATUS_HOMOLOGACAO, normalize_voice_contacts, validate_campaign, validate_sip, validate_wav
 
 
 def _csrf(html: str) -> str:
@@ -51,6 +51,11 @@ def test_sip_validation_and_audio_modes():
     validate_wav(_wav())
     with pytest.raises(ValueError):
         validate_wav(b"not-a-wave")
+
+
+def test_voice_campaign_status_fits_production_column():
+    """Guard against PostgreSQL varchar truncation in campaign review."""
+    assert len(VOICE_STATUS_HOMOLOGACAO) <= VoiceCampaign.__table__.columns.status.type.length
 
 
 def test_blocked_and_duplicate_contacts():
@@ -129,8 +134,9 @@ def test_voice_pages_auth_csrf_and_drafts():
         response = client.post(f"/voice/campaigns/{campaign_id}/review",
                                data={"csrf_token": csrf}, follow_redirects=False)
         assert response.status_code == 303
+        assert "Aguardando homologação" in client.get("/voice/campaigns").text
         db = SessionLocal()
         try:
-            assert db.get(VoiceCampaign, campaign_id).status == "AGUARDANDO_HOMOLOGACAO"
+            assert db.get(VoiceCampaign, campaign_id).status == VOICE_STATUS_HOMOLOGACAO
         finally:
             db.close()

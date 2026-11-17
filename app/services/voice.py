@@ -9,6 +9,9 @@ from app.services.scoring import normalize_phone
 
 MODES = {"AUDIO", "DIRECT"}
 SIP_TRANSPORTS = {"UDP", "TCP", "TLS"}
+
+# voice_campaigns.status is VARCHAR(20) in production. Keep state keys within this limit.
+VOICE_STATUS_HOMOLOGACAO = "EM_HOMOLOGACAO"
 _EXT = re.compile(r"^[0-9*#]{1,20}$")
 _HOST = re.compile(r"^(?=.{1,190}$)[A-Za-z0-9][A-Za-z0-9.-]*$")
 _HHMM = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
