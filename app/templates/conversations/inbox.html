@@ -13,26 +13,59 @@
 
     <form class="inbox-search" action="/conversations" method="get">
       <input type="hidden" name="view" value="{{ view }}">
+      {% if queue_id %}<input type="hidden" name="queue" value="{{ queue_id }}">{% endif %}
+      {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
       <span>⌕</span>
       <input name="q" value="{{ query }}" placeholder="Buscar empresa, pessoa ou telefone">
     </form>
 
+    {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
+    <form class="inbox-queue-filter" action="/conversations" method="get" aria-label="Filtro gerencial de filas">
+      <input type="hidden" name="view" value="{{ view }}">
+      {% if query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+      {% if assignee_id %}<input type="hidden" name="assignee" value="{{ assignee_id }}">{% endif %}
+      <label for="inbox-queue-select">Visualizar fila</label>
+      <div class="inbox-queue-filter-controls">
+        <select id="inbox-queue-select" name="queue" aria-label="Selecionar fila" onchange="this.form.requestSubmit()">
+          <option value="">Todas as filas</option>
+          {% for item in queues %}
+          <option value="{{ item.id }}" {% if queue_id == item.id %}selected{% endif %}>{{ item.name }}</option>
+          {% endfor %}
+        </select>
+        {% if queue_id %}<a class="inbox-queue-clear" href="/conversations?view={{ view }}" title="Limpar seleção da fila">Limpar</a>{% endif %}
+      </div>
+      <small>{% if focused_queue %}Exibindo somente {{ focused_queue.name }}{% else %}Visão geral das filas permitidas ao seu perfil{% endif %}</small>
+    </form>
+    {% endif %}
+
     <div class="inbox-tabs">
-      <a href="/conversations?view=active" class="{% if view == 'active' %}active{% endif %}">Ativas <b id="count-active">{{ counts.active }}</b></a>
-      <a href="/conversations?view=unread" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
-      {% if current_user.role in ['ADMIN','GESTOR'] %}
-      <a href="/conversations?view=queue" class="{% if view == 'queue' %}active{% endif %}">Fila <b id="count-queue">{{ counts.queue }}</b></a>
+      {% set preserved_filters = ('&queue=' ~ queue_id if queue_id else '') ~ ('&assignee=' ~ assignee_id if assignee_id else '') ~ ('&q=' ~ (query|urlencode) if query else '') %}
+      <a href="/conversations?view=active{{ preserved_filters }}" class="{% if view == 'active' %}active{% endif %}">Ativas <b id="count-active">{{ counts.active }}</b></a>
+      <a href="/conversations?view=unread{{ preserved_filters }}" class="{% if view == 'unread' %}active{% endif %}">Não lidas <b id="count-unread">{{ counts.unread }}</b></a>
+      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+      <a href="/conversations?view=pending{{ preserved_filters }}" class="{% if view == 'pending' %}active{% endif %}">Pendentes <b id="count-pending">{{ counts.pending }}</b></a>
+      <a href="/conversations?view=queue{{ preserved_filters }}" class="{% if view == 'queue' %}active{% endif %}">Sem responsável <b id="count-queue">{{ counts.queue }}</b></a>
       {% endif %}
-      <a href="/conversations?view=closed" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
+      <a href="/conversations?view=closed{{ preserved_filters }}" class="{% if view == 'closed' %}active{% endif %}">Encerradas <b id="count-closed">{{ counts.closed }}</b></a>
     </div>
+    {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] and focused_queue %}
+    <div class="inbox-queue-summary" aria-label="Situação da fila selecionada">
+      <span><strong id="queue-summary-pending">{{ counts.pending }}</strong> pendentes</span>
+      <span><strong id="queue-summary-unread">{{ counts.unread }}</strong> não lidas</span>
+      <span><strong id="queue-summary-owner">{{ counts.queue }}</strong> sem responsável</span>
+      <span><strong id="queue-summary-wait-client">{{ counts.waiting_client }}</strong> aguardando cliente</span>
+      <span><strong id="queue-summary-follow-up">{{ counts.follow_up }}</strong> follow-ups</span>
+    </div>
+    {% endif %}
 
     {% if queues %}
     <div class="seller-panel">
-      <div class="seller-panel-title">Filas ativas</div>
+      <div class="seller-panel-title">Filas ativas · pendências</div>
       {% for item in queues %}
-      <a href="/conversations?view=active&amp;queue={{ item.id }}" class="seller-row {% if queue_id == item.id %}active{% endif %}">
+      <a href="/conversations?view={{ view }}&amp;queue={{ item.id }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}" class="seller-row {% if queue_id == item.id %}active{% endif %}">
         <span>{{ item.name }}</span>
-        <b>{{ item.open }}</b>
+        <small title="Pendências nessa fila">{{ item.pending }} pend.</small>
+        <b title="Conversas ativas">{{ item.open }}</b>
       </a>
       {% endfor %}
     </div>
@@ -41,11 +74,11 @@
     {% if sellers %}
     <div class="seller-panel">
       <div class="seller-panel-title">Vendedores</div>
-      <a href="/conversations?view=active" class="seller-row {% if not assignee_id %}active{% endif %}">
+      <a href="/conversations?view={{ view }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}" class="seller-row {% if not assignee_id %}active{% endif %}">
         <span>Todos</span><b>{{ counts.active }}</b>
       </a>
       {% for seller in sellers %}
-      <a href="/conversations?view=active&amp;assignee={{ seller.id }}" class="seller-row {% if assignee_id == seller.id %}active{% endif %}">
+      <a href="/conversations?view={{ view }}&amp;assignee={{ seller.id }}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}" class="seller-row {% if assignee_id == seller.id %}active{% endif %}">
         <span><i class="seller-dot {% if seller.online %}on{% endif %}"></i>{{ seller.name }}</span>
         <small>{{ 'online' if seller.online else 'offline' }}</small>
         <b>{{ seller.open }}</b>
@@ -62,12 +95,22 @@
       .seller-row.active{background:rgba(255,122,36,.14);font-weight:600}
       .seller-dot{width:8px;height:8px;border-radius:50%;background:#9ca3af;display:inline-block;flex:none}
       .seller-dot.on{background:#16a34a}
+      .inbox-queue-filter{flex:none;margin:10px 12px 5px;padding:10px;border:1px solid #f4c5a8;background:#fff9f5;border-radius:10px;display:grid;gap:5px}
+      .inbox-queue-filter label{font-weight:750;color:#c4500b;font-size:12px}
+      .inbox-queue-filter-controls{display:flex;align-items:center;gap:6px;min-width:0}
+      .inbox-queue-filter select{min-width:0;flex:1;width:100%;padding:7px;border:1px solid #e5d0c3;border-radius:7px;background:white;color:#17202c;font:inherit}
+      .inbox-queue-clear{flex:none;font-size:11px;text-decoration:none;color:#b94a10}
+      .inbox-queue-filter small{font-size:11px;color:#7e6355}
+      .inbox-queue-summary{display:flex;flex:none;flex-wrap:wrap;gap:5px;margin:5px 12px;font-size:11px}
+      .inbox-queue-summary span{background:#f1f3f5;border-radius:6px;padding:4px 6px;color:#475569}
+      .inbox-queue-summary strong{color:#1f2937}
+      .inbox-tabs{flex-wrap:wrap}
     </style>
     {% endif %}
 
     <div class="conversation-list" id="conversation-list">
       {% for item in conversations %}
-      <a class="conversation-row {% if conversation and item.id == conversation.id %}selected{% endif %}" href="/conversations/{{ item.id }}?view={{ view }}{% if query %}&q={{ query|urlencode }}{% endif %}">
+      <a class="conversation-row {% if conversation and item.id == conversation.id %}selected{% endif %}" href="/conversations/{{ item.id }}?view={{ view }}{% if query %}&amp;q={{ query|urlencode }}{% endif %}{% if queue_id %}&amp;queue={{ queue_id }}{% endif %}{% if assignee_id %}&amp;assignee={{ assignee_id }}{% endif %}">
         <div class="conversation-avatar">{{ (item.contact.business_name or item.contact.name or 'C')[:2]|upper }}</div>
         <div class="conversation-row-copy">
           <div class="conversation-row-top">
@@ -402,14 +445,29 @@
   };
 
   const updateCounts = counts => {
-    for (const key of ['active','unread','queue','closed']) {
+    for (const key of ['active','unread','queue','closed','pending']) {
       const el = document.getElementById('count-' + key);
+      if (el && counts && key in counts) el.textContent = counts[key];
+    }
+  };
+
+  const updateQueueSummary = counts => {
+    const mapping = {
+      pending: 'queue-summary-pending',
+      unread: 'queue-summary-unread',
+      queue: 'queue-summary-owner',
+      waiting_client: 'queue-summary-wait-client',
+      follow_up: 'queue-summary-follow-up'
+    };
+    for (const [key, id] of Object.entries(mapping)) {
+      const el = document.getElementById(id);
       if (el && counts && key in counts) el.textContent = counts[key];
     }
   };
 
   const renderInbox = data => {
     updateCounts(data.counts || {});
+    updateQueueSummary(data.counts || {});
     const items = data.items || [];
     list.replaceChildren();
 
