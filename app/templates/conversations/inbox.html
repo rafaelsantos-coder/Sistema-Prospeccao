@@ -535,12 +535,17 @@
   // CSP bloqueia handlers inline; o seletor usa o script autorizado por nonce.
   const queueSelect = document.getElementById('inbox-queue-select');
   queueSelect?.addEventListener('change', () => queueSelect.form?.requestSubmit());
+  document.querySelectorAll('[data-commercial-filter] select').forEach(sel => {
+    sel.addEventListener('change', () => sel.form?.requestSubmit());
+  });
 
   const conversationId = Number(root.dataset.conversationId || 0);
   const view = root.dataset.view || 'active';
   const query = root.dataset.query || '';
   const assignee = root.dataset.assignee || '';
   const queue = root.dataset.queue || '';
+  const tag = root.dataset.tag || '';
+  const temperature = root.dataset.temperature || '';
   let inboxSignature = '';
 
   const statusLabel = value => (value || '').replaceAll('_', ' ');
@@ -599,7 +604,7 @@
     for (const item of items) {
       const row = document.createElement('a');
       row.className = 'conversation-row' + (Number(item.id) === conversationId ? ' selected' : '');
-      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '') + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '') + (queue ? '&queue=' + encodeURIComponent(queue) : '');
+      row.href = '/conversations/' + item.id + '?view=' + encodeURIComponent(view) + (query ? '&q=' + encodeURIComponent(query) : '') + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '') + (queue ? '&queue=' + encodeURIComponent(queue) : '') + (tag ? '&tag=' + encodeURIComponent(tag) : '') + (temperature ? '&temperature=' + encodeURIComponent(temperature) : '');
 
       const avatar = document.createElement('div');
       avatar.className = 'conversation-avatar';
@@ -630,6 +635,24 @@
       meta.append(owner, status);
 
       copy.append(top, preview, meta);
+      if (item.commercial_temperature && item.commercial_temperature !== 'INDEFINIDO' || (item.commercial_tags || []).length) {
+        const badges = document.createElement('div');
+        badges.className = 'commercial-list-badges';
+        if (item.commercial_temperature && item.commercial_temperature !== 'INDEFINIDO') {
+          const badge = document.createElement('span');
+          badge.className = 'commercial-temperature commercial-temperature-' + item.commercial_temperature.toLowerCase();
+          badge.textContent = {QUENTE:'Quente', MORNO:'Morno', FRIO:'Frio'}[item.commercial_temperature] || 'Sem análise';
+          badges.append(badge);
+        }
+        for (const t of (item.commercial_tags || []).slice(0, 2)) {
+          const badge = document.createElement('span');
+          badge.className = 'commercial-tag';
+          badge.textContent = t.name;
+          badge.title = t.source === 'MANUAL' ? 'Manual' : 'Sugerida pela IA';
+          badges.append(badge);
+        }
+        copy.append(badges);
+      }
       row.append(avatar, copy);
 
       if (Number(item.unread_count || 0) > 0) {
@@ -644,7 +667,7 @@
 
   const pollInbox = async () => {
     try {
-      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query) + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '') + (queue ? '&queue=' + encodeURIComponent(queue) : '');
+      const url = '/api/conversations/inbox?view=' + encodeURIComponent(view) + '&q=' + encodeURIComponent(query) + (assignee ? '&assignee=' + encodeURIComponent(assignee) : '') + (queue ? '&queue=' + encodeURIComponent(queue) : '') + (tag ? '&tag=' + encodeURIComponent(tag) : '') + (temperature ? '&temperature=' + encodeURIComponent(temperature) : '');
       const response = await fetch(url, {headers:{'Accept':'application/json'}, credentials:'same-origin'});
       if (!response.ok) return;
       const data = await response.json();
