@@ -149,8 +149,8 @@ def _test_phone_binding(db: Session, conversation_id: int, queue) -> Any | None:
 
 
 def is_human_only_queue(queue: ServiceQueue | None) -> bool:
-    """A fila Natine (ID 4) nunca recebe IA, inclusive telefones de teste."""
-    return bool(queue and (queue.id == 4 or queue.name.strip().casefold() == "natine"))
+    """A fila identificada como Natine nunca recebe IA, nem em testes."""
+    return bool(queue and queue.name.strip().casefold() == "natine")
 
 
 def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBinding | None:
