@@ -228,7 +228,7 @@ class SipProbe:
 
     def _call(self) -> SipDiagnostic:
         self.media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.media.bind(("0.0.0.0", 0))
+        self.media.bind((self.local_ip, 0))
         target = f"sip:{self.phone}@{self.host}"
         to_header = f"<{target}>"
         callid = f"{self.callid_prefix}-call@{self.host}"
