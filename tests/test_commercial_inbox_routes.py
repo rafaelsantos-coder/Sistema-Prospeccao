@@ -34,6 +34,12 @@ def test_manager_can_open_commercial_dashboard_and_tag_conversation():
         assert inbox.status_code == 200
         assert 'name="tag"' in inbox.text
         assert 'name="temperature"' in inbox.text
+        assert 'data-inbox-filter-drawer' in inbox.text
+        assert 'id="inbox-queue-select"' in inbox.text
+        assert 'class="inbox-filter-popup"' in inbox.text
+        assert 'class="inbox-shortcut-group"' in inbox.text
+        assert 'aria-label="Situação dos atendimentos"' in inbox.text
+        assert "Filtros" in inbox.text
         lead_page = client.get("/leads/1")
         opened = client.post("/leads/1/conversation", data={
             "csrf_token": _csrf(lead_page.text),
@@ -44,6 +50,11 @@ def test_manager_can_open_commercial_dashboard_and_tag_conversation():
         detail = client.get(path)
         assert detail.status_code == 200
         assert "Adicionar etiqueta" in detail.text
+        assert 'class="commercial-tag-shortcuts"' in detail.text
+        assert 'class="commercial-tag-picker"' in detail.text
+        assert 'data-tag="EM_NEGOCIACAO"' in detail.text
+        assert 'data-tag="ALTO_POTENCIAL"' in detail.text
+        assert '<optgroup label="Documentos e contrato">' in detail.text
         saved = client.post(f"/conversations/{conversation_id}/commercial-tag", data={
             "csrf_token": _csrf(detail.text),
             "code": "ALTO_POTENCIAL",
