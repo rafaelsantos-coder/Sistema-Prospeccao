@@ -217,6 +217,12 @@ def test_real_udp_probe_with_local_fake_pbx(monkeypatch):
 
 def test_admin_registration_check_requires_live_agent_and_does_not_create_call():
     account_id = _account()
+    # O banco de testes persiste entre casos; force heartbeat expirado.
+    with SessionLocal() as db:
+        agent = db.get(VoiceTestAgent, 1)
+        if agent:
+            agent.heartbeat_at = now_utc() - timedelta(minutes=10)
+            db.commit()
     with TestClient(app) as client:
         token = _login(client)
         unavailable = client.post(
