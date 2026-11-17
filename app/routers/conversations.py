@@ -307,7 +307,7 @@ def _inbox_query(
     stmt = _conversation_stmt(user).join(Contact, Conversation.contact_id == Contact.id)
     if assignee_id:
         stmt = stmt.where(Conversation.assigned_user_id == assignee_id)
-    if queue_id:
+    if queue_id is not None:
         stmt = stmt.join(
             ConversationQueueLink,
             ConversationQueueLink.conversation_id == Conversation.id,
@@ -325,10 +325,22 @@ def _inbox_query(
         )
     if view == "unread":
         stmt = stmt.where(Conversation.unread_count > 0)
+    elif view == "pending":
+        stmt = stmt.where(
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            or_(
+                Conversation.unread_count > 0,
+                Conversation.assigned_user_id.is_(None),
+                Conversation.status.in_(("AGUARDANDO_INTERNO", "FOLLOW_UP")),
+            ),
+        )
     elif view == "closed":
         stmt = stmt.where(Conversation.status.in_(CLOSED_CONVERSATION_STATUSES))
     elif view == "queue":
-        stmt = stmt.where(Conversation.assigned_user_id.is_(None))
+        stmt = stmt.where(
+            Conversation.assigned_user_id.is_(None),
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+        )
     elif view == "mine" and user.role in {"ADMIN", "GESTOR", "SUPERVISOR"}:
         stmt = stmt.where(Conversation.assigned_user_id == user.id)
     else:
@@ -340,17 +352,51 @@ def _inbox_query(
     return list(db.scalars(stmt))
 
 
-def _inbox_counts(db: Session, user: User) -> dict[str, int]:
-    scoped = list(db.scalars(apply_conversation_scope(select(Conversation), user, inbox=True)))
+def _needs_attention(
+    conversation_status: str, unread_count: int | None, assigned_user_id: int | None
+) -> bool:
+    """Pendência operacional: mensagem não lida, sem dono ou tarefa interna/follow-up."""
+    return conversation_status in OPEN_CONVERSATION_STATUSES and (
+        bool(unread_count)
+        or assigned_user_id is None
+        or conversation_status in {"AGUARDANDO_INTERNO", "FOLLOW_UP"}
+    )
+
+
+def _inbox_counts(
+    db: Session,
+    user: User,
+    *,
+    queue_id: int | None = None,
+    assignee_id: int | None = None,
+) -> dict[str, int]:
+    """Contadores com os mesmos filtros da caixa (sem o limite de 250 itens)."""
+    stmt = apply_conversation_scope(select(Conversation), user, inbox=True)
+    if queue_id is not None:
+        stmt = stmt.join(
+            ConversationQueueLink,
+            ConversationQueueLink.conversation_id == Conversation.id,
+        ).where(ConversationQueueLink.queue_id == queue_id)
+    if assignee_id is not None:
+        stmt = stmt.where(Conversation.assigned_user_id == assignee_id)
+    scoped = list(db.scalars(stmt))
+    open_items = [item for item in scoped if item.status in OPEN_CONVERSATION_STATUSES]
     return {
-        "active": sum(1 for item in scoped if item.status in OPEN_CONVERSATION_STATUSES),
+        "active": len(open_items),
         "unread": sum(1 for item in scoped if item.unread_count > 0),
         "closed": sum(1 for item in scoped if item.status in CLOSED_CONVERSATION_STATUSES),
-        "queue": sum(1 for item in scoped if item.assigned_user_id is None),
+        "queue": sum(1 for item in open_items if item.assigned_user_id is None),
+        "pending": sum(
+            1 for item in open_items
+            if _needs_attention(item.status, item.unread_count, item.assigned_user_id)
+        ),
+        "waiting_client": sum(1 for item in open_items if item.status == "AGUARDANDO_CLIENTE"),
+        "waiting_internal": sum(1 for item in open_items if item.status == "AGUARDANDO_INTERNO"),
+        "follow_up": sum(1 for item in open_items if item.status == "FOLLOW_UP"),
     }
 
 
-def _seller_panel(db: Session, user: User) -> list[dict]:
+def _seller_panel(db: Session, user: User, *, queue_id: int | None = None) -> list[dict]:
     """Vendedores visíveis para o usuário, com presença online e carga de conversas abertas."""
     if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
         return []
@@ -373,13 +419,17 @@ def _seller_panel(db: Session, user: User) -> list[dict]:
     )
     online_ids |= ai_user_ids
     open_counts: dict[int, int] = {}
-    for assigned_id in db.scalars(
-        select(Conversation.assigned_user_id).where(
-            Conversation.assigned_user_id.is_not(None),
-            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
-            ~outbound_without_reply_clause(),
-        )
-    ):
+    stmt = select(Conversation.assigned_user_id).where(
+        Conversation.assigned_user_id.is_not(None),
+        Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+        ~outbound_without_reply_clause(),
+    )
+    if queue_id is not None:
+        stmt = stmt.join(
+            ConversationQueueLink,
+            ConversationQueueLink.conversation_id == Conversation.id,
+        ).where(ConversationQueueLink.queue_id == queue_id)
+    for assigned_id in db.scalars(stmt):
         open_counts[assigned_id] = open_counts.get(assigned_id, 0) + 1
     return [
         {
@@ -403,13 +453,42 @@ def _queue_panel(db: Session, user: User) -> list[dict]:
         else:
             queues = [item for item in queues if item.team == user.team]
     open_counts: dict[int, int] = {}
-    for queue_id in db.scalars(
-        select(ConversationQueueLink.queue_id)
+    pending_counts: dict[int, int] = {}
+    for queue_id, conversation_status, unread_count, assigned_user_id in db.execute(
+        select(
+            ConversationQueueLink.queue_id,
+            Conversation.status,
+            Conversation.unread_count,
+            Conversation.assigned_user_id,
+        )
         .join(Conversation, Conversation.id == ConversationQueueLink.conversation_id)
         .where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES), ~outbound_without_reply_clause())
     ):
         open_counts[queue_id] = open_counts.get(queue_id, 0) + 1
-    return [{"id": item.id, "name": item.name, "open": open_counts.get(item.id, 0)} for item in queues]
+        if _needs_attention(conversation_status, unread_count, assigned_user_id):
+            pending_counts[queue_id] = pending_counts.get(queue_id, 0) + 1
+    return [
+        {
+            "id": item.id,
+            "name": item.name,
+            "open": open_counts.get(item.id, 0),
+            "pending": pending_counts.get(item.id, 0),
+        }
+        for item in queues
+    ]
+
+
+def _validate_queue_filter(user: User, queue_id: int | None, queues: list[dict]) -> None:
+    """Não permitir consultar filas fora do escopo gerencial do usuário."""
+    if queue_id is None:
+        return
+    if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"} or queue_id not in {
+        item["id"] for item in queues
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Fila indisponível para o seu perfil.",
+        )
 
 
 def _render_inbox(
@@ -423,6 +502,9 @@ def _render_inbox(
     assignee_id: int | None = None,
     queue_id: int | None = None,
 ):
+    queues = _queue_panel(db, user)
+    _validate_queue_filter(user, queue_id, queues)
+    focused_queue = next((item for item in queues if item["id"] == queue_id), None)
     conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee_id, queue_id=queue_id)
     selected = None
     if conversation_id is not None:
@@ -466,7 +548,7 @@ def _render_inbox(
             )
         )
 
-    counts = _inbox_counts(db, user)
+    counts = _inbox_counts(db, user, queue_id=queue_id, assignee_id=assignee_id)
     return render(
         request,
         "conversations/inbox.html",
@@ -489,8 +571,9 @@ def _render_inbox(
         view=view,
         assignee_id=assignee_id,
         queue_id=queue_id,
-        sellers=_seller_panel(db, user),
-        queues=_queue_panel(db, user),
+        sellers=_seller_panel(db, user, queue_id=queue_id),
+        queues=queues,
+        focused_queue=focused_queue,
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -1146,9 +1229,11 @@ def conversation_inbox_api(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Entre no WhatsApp para acessar o canal.",
         )
+    queues = _queue_panel(db, user) if queue is not None else []
+    _validate_queue_filter(user, queue, queues)
     conversations = _inbox_query(db, user, q=q, view=view, assignee_id=assignee, queue_id=queue)
     return {
-        "counts": _inbox_counts(db, user),
+        "counts": _inbox_counts(db, user, queue_id=queue, assignee_id=assignee),
         "items": [
             {
                 "id": item.id,
