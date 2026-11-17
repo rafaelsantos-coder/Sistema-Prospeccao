@@ -654,6 +654,9 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
         return False, "CONVERSA_INEXISTENTE"
     if conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
         return False, "CONVERSA_ENCERRADA"
+    from app.services.global_blacklist import is_globally_blocked  # noqa: PLC0415
+    if is_globally_blocked(db, conversation.contact.phone):
+        return False, "BLACKLIST_GLOBAL"
     lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
     if lead and lead.do_not_contact:
         return False, "DO_NOT_CONTACT"
