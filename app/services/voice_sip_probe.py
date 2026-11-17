@@ -86,13 +86,13 @@ def _digest(challenge: str, method: str, uri: str, username: str, password: str)
 
 
 class SipProbe:
-    def __init__(self, host: str, username: str, password: str, phone: str,
+    def __init__(self, host: str, username: str, password: str, phone: str | None,
                  notify: Callable[[str, int | None, int | None, str], None]):
         if not re.fullmatch(r"[A-Za-z0-9.-]{3,190}", host):
             raise SipProbeError("Servidor SIP invalido.")
         if not re.fullmatch(r"[0-9*#]{1,20}", username):
             raise SipProbeError("Usuario SIP invalido.")
-        if not re.fullmatch(r"\d{10,14}", phone):
+        if phone is not None and not re.fullmatch(r"\d{10,14}", phone):
             raise SipProbeError("Numero de teste invalido.")
         self.host = host
         self.username = username
@@ -185,7 +185,7 @@ class SipProbe:
         raise SipProbeError("Central SIP recusou autenticacao da conta.")
 
     def _register(self, expires: int = 75) -> None:
-        callid = f"{self.callid_prefix}-reg@{self.host}"
+        callid = f"{self.callid_prefix}-{'reg' if expires else 'unreg'}@{self.host}"
         target = f"sip:{self.host}"
         to = f"<sip:{self.username}@{self.host}>"
         code, _, _, _, _, _ = self._exchange(
@@ -193,7 +193,8 @@ class SipProbe:
         )
         if code != 200:
             raise SipProbeError(f"Registro SIP recusado pela central (SIP {code}).", register_code=code)
-        self.notify("REGISTRADO", 200, None, "Conta autenticada na central. Preparando chamada de teste.")
+        if expires:
+            self.notify("REGISTRADO", 200, None, "Conta autenticada na central SIP.")
 
     def _sdp(self) -> str:
         assert self.media is not None
@@ -227,6 +228,8 @@ class SipProbe:
             self._send(bye)
 
     def _call(self) -> SipDiagnostic:
+        if self.phone is None:
+            raise SipProbeError("Teste sem telefone nao pode originar chamada.")
         self.media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.media.bind((self.local_ip, 0))
         target = f"sip:{self.phone}@{self.host}"
@@ -277,6 +280,35 @@ class SipProbe:
         if ringing:
             return SipDiagnostic("TOCOU", 200, 180, "Central sinalizou toque SIP 180. Teste encerrado automaticamente.")
         return SipDiagnostic("SEM_RESPOSTA", 200, last, "Nenhuma confirmacao SIP 180/200 de chamada dentro do limite.")
+
+    def run_registration_only(self) -> SipDiagnostic:
+        """Check REGISTER response without INVITE, phone number or campaign traffic."""
+        self.notify("REGISTRANDO", None, None, "Validando autenticacao SIP sem realizar ligacao.")
+        registered = False
+        try:
+            resolved = socket.getaddrinfo(self.host, 5060, socket.AF_INET, socket.SOCK_DGRAM)
+            if not resolved:
+                raise SipProbeError("Dominio SIP sem endereco IPv4.")
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.settimeout(2)
+            self.sock.connect(resolved[0][4])
+            self.local_ip, self.local_port = self.sock.getsockname()
+            self._register(expires=60)
+            registered = True
+            return SipDiagnostic("SIP_VALIDADO", 200, None,
+                                 "SIP REGISTER 200 OK. Autenticacao confirmada neste teste; "
+                                 "ramal nao esta permanentemente conectado.")
+        except (socket.gaierror, OSError) as exc:
+            raise SipProbeError("Falha de rede com central SIP; revise dominio, porta 5060 e UDP.") from exc
+        finally:
+            if registered:
+                try:
+                    self._register(expires=0)
+                except (SipProbeError, OSError):
+                    pass
+            if self.sock:
+                self.sock.close()
+
 
     def run(self) -> SipDiagnostic:
         self.notify("REGISTRANDO", None, None, "Registrando temporariamente o ramal SIP.")
