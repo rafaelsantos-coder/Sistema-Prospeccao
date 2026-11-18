@@ -589,7 +589,13 @@ def account_test_page(account_id: int, request: Request, db: Session = Depends(g
         request, "voice/account_test.html", user=actor, active_nav="voice",
         voice_section="accounts", page_title="Prospecta VOZ · Testar ligação SIP",
         account=account, recent=recent, agent_online=is_agent_online(db),
-        processing=bool(recent and recent[0].status in {"PENDENTE","REGISTRANDO","REGISTRADO","CHAMANDO","TOCANDO"}),
+        engine=db.get(VoiceDialerEngine, 1),
+        engine_online=bool((eng := db.get(VoiceDialerEngine, 1)) and eng.heartbeat_at
+                           and datetime.now(timezone.utc) - aware(eng.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
+        processing=bool(recent and recent[0].status in {
+            "PENDENTE", "REGISTRANDO", "REGISTRADO", "CHAMANDO", "TOCANDO",
+            "PENDENTE_PJSIP", "REGISTRANDO_PJSIP",
+        }),
     )
 
 
@@ -812,3 +818,60 @@ def test_group_transfer(group_id: int, request: Request, csrf_token: str = Form(
     db.commit()
     flash(request, "Teste de transferencia iniciado. Acompanhe o status abaixo.")
     return RedirectResponse("/voice/groups", status_code=303)
+
+
+@router.post("/accounts/{account_id}/test-native")
+def request_native_sip_test(account_id: int, request: Request,
+                            csrf_token: str = Form(...), phone: str = Form(...),
+                            authorized: str = Form(""), db: Session = Depends(get_db)):
+    """One authorized native SIP/RTP call, no campaign and no transfer."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    account = db.scalar(select(VoiceSipAccount).where(
+        VoiceSipAccount.id == account_id
+    ).with_for_update())
+    if not account or not account.active:
+        return _error(request, "Conta SIP nao encontrada ou pausada.", "/voice/accounts")
+    engine = db.get(VoiceDialerEngine, 1)
+    now = datetime.now(timezone.utc)
+    if not engine or not engine.enabled or not engine.test_runtime_enabled:
+        return _error(request, "Motor nativo PJSUA2 ainda esta bloqueado para testes.", f"/voice/accounts/{account_id}/test")
+    if not engine.heartbeat_at or now - aware(engine.heartbeat_at) > ENGINE_HEARTBEAT_MAX:
+        return _error(request, "Motor PJSUA2 offline.", f"/voice/accounts/{account_id}/test")
+    if authorized != "sim":
+        return _error(request, "Confirmacao de autorizacao do destino obrigatoria.",
+                      f"/voice/accounts/{account_id}/test")
+    try:
+        clean = validate_test_phone(phone)
+        outbound_guard(db, clean)
+    except ValueError as exc:
+        return _error(request, str(exc), f"/voice/accounts/{account_id}/test")
+    recent = list(db.scalars(select(VoiceTestCall).where(
+        VoiceTestCall.account_id == account.id,
+        VoiceTestCall.created_at >= now - timedelta(hours=1),
+        VoiceTestCall.status != "SIP_VALIDADO",
+    )))
+    in_progress = list(db.scalars(select(VoiceTestCall).where(
+        VoiceTestCall.status.in_({"PENDENTE_PJSIP", "REGISTRANDO_PJSIP"})
+    )))
+    if len(recent) >= 3 or in_progress or any(
+        t.target_phone == clean and now - aware(t.created_at) < timedelta(minutes=3)
+        for t in recent
+    ):
+        return _error(request, "Limite de testes atingido ou ha uma chamada em andamento.",
+                      f"/voice/accounts/{account_id}/test")
+    test = VoiceTestCall(
+        account_id=account.id, account_label=account.name, target_phone=clean,
+        status="PENDENTE_PJSIP", message="Chamada nativa PJSUA2 autorizada pelo administrador.",
+        initiator_user_id=actor.id, created_at=now,
+    )
+    db.add(test)
+    db.flush()
+    write_audit(db, user=actor, action="VOICE_NATIVE_TEST_REQUESTED",
+                entity_type="voice_test_call", entity_id=test.id,
+                payload={"account_id": account.id, "target_last4": clean[-4:]})
+    db.commit()
+    flash(request, "Teste SIP/RTP solicitado. Acompanhe o resultado real nesta pagina.")
+    return RedirectResponse(f"/voice/accounts/{account_id}/test", status_code=303)
