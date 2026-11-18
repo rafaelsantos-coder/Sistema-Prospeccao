@@ -88,7 +88,7 @@ def make_dial_uri(account: VoiceSipAccount, number: str) -> str:
         raise VoiceReadinessError("Prefixo SIP incorreto.")
     host = validate_host(account.dial_domain or account.domain)
     validate_port(account.sip_port)
-    return f"sip:{prefix}{clean}@{host};transport={account.transport.lower()}"
+    return f"sip:{prefix}{clean}@{host}:{account.sip_port};transport={account.transport.lower()}"
 
 
 def make_transfer_uri(account: VoiceSipAccount, group: VoiceGroup) -> str:
@@ -96,7 +96,7 @@ def make_transfer_uri(account: VoiceSipAccount, group: VoiceGroup) -> str:
     if not _EXT_RE.fullmatch(extension):
         raise VoiceReadinessError("Ramal de destino invalido.")
     host = validate_host(account.dial_domain or account.domain)
-    return f"sip:{extension}@{host};transport={account.transport.lower()}"
+    return f"sip:{extension}@{host}:{account.sip_port};transport={account.transport.lower()}"
 
 
 def outbound_guard(db: Session, phone: str) -> None:
