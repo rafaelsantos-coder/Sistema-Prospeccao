@@ -81,6 +81,7 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
         "campaigns": len(campaigns),
         "campaigns_draft": sum(1 for item in campaigns if item.status == "RASCUNHO"),
         "campaigns_review": sum(1 for item in campaigns if item.status == VOICE_STATUS_HOMOLOGACAO),
+        "campaigns_live": sum(1 for item in campaigns if item.status == "EM_EXECUCAO"),
         "recipients": recipient_count,
     }
     return render(
@@ -117,10 +118,15 @@ def voice_groups(request: Request, edit_id: int | None = None, db: Session = Dep
         return redirect
     groups = list(db.scalars(select(VoiceGroup).order_by(VoiceGroup.id.desc())))
     edit_group = db.get(VoiceGroup, edit_id) if edit_id else None
+    accounts = list(db.scalars(select(VoiceSipAccount).where(VoiceSipAccount.active.is_(True))))
+    transfers = list(db.scalars(select(VoiceTransferTest).order_by(
+        VoiceTransferTest.id.desc()).limit(30)))
+    engine = db.get(VoiceDialerEngine, 1)
     return render(
         request, "voice/groups.html", user=actor, active_nav="voice",
         voice_section="groups", page_title="Prospecta VOZ · Ramais e grupos",
-        groups=groups, edit_group=edit_group,
+        groups=groups, edit_group=edit_group, accounts=accounts, engine=engine,
+        transfers=transfers,
     )
 
 
