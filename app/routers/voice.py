@@ -88,6 +88,8 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
         request, "voice/dashboard.html", user=actor, active_nav="voice",
         voice_section="dashboard", page_title="Prospecta VOZ · Dashboard",
         accounts=accounts, campaigns=campaigns[:5], stats=stats, engine=engine,
+        engine_online=bool(engine and engine.heartbeat_at and
+            datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
 
 
@@ -127,6 +129,8 @@ def voice_groups(request: Request, edit_id: int | None = None, db: Session = Dep
         voice_section="groups", page_title="Prospecta VOZ · Ramais e grupos",
         groups=groups, edit_group=edit_group, accounts=accounts, engine=engine,
         transfers=transfers,
+        engine_online=bool(engine and engine.heartbeat_at and
+            datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
 
 
@@ -159,6 +163,8 @@ def voice_campaigns(request: Request, db: Session = Depends(get_db)):
         request, "voice/campaigns.html", user=actor, active_nav="voice",
         voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
         campaigns=campaigns, counts=counts, engine=engine, readiness=checklist,
+        engine_online=bool(engine and engine.heartbeat_at and
+            datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
 
 
