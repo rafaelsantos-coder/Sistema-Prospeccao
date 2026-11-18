@@ -118,29 +118,29 @@ def test_blacklist_fail_closed_for_all_voice_channels(monkeypatch):
         outbound_guard(db, "5555999980300")
 
 
-def test_call_schedule_conservative_weekdays():
-    camp = VoiceCampaign(window_start="09:00", window_end="18:00",
+def test_call_schedule_respects_campaign_window_including_weekends():
+    camp = VoiceCampaign(window_start="09:00", window_end="20:00",
                          daily_limit=10, interval_seconds=60)
     assert within_call_window(camp, datetime(2026, 11, 19, 13, 30, tzinfo=timezone.utc))
+    assert within_call_window(camp, datetime(2026, 11, 18, 21, 41, tzinfo=timezone.utc))
     assert not within_call_window(camp, datetime(2026, 11, 19, 1, 0, tzinfo=timezone.utc))
-    assert not within_call_window(camp, datetime(2026, 11, 22, 13, 30, tzinfo=timezone.utc))
+    assert within_call_window(camp, datetime(2026, 11, 22, 13, 30, tzinfo=timezone.utc))
+    assert not within_call_window(camp, datetime(2026, 11, 22, 23, 0, tzinfo=timezone.utc))
 
 
-def test_next_call_window_reports_tomorrow_and_after_weekend():
-    campaign = VoiceCampaign(window_start="09:00", window_end="18:00")
-    # Quarta 18/11/2026 18h14 em Sao Paulo: quinta 19/11 09h.
+def test_next_call_window_uses_only_campaign_schedule():
+    campaign = VoiceCampaign(window_start="09:00", window_end="20:00")
     next_start = next_call_window_start(
-        campaign, datetime(2026, 11, 18, 21, 14, tzinfo=timezone.utc))
+        campaign, datetime(2026, 11, 18, 23, 14, tzinfo=timezone.utc))
     assert next_start is not None
     assert next_start.astimezone(timezone.utc) == datetime(
         2026, 11, 19, 12, 0, tzinfo=timezone.utc
     )
-    # Sexta a noite: proximo dia util na segunda.
-    monday = next_call_window_start(
+    saturday = next_call_window_start(
         campaign, datetime(2026, 11, 20, 22, 0, tzinfo=timezone.utc))
-    assert monday is not None
-    assert monday.astimezone(timezone.utc) == datetime(
-        2026, 11, 23, 12, 0, tzinfo=timezone.utc
+    assert saturday is not None
+    assert saturday.astimezone(timezone.utc) == datetime(
+        2026, 11, 21, 12, 0, tzinfo=timezone.utc
     )
 
 
