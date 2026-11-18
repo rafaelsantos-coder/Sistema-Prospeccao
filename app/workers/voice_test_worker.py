@@ -19,6 +19,7 @@ from app.models import VoiceSipAccount, VoiceTestAgent, VoiceTestCall
 from app.services.secret_store import SecretStoreError, decrypt_secret
 from app.services.voice_sip_probe import SipDiagnostic, SipProbe, SipProbeError
 from app.services.voice_test import aware, now_utc, REQUEST_MAX_AGE
+from app.services.voice_runtime import outbound_guard, update_sip_check
 
 logger = logging.getLogger(__name__)
 WORKER_ID = (socket.gethostname() + "-" + uuid4().hex[:8])[:120]
@@ -94,8 +95,13 @@ def run_one(test_id: int, account_id: int, phone: str) -> None:
                 _record(test_id, "FALHOU", None, None, "Transporte nao homologado; teste UDP somente.", True)
                 return
             host = account.domain
+            sip_port = account.sip_port
+            proxy_host = account.proxy_host
+            proxy_port = account.proxy_port
             username = account.username
             password = decrypt_secret(account.password_encrypted)
+            if phone != "SIP_ONLY":
+                outbound_guard(db, phone)
         if not password:
             _record(test_id, "FALHOU", None, None, "Credencial SIP ausente.", True)
             return
@@ -103,15 +109,28 @@ def run_one(test_id: int, account_id: int, phone: str) -> None:
         probe = SipProbe(
             host=host, username=username, password=password,
             phone=None if is_register_only else phone,
+            port=sip_port, proxy_host=proxy_host, proxy_port=proxy_port,
             notify=lambda status, register, invite, message:
                 _record(test_id, status, register, invite, message),
         )
         result: SipDiagnostic = probe.run_registration_only() if is_register_only else probe.run()
+        if result.register_code is not None:
+            with SessionLocal() as db:
+                record = db.get(VoiceSipAccount, account_id)
+                if record:
+                    update_sip_check(db, record, result.register_code, result.message)
+                    db.commit()
         _record(test_id, result.status, result.register_code, result.invite_code,
                 result.message, True)
     except (SecretStoreError, SipProbeError) as exc:
         # Never log authentication strings or raw SIP messages.
         if isinstance(exc, SipProbeError):
+            if exc.register_code is not None:
+                with SessionLocal() as db:
+                    account = db.get(VoiceSipAccount, account_id)
+                    if account:
+                        update_sip_check(db, account, exc.register_code, str(exc))
+                        db.commit()
             _record(test_id, "FALHOU", exc.register_code, exc.invite_code, str(exc), True)
         else:
             _record(test_id, "FALHOU", None, None, "Chave de criptografia do agente incorreta.", True)
