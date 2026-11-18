@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 
 from sqlalchemy import select
@@ -47,11 +48,14 @@ def instance_by_webhook_key(db: Session, webhook_key: str) -> ZApiInstance | Non
 
 
 def service_for_instance(instance: ZApiInstance) -> ZApiService:
+    # Substituicao isolada do Client-Token por instancia, via segredo Railway.
+    override_name = f"ZAPI_CLIENT_TOKEN_OVERRIDE_{instance.instance_id.strip().upper()}"
+    override_token = os.getenv(override_name, "").strip()
     return ZApiService(
         base_url=instance.base_url,
         instance_id=instance.instance_id,
         instance_token=decrypt_secret(instance.instance_token_encrypted),
-        client_token=decrypt_secret(instance.client_token_encrypted),
+        client_token=override_token or decrypt_secret(instance.client_token_encrypted),
     )
 
 
