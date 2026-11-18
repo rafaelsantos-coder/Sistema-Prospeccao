@@ -38,10 +38,13 @@
       <span class="voice-campaign-summary-main">
         <span class="voice-campaign-summary-name">{{ campaign.name }}</span>
         <span class="voice-campaign-summary-info">#{{ campaign.id }} · {{ counts.get(campaign.id, 0) }} contato(s) · {{ 'Áudio sem transferência' if campaign.mode == 'AUDIO' and not campaign.group_id else ('Áudio + confirmação DTMF' if campaign.mode == 'AUDIO' else 'Transferência direta') }}</span>
+        {% if campaign.id in waiting_windows %}
+          <span class="voice-campaign-summary-info voice-window-note">Fora do horário de discagem · {% if waiting_windows[campaign.id] %}próxima janela: {{ waiting_windows[campaign.id].strftime('%d/%m às %H:%M') }}{% else %}revise o horário cadastrado{% endif %}</span>
+        {% endif %}
       </span>
       <span class="voice-campaign-summary-side">
-        <span class="voice-pill {{ 'is-ready' if campaign.status in ['EM_EXECUCAO','CONCLUIDA'] else ('is-paused' if campaign.status in ['PAUSADA','EXCLUIDA'] else 'is-unknown') }}">
-          {{ 'PREPARADA' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}
+        <span class="voice-pill {{ 'is-paused' if campaign.id in waiting_windows else ('is-ready' if campaign.status in ['EM_EXECUCAO','CONCLUIDA'] else ('is-paused' if campaign.status in ['PAUSADA','EXCLUIDA'] else 'is-unknown')) }}">
+          {{ 'AGUARDANDO HORÁRIO' if campaign.id in waiting_windows else ('PREPARADA' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ')) }}
         </span>
         <span class="voice-campaign-chevron" aria-hidden="true"></span>
       </span>
@@ -61,4 +64,4 @@
   </section>
 {% endif %}
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', path='/js/voice_campaign_status.js') }}?v=voice-resend-20261118" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/js/voice_campaign_status.js') }}?v=voice-window-20261118" defer></script>{% endblock %}

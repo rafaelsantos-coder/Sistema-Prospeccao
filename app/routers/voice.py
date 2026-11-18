@@ -20,7 +20,7 @@ from app.services.voice_resend import RESEND_MODES, select_resend_recipients
 from app.services.secret_store import encrypt_secret
 from app.services.voice_runtime import (
     check_campaign_ready, validate_routing_options, outbound_guard, make_dial_uri,
-    MAX_CALLS_PER_DAY, ENGINE_HEARTBEAT_MAX
+    next_call_window_start, within_call_window, MAX_CALLS_PER_DAY, ENGINE_HEARTBEAT_MAX
 )
 from app.services.voice_test import aware
 from datetime import datetime, timezone, timedelta
@@ -370,17 +370,15 @@ def voice_campaign_resend_preview(campaign_id: int, request: Request, mode: str 
         selection = select_resend_recipients(db, campaign, mode)
     except Exception:
         return _error(request, "Não foi possível consultar a blacklist e o histórico. Reenvio bloqueado.", "/voice/campaigns")
-    return render(
-        request, "voice/campaign_resend.html", user=actor, active_nav="voice",
-        voice_section="campaigns", page_title=f"Prospecta VOZ · Reenviar campanha #{campaign.id}",
-        campaign=campaign, mode=mode, selection=selection,
-    )
+    # Compatibilidade com URLs antigas de previa: reenvio agora e feito
+    # na propria campanha por POST autenticado, sem tela extra.
+    return RedirectResponse(f"/voice/campaigns?open={campaign.id}", status_code=303)
 
 
 @router.post("/campaigns/{campaign_id}/resend")
 def voice_campaign_resend(campaign_id: int, request: Request,
                           csrf_token: str = Form(...), mode: str = Form(...),
-                          confirm_name: str = Form(""), authorization: str = Form(""),
+                          authorization: str = Form(""),
                           legal_confirmation: str = Form(""),
                           db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
@@ -396,8 +394,9 @@ def voice_campaign_resend(campaign_id: int, request: Request,
         return _error(request, "Campanha não encontrada.", "/voice/campaigns")
     if campaign.status not in {"PAUSADA", "CONCLUIDA"} or _campaign_calls_in_flight(db, campaign_id):
         return _error(request, "Campanha em execução ou com chamada em andamento. Pause antes de reenviar.", "/voice/campaigns")
-    if confirm_name.strip() != campaign.name or authorization != "sim" or legal_confirmation != "confirmado":
-        return _error(request, "Nenhuma ligação iniciada: confirme o nome, a autorização e a base legal.", f"/voice/campaigns/{campaign_id}/resend?mode={mode}")
+    if authorization != "sim" or legal_confirmation != "confirmado":
+        return _error(request, "Nenhuma ligação iniciada: confirme a autorização e a base legal.",
+                      f"/voice/campaigns?open={campaign_id}")
 
     # Evita duplicações por duplo clique, abas ou atualização do navegador.
     last_resend = db.scalar(select(AuditLog.id).where(
@@ -475,7 +474,15 @@ def voice_campaign_resend(campaign_id: int, request: Request,
                          "resend_mode": mode, "single_call_at_a_time": True,
                          "selected": selection.eligible_count})
     db.commit()
-    flash(request, f"Reenvio iniciado na campanha #{new_campaign.id}: {selection.eligible_count} contatos selecionados. A original foi preservada. Acompanhe os resultados na nova campanha.")
+    if within_call_window(new_campaign):
+        detail = "O motor iniciará as ligações conforme o intervalo da campanha."
+    else:
+        next_start = next_call_window_start(new_campaign)
+        detail = (f"Fora do horário permitido. Primeira discagem a partir de "
+                  f"{next_start.strftime('%d/%m/%Y às %H:%M')}."
+                  if next_start else "Janela sem horários permitidos: revise a configuração.")
+    flash(request, f"Rodada #{new_campaign.id} criada com {selection.eligible_count} contato(s). "
+          f"{detail} A campanha original e o histórico foram preservados.")
     return RedirectResponse(f"/voice/campaigns?open={new_campaign.id}", status_code=303)
 
 
@@ -499,10 +506,17 @@ def voice_campaigns(request: Request, archived: bool = False, db: Session = Depe
     ).where(VoiceRecipient.campaign_id.in_(ids)).group_by(
         VoiceRecipient.campaign_id,
     )).all()) if ids else {}
+    # Não consultar histórico/SIP na listagem; somente calcular a próxima janela.
+    waiting_windows = {
+        item.id: next_call_window_start(item)
+        for item in campaigns
+        if item.status == "EM_EXECUCAO" and not within_call_window(item)
+    }
     return render(
         request, "voice/campaigns.html", user=actor, active_nav="voice",
         voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
-        campaigns=campaigns, counts=counts, engine=engine, show_archived=archived,
+        campaigns=campaigns, counts=counts, waiting_windows=waiting_windows,
+        engine=engine, show_archived=archived,
         archived_count=archived_count,
         engine_online=bool(engine and engine.heartbeat_at and
             datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),

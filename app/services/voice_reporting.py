@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, VoiceCallEvent, VoiceCampaign, VoiceRecipient
-from app.services.voice_runtime import within_call_window
+from app.services.voice_runtime import next_call_window_start, within_call_window
 from app.services.voice_test import aware
 
 
@@ -105,10 +105,23 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
     } for event, recipient in event_rows]
 
     status = campaign.status
+    next_window = None
     if status == "EM_EXECUCAO":
-        headline = ("Em execução — aguardando janela de discagem"
-                    if not within_call_window(campaign)
-                    else "Em execução — monitoramento ativo")
+        if not stats["pending"] and not stats["in_progress"]:
+            headline = "Sem contatos pendentes — aguardando conclusão da campanha"
+        elif not within_call_window(campaign):
+            next_window = next_call_window_start(campaign)
+            if next_window:
+                headline = (
+                    "Aguardando horário — nenhuma ligação fora da janela permitida. "
+                    f"Próxima discagem: {next_window.strftime('%d/%m/%Y às %H:%M')}"
+                )
+            else:
+                headline = "Horário de campanha inválido — nenhuma chamada poderá ser iniciada"
+        elif reasons:
+            headline = "Em execução — temporariamente bloqueada: " + " / ".join(reasons[:2])
+        else:
+            headline = "Em execução — aguardando próxima chamada"
     elif status == "PAUSADA":
         headline = "Pausada — nenhuma nova ligação será iniciada"
     elif status == "CONCLUIDA":
@@ -128,6 +141,8 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
             "PAUSADA": "PAUSADA", "CONCLUIDA": "CONCLUÍDA",
         }.get(status, status.replace("_", " ")),
         "headline": headline,
+        "next_window_at": _iso(next_window),
+        "outside_call_window": status == "EM_EXECUCAO" and not within_call_window(campaign),
         "readiness": list(reasons),
         "stats": stats,
         "last_command": _last_command(db, campaign.id),

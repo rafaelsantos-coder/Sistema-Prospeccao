@@ -299,6 +299,25 @@ def _claim_recipient() -> int | None:
             VoiceCampaign.status == "EM_EXECUCAO"
         ).order_by(VoiceCampaign.id.asc())))
         for campaign in campaigns:
+            # Concluir independentemente da janela, caso a última chamada tenha
+            # sido processada. Não concluir enquanto outra ligação estiver ativa.
+            pending = db.scalar(select(VoiceRecipient.id).where(
+                VoiceRecipient.campaign_id == campaign.id,
+                VoiceRecipient.status == "PENDENTE",
+                VoiceRecipient.attempts == 0,
+            ).limit(1))
+            if pending is None:
+                active_call = db.scalar(select(VoiceRecipient.id).where(
+                    VoiceRecipient.campaign_id == campaign.id,
+                    VoiceRecipient.status.in_(
+                        ("INICIANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERINDO")
+                    ),
+                ).limit(1))
+                if active_call is None:
+                    campaign.status = "CONCLUIDA"
+                    campaign.stopped_at = now()
+                    db.commit()
+                continue
             if check_campaign_ready(db, campaign):
                 continue
             if not next_attempt_allowed(db, campaign):
@@ -309,9 +328,6 @@ def _claim_recipient() -> int | None:
                 VoiceRecipient.attempts == 0,
             ).order_by(VoiceRecipient.id.asc()).with_for_update(skip_locked=True).limit(1))
             if item is None:
-                campaign.status = "CONCLUIDA"
-                campaign.stopped_at = now()
-                db.commit()
                 continue
             try:
                 outbound_guard(db, item.phone)

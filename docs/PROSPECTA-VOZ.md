@@ -248,3 +248,27 @@ e o monitoramento e a auditoria da nova rodada são independentes. O motor
 PJSUA2 passa a executar as ligações somente enquanto os bloqueios usuais
 (estágio, conta, horário, limite diário, parada geral) estiverem liberados.
 Submissões duplicadas em até dois minutos são rejeitadas.
+
+
+## Reenvio e horários — correção de produção 18/11/2026
+
+A janela de discagem respeita **o horário cadastrado na campanha** e o limite
+operacional de 09h–18h, de segunda a sexta-feira (America/Sao_Paulo). Um
+reenvio criado às 18h12 pode estar `EM_EXECUCAO`, mas **nenhum INVITE será
+enviado** até a próxima janela. A linha compacta mostra `AGUARDANDO HORÁRIO`
+e o horário de reabertura; o relatório também apresenta essa data.
+
+O REGISTER SIP é testado pelo PJSUA2 **durante cada tentativa**, antes de
+originar uma chamada (exige resposta SIP 200). A validação manual/antiga que
+expirou não impede a retomada automática no próximo dia. Falha de REGISTER
+continua sendo registrada, sem INVITE ao contato.
+
+O reenvio (completo ou somente não atendidos) agora é confirmado no próprio
+painel expandido, sem abrir uma segunda tela ou digitar o nome da campanha.
+O ADMIN precisa confirmar autorização e base legal, e cada destinatário é
+verificado novamente contra a blacklist antes de discar. Continua existindo
+uma **rodada separada** com registro de histórico independente e status
+`EM_EXECUCAO` para acompanhar resultados.
+
+Campanhas ativas sem nenhum contato pendente ou chamada em andamento passam
+para `CONCLUIDA` automaticamente, inclusive fora da janela de discagem.

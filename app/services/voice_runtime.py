@@ -139,10 +139,12 @@ def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | No
     account = db.get(VoiceSipAccount, campaign.sip_account_id)
     if not account or not account.active:
         errors.append("Conta SIP ausente ou pausada.")
-    elif account.sip_check_code != 200 or not account.sip_check_at or (
-        now - aware(account.sip_check_at) > SIP_VERIFICATION_MAX
-    ):
-        errors.append("Conta SIP sem autenticacao recente confirmada pelo PABX.")
+    elif not account.username or not account.domain or not account.password_encrypted:
+        errors.append("Conta SIP incompleta: configure usuario, servidor e senha.")
+    # Nao bloquear pela validade de um REGISTER antigo: o worker executa
+    # REGISTER real em cada chamada e exige codigo SIP 200 ANTES do INVITE.
+    # Assim, campanhas agendadas para o dia seguinte retomam automaticamente,
+    # mantendo a autenticacao real como condicao de cada discagem.
     if campaign.group_id is None:
         # O modo AUDIO informativo encerra sem transferir a chamada.
         if campaign.mode != "AUDIO":
@@ -173,6 +175,24 @@ def within_call_window(campaign: VoiceCampaign, at: datetime | None = None) -> b
         return False
     current = now.strftime("%H:%M")
     return campaign.window_start <= current < campaign.window_end and "09:00" <= current < "18:00"
+
+
+def next_call_window_start(campaign: VoiceCampaign, at: datetime | None = None) -> datetime | None:
+    """Proxima abertura real permitida, conforme campanha e limite 09h-18h."""
+    local = (at or datetime.now(timezone.utc)).astimezone(SAO_PAULO)
+    opening = max(campaign.window_start, "09:00")
+    closing = min(campaign.window_end, "18:00")
+    if opening >= closing:
+        return None
+    hours, minutes = map(int, opening.split(":"))
+    for days in range(8):
+        day = local + timedelta(days=days)
+        if day.weekday() >= 5:
+            continue
+        start = day.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+        if start > local:
+            return start
+    return None
 
 
 def campaign_daily_count(db: Session, campaign: VoiceCampaign, at: datetime | None = None) -> int:
