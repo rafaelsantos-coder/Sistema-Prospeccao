@@ -140,3 +140,18 @@ def test_voice_pages_auth_csrf_and_drafts():
             assert db.get(VoiceCampaign, campaign_id).status == VOICE_STATUS_HOMOLOGACAO
         finally:
             db.close()
+
+
+def test_voice_audio_accepts_more_than_2mb_and_more_than_60_seconds():
+    """Audio de campanha nao deve ser truncado por limite antigo do discador."""
+    with BytesIO() as stream:
+        with wave.open(stream, "wb") as player:
+            player.setnchannels(1)
+            player.setsampwidth(2)
+            player.setframerate(16000)
+            player.writeframes(b"\x00\x00" * (16000 * 65))
+        data = stream.getvalue()
+    assert len(data) > 2_000_000
+    validate_wav(data)
+    with pytest.raises(ValueError, match="capacidade"):
+        validate_wav(data, max_bytes=2_000_000)
