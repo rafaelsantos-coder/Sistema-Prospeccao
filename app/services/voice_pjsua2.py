@@ -187,6 +187,7 @@ class PjSession:
     def perform_call(
         self, phone: str, *, mode: str, group=None,
         audio_wav: str | None = None, dtmf_digit: str = "1", timeout: int = 55,
+        dial_format: str | None = None,
         on_status: Callable[[str, int | None], None] | None = None,
         should_abort: Callable[[], bool] | None = None,
     ) -> VoiceCallResult:
@@ -209,7 +210,7 @@ class PjSession:
                     audio_seconds = wav.getnframes() / wav.getframerate()
             except (OSError, wave.Error, ZeroDivisionError) as exc:
                 raise VoiceEngineError("Nao foi possivel ler a duracao do audio.") from exc
-        target_uri = make_dial_uri(self.account_model, phone)
+        target_uri = make_dial_uri(self.account_model, phone, dial_format=dial_format)
         transfer_uri = make_transfer_uri(self.account_model, group) if group is not None else None
 
         class ManagedCall(pj.Call):
