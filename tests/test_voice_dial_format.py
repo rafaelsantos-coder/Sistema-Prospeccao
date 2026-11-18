@@ -85,6 +85,7 @@ def test_admin_can_create_national_voice_campaign_and_preview_real_sip_number():
             campaign = db.scalar(select(VoiceCampaign).where(VoiceCampaign.name == campaign_name))
             assert campaign is not None
             assert campaign.dial_format == "NATIONAL"
+            campaign_id = campaign.id
             db.add(VoiceRecipient(
                 campaign_id=campaign.id, name="Teste regional",
                 phone="5555999002508", status="PENDENTE",
@@ -93,11 +94,15 @@ def test_admin_can_create_national_voice_campaign_and_preview_real_sip_number():
 
         page = client.get("/voice/campaigns")
         assert page.status_code == 200
-        assert "Formato SIP:" in page.text
-        assert "DDD + número (sem DDI)" in page.text
-        assert "Próximo exemplo discado:" in page.text
-        assert "55999002508" in page.text
-        assert "5555999002508" not in page.text
+        assert campaign_name in page.text
+        assert "Próximo exemplo discado:" not in page.text
+        details = client.get(f"/voice/campaigns/{campaign_id}/details")
+        assert details.status_code == 200
+        assert "Formato SIP:" in details.text
+        assert "DDD + número (sem DDI)" in details.text
+        assert "Próximo exemplo discado:" in details.text
+        assert "55999002508" in details.text
+        assert "5555999002508" not in details.text
 
         new_page = client.get("/voice/campaigns/new")
         assert new_page.status_code == 200

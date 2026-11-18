@@ -363,45 +363,73 @@ def voice_campaigns(request: Request, archived: bool = False, db: Session = Depe
         VoiceCampaign.status == VOICE_CAMPAIGN_ARCHIVED
     )) or 0
     engine = db.get(VoiceDialerEngine, 1)
-    checklist = {item.id: check_campaign_ready(db, item) for item in campaigns}
-    # Mostra exatamente o numero que o PABX vai receber, sem expor tokens SIP.
-    sip_preview = {}
-    for item in campaigns:
-        recipient = db.scalar(select(VoiceRecipient).where(
-            VoiceRecipient.campaign_id == item.id
-        ).order_by(VoiceRecipient.id.asc()).limit(1))
-        if recipient is None:
-            continue
-        try:
-            uri = make_dial_uri(item.sip_account, recipient.phone,
-                                dial_format=item.dial_format or "NATIONAL")
-            sip_preview[item.id] = uri.partition("@")[0].removeprefix("sip:")
-        except ValueError:
-            sip_preview[item.id] = "Número inválido — revisar CSV"
-    reports = {item.id: campaign_operational_report(db, item, checklist[item.id]) for item in campaigns}
-    counts = dict(db.execute(
-        select(VoiceRecipient.campaign_id, func.count(VoiceRecipient.id)).group_by(VoiceRecipient.campaign_id)
-    ).all())
+    # A listagem só carrega nome/status/contagem: checklist, eventos e métricas
+    # são consultados apenas quando o administrador expande uma campanha.
+    ids = [item.id for item in campaigns]
+    counts = dict(db.execute(select(
+        VoiceRecipient.campaign_id, func.count(VoiceRecipient.id),
+    ).where(VoiceRecipient.campaign_id.in_(ids)).group_by(
+        VoiceRecipient.campaign_id,
+    )).all()) if ids else {}
     return render(
         request, "voice/campaigns.html", user=actor, active_nav="voice",
         voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
-        campaigns=campaigns, counts=counts, engine=engine, readiness=checklist,
-        reports=reports, sip_preview=sip_preview, show_archived=archived,
+        campaigns=campaigns, counts=counts, engine=engine, show_archived=archived,
         archived_count=archived_count,
         engine_online=bool(engine and engine.heartbeat_at and
             datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
 
 
-@router.get("/campaigns/status")
-def voice_campaigns_live_status(request: Request, db: Session = Depends(get_db)):
-    """Polling de status, somente para ADMIN; nao dispara chamadas."""
+@router.get("/campaigns/{campaign_id}/details")
+def voice_campaign_details(campaign_id: int, request: Request,
+                           db: Session = Depends(get_db)):
+    """Fragmento sob demanda: sem modificar campanha nem iniciar ligação."""
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
-    campaigns = db.scalars(select(VoiceCampaign).where(
-        VoiceCampaign.status != VOICE_CAMPAIGN_ARCHIVED
-    ).order_by(VoiceCampaign.id.desc())).all()
+    campaign = db.get(VoiceCampaign, campaign_id)
+    if not campaign:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Campanha não encontrada.")
+    readiness = check_campaign_ready(db, campaign)
+    report = campaign_operational_report(db, campaign, readiness)
+    count = db.scalar(select(func.count(VoiceRecipient.id)).where(
+        VoiceRecipient.campaign_id == campaign.id,
+    )) or 0
+    recipient = db.scalar(select(VoiceRecipient).where(
+        VoiceRecipient.campaign_id == campaign.id,
+    ).order_by(VoiceRecipient.id.asc()).limit(1))
+    sip_preview = None
+    if recipient:
+        try:
+            uri = make_dial_uri(
+                campaign.sip_account, recipient.phone,
+                dial_format=campaign.dial_format or "NATIONAL",
+            )
+            sip_preview = uri.partition("@")[0].removeprefix("sip:")
+        except ValueError:
+            sip_preview = "Número inválido — revisar CSV"
+    response = render(
+        request, "voice/_campaign_detail.html", user=actor, active_nav="voice",
+        campaign=campaign, count=count, report=report, readiness=readiness,
+        sip_preview=sip_preview,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@router.get("/campaigns/status")
+def voice_campaigns_live_status(request: Request, campaign_id: int | None = None,
+                                db: Session = Depends(get_db)):
+    """Polling de status; com campaign_id consulta só a campanha aberta."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    query = select(VoiceCampaign).where(VoiceCampaign.status != VOICE_CAMPAIGN_ARCHIVED)
+    if campaign_id is not None:
+        query = query.where(VoiceCampaign.id == campaign_id)
+    campaigns = db.scalars(query.order_by(VoiceCampaign.id.desc())).all()
     data = {
         str(item.id): campaign_operational_report(db, item, check_campaign_ready(db, item))
         for item in campaigns

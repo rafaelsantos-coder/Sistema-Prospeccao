@@ -2489,3 +2489,92 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .voice-campaign-title { flex-wrap: wrap; }
   .voice-campaign-controls .button { min-height: 36px; }
 }
+
+
+/* Prospecta VOZ: lista compacta, um detalhamento de campanha por vez. */
+.voice-campaign-list { display: grid; gap: 9px; margin-top: 18px; }
+.voice-campaign-row-card {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  box-shadow: var(--shadow-sm);
+}
+.voice-campaign-row-card.is-expanded {
+  border-color: #f4b991;
+  box-shadow: 0 9px 25px rgba(41, 33, 23, .08);
+}
+.voice-campaign-toggle {
+  appearance: none;
+  border: 0;
+  width: 100%;
+  min-height: 70px;
+  padding: 14px 18px;
+  background: transparent;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+.voice-campaign-toggle:hover { background: #fff8f4; }
+.voice-campaign-toggle:focus-visible {
+  outline: 3px solid var(--orange);
+  outline-offset: -3px;
+}
+.voice-campaign-toggle[aria-expanded="true"] { background: #fffaf6; }
+.voice-campaign-summary-main { display: grid; gap: 3px; min-width: 0; }
+.voice-campaign-summary-name {
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.voice-campaign-summary-info { font-size: 11px; color: var(--muted); }
+.voice-campaign-summary-side {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 16px;
+}
+.voice-campaign-chevron {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid #848c96;
+  border-bottom: 2px solid #848c96;
+  transform: rotate(45deg);
+  transition: transform .18s ease;
+}
+.voice-campaign-toggle[aria-expanded="true"] .voice-campaign-chevron {
+  transform: rotate(225deg);
+}
+.voice-campaign-detail {
+  padding: 18px 20px 20px;
+  border-top: 1px solid var(--line);
+}
+.voice-campaign-detail[hidden] { display: none !important; }
+.voice-campaign-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.voice-campaign-detail-heading { display: grid; gap: 3px; }
+.voice-campaign-detail-heading strong { font-size: 14px; font-weight: 800; }
+.voice-campaign-detail .voice-live-monitor { margin-top: 15px; }
+@media (max-width: 680px) {
+  .voice-campaign-toggle { padding: 13px 14px; min-height: 64px; }
+  .voice-campaign-summary-side { gap: 10px; }
+  .voice-campaign-summary-info { font-size: 10px; }
+  .voice-campaign-detail { padding: 14px 12px 18px; }
+  .voice-campaign-detail-header { align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-campaign-chevron { transition: none; }
+}

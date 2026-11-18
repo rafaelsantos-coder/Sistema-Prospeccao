@@ -36,6 +36,7 @@ def _login(client: TestClient) -> str:
 def test_voice_campaign_tracking_and_denied_start_are_persisted():
     with TestClient(app) as client:
         assert client.get("/voice/campaigns/status", follow_redirects=False).status_code == 303
+        assert client.get("/voice/campaigns/999999/details", follow_redirects=False).status_code == 303
         token = _login(client)
         with SessionLocal() as db:
             account = VoiceSipAccount(
@@ -90,10 +91,24 @@ def test_voice_campaign_tracking_and_denied_start_are_persisted():
         assert "Nenhuma solicitação" in data["last_command"]["label"]
 
         page = client.get("/voice/campaigns").text
-        assert "ACOMPANHAMENTO DA CAMPANHA" in page
-        assert "Iniciar campanha" in page
+        assert "Teste status real" in page
+        assert 'data-voice-campaign-toggle' in page
+        assert 'aria-expanded="false"' in page
+        assert 'data-voice-campaign-details hidden' in page
         assert "voice_campaign_status.js" in page
-        assert 'data-voice-stat="attempted"' in page
+        # Lista compacta não renderiza 9 indicadores e eventos de todas as campanhas.
+        assert "ACOMPANHAMENTO DA CAMPANHA" not in page
+        assert 'data-voice-stat="attempted"' not in page
+        detail = client.get(f"/voice/campaigns/{campaign_id}/details")
+        assert detail.status_code == 200
+        assert "no-store" in detail.headers["cache-control"]
+        assert "ACOMPANHAMENTO DA CAMPANHA" in detail.text
+        assert "Iniciar campanha" in detail.text
+        assert 'data-voice-stat="attempted"' in detail.text
+        assert "Timeout SIP" in detail.text
+        filtered = client.get(f"/voice/campaigns/status?campaign_id={campaign_id}")
+        assert filtered.status_code == 200
+        assert list(filtered.json()["campaigns"]) == [str(campaign_id)]
 
         response = client.post(
             f"/voice/campaigns/{campaign_id}/start",

@@ -63,8 +63,10 @@ def test_create_audio_campaign_without_group_and_check_readiness():
             assert not any("transferencia" in x.lower() or "grupo" in x.lower() for x in errors)
 
         page = client.get("/voice/campaigns").text
-        assert "Sem transferência — áudio e encerramento" in page
-        assert "Áudio informativo (sem transferência)" in page
+        assert "Áudio sem transferência" in page
+        assert f'data-campaign-id="{campaign_id}"' in page
+        details = client.get(f"/voice/campaigns/{campaign_id}/details").text
+        assert "Sem transferência — áudio e encerramento" in details
         invalid = client.post("/voice/campaigns", data={
             "csrf_token": csrf, "name": "Direto sem grupo", "sip_account_id": account_id,
             "group_id": "", "mode": "DIRECT", "dtmf_digit": "1",
