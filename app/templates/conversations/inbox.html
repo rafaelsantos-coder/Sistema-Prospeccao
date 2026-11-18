@@ -252,6 +252,42 @@
       </div>
     </header>
 
+    {% if crm_manual_seller and not crm_manual_status %}
+    <dialog class="crm-manual-dialog" id="crm-manual-dialog" aria-labelledby="crm-manual-title">
+      <form method="post" action="/conversations/{{ conversation.id }}/register-crm" class="crm-manual-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <span class="eyebrow">CRM COMERCIAL</span>
+        <h3 id="crm-manual-title">Registrar CRM</h3>
+        <p>Confira os dados antes de criar a oportunidade. Esta ação não envia mensagem ao cliente nem ativa a IA.</p>
+        <label for="crm-manual-name">Nome do cliente</label>
+        <input id="crm-manual-name" name="client_name" required minlength="2" maxlength="150" value="{{ conversation.contact.business_name or conversation.contact.name or '' }}" placeholder="Nome completo do cliente">
+        <label>Telefone</label>
+        <div class="crm-manual-readonly">{{ conversation.contact.phone|phone_br }}</div>
+        <label>Vendedor responsável</label>
+        <div class="crm-manual-readonly">{{ conversation.assigned_user.name }} ({{ crm_manual_seller.username }})</div>
+        <label>Funil comercial</label>
+        <div class="crm-manual-readonly">{{ crm_manual_seller.funnel_name }} — INÍCIO</div>
+        <label>Origem</label>
+        <div class="crm-manual-readonly">Sulnet Prospecta</div>
+        <p class="crm-manual-hint">O sistema consultará possíveis registros existentes antes de enviar. O registro será vinculado ao responsável atual desta conversa.</p>
+        <div class="crm-manual-dialog-actions">
+          <button type="button" class="button button-secondary" data-crm-manual-close>Cancelar</button>
+          <button type="submit" class="button button-primary" data-crm-manual-submit>Confirmar registro</button>
+        </div>
+      </form>
+    </dialog>
+    {% elif crm_manual_status and crm_manual_status.state != "CRM_MANUAL_REGISTERED" %}
+    <div class="crm-manual-alert" role="status">O registro no CRM requer conferência manual. Não envie novamente antes de verificar no CRM Comercial.</div>
+    {% elif crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
+    {% if crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
+    <div class="crm-manual-success" role="status">
+      Registrado no CRM{% if crm_manual_status.protocol %} · Protocolo {{ crm_manual_status.protocol }}{% endif %}
+    </div>
+    {% else %}
+    <div class="crm-manual-alert" role="status">Este contato está registrado no CRM com outro vendedor. Confira a transferência antes de prosseguir.</div>
+    {% endif %}
+    {% endif %}
+
     <div class="chat-stream" id="chat-stream">
       <div class="chat-day-separator"><span>Histórico permanente</span></div>
       {% for item in messages %}
@@ -714,6 +750,18 @@
 {% block scripts %}
 <script nonce="{{ csp_nonce }}">
 (() => {
+  const crmDialog = document.getElementById('crm-manual-dialog');
+  const crmOpen = document.querySelector('[data-crm-manual-open]');
+  const crmClose = document.querySelector('[data-crm-manual-close]');
+  const crmSubmit = document.querySelector('[data-crm-manual-submit]');
+  crmOpen?.addEventListener('click', () => crmDialog?.showModal());
+  crmClose?.addEventListener('click', () => crmDialog?.close());
+  crmDialog?.querySelector('form')?.addEventListener('submit', () => {
+    if (crmSubmit) {
+      crmSubmit.disabled = true;
+      crmSubmit.textContent = 'Registrando...';
+    }
+  });
   const root = document.querySelector('[data-inbox]');
   const list = document.getElementById('conversation-list');
   if (!root || !list) return;

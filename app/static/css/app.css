@@ -2605,3 +2605,34 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .voice-resend-inline-form { margin-top: 9px; }
 .voice-resend-inline-form > label { display: inline-flex; align-items: start; gap: 7px; font-size: 12px; }
 .voice-resend-inline-form > label > input { margin-top: 2px; flex-shrink: 0; }
+
+
+/* Registro manual CRM: integração humana no topo das conversas. */
+.crm-manual-topbar-button { white-space: nowrap; }
+.crm-manual-topbar-state { white-space: nowrap; color: #167241; }
+.crm-manual-dialog {
+  width: min(440px, calc(100vw - 30px)); max-height: 88vh;
+  border: 1px solid #e5e7eb; border-radius: 16px; padding: 24px;
+  box-shadow: 0 24px 60px rgba(20, 28, 40, .24); color: var(--text);
+}
+.crm-manual-dialog::backdrop { background: rgba(15, 23, 42, .55); }
+.crm-manual-form { display: flex; flex-direction: column; gap: 9px; }
+.crm-manual-form h3 { font-size: 21px; margin: 2px 0; }
+.crm-manual-form p { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0 0 6px; }
+.crm-manual-form label { font-size: 11px; font-weight: 800; margin-top: 3px; }
+.crm-manual-form input {
+  border: 1px solid #d5dce5; border-radius: 8px; padding: 11px;
+  width: 100%; font: inherit;
+}
+.crm-manual-readonly { background: #f5f6f8; border-radius: 8px; padding: 10px; font-size: 12px; }
+.crm-manual-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 8px; }
+.crm-manual-success,.crm-manual-alert {
+  padding: 9px 14px; font-size: 12px; border-bottom: 1px solid #e5e7eb;
+}
+.crm-manual-success { color: #166534; background: #f0fdf4; }
+.crm-manual-alert { color: #92400e; background: #fffbeb; }
+@media(max-width: 620px) {
+  .topbar-actions .crm-manual-topbar-button { font-size: 10px; width: auto; padding: 0 8px; }
+  .topbar-actions .crm-manual-topbar-state { font-size: 0; width: 34px; padding: 0; }
+  .topbar-actions .crm-manual-topbar-state::before { content: '✓ CRM'; font-size: 10px; }
+}

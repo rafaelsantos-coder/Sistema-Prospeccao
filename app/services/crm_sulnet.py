@@ -307,6 +307,7 @@ class SulnetCRMClient:
     base_url: str
     bearer_token: str = ""
     integration_key: str = ""
+    lead_integration_key: str = ""
     timeout: float = 25.0
     _profile_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
@@ -320,6 +321,7 @@ class SulnetCRMClient:
             base_url=settings.sulnet_crm_base_url.rstrip("/"),
             bearer_token=settings.sulnet_crm_bearer_token,
             integration_key=settings.sulnet_ai_integration_key,
+            lead_integration_key=settings.sulnet_crm_lead_integration_key,
         )
 
     @staticmethod
@@ -700,6 +702,50 @@ class SulnetCRMClient:
                     except (TypeError, ValueError):
                         continue
         return None
+
+    def find_opportunities_by_phone(self, phone: str) -> dict[str, Any] | list[dict[str, Any]]:
+        """Pesquisa CRM por telefone antes do registro manual, com Bearer de leitura.
+
+        O CRM pode retornar lista direta ou coleção paginada. A validação dos
+        dados e da completude da pesquisa ocorre no serviço de registro.
+        """
+        return self._request(
+            "GET",
+            "/api/opportunities",
+            params={"search": phone},
+            auth_mode="bearer",
+        )
+
+    def create_seller_lead(
+        self,
+        *,
+        seller_username: str,
+        client_name: str,
+        client_phone: str,
+        origin: str = "Sulnet Prospecta",
+    ) -> dict[str, Any]:
+        """Webhook comercial independente do token personificado do SDR IA."""
+        result = self._request(
+            "POST",
+            "/webhook/leads",
+            json_body={
+                "sellerUsername": seller_username,
+                "clientName": client_name,
+                "clientPhone": client_phone,
+                "origin": origin,
+            },
+            auth_mode="none" if self.lead_integration_key else "integration",
+            extra_headers=(
+                {"X-Integration-Key": self.lead_integration_key}
+                if self.lead_integration_key else None
+            ),
+        )
+        if not isinstance(result, dict):
+            raise CRMIntegrationError(
+                "Webhook do CRM retornou resposta inválida.",
+                error_code="CRM_INVALID_WEBHOOK_RESPONSE",
+            )
+        return result
 
     def create_opportunity(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_payload = dict(payload)
