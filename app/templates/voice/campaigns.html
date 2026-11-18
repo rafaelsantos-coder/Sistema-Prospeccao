@@ -51,7 +51,7 @@
       <p data-voice-last-detail>{{ report.last_command.detail }}</p>
     </div>
     <div class="voice-monitor-metrics">
-      {% for key, label in [('total','Contatos'), ('pending','Pendentes'), ('attempted','Tentativas'), ('in_progress','Em andamento'), ('answered','Atendidas'), ('transferred','Transferidas'), ('failed','Falhas'), ('blocked','Bloqueadas')] %}
+      {% for key, label in [('total','Contatos'), ('pending','Pendentes'), ('attempted','Tentativas'), ('in_progress','Em andamento'), ('answered','Atendidas'), ('transferred','Transferidas'), ('audio_completed','Áudios concluídos'), ('failed','Falhas'), ('blocked','Bloqueadas')] %}
       <div class="voice-monitor-metric">
         <strong data-voice-stat="{{ key }}">{{ report.stats[key] }}</strong>
         <span>{{ label }}</span>
