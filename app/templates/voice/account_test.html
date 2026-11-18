@@ -56,6 +56,32 @@
 </section>
 
 <section class="panel voice-panel">
+  <span class="eyebrow">PJSUA2 · TESTE DE CHAMADA NATIVA</span>
+  <h3>Teste uma ligação diretamente — sem ramais ou grupos</h3>
+  <p>Este teste usa a biblioteca de telefonia PJSUA2 para registrar a conta e realizar uma única chamada. O SIP 200 confirma atendimento segundo o protocolo; áudio RTP depende da negociação de mídia e deve ser validado com a central.</p>
+  <span class="voice-pill {{ 'is-ready' if engine_online and engine and engine.enabled and engine.test_runtime_enabled else 'is-paused' }}">
+    {{ 'Motor nativo disponível' if engine_online and engine and engine.enabled and engine.test_runtime_enabled else 'Motor nativo não habilitado' }}
+  </span>
+  <form method="post" action="/voice/accounts/{{ account.id }}/test-native" class="stack-form" style="margin-top:14px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field"><span>Telefone autorizado com DDD</span>
+        <input name="phone" type="tel" placeholder="Ex.: 55 55 99999-9999" required>
+      </label>
+    </div>
+    <label><input name="authorized" type="checkbox" value="sim" required>
+      Confirmo que o número é meu ou autorizou esta ligação única de teste.</label>
+    <div class="voice-actions">
+      <button class="button button-primary" type="submit" {% if not engine_online or not engine or not engine.enabled or not engine.test_runtime_enabled or not account.active or processing %}disabled{% endif %}>
+        Fazer ligação PJSUA2 sem grupo
+      </button>
+      <a class="button button-secondary" href="/voice/campaigns">Abrir controle do motor</a>
+    </div>
+  </form>
+  <p class="voice-help">Até três testes por conta/hora, sem repetição automática. Para liberar o motor, use a parada geral em Campanhas e preparação. O mecanismo de chamadas comerciais permanece independente.</p>
+</section>
+
+<section class="panel voice-panel">
   <span class="eyebrow">DIAGNÓSTICO REAL</span><h3>Histórico de testes</h3>
   {% if recent %}
   <div class="voice-table-wrap">
@@ -65,7 +91,7 @@
         <tr>
           <td><strong>{{ "Conexão SIP (sem chamada)" if item.target_phone == "SIP_ONLY" else item.target_phone }}</strong><small>{{ item.created_at.strftime('%d/%m/%Y %H:%M') if item.created_at else '' }} UTC</small></td>
           <td><span class="voice-pill {{ 'is-ready' if item.status in ['TOCOU', 'ATENDIDA', 'SIP_VALIDADO'] else 'is-paused' if item.status in ['FALHOU','EXPIRADO','SEM_RESPOSTA','OCUPADO'] else 'is-unknown' }}">
-            {{ {'PENDENTE':'Aguardando agente', 'REGISTRANDO':'Registrando SIP', 'REGISTRADO':'SIP autenticado', 'CHAMANDO':'Chamando', 'TOCANDO':'Sinal de toque', 'TOCOU':'Tocou (SIP 180)', 'ATENDIDA':'Atendida (SIP 200)', 'OCUPADO':'Ocupado', 'FALHOU':'Falhou', 'SEM_RESPOSTA':'Sem resposta', 'EXPIRADO':'Expirado', 'SIP_VALIDADO':'Autenticado no PABX'}.get(item.status, item.status) }}
+            {{ {'PENDENTE_PJSIP':'Aguardando motor PJSUA2', 'REGISTRANDO_PJSIP':'Autenticando no PJSUA2', 'INDETERMINADO':'Resultado não determinado', 'INTERROMPIDA':'Interrompida', 'FINALIZADA':'Finalizada', 'PENDENTE':'Aguardando agente', 'REGISTRANDO':'Registrando SIP', 'REGISTRADO':'SIP autenticado', 'CHAMANDO':'Chamando', 'TOCANDO':'Sinal de toque', 'TOCOU':'Tocou (SIP 180)', 'ATENDIDA':'Atendida (SIP 200)', 'OCUPADO':'Ocupado', 'FALHOU':'Falhou', 'SEM_RESPOSTA':'Sem resposta', 'EXPIRADO':'Expirado', 'SIP_VALIDADO':'Autenticado no PABX'}.get(item.status, item.status) }}
           </span></td>
           <td>{{ item.sip_register_code if item.sip_register_code is not none else '—' }}</td>
           <td>{{ item.sip_invite_code if item.sip_invite_code is not none else '—' }}</td>
