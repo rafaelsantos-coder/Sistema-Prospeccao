@@ -24,8 +24,8 @@ def upgrade():
             "ai_queue_bindings",
             sa.Column("manual_authorized", sa.Boolean(), nullable=False, server_default=sa.false()),
         )
-    # Nao confundir o id=1 legado (Geral Comercial) com a Fila IA.
-    # A liberacao original da Fila IA e preservada quando ela existe e ja estava ativa.
+    # Nao confundir id=1 legado (Geral Comercial) com a Fila IA.
+    # Preservar apenas a Fila IA dedicada se ja estava realmente ativa.
     op.execute(sa.text("""
         UPDATE ai_queue_bindings
            SET manual_authorized = true
@@ -34,6 +34,16 @@ def upgrade():
                SELECT id FROM service_queues
                 WHERE code = 'FILA-IA' AND active = true
            )
+    """))
+    # Desativar de fato todas as demais filas, inclusive vinculos legados.
+    # Assim nem rotinas antigas que consultam apenas 'active' poderao atendê-las.
+    op.execute(sa.text("""
+        UPDATE ai_queue_bindings
+           SET active = false,
+               manual_authorized = false
+         WHERE queue_id NOT IN (
+             SELECT id FROM service_queues WHERE code = 'FILA-IA'
+         )
     """))
 
 
