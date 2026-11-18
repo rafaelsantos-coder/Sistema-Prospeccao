@@ -194,14 +194,16 @@ def test_resend_selection_excludes_any_answered_calls_and_blacklist():
                 follow_redirects=False,
             ).status_code == 303
             token = _login(client)
-            page = client.get(f"/voice/campaigns/{config['source_id']}/resend?mode=UNANSWERED")
-            assert page.status_code == 200
-            assert "4" in page.text
-            assert "Atenderam e foram excluídos" in page.text
+            page = client.get(f"/voice/campaigns/{config['source_id']}/resend?mode=UNANSWERED",
+                              follow_redirects=False)
+            assert page.status_code == 303
+            assert page.headers["location"] == f"/voice/campaigns?open={config['source_id']}"
             details = client.get(f"/voice/campaigns/{config['source_id']}/details")
-            assert "Reenviar campanha" in details.text
+            assert "Reenviar campanha inteira" in details.text
             assert "Reenviar somente não atendidos" in details.text
-            assert f"/voice/campaigns/{config['source_id']}/resend?mode=UNANSWERED" in details.text
+            assert f'/voice/campaigns/{config["source_id"]}/resend' in details.text
+            assert 'name="legal_confirmation"' in details.text
+            assert 'name="confirm_name"' not in details.text
         finally:
             _cleanup(config)
 
@@ -214,10 +216,9 @@ def test_resent_campaign_creates_independent_run_and_protects_against_duplicate(
             endpoint = f"/voice/campaigns/{config['source_id']}/resend"
             payload = {
                 "csrf_token": token, "mode": "UNANSWERED",
-                "confirm_name": config["source_name"],
                 "authorization": "sim", "legal_confirmation": "confirmado",
             }
-            wrong = client.post(endpoint, data={**payload, "confirm_name": "nao confere"},
+            wrong = client.post(endpoint, data={**payload, "legal_confirmation": ""},
                                 follow_redirects=False)
             assert wrong.status_code == 303
             with SessionLocal() as db:
@@ -282,7 +283,6 @@ def test_full_resend_can_recontact_answered_but_not_blacklisted():
             token = _login(client)
             payload = {
                 "csrf_token": token, "mode": "ALL",
-                "confirm_name": config["source_name"],
                 "authorization": "sim", "legal_confirmation": "confirmado",
             }
             response = client.post(
