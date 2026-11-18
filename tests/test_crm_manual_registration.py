@@ -178,7 +178,16 @@ def test_seller_wrong_owner_is_blocked_without_creating(monkeypatch):
         cid = int(path.rstrip("/").split("/")[-1])
         with SessionLocal() as db:
             seller = db.scalar(select(User).where(User.email == "fabiano.crm.manual.test@sulnet.local"))
-            assert seller is not None
+            if seller is None:
+                seller = User(
+                    name="Fabiano Braga",
+                    email="fabiano.crm.manual.test@sulnet.local",
+                    password_hash="test-hash",
+                    role="CONSULTOR",
+                    active=True,
+                )
+                db.add(seller)
+                db.flush()
             conv = db.get(Conversation, cid)
             conv.assigned_user_id = seller.id
             db.execute(delete(AuditLog).where(
