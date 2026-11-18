@@ -99,8 +99,12 @@ def test_edit_and_archive_campaign_with_call_history_preserved():
         assert client.get(f"/voice/campaigns/{camp_id}/delete", follow_redirects=False).status_code == 303
         token = _login(client)
         listing = client.get("/voice/campaigns").text
-        assert f"/voice/campaigns/{camp_id}/edit" in listing
-        assert f"/voice/campaigns/{camp_id}/delete" in listing
+        assert f'data-campaign-id="{camp_id}"' in listing
+        assert f"/voice/campaigns/{camp_id}/edit" not in listing
+        details = client.get(f"/voice/campaigns/{camp_id}/details")
+        assert details.status_code == 200
+        assert f"/voice/campaigns/{camp_id}/edit" in details.text
+        assert f"/voice/campaigns/{camp_id}/delete" in details.text
         page = client.get(f"/voice/campaigns/{camp_id}/edit")
         assert page.status_code == 200
         assert name in page.text
@@ -156,7 +160,9 @@ def test_edit_and_archive_campaign_with_call_history_preserved():
         assert renamed not in operational_page
         archive_page = client.get("/voice/campaigns?archived=1").text
         assert renamed in archive_page
-        assert f"/voice/campaigns/{camp_id}/restore" in archive_page
+        assert f"/voice/campaigns/{camp_id}/restore" not in archive_page
+        archived_details = client.get(f"/voice/campaigns/{camp_id}/details")
+        assert f"/voice/campaigns/{camp_id}/restore" in archived_details.text
         assert str(camp_id) not in client.get("/voice/campaigns/status").json()["campaigns"]
         assert client.get(f"/voice/campaigns/{camp_id}/edit", follow_redirects=False).status_code == 303
 
@@ -199,7 +205,11 @@ def test_paused_campaign_allows_new_csv_without_resetting_previous_attempts():
     with TestClient(app) as client:
         token = _login(client)
         page = client.get("/voice/campaigns").text
-        assert f"/voice/campaigns/{camp_id}/contacts" in page
+        assert f'data-campaign-id="{camp_id}"' in page
+        assert f"/voice/campaigns/{camp_id}/contacts" not in page
+        details = client.get(f"/voice/campaigns/{camp_id}/details")
+        assert details.status_code == 200
+        assert f"/voice/campaigns/{camp_id}/contacts" in details.text
         result = client.post(
             f"/voice/campaigns/{camp_id}/contacts",
             data={"csrf_token": token},
