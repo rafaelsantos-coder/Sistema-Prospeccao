@@ -476,7 +476,7 @@ def voice_campaign_resend(campaign_id: int, request: Request,
                          "selected": selection.eligible_count})
     db.commit()
     flash(request, f"Reenvio iniciado na campanha #{new_campaign.id}: {selection.eligible_count} contatos selecionados. A original foi preservada. Acompanhe os resultados na nova campanha.")
-    return RedirectResponse("/voice/campaigns", status_code=303)
+    return RedirectResponse(f"/voice/campaigns?open={new_campaign.id}", status_code=303)
 
 
 @router.get("/campaigns")
