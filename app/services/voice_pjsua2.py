@@ -147,7 +147,10 @@ class PjSession:
                         LOG.warning("SIP chamada entrante rejeitada no worker de saida")
 
             acc_cfg = pj.AccountConfig()
-            acc_cfg.idUri = f"sip:{self.params.username}@{self.params.domain}"
+            # Caller ID is a requested display name; the PBX/provider controls the
+            # effective CLI displayed to the callee.
+            aor = f"sip:{self.params.username}@{self.params.domain}"
+            acc_cfg.idUri = (f'"{self.params.caller_id}" <{aor}>' if self.params.caller_id else aor)
             acc_cfg.regConfig.registrarUri = (
                 f"sip:{self.params.domain}:{self.params.port};transport={transport.lower()}"
             )
