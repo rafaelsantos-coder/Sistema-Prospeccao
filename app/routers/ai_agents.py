@@ -20,13 +20,15 @@ from app.models import (
     AIRun,
     Conversation,
     ServiceQueue,
+    ServiceQueueZApiInstance,
     User,
+    ZApiInstance,
 )
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.ai_queue_scope import ai_allowed_for_queue, exclusive_ai_queue_id, manual_queue_control_enabled, ai_queue_enabled
 from app.services.ai_sdr import ai_metrics
 from app.services.audit import write_audit
-from app.services.zapi_instances import queue_instance
+from app.services.zapi_instances import bind_queue_instance, list_zapi_instances, queue_instance
 from app.web import flash, render
 
 
@@ -116,6 +118,17 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         queue.id: queue_instance(db, queue.id)
         for queue in queues
     }
+    # Uma conexão Z-API não é necessariamente uma fila operacional.
+    # Exibir as conexões ainda sem fila para que o gestor possa configurá-las,
+    # sem criar vínculos ou ativar IA durante a simples visualização.
+    linked_instance_ids = set(
+        db.scalars(select(ServiceQueueZApiInstance.zapi_instance_id))
+    )
+    unlinked_zapi_instances = [
+        instance
+        for instance in list_zapi_instances(db, active_only=True)
+        if instance.id not in linked_instance_ids
+    ]
     knowledge = list(
         db.scalars(
             select(AIKnowledgeItem)
@@ -158,6 +171,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         page_title="IA & Agentes",
         agents=agents,
         queues=queues,
+        unlinked_zapi_instances=unlinked_zapi_instances,
         bindings=bindings,
         bindings_by_queue={binding.queue_id: binding for binding in bindings},
         queue_instances=queue_instances,
@@ -799,7 +813,7 @@ def toggle_knowledge(
 def bind_queue(
     request: Request,
     csrf_token: str = Form(...),
-    queue_id: int = Form(...),
+    queue_id: str = Form(...),
     agent_id: int = Form(...),
     handling_mode: str = Form("AI_FIRST"),
     fallback_to_human: bool = Form(False),
@@ -811,25 +825,81 @@ def bind_queue(
     validate_csrf(request, csrf_token)
     require_roles(actor, "ADMIN", "GESTOR")
 
-    queue = db.get(ServiceQueue, queue_id)
     agent = _agent_or_404(db, agent_id)
     mode = handling_mode.strip().upper()
+    if agent.role_type != "SDR":
+        flash(
+            request,
+            "Somente agentes SDR podem iniciar atendimento em uma fila.",
+            "warning",
+        )
+        return RedirectResponse("/ai", status_code=303)
+    if mode not in HANDLING_MODES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+
+    selected = queue_id.strip()
+    queue = None
+    if selected.startswith("zapi:"):
+        # Só o gestor, ao salvar expressamente, pode transformar uma conexão
+        # sem fila operacional numa fila configurável. Não ativa IA.
+        if not manual_queue_control_enabled():
+            flash(request, "A configuração individual de filas está desativada.", "warning")
+            return RedirectResponse("/ai", status_code=303)
+        try:
+            instance_pk = int(selected.removeprefix("zapi:"))
+        except ValueError:
+            instance_pk = 0
+        instance = db.get(ZApiInstance, instance_pk) if instance_pk > 0 else None
+        if not instance or not instance.active:
+            flash(request, "Conexão Z-API inválida ou arquivada.", "warning")
+            return RedirectResponse("/ai", status_code=303)
+        # Reutilizar a fila já cadastrada caso tenha sido vinculada
+        # em outra sessão desde que o gestor abriu esta tela.
+        queue = db.scalar(
+            select(ServiceQueue)
+            .join(ServiceQueueZApiInstance, ServiceQueueZApiInstance.queue_id == ServiceQueue.id)
+            .where(ServiceQueueZApiInstance.zapi_instance_id == instance.id)
+            .order_by(ServiceQueue.id.asc())
+            .limit(1)
+        )
+        if not queue:
+            code = f"ZAPI-{instance.id}"
+            if db.scalar(select(ServiceQueue.id).where(ServiceQueue.code == code)):
+                flash(request, "Código de fila já utilizado; configure a fila operacional existente.", "warning")
+                return RedirectResponse("/ai", status_code=303)
+            queue = ServiceQueue(
+                name=instance.name,
+                code=code,
+                team="DIGITAL",
+                routing_strategy="MANUAL",
+                is_default_inbound=False,
+                active=True,
+                created_by_id=actor.id,
+            )
+            db.add(queue)
+            db.flush()
+            bind_queue_instance(db, queue.id, instance.id)
+            write_audit(
+                db,
+                user=actor,
+                action="SERVICE_QUEUE_CREATED_FROM_ZAPI",
+                entity_type="service_queue",
+                entity_id=queue.id,
+                payload={"zapi_instance_id": instance.id, "ai_enabled": False},
+            )
+    else:
+        try:
+            operational_queue_id = int(selected)
+        except ValueError:
+            operational_queue_id = 0
+        queue = db.get(ServiceQueue, operational_queue_id) if operational_queue_id > 0 else None
+
     if not queue or not queue.active:
         flash(request, "Fila inválida ou inativa.", "warning")
         return RedirectResponse("/ai", status_code=303)
     if not ai_allowed_for_queue(queue.id):
         flash(request, "Esta fila não está autorizada pela política de IA.", "warning")
         return RedirectResponse("/ai", status_code=303)
-    if agent.role_type != "SDR":
-        flash(
-            request,
-            "O Vendedor IA recebe handoff do SDR e não pode ser vinculado como agente inicial de uma fila.",
-            "warning",
-        )
-        return RedirectResponse("/ai/seller", status_code=303)
-    if mode not in HANDLING_MODES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
-
     binding = db.scalar(
         select(AIQueueBinding).where(AIQueueBinding.queue_id == queue.id)
     )
