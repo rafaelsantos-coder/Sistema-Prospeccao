@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import AIAgentProfile, AIQueueBinding, Contact, Conversation, ConversationQueueLink, ServiceQueue
+from app.models import AIAgentProfile, AIQueueBinding, Contact, Conversation, ConversationQueueLink, ServiceQueue, ServiceQueueZApiInstance
 from app.services.ai_queue_coverage import ensure_unanswered_coverage_all_queues
 from app.services.ai_queue_scope import (
     ai_allowed_for_conversation,
@@ -22,6 +22,7 @@ from app.services.ai_queue_scope import (
 )
 from app.services.ai_sdr import binding_for_conversation, queue_ai_binding
 from app.services.queue_routing import usable_ai_binding
+from app.services.zapi_instances import create_zapi_instance
 from test_ai_all_queues_coverage import _database, _setup
 
 
@@ -160,3 +161,79 @@ def test_manager_can_configure_then_activate_and_pause_one_queue(monkeypatch):
             assert not binding.active
             assert not binding.manual_authorized
             assert not ai_queue_enabled(db, queue_id)
+
+
+def test_unlinked_zapi_connection_appears_in_selector_without_enabling_ai(monkeypatch):
+    monkeypatch.setenv("AI_QUEUE_MANUAL_CONTROL", "true")
+    monkeypatch.setenv("AI_EXCLUSIVE_QUEUE_ID", "1")
+    suffix = uuid4().hex[:12]
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            agent = db.scalar(select(AIAgentProfile).where(AIAgentProfile.role_type == "SDR"))
+            assert agent is not None
+            agent.active = True
+            instance = create_zapi_instance(
+                db,
+                name=f"Fila ZAPI Sem Vínculo {suffix}",
+                phone_label="Telefone teste",
+                base_url="https://api.z-api.io",
+                instance_id=f"zapi-select-unlinked-{suffix}",
+                instance_token="instance-test-token-not-real",
+                client_token="client-test-token-not-real",
+                created_by_id=None,
+            )
+            db.commit()
+            instance_id, agent_id = instance.id, agent.id
+
+        _login_admin(client)
+        page = client.get("/ai")
+        assert page.status_code == 200
+        assert f'value="zapi:{instance_id}"' in page.text
+        assert f"Fila ZAPI Sem Vínculo {suffix}" in page.text
+
+        # Navegar pelo menu não pode criar uma fila operacional,
+        # nem inscrever a IA numa instância.
+        with SessionLocal() as db:
+            assert not db.scalar(
+                select(ServiceQueueZApiInstance.id)
+                .where(ServiceQueueZApiInstance.zapi_instance_id == instance_id)
+            )
+
+        response = client.post(
+            "/ai/queues/bind",
+            data={
+                "csrf_token": _csrf(page.text),
+                "queue_id": f"zapi:{instance_id}",
+                "agent_id": str(agent_id),
+                "handling_mode": "AI_FIRST",
+                "fallback_to_human": "true",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        with SessionLocal() as db:
+            link = db.scalar(
+                select(ServiceQueueZApiInstance)
+                .where(ServiceQueueZApiInstance.zapi_instance_id == instance_id)
+            )
+            assert link is not None
+            queue = db.get(ServiceQueue, link.queue_id)
+            binding = db.scalar(
+                select(AIQueueBinding)
+                .where(AIQueueBinding.queue_id == queue.id)
+            )
+            assert queue.name == f"Fila ZAPI Sem Vínculo {suffix}"
+            assert queue.active
+            assert not queue.is_default_inbound
+            assert binding is not None
+            assert binding.agent_id == agent_id
+            assert binding.active is False
+            assert binding.manual_authorized is False
+            assert ai_queue_enabled(db, queue.id) is False
+
+        # Após salvar, a mesma instância é exibida como fila operacional,
+        # sem opção virtual duplicada.
+        page_after = client.get("/ai")
+        assert f'value="zapi:{instance_id}"' not in page_after.text
+        assert f"Fila ZAPI Sem Vínculo {suffix}" in page_after.text

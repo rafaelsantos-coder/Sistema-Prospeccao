@@ -147,6 +147,23 @@
     </table>
   </div>
 
+  {% if unlinked_zapi_instances %}
+  <div class="info-box top-space">
+    <strong>Conexões WhatsApp que ainda não possuem fila operacional</strong>
+    <p>Estas conexões Z-API também estão disponíveis no seletor abaixo. Ao salvar a configuração, a fila operacional será criada sem ativar a IA. Antes de usá-la para atendimento humano, configure os membros da fila.</p>
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Conexão Z-API</th><th>Telefone</th><th>Atendimento IA</th></tr></thead>
+        <tbody>
+        {% for instance in unlinked_zapi_instances %}
+          <tr><td><strong>{{ instance.name }}</strong></td><td>{{ instance.phone_label or '—' }}</td><td>Desativado · selecione abaixo para configurar</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
   {% if agents %}
   <div class="queue-create-box">
     <div class="panel-header"><div><span class="eyebrow">VINCULAR FILA</span><h3>Configurar atuação do agente</h3></div></div>
@@ -160,7 +177,12 @@
             <option value="{{ queue.id }}" {% if not queue.active %}disabled{% endif %}>{{ queue.name }} · WhatsApp: {{ qi.name if qi else 'sem instância' }} · {{ constants.teams.get(queue.team, queue.team) }}{% if not queue.active %} (inativa){% endif %}</option>
           {% endif %}
         {% endfor %}
-      </select><small>Selecione a fila. Salvar o vínculo não ativa o atendimento automático.</small></label>
+        {% if manual_queue_control_enabled %}
+          {% for instance in unlinked_zapi_instances %}
+            <option value="zapi:{{ instance.id }}">{{ instance.name }} · Z-API: {{ instance.phone_label or 'sem telefone confirmado' }} · criar fila ao salvar (IA desativada)</option>
+          {% endfor %}
+        {% endif %}
+      </select><small>Exibe filas operacionais e conexões Z-API ainda não vinculadas. Salvar não ativa a IA.</small></label>
       <label class="field"><span>Agente</span><select name="agent_id" required>{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select></label>
       <label class="field"><span>Modo da fila</span><select name="handling_mode">{% for key, label in handling_modes.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
       <label class="queue-check"><input type="checkbox" name="fallback_to_human" value="true" checked><span>Usar humano como fallback</span></label>
