@@ -174,14 +174,14 @@ def within_call_window(campaign: VoiceCampaign, at: datetime | None = None) -> b
     if now.weekday() >= 5:
         return False
     current = now.strftime("%H:%M")
-    return campaign.window_start <= current < campaign.window_end and "09:00" <= current < "18:00"
+    return campaign.window_start <= current < campaign.window_end and "09:00" <= current < "20:00"
 
 
 def next_call_window_start(campaign: VoiceCampaign, at: datetime | None = None) -> datetime | None:
-    """Proxima abertura real permitida, conforme campanha e limite 09h-18h."""
+    """Proxima abertura real permitida, conforme campanha e limite 09h-20h."""
     local = (at or datetime.now(timezone.utc)).astimezone(SAO_PAULO)
     opening = max(campaign.window_start, "09:00")
-    closing = min(campaign.window_end, "18:00")
+    closing = min(campaign.window_end, "20:00")
     if opening >= closing:
         return None
     hours, minutes = map(int, opening.split(":"))
