@@ -145,8 +145,7 @@ def test_no_campaign_start_until_account_group_pair_and_legal_cleared():
             engine.heartbeat_at = datetime.now(timezone.utc)
             db.commit()
             campaign = db.get(VoiceCampaign, cid)
-            assert any("mesma campanha" not in x for x in [])  # no external calls
-            assert any("mesma conta" in x for x in check_campaign_ready(db, campaign))
+            assert any("A conta desta campanha" in x for x in check_campaign_ready(db, campaign))
 
             db.add(VoiceTransferTest(account_id=aid, group_id=gid, phone_last4="0100",
                   result="TRANSFERIDA", sip_code=200, message="SIP REFER confirmado",
