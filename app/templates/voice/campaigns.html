@@ -153,7 +153,7 @@
           <form action="/voice/campaigns/{{ campaign.id }}/start" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label><input type="checkbox" name="authorization" value="sim" required> Autorizo iniciar as ligações desta campanha.</label>
-            <button class="button button-primary" type="submit">Solicitar início da campanha</button>
+            <button class="button button-primary" type="submit">Iniciar campanha</button>
             {% if readiness.get(campaign.id) %}
             <p class="voice-start-warning">Atenção: início bloqueado por {{ readiness[campaign.id]|length }} pendência(s). Ao solicitar, o sistema registra a tentativa e informa o motivo.</p>
             {% endif %}
