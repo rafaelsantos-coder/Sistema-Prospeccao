@@ -22,7 +22,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models import (
     VoiceCallEvent, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient,
-    VoiceSipAccount, VoiceTransferTest,
+    VoiceSipAccount, VoiceTestCall, VoiceTransferTest,
 )
 from app.services.global_blacklist import is_globally_blocked
 from app.services.secret_store import decrypt_secret
@@ -140,6 +140,87 @@ def mark_registration(account_id: int, code: int | None, message: str):
         if account:
             update_sip_check(db, account, code, message)
             db.commit()
+
+
+def _claim_native_test() -> int | None:
+    if not TRANSFER_TESTS_ENABLED or not outbound_allowed():
+        return None
+    with SessionLocal() as db:
+        test = db.scalar(select(VoiceTestCall).where(
+            VoiceTestCall.status == "PENDENTE_PJSIP"
+        ).order_by(VoiceTestCall.id).with_for_update(skip_locked=True).limit(1))
+        if not test:
+            return None
+        if now() - aware(test.created_at) > timedelta(minutes=3):
+            test.status = "EXPIRADO"
+            test.message = "Teste SIP/RTP expirou; nenhuma ligacao foi iniciada."
+            test.finished_at = now()
+            db.commit()
+            return None
+        test.status = "REGISTRANDO_PJSIP"
+        test.started_at = now()
+        db.commit()
+        return test.id
+
+
+def _native_record(test_id: int, status: str, register_code: int | None,
+                   invite_code: int | None, message: str, *, final=False) -> None:
+    with SessionLocal() as db:
+        test = db.get(VoiceTestCall, test_id)
+        if not test:
+            return
+        test.status = status[:30]
+        if register_code is not None:
+            test.sip_register_code = register_code
+        if invite_code is not None:
+            test.sip_invite_code = invite_code
+        test.message = (message or "")[:230]
+        if final:
+            test.finished_at = now()
+        db.commit()
+
+
+def _run_native_test(test_id: int):
+    try:
+        with SessionLocal() as db:
+            test = db.get(VoiceTestCall, test_id)
+            if not test or test.status != "REGISTRANDO_PJSIP" or not test.account_id:
+                return
+            account = db.get(VoiceSipAccount, test.account_id)
+            if not account or not account.active:
+                raise VoiceEngineError("Conta SIP nao esta ativa.")
+            number = test.target_phone
+            outbound_guard(db, number)
+            secret = decrypt_secret(account.password_encrypted)
+            account_id = account.id
+            db.expunge(account)
+        with PjSession(account, secret) as driver:
+            code, message = driver.wait_for_registration()
+            mark_registration(account_id, code, message)
+            _native_record(test_id, "REGISTRADO" if code == 200 else "FALHOU", code,
+                           None, message)
+            if code != 200:
+                raise VoiceEngineError(message)
+            with SessionLocal() as db:
+                outbound_guard(db, number)
+            if not outbound_allowed():
+                raise VoiceEngineError("Chamada interrompida antes de discar.")
+            result = driver.perform_call(
+                number, mode="PROBE",
+                on_status=lambda status, sip: _native_record(
+                    test_id, status, 200, sip, f"Teste PJSIP: {status}"
+                ),
+                should_abort=lambda: not outbound_allowed(),
+                timeout=30,
+            )
+            detail = result.message + (
+                " RTP negociado com midia ativa." if result.media_active
+                else " Audio RTP nao confirmado."
+            )
+            _native_record(test_id, result.status, 200, result.sip_code, detail, final=True)
+    except Exception as exc:
+        LOG.error("Falha em teste nativo %s: %s", test_id, type(exc).__name__)
+        _native_record(test_id, "FALHOU", None, None, str(exc), final=True)
 
 
 def _claim_transfer_test() -> int | None:
@@ -317,6 +398,13 @@ def _run_campaign_call(recipient_id: int) -> None:
 def _expire_crashed_calls() -> None:
     """Never redial calls that might have been placed before a worker restart."""
     with SessionLocal() as db:
+        for test in db.scalars(select(VoiceTestCall).where(
+            VoiceTestCall.status.in_(["REGISTRANDO_PJSIP", "PENDENTE_PJSIP"])
+        )):
+            if now() - aware(test.created_at) > timedelta(minutes=3):
+                test.status = "INDETERMINADO"
+                test.message = "Worker reiniciou; teste nativo nao sera repetido."
+                test.finished_at = now()
         for row in db.scalars(select(VoiceTransferTest).where(
             VoiceTransferTest.result.in_([
                 "REGISTRANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERINDO",
@@ -349,8 +437,11 @@ def main() -> None:
             if t - last_beat >= 8:
                 heartbeat()
                 last_beat = t
-            test_id = _claim_transfer_test()
-            if test_id is not None:
+            native_id = _claim_native_test()
+            if native_id is not None:
+                _run_native_test(native_id)
+                last_beat = 0
+            elif (test_id := _claim_transfer_test()) is not None:
                 _run_transfer_test(test_id)
                 last_beat = 0
             elif (recipient_id := _claim_recipient()) is not None:
