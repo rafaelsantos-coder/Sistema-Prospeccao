@@ -20,7 +20,7 @@
 <div class="voice-metrics" aria-label="Indicadores do Prospecta VOZ">
   <div class="voice-metric"><span>Contas SIP</span><strong>{{ stats.accounts }}</strong><small>{{ stats.accounts_active }} ativas para cadastro · {{ stats.accounts_paused }} pausadas</small></div>
   <div class="voice-metric"><span>Grupos de ramais</span><strong>{{ stats.groups }}</strong><small>{{ stats.groups_active }} disponíveis para configurar</small></div>
-  <div class="voice-metric"><span>Campanhas de voz</span><strong>{{ stats.campaigns }}</strong><small>{{ stats.campaigns_draft }} rascunhos · {{ stats.campaigns_review }} em homologação</small></div>
+  <div class="voice-metric"><span>Campanhas de voz</span><strong>{{ stats.campaigns }}</strong><small>{{ stats.campaigns_draft }} rascunhos · {{ stats.campaigns_review }} preparadas</small></div>
   <div class="voice-metric"><span>Contatos preparados</span><strong>{{ stats.recipients }}</strong><small>{{ stats.campaigns_live or 0 }} campanhas em execução, sem discagem preditiva</small></div>
 </div>
 
@@ -72,7 +72,7 @@
         {% for campaign in campaigns %}
           <tr>
             <td><strong>{{ campaign.name }}</strong></td>
-            <td>{{ 'Áudio + confirmação' if campaign.mode == 'AUDIO' else 'Transferência direta' }}</td>
+            <td>{{ ('Áudio informativo — sem grupo' if not campaign.group_id else 'Áudio + confirmação') if campaign.mode == 'AUDIO' else 'Transferência direta' }}</td>
             <td><span class="voice-pill is-unknown">{{ 'Aguardando homologação' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}</span></td>
           </tr>
         {% endfor %}
