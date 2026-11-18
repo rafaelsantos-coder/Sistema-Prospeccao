@@ -167,3 +167,12 @@ campanhas preexistentes. Quando não há grupo:
 Campanhas existentes que selecionam grupos mantêm o fluxo anterior de DIRECT
 ou AUDIO com tecla DTMF e transferência validada. A opção sem grupo jamais habilita
 a discagem automaticamente: a parada geral e o botão de iniciar continuam obrigatórios.
+
+
+## Gestão de campanhas — editar, excluir e restaurar
+
+- **Editar:** disponível para campanhas `RASCUNHO`, `PRONTA`, `EM_HOMOLOGACAO`, `PAUSADA` e `CONCLUIDA`, desde que não exista ligação em andamento. Permite alterar nome, conta SIP, grupo ou ausência de grupo, modalidade, tecla DTMF, limite diário, intervalo, horários e formato SIP nacional/E.164. Salvar não dispara chamada e não reinicia contatos já processados.
+- **Campanha pausada:** permite importar novos contatos por CSV ou substituir o áudio WAV. A importação preserva eventos antigos e não rediscagem automaticamente números já processados. Novos destinatários ou troca de áudio exigem nova confirmação da base legal.
+- **Excluir:** somente com campanha parada e nenhuma chamada em andamento. Por motivos de auditoria, é uma **exclusão lógica** (status `EXCLUIDA`), que a remove do painel operacional e dos contadores ativos sem apagar contatos, tentativas, eventos SIP ou histórico de ações. Exige digitar o nome exato e CSRF.
+- **Restaurar:** em Campanhas → Excluídas, somente pelo administrador. Volta para `RASCUNHO` ou `PAUSADA` e invalida a confirmação anterior da base legal, exigindo início manual e novos pré-requisitos.
+- As rotas de operação continuam exclusivas para o perfil `ADMIN`; não existe discagem automática ao editar, excluir ou restaurar.
