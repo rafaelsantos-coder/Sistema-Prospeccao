@@ -49,6 +49,16 @@ def test_sip_validation_and_audio_modes():
     with pytest.raises(ValueError):
         validate_campaign("AUDIO", "09:00", "18:00", "1", "")
     validate_wav(_wav())
+    # Previously rejected for exceeding 2 MB and 60 seconds.
+    with BytesIO() as stream:
+        with wave.open(stream, "wb") as player:
+            player.setnchannels(1)
+            player.setsampwidth(2)
+            player.setframerate(8000)
+            player.writeframes(b"\x00" * (8000 * 2 * 190))
+        long_wav = stream.getvalue()
+    assert len(long_wav) > 2_000_000
+    validate_wav(long_wav)
     with pytest.raises(ValueError):
         validate_wav(b"not-a-wave")
 
