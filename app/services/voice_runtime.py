@@ -131,23 +131,28 @@ def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | No
         now - aware(account.sip_check_at) > SIP_VERIFICATION_MAX
     ):
         errors.append("Conta SIP sem autenticacao recente confirmada pelo PABX.")
-    group = db.get(VoiceGroup, campaign.group_id)
-    if not group or not group.active:
-        errors.append("Grupo de ramais ausente ou pausado.")
-    elif not group.transfer_verified_at or (
-        now - aware(group.transfer_verified_at) > TRANSFER_VERIFICATION_MAX
-    ):
-        errors.append("Transferencia ao grupo nao foi comprovada com teste real de REFER.")
+    if campaign.group_id is None:
+        # AUDIO sem grupo e puramente informativo; nao ha transferencia nem teste REFER.
+        if campaign.mode != "AUDIO":
+            errors.append("Transferencia direta exige um grupo de ramais ativo.")
     else:
-        # Verification is scoped to both the SAME account and the SAME group.
-        pair_verified = db.scalar(select(VoiceTransferTest.id).where(
-            VoiceTransferTest.account_id == campaign.sip_account_id,
-            VoiceTransferTest.group_id == campaign.group_id,
-            VoiceTransferTest.result == "TRANSFERIDA",
-            VoiceTransferTest.finished_at >= now - TRANSFER_VERIFICATION_MAX,
-        ).limit(1))
-        if not pair_verified:
-            errors.append("A conta desta campanha nao tem teste de transferencia aprovado para o grupo.")
+        group = db.get(VoiceGroup, campaign.group_id)
+        if not group or not group.active:
+            errors.append("Grupo de ramais ausente ou pausado.")
+        elif not group.transfer_verified_at or (
+            now - aware(group.transfer_verified_at) > TRANSFER_VERIFICATION_MAX
+        ):
+            errors.append("Transferencia ao grupo nao foi comprovada com teste real de REFER.")
+        else:
+            # Teste REFER validado para a conta e o grupo da campanha.
+            pair_verified = db.scalar(select(VoiceTransferTest.id).where(
+                VoiceTransferTest.account_id == campaign.sip_account_id,
+                VoiceTransferTest.group_id == campaign.group_id,
+                VoiceTransferTest.result == "TRANSFERIDA",
+                VoiceTransferTest.finished_at >= now - TRANSFER_VERIFICATION_MAX,
+            ).limit(1))
+            if not pair_verified:
+                errors.append("A conta desta campanha nao tem teste de transferencia aprovado para o grupo.")
     if not campaign.legal_basis_verified:
         errors.append("Base legal e autorizacao de contato nao foram verificadas.")
     if campaign.mode == "AUDIO" and not campaign.audio_uri:
