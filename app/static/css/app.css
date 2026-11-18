@@ -2578,3 +2578,24 @@ button, a { -webkit-tap-highlight-color: transparent; }
 @media (prefers-reduced-motion: reduce) {
   .voice-campaign-chevron { transition: none; }
 }
+
+/* Reenvio de campanhas VOZ: duas ações claramente distintas. */
+.voice-campaign-resend-options {
+  display: flex;
+  gap: 15px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 16px;
+  margin-bottom: 18px;
+  border: 1px solid #f0e0d2;
+  border-radius: 11px;
+  background: #fffaf6;
+}
+.voice-campaign-resend-options .voice-help { margin: 5px 0 0; max-width: 660px; }
+.voice-campaign-resend-options .voice-actions { flex-wrap: wrap; gap: 8px; }
+@media (max-width: 680px) {
+  .voice-campaign-resend-options { padding: 12px; }
+  .voice-campaign-resend-options .voice-actions { width: 100%; }
+  .voice-campaign-resend-options .voice-actions .button { flex: 1 1 auto; text-align: center; }
+}
