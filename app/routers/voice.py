@@ -455,7 +455,7 @@ def add_group(request: Request, csrf_token: str = Form(...), name: str = Form(..
 
 @router.post("/campaigns")
 def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form(...),
-                 sip_account_id: int = Form(...), group_id: int = Form(...),
+                 sip_account_id: int = Form(...), group_id: str = Form(""),
                  mode: str = Form(...), dtmf_digit: str = Form("1"),
                  window_start: str = Form("09:00"), window_end: str = Form("18:00"),
                  daily_limit: int = Form(30), interval_seconds: int = Form(30),
@@ -465,9 +465,17 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
         return redirect
     validate_csrf(request, csrf_token)
     account = db.get(VoiceSipAccount, sip_account_id)
-    group = db.get(VoiceGroup, group_id)
-    if not account or not account.active or not group or not group.active:
-        return _error(request, "Selecione conta SIP e grupo ativos.")
+    if not account or not account.active:
+        return _error(request, "Selecione uma conta SIP ativa.")
+    raw_group_id = group_id.strip()
+    if raw_group_id and not raw_group_id.isdecimal():
+        return _error(request, "Grupo de transferência inválido.")
+    selected_group_id = int(raw_group_id) if raw_group_id else None
+    group = db.get(VoiceGroup, selected_group_id) if selected_group_id is not None else None
+    if selected_group_id is not None and (not group or not group.active):
+        return _error(request, "O grupo de transferência selecionado está indisponível.")
+    if selected_group_id is None and mode.upper() != "AUDIO":
+        return _error(request, "Sem transferência, escolha a modalidade Áudio automático.")
     if not name.strip() or len(name.strip()) > 180:
         return _error(request, "Informe o nome da campanha.")
     if not 1 <= daily_limit <= 300 or not 10 <= interval_seconds <= 3600:
@@ -479,7 +487,7 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
     except ValueError as exc:
         return _error(request, str(exc))
     campaign = VoiceCampaign(name=name.strip(), mode=clean_mode, sip_account_id=account.id,
-                             group_id=group.id, dtmf_digit=dtmf_digit, daily_limit=daily_limit,
+                             group_id=selected_group_id, dtmf_digit=dtmf_digit, daily_limit=daily_limit,
                              interval_seconds=interval_seconds, window_start=window_start,
                              window_end=window_end, created_by_id=actor.id,
                              status="RASCUNHO", legal_basis_verified=False)
@@ -487,7 +495,8 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
     db.flush()
     write_audit(db, user=actor, action="VOICE_CAMPAIGN_CREATED",
                 entity_type="voice_campaign", entity_id=campaign.id,
-                payload={"mode": clean_mode, "group_id": group.id})
+                payload={"mode": clean_mode, "group_id": selected_group_id,
+                         "without_transfer": selected_group_id is None})
     db.commit()
     flash(request, "Campanha criada. Importe os contatos, anexe o áudio e confira o checklist para iniciar.")
     return RedirectResponse("/voice/campaigns", status_code=303)
