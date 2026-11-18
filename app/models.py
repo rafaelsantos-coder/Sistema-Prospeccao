@@ -1301,6 +1301,8 @@ class VoiceDialerEngine(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_id: Mapped[str] = mapped_column(String(120), default="")
     backend: Mapped[str] = mapped_column(String(35), default="PJSUA2")
+    campaign_runtime_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    test_runtime_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     last_error: Mapped[str] = mapped_column(String(200), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
