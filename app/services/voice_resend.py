@@ -15,6 +15,7 @@ from app.models import (
     GlobalContactBlacklist, Lead, VoiceCallEvent, VoiceCampaign, VoiceRecipient,
 )
 from app.services.voice_test import validate_test_phone
+from app.services.global_blacklist import canonical_phone
 
 
 # SIP 200 / midia ativa / DTMF / REFER demonstram atendimento, mesmo que
@@ -64,16 +65,26 @@ def select_resend_recipients(db: Session, campaign: VoiceCampaign, mode: str) ->
     if not rows:
         return selection
     phones = sorted({row.phone for row in rows if row.phone})
+    # Compatibilidade com bases legadas em DDD+número e E.164.
+    lookup_phones = set(phones)
+    for phone in phones:
+        try:
+            canonical = canonical_phone(phone)
+            lookup_phones.add(canonical)
+            if canonical.startswith("55"):
+                lookup_phones.add(canonical[2:])
+        except ValueError:
+            continue
 
     # A lista central e o opt-out legado sao consultados em lote. O worker
     # checa novamente antes do INVITE (a blacklist pode mudar posteriormente).
     blocked = set(db.scalars(select(GlobalContactBlacklist.phone).where(
         GlobalContactBlacklist.active.is_(True),
-        GlobalContactBlacklist.phone.in_(phones),
+        GlobalContactBlacklist.phone.in_(lookup_phones),
     )))
     blocked.update(db.scalars(select(Lead.phone).where(
         Lead.do_not_contact.is_(True),
-        Lead.phone.in_(phones),
+        Lead.phone.in_(lookup_phones),
     )))
 
     answered_phones: set[str] = set()
@@ -82,7 +93,7 @@ def select_resend_recipients(db: Session, campaign: VoiceCampaign, mode: str) ->
         # Evita novos contatos com numero que ja atendeu em qualquer rodada,
         # mesmo se falhou a transferencia ou se o status foi sobrescrito.
         answered_phones.update(db.scalars(select(VoiceRecipient.phone).where(
-            VoiceRecipient.phone.in_(phones),
+            VoiceRecipient.phone.in_(lookup_phones),
             (
                 VoiceRecipient.answered_at.is_not(None)
                 | VoiceRecipient.transferred_at.is_not(None)
@@ -93,7 +104,7 @@ def select_resend_recipients(db: Session, campaign: VoiceCampaign, mode: str) ->
         answered_phones.update(db.scalars(select(VoiceRecipient.phone).join(
             VoiceCallEvent, VoiceCallEvent.recipient_id == VoiceRecipient.id,
         ).where(
-            VoiceRecipient.phone.in_(phones),
+            VoiceRecipient.phone.in_(lookup_phones),
             VoiceCallEvent.event.in_(ANSWER_EVIDENCE_EVENTS),
         )))
         ringing_recipient_ids.update(db.scalars(select(VoiceCallEvent.recipient_id).where(
@@ -101,9 +112,18 @@ def select_resend_recipients(db: Session, campaign: VoiceCampaign, mode: str) ->
             VoiceCallEvent.event == "TOCANDO",
         )))
 
+    # Telefones respondidos sao normalizados antes da comparacao.
+    normalized_answered: set[str] = set()
+    for phone in answered_phones:
+        try:
+            normalized_answered.add(canonical_phone(phone))
+        except ValueError:
+            continue
+
     for row in rows:
         try:
-            normalized = validate_test_phone(row.phone)
+            validate_test_phone(row.phone)
+            normalized = canonical_phone(row.phone)
         except ValueError:
             selection.blocked += 1
             continue
@@ -118,7 +138,7 @@ def select_resend_recipients(db: Session, campaign: VoiceCampaign, mode: str) ->
             selection.eligible.append(row)
             continue
 
-        if row.phone in answered_phones:
+        if normalized in normalized_answered:
             selection.answered_excluded += 1
         elif not row.attempts:
             selection.never_attempted += 1
