@@ -1170,6 +1170,16 @@ class VoiceSipAccount(Base):
     username: Mapped[str] = mapped_column(String(120))
     password_encrypted: Mapped[str] = mapped_column(Text)
     transport: Mapped[str] = mapped_column(String(10), default="UDP")
+    sip_port: Mapped[int] = mapped_column(Integer, default=5060)
+    proxy_host: Mapped[str] = mapped_column(String(190), default="")
+    proxy_port: Mapped[int] = mapped_column(Integer, default=5060)
+    dial_domain: Mapped[str] = mapped_column(String(190), default="")
+    dial_prefix: Mapped[str] = mapped_column(String(12), default="")
+    strip_brazil_ddi: Mapped[bool] = mapped_column(Boolean, default=False)
+    caller_id: Mapped[str] = mapped_column(String(50), default="")
+    sip_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sip_check_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sip_check_message: Mapped[str] = mapped_column(String(200), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -1182,6 +1192,7 @@ class VoiceGroup(Base):
     name: Mapped[str] = mapped_column(String(120))
     target_extension: Mapped[str] = mapped_column(String(30))
     member_extensions: Mapped[str] = mapped_column(Text, default="")
+    transfer_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -1205,6 +1216,9 @@ class VoiceCampaign(Base):
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_call_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     sip_account: Mapped[VoiceSipAccount] = relationship()
@@ -1276,3 +1290,31 @@ class VoiceTestAgent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_id: Mapped[str] = mapped_column(String(120), default="")
+
+
+
+class VoiceDialerEngine(Base):
+    """Global emergency stop and real SIP engine heartbeat; default disabled."""
+    __tablename__ = "voice_dialer_engine"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str] = mapped_column(String(120), default="")
+    backend: Mapped[str] = mapped_column(String(35), default="PJSUA2")
+    last_error: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class VoiceTransferTest(Base):
+    """A verified REFER result from an authorized individual test, not a guess."""
+    __tablename__ = "voice_transfer_tests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("voice_sip_accounts.id"))
+    group_id: Mapped[int] = mapped_column(ForeignKey("voice_groups.id"))
+    phone_last4: Mapped[str] = mapped_column(String(4))
+    result: Mapped[str] = mapped_column(String(35), default="PENDENTE")
+    sip_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    message: Mapped[str] = mapped_column(String(200), default="")
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
