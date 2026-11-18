@@ -1,6 +1,6 @@
 """Ativacao de IA por fila requer autorizacao explicita do gestor.
 
-Revision ID: 0025_ai_queue_manual_authorization
+Revision ID: 0025_ai_queue_manual_auth
 Revises: 0024_voice_dial_format
 
 Preserva autorizada apenas a Fila IA dedicada previamente ativa.
@@ -10,7 +10,7 @@ Todos os vinculos legados das demais filas ficam sem autorizacao manual.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0025_ai_queue_manual_authorization"
+revision = "0025_ai_queue_manual_auth"
 down_revision = "0024_voice_dial_format"
 branch_labels = None
 depends_on = None
