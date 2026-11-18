@@ -30,6 +30,7 @@ from app.services.voice import (
     validate_extension,
     validate_sip,
     validate_wav,
+    validate_wav_file,
 )
 from app.web import flash, render
 
@@ -486,19 +487,20 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
     campaign = db.get(VoiceCampaign, campaign_id)
     if not campaign or campaign.mode != "AUDIO" or campaign.status != "RASCUNHO":
         return _error(request, "Campanha nao permite upload de audio.")
-    data = await audio.read(2_000_001)
     try:
-        validate_wav(data)
+        # UploadFile.file is spooled to disk by Starlette for large files.
+        # Keep all validation and S3 multipart transfer bounded-memory.
+        validate_wav_file(audio.file)
         storage = MediaStorage()
         if not storage.configured:
             raise ValueError("Configure armazenamento de midia seguro antes do upload.")
-        uri, _ = storage.upload_campaign_bytes(
-            data=data, campaign_id=campaign.id,
+        uri, _ = storage.upload_campaign_file(
+            fileobj=audio.file, campaign_id=campaign.id,
             filename=f"voice-{uuid4().hex}.wav", mime_type="audio/wav")
     except ValueError as exc:
         return _error(request, str(exc))
     except Exception:
-        # Nao exibir mensagem interna do armazenamento.
+        # Avoid disclosing media storage credentials or infrastructure details.
         return _error(request, "Falha ao validar ou salvar audio no armazenamento seguro.")
     campaign.audio_uri = uri
     write_audit(db, user=actor, action="VOICE_AUDIO_UPDATED",

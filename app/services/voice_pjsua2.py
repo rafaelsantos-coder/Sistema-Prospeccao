@@ -10,6 +10,7 @@ import importlib
 import logging
 import socket
 import time
+import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -200,6 +201,10 @@ class PjSession:
             raise VoiceEngineError("A transferencia exige grupo de destino.")
         if call_mode == "AUDIO" and (not audio_wav or not Path(audio_wav).is_file()):
             raise VoiceEngineError("Audio WAV indisponivel no motor de chamadas.")
+        audio_duration = 0.0
+        if call_mode == "AUDIO":
+            with wave.open(audio_wav, "rb") as wav:
+                audio_duration = wav.getnframes() / wav.getframerate()
         target_uri = make_dial_uri(self.account_model, phone)
         transfer_uri = make_transfer_uri(self.account_model, group) if group is not None else None
 
@@ -217,6 +222,7 @@ class PjSession:
                 self.transfer_failed = False
                 self.transfer_code = None
                 self._audio_connected = False
+                self.audio_started_at = None
 
             def onCallState(self, prm):
                 try:
@@ -249,6 +255,7 @@ class PjSession:
                                     session._player.createPlayer(audio_wav, pj.PJMEDIA_FILE_NO_LOOP)
                                 session._player.startTransmit(self.getAudioMedia(index))
                                 self._audio_connected = True
+                                self.audio_started_at = time.monotonic()
                 except Exception:
                     LOG.exception("Audio RTP indisponivel em chamada SIP")
 
@@ -273,10 +280,17 @@ class PjSession:
             call.makeCall(target_uri, prm)
             if on_status:
                 on_status("CHAMANDO", None)
-            deadline = time.monotonic() + min(90, max(15, timeout))
+            # Ring timeout is independent of the recording duration.
+            ring_deadline = time.monotonic() + min(90, max(15, timeout))
             answered_at = None
+            active_deadline = None
             transfer_at = None
-            while time.monotonic() < deadline:
+            while True:
+                current = time.monotonic()
+                if answered_at is None and current >= ring_deadline:
+                    break
+                if active_deadline is not None and current >= active_deadline:
+                    break
                 self.pump(150)
                 if should_abort and should_abort():
                     return VoiceCallResult("INTERROMPIDA", call.sip_code, False,
@@ -298,6 +312,11 @@ class PjSession:
                 if call.answered:
                     if answered_at is None:
                         answered_at = time.monotonic()
+                        # Audio mode allows the COMPLETE WAV plus time for DTMF,
+                        # rather than truncating at the former 55/90-second cap.
+                        active_deadline = answered_at + (
+                            audio_duration + 30 if call_mode == "AUDIO" else max(20, timeout)
+                        )
                     if call_mode == "PROBE" and time.monotonic() - answered_at >= 1:
                         return VoiceCallResult("ATENDIDA", call.sip_code, False,
                                                "Chamada atendida, sem transferencia.",
@@ -329,9 +348,12 @@ class PjSession:
                                                "Timeout da confirmacao da transferencia SIP REFER.",
                                                True, call.media_active)
                     if call_mode == "AUDIO" and not call.digit_confirmed:
-                        if time.monotonic() - answered_at >= 25:
+                        # Start the response window after audio playback finishes.
+                        # The file duration is measured, never guessed from its size.
+                        elapsed = time.monotonic() - (call.audio_started_at or answered_at)
+                        if elapsed >= audio_duration + 15:
                             return VoiceCallResult("SEM_INTERESSE", call.sip_code, False,
-                                                   "Nao houve confirmacao DTMF do destinatario.",
+                                                   "Nao houve confirmacao DTMF apos o audio.",
                                                    True, call.media_active)
             return VoiceCallResult("TIMEOUT", call.sip_code, False,
                                    "Limite de duracao da chamada atingido.", call.answered, call.media_active)

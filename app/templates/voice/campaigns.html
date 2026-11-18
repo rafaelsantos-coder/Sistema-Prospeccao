@@ -47,7 +47,7 @@
     <form method="post" action="/voice/campaigns/{{ campaign.id }}/audio" enctype="multipart/form-data" class="stack-form voice-subpanel">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <h4>2. Áudio da campanha {% if campaign.audio_uri %}<span class="voice-pill is-ready">Carregado</span>{% else %}<span class="voice-pill is-unknown">Pendente</span>{% endif %}</h4>
-      <label class="field"><span>WAV PCM mono, 8/16 kHz (máx. 2 MB)</span><input name="audio" type="file" accept=".wav,audio/wav" required></label>
+      <label class="field"><span>WAV PCM 16 bits, mono, 8/16 kHz — sem limite fixo de tamanho ou duração</span><input name="audio" type="file" accept=".wav,audio/wav" required></label>
       <button class="button button-secondary" type="submit">Salvar gravação</button>
     </form>
     {% endif %}
