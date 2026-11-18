@@ -223,3 +223,53 @@ def test_emergency_stop_requires_admin_and_prevents_calls():
         assert response.status_code == 303
         with SessionLocal() as db:
             assert db.get(VoiceDialerEngine, 1).enabled is False
+
+
+def test_admin_can_queue_native_call_without_group_and_blacklist_applies():
+    from app.models import VoiceTestCall
+    with TestClient(app) as client:
+        csrf = _login(client)
+        aid, _gid, _cid = _scenario()
+        with SessionLocal() as db:
+            engine = _ensure_engine(db)
+            engine.enabled = True
+            engine.test_runtime_enabled = True
+            engine.heartbeat_at = datetime.now(timezone.utc)
+            db.commit()
+        response = client.post(f"/voice/accounts/{aid}/test-native", data={
+            "csrf_token": csrf, "phone": "5555999970400", "authorized": "sim",
+        }, follow_redirects=False)
+        assert response.status_code == 303
+        with SessionLocal() as db:
+            pending = list(db.scalars(select(VoiceTestCall).where(
+                VoiceTestCall.account_id == aid,
+                VoiceTestCall.target_phone == "5555999970400",
+            )))
+            assert len(pending) == 1
+            assert pending[0].status == "PENDENTE_PJSIP"
+            # No native worker is running in tests, so no phone has been dialed.
+            pending[0].status = "EXPIRADO"
+            pending[0].finished_at = datetime.now(timezone.utc)
+            engine = db.get(VoiceDialerEngine, 1)
+            engine.enabled = False
+            db.commit()
+
+
+def test_native_call_rejected_if_engine_off():
+    from app.models import VoiceTestCall
+    with TestClient(app) as client:
+        csrf = _login(client)
+        aid, _gid, _cid = _scenario()
+        with SessionLocal() as db:
+            engine = _ensure_engine(db)
+            engine.enabled = False
+            engine.test_runtime_enabled = False
+            db.commit()
+        response = client.post(f"/voice/accounts/{aid}/test-native", data={
+            "csrf_token": csrf, "phone": "5555999970500", "authorized": "sim",
+        }, follow_redirects=False)
+        assert response.status_code == 303
+        with SessionLocal() as db:
+            assert db.scalar(select(VoiceTestCall).where(
+                VoiceTestCall.account_id == aid, VoiceTestCall.target_phone == "5555999970500",
+            )) is None
