@@ -1041,3 +1041,29 @@ def test_credit_rejected_outcome_falls_back_to_19_when_catalog_fails(monkeypatch
     monkeypatch.setattr(crm_module.httpx, "Client", _Down)
     client = SulnetCRMClient(base_url="https://crm.example", bearer_token="service-token-value")
     assert client.credit_rejected_outcome_id() == 19
+
+
+def test_manual_webhook_prefers_dedicated_lead_integration_key(monkeypatch):
+    monkeypatch.setattr(crm_module.httpx, "Client", FakeClient)
+    client = SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="capture-token",
+        integration_key="legacy-other-integration",
+        lead_integration_key="dedicated-lead-integration",
+    )
+    client.create_seller_lead(
+        seller_username="fabiano.braga",
+        client_name="JOAO SILVA",
+        client_phone="55999990000",
+        origin="Sulnet Prospecta",
+    )
+    headers = FakeClient.captured_headers or {}
+    assert headers["X-Integration-Key"] == "dedicated-lead-integration"
+    assert "Authorization" not in headers
+    assert FakeClient.captured_url == "https://crm.example/webhook/leads"
+    assert FakeClient.captured_json == {
+        "sellerUsername": "fabiano.braga",
+        "clientName": "JOAO SILVA",
+        "clientPhone": "55999990000",
+        "origin": "Sulnet Prospecta",
+    }
