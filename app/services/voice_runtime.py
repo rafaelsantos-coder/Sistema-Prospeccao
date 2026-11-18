@@ -79,9 +79,22 @@ def validate_routing_options(
     }
 
 
-def make_dial_uri(account: VoiceSipAccount, number: str) -> str:
+def make_dial_uri(account: VoiceSipAccount, number: str, *,
+                  dial_format: str | None = None) -> str:
+    """Monta o destino SIP segundo o plano de discagem; nunca duplica DDI.
+
+    CRM/CSV guarda E.164 para deduplicacao/blacklist. Campanhas usam NATIONAL
+    (DDD+numero) por padrao; testes SIP sem override mantem ajuste da conta.
+    """
     clean = validate_test_phone(number)
-    if account.strip_brazil_ddi and clean.startswith("55") and len(clean) in (12, 13):
+    if dial_format is not None:
+        if dial_format not in {"NATIONAL", "E164"}:
+            raise VoiceReadinessError("Formato de discagem SIP invalido.")
+        if dial_format == "NATIONAL" and len(clean) in (12, 13) and clean.startswith("55"):
+            clean = clean[2:]
+        elif dial_format == "E164" and len(clean) in (10, 11):
+            clean = "55" + clean
+    elif account.strip_brazil_ddi and clean.startswith("55") and len(clean) in (12, 13):
         clean = clean[2:]
     prefix = getattr(account, "dial_prefix", "") or ""
     if not re.fullmatch(r"[0-9]{0,12}", prefix):

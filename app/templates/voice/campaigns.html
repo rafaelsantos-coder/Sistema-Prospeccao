@@ -34,6 +34,8 @@
     <span><strong>Destino:</strong> {{ (campaign.group.name ~ ' (' ~ campaign.group.target_extension ~ ')') if campaign.group else 'Sem transferência — áudio e encerramento' }}</span>
     <span><strong>Janela:</strong> {{ campaign.window_start }}–{{ campaign.window_end }}</span>
     <span><strong>Limite:</strong> {{ campaign.daily_limit }}/dia</span>
+    <span><strong>Formato SIP:</strong> {{ 'DDD + número (sem DDI)' if campaign.dial_format == 'NATIONAL' else 'DDI 55 + DDD + número (E.164)' }}</span>
+    <span><strong>Próximo exemplo discado:</strong> {{ sip_preview.get(campaign.id) or 'Importe contatos' }}</span>
   </div>
   {% set report = reports[campaign.id] %}
   <section class="voice-live-monitor" data-voice-campaign="{{ campaign.id }}" data-voice-status-code="{{ campaign.status }}" aria-label="Acompanhamento de {{ campaign.name }}">

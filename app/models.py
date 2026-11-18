@@ -1210,6 +1210,8 @@ class VoiceCampaign(Base):
     dtmf_digit: Mapped[str] = mapped_column(String(1), default="1")
     daily_limit: Mapped[int] = mapped_column(Integer, default=30)
     interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    # Formato de origem da chamada SIP, independente da forma canonica do CRM.
+    dial_format: Mapped[str] = mapped_column(String(12), default="NATIONAL")
     window_start: Mapped[str] = mapped_column(String(5), default="09:00")
     window_end: Mapped[str] = mapped_column(String(5), default="18:00")
     legal_basis_verified: Mapped[bool] = mapped_column(Boolean, default=False)

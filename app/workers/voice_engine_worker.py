@@ -363,6 +363,7 @@ def _run_campaign_call(recipient_id: int) -> None:
             outbound_guard(db, phone)
             secret = decrypt_secret(account.password_encrypted)
             mode, dtmf, audio_uri = campaign.mode, campaign.dtmf_digit, campaign.audio_uri
+            dial_format = campaign.dial_format or "NATIONAL"
             aid = account.id
             db.expunge(account)
             if group is not None:
@@ -385,7 +386,7 @@ def _run_campaign_call(recipient_id: int) -> None:
                 raise VoiceEngineError("Discador interrompido.")
             result = driver.perform_call(
                 phone, mode=mode, group=group,
-                audio_wav=file_path, dtmf_digit=dtmf,
+                audio_wav=file_path, dtmf_digit=dtmf, dial_format=dial_format,
                 on_status=lambda status, code: _set_recipient(
                     recipient_id, status, code, ""),
                 should_abort=lambda: not campaign_call_permitted(recipient_id),
