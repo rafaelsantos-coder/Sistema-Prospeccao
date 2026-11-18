@@ -200,6 +200,11 @@ def register_conversation(
     previous = registration_status(db, conversation.contact_id)
     if previous is not None:
         if previous["state"] == ACTION_REGISTERED:
+            if previous.get("sellerUsername") != seller.username:
+                raise CRMManualError(
+                    "Esta conversa já está vinculada a outro vendedor no CRM. "
+                    "Transfira a oportunidade no CRM antes de continuar."
+                )
             return {"already": True, **previous}
         raise CRMManualError(
             "Registro anterior precisa de conferência no CRM. Não é seguro enviar novamente."
@@ -234,7 +239,6 @@ def register_conversation(
     for item in matches:
         opportunity_id = _record_id(item)
         owner_id = _record_owner(item)
-        funnel_id = _as_int(item.get("funnelId") or item.get("funnel_id"))
         if opportunity_id is None or owner_id is None:
             raise CRMManualError(
                 "Já existe um resultado no CRM que precisa de conferência manual. Registro bloqueado."
