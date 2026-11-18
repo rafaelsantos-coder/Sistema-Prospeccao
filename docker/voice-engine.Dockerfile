@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VOICE_TRANSFER_TESTS_ENABLED=false
 WORKDIR /app
 RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 libgcc-s1 libasound2 \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements-voice.txt .
