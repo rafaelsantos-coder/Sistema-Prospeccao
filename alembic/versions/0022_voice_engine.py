@@ -8,24 +8,31 @@ branch_labels = None
 depends_on = None
 
 
+
 def upgrade():
-    with op.batch_alter_table("voice_sip_accounts") as batch:
-        batch.add_column(sa.Column("sip_port", sa.Integer(), nullable=False, server_default="5060"))
-        batch.add_column(sa.Column("proxy_host", sa.String(190), nullable=False, server_default=""))
-        batch.add_column(sa.Column("proxy_port", sa.Integer(), nullable=False, server_default="5060"))
-        batch.add_column(sa.Column("dial_domain", sa.String(190), nullable=False, server_default=""))
-        batch.add_column(sa.Column("dial_prefix", sa.String(12), nullable=False, server_default=""))
-        batch.add_column(sa.Column("strip_brazil_ddi", sa.Boolean(), nullable=False, server_default=sa.false()))
-        batch.add_column(sa.Column("caller_id", sa.String(50), nullable=False, server_default=""))
-        batch.add_column(sa.Column("sip_check_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("sip_check_code", sa.Integer(), nullable=True))
-        batch.add_column(sa.Column("sip_check_message", sa.String(200), nullable=False, server_default=""))
-    with op.batch_alter_table("voice_groups") as batch:
-        batch.add_column(sa.Column("transfer_verified_at", sa.DateTime(timezone=True), nullable=True))
-    with op.batch_alter_table("voice_campaigns") as batch:
-        batch.add_column(sa.Column("started_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("stopped_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("last_call_at", sa.DateTime(timezone=True), nullable=True))
+    # Direct ADD COLUMN avoids SQLAlchemy 2.1 circular ordering in SQLite
+    # batch recreation; supported by both SQLite and PostgreSQL 18.
+    table = "voice_sip_accounts"
+    for col in (
+        sa.Column("sip_port", sa.Integer(), nullable=False, server_default="5060"),
+        sa.Column("proxy_host", sa.String(190), nullable=False, server_default=""),
+        sa.Column("proxy_port", sa.Integer(), nullable=False, server_default="5060"),
+        sa.Column("dial_domain", sa.String(190), nullable=False, server_default=""),
+        sa.Column("dial_prefix", sa.String(12), nullable=False, server_default=""),
+        sa.Column("strip_brazil_ddi", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("caller_id", sa.String(50), nullable=False, server_default=""),
+        sa.Column("sip_check_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("sip_check_code", sa.Integer(), nullable=True),
+        sa.Column("sip_check_message", sa.String(200), nullable=False, server_default=""),
+    ):
+        op.add_column(table, col)
+    op.add_column("voice_groups", sa.Column("transfer_verified_at", sa.DateTime(timezone=True), nullable=True))
+    for col in (
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("stopped_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("last_call_at", sa.DateTime(timezone=True), nullable=True),
+    ):
+        op.add_column("voice_campaigns", col)
     op.create_table(
         "voice_dialer_engine",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -58,11 +65,12 @@ def upgrade():
 def downgrade():
     op.drop_table("voice_transfer_tests")
     op.drop_table("voice_dialer_engine")
-    with op.batch_alter_table("voice_campaigns") as batch:
-        for name in ("last_call_at", "stopped_at", "started_at"):
-            batch.drop_column(name)
-    with op.batch_alter_table("voice_groups") as batch:
-        batch.drop_column("transfer_verified_at")
-    with op.batch_alter_table("voice_sip_accounts") as batch:
-        for name in ("sip_check_message", "sip_check_code", "sip_check_at", "caller_id", "strip_brazil_ddi", "dial_prefix", "dial_domain", "proxy_port", "proxy_host", "sip_port"):
-            batch.drop_column(name)
+    for column in ("last_call_at", "stopped_at", "started_at"):
+        op.drop_column("voice_campaigns", column)
+    op.drop_column("voice_groups", "transfer_verified_at")
+    for column in (
+        "sip_check_message", "sip_check_code", "sip_check_at", "caller_id",
+        "strip_brazil_ddi", "dial_prefix", "dial_domain", "proxy_port",
+        "proxy_host", "sip_port",
+    ):
+        op.drop_column("voice_sip_accounts", column)
