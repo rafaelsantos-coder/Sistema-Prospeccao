@@ -536,7 +536,13 @@ def _ai_reserved_queue_ids():
         AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY"}),
     )
     if manual_queue_control_enabled():
-        query = query.where(AIQueueBinding.manual_authorized.is_(True))
+        query = query.join(AIAgentProfile, AIAgentProfile.id == AIQueueBinding.agent_id).join(
+            ServiceQueue, ServiceQueue.id == AIQueueBinding.queue_id
+        ).where(
+            AIQueueBinding.manual_authorized.is_(True),
+            AIAgentProfile.active.is_(True),
+            ServiceQueue.active.is_(True),
+        )
     return query
 
 
@@ -547,7 +553,15 @@ def _ai_owned_offline_queue_conversation_ids():
         AIQueueBinding.handling_mode.in_({AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE}),
     )
     if manual_queue_control_enabled():
-        offline_queue_ids = offline_queue_ids.where(AIQueueBinding.manual_authorized.is_(True))
+        offline_queue_ids = offline_queue_ids.join(
+            AIAgentProfile, AIAgentProfile.id == AIQueueBinding.agent_id
+        ).join(
+            ServiceQueue, ServiceQueue.id == AIQueueBinding.queue_id
+        ).where(
+            AIQueueBinding.manual_authorized.is_(True),
+            AIAgentProfile.active.is_(True),
+            ServiceQueue.active.is_(True),
+        )
     return (
         select(ConversationQueueLink.conversation_id)
         .join(
