@@ -21,7 +21,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import SessionLocal
 from app.models import (
-    VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient,
+    VoiceCallEvent, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient,
     VoiceSipAccount, VoiceTransferTest,
 )
 from app.services.global_blacklist import is_globally_blocked
@@ -126,6 +126,11 @@ def _set_recipient(recipient_id: int, status: str, code: int | None,
                 row.answered_at = now()
             if transferred:
                 row.transferred_at = now()
+            db.add(VoiceCallEvent(
+                recipient_id=row.id, event_id=uuid4().hex,
+                event=(status or "INDETERMINADO")[:35],
+                detail=(message or f"SIP {code or '-'}")[:180],
+            ))
             db.commit()
 
 
@@ -242,6 +247,19 @@ def _claim_recipient() -> int | None:
     return None
 
 
+def campaign_call_permitted(recipient_id: int) -> bool:
+    """Stop an in-flight call immediately if ADMIN paused the campaign or engine."""
+    if not outbound_allowed():
+        return False
+    try:
+        with SessionLocal() as db:
+            row = db.get(VoiceRecipient, recipient_id)
+            campaign = db.get(VoiceCampaign, row.campaign_id) if row else None
+            return bool(campaign and campaign.status == "EM_EXECUCAO")
+    except Exception:
+        return False
+
+
 def _run_campaign_call(recipient_id: int) -> None:
     file_path = None
     try:
@@ -284,7 +302,7 @@ def _run_campaign_call(recipient_id: int) -> None:
                 audio_wav=file_path, dtmf_digit=dtmf,
                 on_status=lambda status, code: _set_recipient(
                     recipient_id, status, code, ""),
-                should_abort=lambda: not outbound_allowed(),
+                should_abort=lambda: not campaign_call_permitted(recipient_id),
             )
             _set_recipient(recipient_id, result.status, result.sip_code, result.message,
                            True, result.answered, result.transferred)
