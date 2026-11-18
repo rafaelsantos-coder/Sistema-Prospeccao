@@ -216,3 +216,35 @@ aberta por vez.
   listagem reabre a campanha selecionada no mesmo navegador, quando presente.
 - As campanhas começam recolhidas, inclusive na página de excluídas; esta
   alteração é exclusivamente de interface e **não inicia nem reinicia discagem**.
+
+
+## Reenviar campanha (completa / somente não atendidos)
+
+Campanhas **PAUSADAS** ou **CONCLUÍDAS**, sem chamadas em andamento, oferecem
+duas opções dentro da campanha expandida:
+
+- **Reenviar campanha:** seleciona todos os telefones válidos e não bloqueados
+  da campanha original, inclusive atendidos e contatos que ainda estavam
+  pendentes. A tela alerta explicitamente que números atendidos serão contatados
+  outra vez.
+- **Reenviar somente não atendidos:** seleciona apenas números com tentativa
+  registrada e resultado real sem atendimento (SEM_ATENDIMENTO, SEM_RESPOSTA,
+  OCUPADO, TIMEOUT sem evidência de resposta ou FALHOU após SIP TOCANDO).
+  Exclui números com **qualquer** evidência histórica de atendimento nas
+  campanhas de voz, inclusive SIP ATENDIDA, REFER, DTMF, áudio, falha de
+  transferência e falha de áudio após atendimento. Não seleciona resultados
+  indeterminados, falhas antes de tocar ou contatos ainda não tentados.
+
+Os dois modos respeitam a blacklist global e opt-outs legados antes de
+gerar contatos e **novamente no worker imediatamente antes de cada INVITE**.
+Não há desbloqueio, reinício automático ou reimportação de contatos.
+
+O usuário ADMIN vê uma **prévia de quantidade e exclusões**, confirma o
+nome exato da campanha e assinala declaração de base legal e autorização para
+a nova rodada. Só então uma **nova campanha** é criada com mesma conta SIP,
+grupo, modalidade, áudio, limites, janela e formato de discagem; novos
+destinatários iniciam em PENDENTE. O histórico antigo permanece intacto,
+e o monitoramento e a auditoria da nova rodada são independentes. O motor
+PJSUA2 passa a executar as ligações somente enquanto os bloqueios usuais
+(estágio, conta, horário, limite diário, parada geral) estiverem liberados.
+Submissões duplicadas em até dois minutos são rejeitadas.

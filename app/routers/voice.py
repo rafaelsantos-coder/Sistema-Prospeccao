@@ -10,12 +10,13 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse, RedirectResponse
 
 from app.database import get_db
-from app.models import Lead, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall, VoiceTransferTest
+from app.models import AuditLog, Lead, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall, VoiceTransferTest
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.dispatch_queue import parse_dispatch_csv
 from app.services.media_storage import MediaStorage
 from app.services.voice_reporting import campaign_operational_report
+from app.services.voice_resend import RESEND_MODES, select_resend_recipients
 from app.services.secret_store import encrypt_secret
 from app.services.voice_runtime import (
     check_campaign_ready, validate_routing_options, outbound_guard, make_dial_uri,
@@ -23,6 +24,7 @@ from app.services.voice_runtime import (
 )
 from app.services.voice_test import aware
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from app.services.voice_test import is_agent_online, now_utc, validate_test_phone, verify_test_allowed
 from app.services.voice import (
     VOICE_STATUS_HOMOLOGACAO,
@@ -349,6 +351,132 @@ def restore_voice_campaign(campaign_id: int, request: Request,
     db.commit()
     flash(request, "Campanha restaurada. Nova autorização é obrigatória antes de iniciar.")
     return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.get("/campaigns/{campaign_id}/resend")
+def voice_campaign_resend_preview(campaign_id: int, request: Request, mode: str = "ALL",
+                                  db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    if mode not in RESEND_MODES:
+        return _error(request, "Escolha Reenviar campanha ou Reenviar não atendidos.", "/voice/campaigns")
+    campaign = db.get(VoiceCampaign, campaign_id)
+    if not campaign:
+        return _error(request, "Campanha não encontrada.", "/voice/campaigns")
+    if campaign.status not in {"PAUSADA", "CONCLUIDA"} or _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Pause a campanha e aguarde o término das chamadas antes de reenviar.", "/voice/campaigns")
+    try:
+        selection = select_resend_recipients(db, campaign, mode)
+    except Exception:
+        return _error(request, "Não foi possível consultar a blacklist e o histórico. Reenvio bloqueado.", "/voice/campaigns")
+    return render(
+        request, "voice/campaign_resend.html", user=actor, active_nav="voice",
+        voice_section="campaigns", page_title=f"Prospecta VOZ · Reenviar campanha #{campaign.id}",
+        campaign=campaign, mode=mode, selection=selection,
+    )
+
+
+@router.post("/campaigns/{campaign_id}/resend")
+def voice_campaign_resend(campaign_id: int, request: Request,
+                          csrf_token: str = Form(...), mode: str = Form(...),
+                          confirm_name: str = Form(""), authorization: str = Form(""),
+                          legal_confirmation: str = Form(""),
+                          db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    if mode not in RESEND_MODES:
+        return _error(request, "Modalidade de reenvio inválida.", "/voice/campaigns")
+    campaign = db.scalar(select(VoiceCampaign).where(
+        VoiceCampaign.id == campaign_id
+    ).with_for_update())
+    if not campaign:
+        return _error(request, "Campanha não encontrada.", "/voice/campaigns")
+    if campaign.status not in {"PAUSADA", "CONCLUIDA"} or _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Campanha em execução ou com chamada em andamento. Pause antes de reenviar.", "/voice/campaigns")
+    if confirm_name.strip() != campaign.name or authorization != "sim" or legal_confirmation != "confirmado":
+        return _error(request, "Nenhuma ligação iniciada: confirme o nome, a autorização e a base legal.", f"/voice/campaigns/{campaign_id}/resend?mode={mode}")
+
+    # Evita duplicações por duplo clique, abas ou atualização do navegador.
+    last_resend = db.scalar(select(AuditLog.id).where(
+        AuditLog.entity_type == "voice_campaign",
+        AuditLog.entity_id == str(campaign_id),
+        AuditLog.action == "VOICE_CAMPAIGN_RESEND_CREATED",
+        AuditLog.created_at >= datetime.now(timezone.utc) - timedelta(minutes=2),
+    ).limit(1))
+    if last_resend is not None:
+        return _error(request, "Reenvio já solicitado recentemente. Confira a nova campanha antes de tentar novamente.", "/voice/campaigns")
+
+    try:
+        selection = select_resend_recipients(db, campaign, mode)
+    except Exception:
+        return _error(request, "Falha ao consultar blacklist e histórico; nenhuma ligação iniciada.", "/voice/campaigns")
+    if not selection.eligible_count:
+        return _error(request, "Nenhum número elegível para este tipo de reenvio. Nenhuma ligação iniciada.", "/voice/campaigns")
+
+    started_at = datetime.now(timezone.utc)
+    suffix = "Todos" if mode == "ALL" else "Não atendidos"
+    stamp = started_at.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m %H:%M")
+    description = f"Reenvio #{campaign.id} · {suffix} · {stamp}"
+    # Original intacta; nova campanha evita misturar historico antigo e novo
+    # e garante limites e estatísticas independentes para esta rodada.
+    new_campaign = VoiceCampaign(
+        name=(campaign.name[:max(1, 180 - len(description) - 4)] + " · " + description)[:180],
+        mode=campaign.mode,
+        status="EM_EXECUCAO",
+        sip_account_id=campaign.sip_account_id,
+        group_id=campaign.group_id,
+        audio_uri=campaign.audio_uri,
+        dtmf_digit=campaign.dtmf_digit,
+        daily_limit=campaign.daily_limit,
+        interval_seconds=campaign.interval_seconds,
+        dial_format=campaign.dial_format or "NATIONAL",
+        window_start=campaign.window_start,
+        window_end=campaign.window_end,
+        legal_basis_verified=True,
+        created_by_id=actor.id,
+        approved_by_id=actor.id,
+        approved_at=started_at,
+        started_at=started_at,
+    )
+    db.add(new_campaign)
+    db.flush()
+    for recipient in selection.eligible:
+        db.add(VoiceRecipient(
+            campaign_id=new_campaign.id, lead_id=recipient.lead_id,
+            name=recipient.name or "", phone=recipient.phone, status="PENDENTE",
+            attempts=0,
+        ))
+    db.flush()
+
+    failures = check_campaign_ready(db, new_campaign)
+    if failures:
+        db.rollback()  # Sem clone parcial nem novos contatos no banco.
+        write_audit(db, user=actor, action="VOICE_CAMPAIGN_RESEND_BLOCKED",
+                    entity_type="voice_campaign", entity_id=campaign_id,
+                    payload={"mode": mode, "reasons": failures[:6]})
+        db.commit()
+        return _error(request, "NENHUMA LIGAÇÃO INICIADA: " + " / ".join(failures[:3]),
+                      "/voice/campaigns")
+
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_RESEND_CREATED",
+                entity_type="voice_campaign", entity_id=campaign_id,
+                payload={"new_campaign_id": new_campaign.id, "mode": mode,
+                         "selected": selection.eligible_count,
+                         "blocked": selection.blocked,
+                         "answered_excluded": selection.answered_excluded,
+                         "never_attempted": selection.never_attempted,
+                         "other_excluded": selection.other_excluded})
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_STARTED",
+                entity_type="voice_campaign", entity_id=new_campaign.id,
+                payload={"manual_authorization": True, "resend_source_campaign_id": campaign_id,
+                         "resend_mode": mode, "single_call_at_a_time": True,
+                         "selected": selection.eligible_count})
+    db.commit()
+    flash(request, f"Reenvio iniciado na campanha #{new_campaign.id}: {selection.eligible_count} contatos selecionados. A original foi preservada. Acompanhe os resultados na nova campanha.")
+    return RedirectResponse(f"/voice/campaigns?open={new_campaign.id}", status_code=303)
 
 
 @router.get("/campaigns")

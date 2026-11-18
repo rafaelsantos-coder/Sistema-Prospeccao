@@ -216,7 +216,15 @@
 
   let restored = null;
   try {
-    restored = sessionStorage.getItem(restoreKey);
+    const url = new URL(window.location.href);
+    const requested = url.searchParams.get("open");
+    if (requested && /^\d+$/.test(requested)) {
+      restored = requested;
+      url.searchParams.delete("open");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    } else {
+      restored = sessionStorage.getItem(restoreKey);
+    }
     sessionStorage.removeItem(restoreKey);
   } catch (_) { /* private mode */ }
   if (restored) {
