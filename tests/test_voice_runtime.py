@@ -20,7 +20,8 @@ from app.services.secret_store import encrypt_secret
 from app.services.voice_pjsua2 import PjSession, VoiceEngineError
 from app.services.voice_runtime import (
     VoiceReadinessError, check_campaign_ready, make_dial_uri, make_transfer_uri,
-    next_attempt_allowed, outbound_guard, validate_routing_options, within_call_window,
+    next_attempt_allowed, next_call_window_start, outbound_guard,
+    validate_routing_options, within_call_window,
 )
 
 
@@ -125,6 +126,24 @@ def test_call_schedule_conservative_weekdays():
     assert not within_call_window(camp, datetime(2026, 11, 22, 13, 30, tzinfo=timezone.utc))
 
 
+def test_next_call_window_reports_tomorrow_and_after_weekend():
+    campaign = VoiceCampaign(window_start="09:00", window_end="18:00")
+    # Quarta 18/11/2026 18h14 em Sao Paulo: quinta 19/11 09h.
+    next_start = next_call_window_start(
+        campaign, datetime(2026, 11, 18, 21, 14, tzinfo=timezone.utc))
+    assert next_start is not None
+    assert next_start.astimezone(timezone.utc) == datetime(
+        2026, 11, 19, 12, 0, tzinfo=timezone.utc
+    )
+    # Sexta a noite: proximo dia util na segunda.
+    monday = next_call_window_start(
+        campaign, datetime(2026, 11, 20, 22, 0, tzinfo=timezone.utc))
+    assert monday is not None
+    assert monday.astimezone(timezone.utc) == datetime(
+        2026, 11, 23, 12, 0, tzinfo=timezone.utc
+    )
+
+
 def test_campaign_uses_registered_group_without_prior_refer_test():
     with TestClient(app) as client:
         token = _login(client)
@@ -167,6 +186,13 @@ def test_campaign_uses_registered_group_without_prior_refer_test():
                 VoiceTransferTest.account_id == aid,
                 VoiceTransferTest.group_id == gid,
             )).first()
+            db.commit()
+            assert check_campaign_ready(db, campaign) == []
+            account = db.get(VoiceSipAccount, aid)
+            # O REGISTER anterior expira à noite; o worker deve fazer outro
+            # antes do INVITE, sem bloquear a fila automaticamente.
+            account.sip_check_at = datetime.now(timezone.utc) - timedelta(days=2)
+            account.sip_check_code = 401
             db.commit()
             assert check_campaign_ready(db, campaign) == []
             group.active = False
