@@ -33,6 +33,8 @@ def upgrade():
         sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("worker_id", sa.String(120), nullable=False, server_default=""),
         sa.Column("backend", sa.String(35), nullable=False, server_default="PJSUA2"),
+        sa.Column("campaign_runtime_enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("test_runtime_enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("last_error", sa.String(200), nullable=False, server_default=""),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
