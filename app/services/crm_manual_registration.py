@@ -84,8 +84,20 @@ def _records(payload: Any) -> list[dict[str, Any]]:
         for key in ("items", "opportunities", "leads", "results", "rows", "data"):
             if key in payload:
                 records = _records(payload[key])
-                total = _as_int(payload.get("total") or payload.get("totalCount") or payload.get("count"))
-                if (total is not None and total > len(records)) or payload.get("nextPage") or payload.get("next"):
+                pagination = _as_dict(payload.get("pagination") or payload.get("meta"))
+                total = _as_int(
+                    payload.get("total") or payload.get("totalCount") or pagination.get("total")
+                    or pagination.get("totalCount")
+                )
+                page = _as_int(payload.get("page") or pagination.get("page")) or 1
+                pages = _as_int(payload.get("totalPages") or pagination.get("totalPages"))
+                has_more = (
+                    payload.get("hasMore") or pagination.get("hasMore")
+                    or payload.get("nextPage") or pagination.get("nextPage")
+                    or payload.get("next") or pagination.get("next")
+                    or (pages is not None and page < pages)
+                )
+                if (total is not None and total > len(records)) or has_more:
                     raise CRMManualError(
                         "A pesquisa do CRM retornou resultados incompletos. Confira o CRM antes de registrar."
                     )
@@ -210,7 +222,12 @@ def register_conversation(
             "Registro anterior precisa de conferência no CRM. Não é seguro enviar novamente."
         )
 
-    crm = SulnetCRMClient.from_settings()
+    try:
+        crm = SulnetCRMClient.from_settings()
+    except CRMIntegrationError as exc:
+        raise CRMManualError(
+            "A conexão com o CRM Comercial não está configurada. Registro não realizado."
+        ) from exc
     if not crm.bearer_token:
         raise CRMManualError(
             "Consulta de duplicidades do CRM não configurada. Registro bloqueado por segurança."
