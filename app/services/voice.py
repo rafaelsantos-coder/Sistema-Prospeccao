@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import wave
 from io import BytesIO
+from typing import BinaryIO
 
 from app.services.scoring import normalize_phone
 
@@ -50,20 +51,44 @@ def validate_campaign(mode: str, start: str, end: str, digit: str, audio_uri: st
     return clean
 
 
-def validate_wav(data: bytes, max_bytes: int = 2_000_000) -> None:
-    if not data or len(data) > max_bytes:
-        raise ValueError("Audio WAV vazio ou maior que 2 MB.")
+def validate_wav_file(fileobj: BinaryIO) -> None:
+    """Validate WAV in bounded-memory chunks, without a business size/duration cap.
+
+    Large recordings stay in the upload's spooled file instead of being read
+    fully into RAM. The file is rewound for S3 multipart upload afterward.
+    """
     try:
-        with wave.open(BytesIO(data), "rb") as player:
+        fileobj.seek(0, 2)
+        if fileobj.tell() < 44:
+            raise ValueError("Arquivo WAV vazio ou incompleto.")
+        fileobj.seek(0)
+        with wave.open(fileobj, "rb") as player:
             if player.getcomptype() != "NONE" or player.getnchannels() != 1:
                 raise ValueError("Use WAV PCM mono, sem compressao.")
             if player.getsampwidth() != 2 or player.getframerate() not in {8000, 16000}:
                 raise ValueError("Use WAV PCM 16-bit, mono, 8 ou 16 kHz.")
-            duration = player.getnframes() / player.getframerate()
-            if not 0.5 <= duration <= 60:
-                raise ValueError("O audio deve durar de 0,5 a 60 segundos.")
-    except (EOFError, wave.Error) as exc:
+            total_frames = player.getnframes()
+            if total_frames <= 0:
+                raise ValueError("O audio deve conter gravacao valida.")
+            # Do not allocate frames for a whole recording. Reject truncated
+            # WAV data rather than uploading it and failing at playback time.
+            remaining = total_frames
+            while remaining:
+                frames = player.readframes(min(8192, remaining))
+                received = len(frames) // 2  # PCM16 mono: two bytes per frame
+                if received <= 0 or len(frames) % 2:
+                    raise ValueError("Arquivo WAV incompleto ou truncado.")
+                remaining -= received
+    except (EOFError, wave.Error, OSError) as exc:
         raise ValueError("Arquivo WAV invalido.") from exc
+    finally:
+        fileobj.seek(0)
+
+
+def validate_wav(data: bytes) -> None:
+    """Backward-compatible validator for existing callers and small files."""
+    with BytesIO(data) as fileobj:
+        validate_wav_file(fileobj)
 
 
 def normalize_voice_contacts(rows: list[dict[str, str]], blocked: set[str]) -> tuple[list[dict[str, str]], int]:
