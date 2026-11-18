@@ -123,7 +123,7 @@ def _set_recipient(recipient_id: int, status: str, code: int | None,
         if row:
             row.status = status[:25]
             row.last_event = (status or "")[:40]
-            row.last_error = (message or "")[:200] if status not in {"TRANSFERIDA", "ATENDIDA"} else ""
+            row.last_error = (message or "")[:200] if status not in {"TRANSFERIDA", "ATENDIDA", "AUDIO_CONCLUIDO"} else ""
             if answered:
                 row.answered_at = now()
             if transferred:
