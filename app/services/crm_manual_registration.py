@@ -83,7 +83,13 @@ def _records(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         for key in ("items", "opportunities", "leads", "results", "rows", "data"):
             if key in payload:
-                return _records(payload[key])
+                records = _records(payload[key])
+                total = _as_int(payload.get("total") or payload.get("totalCount") or payload.get("count"))
+                if (total is not None and total > len(records)) or payload.get("nextPage") or payload.get("next"):
+                    raise CRMManualError(
+                        "A pesquisa do CRM retornou resultados incompletos. Confira o CRM antes de registrar."
+                    )
+                return records
     raise CRMManualError(
         "O CRM não confirmou o resultado da pesquisa de duplicidades. Registro não realizado."
     )
@@ -209,8 +215,14 @@ def register_conversation(
     # em formato desconhecido: isso poderia duplicar oportunidades existentes.
     try:
         found = crm.find_opportunities_by_phone(phone)
+        records = _records(found)
+        # Resultados sem telefone não permitem decidir se há duplicidade.
+        if any(not _record_phone(item) for item in records):
+            raise CRMManualError(
+                "A consulta do CRM não trouxe todos os telefones. Registro bloqueado para evitar duplicidade."
+            )
         matches = [
-            item for item in _records(found)
+            item for item in records
             if _phone_key(_record_phone(item)) == _phone_key(phone) and not _closed(item)
         ]
     except CRMIntegrationError as exc:
