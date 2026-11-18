@@ -5,7 +5,7 @@ import re
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.database import SessionLocal
 from app.main import app
@@ -181,6 +181,11 @@ def test_seller_wrong_owner_is_blocked_without_creating(monkeypatch):
             assert seller is not None
             conv = db.get(Conversation, cid)
             conv.assigned_user_id = seller.id
+            db.execute(delete(AuditLog).where(
+                AuditLog.entity_type == "contact",
+                AuditLog.entity_id == str(conv.contact_id),
+                AuditLog.action.in_((manual.ACTION_REGISTERED, manual.ACTION_UNCERTAIN, manual.ACTION_REVIEW)),
+            ))
             db.commit()
 
         page = client.get(path)
