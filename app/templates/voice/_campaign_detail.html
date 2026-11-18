@@ -23,10 +23,18 @@
       <span class="eyebrow">NOVA RODADA DE LIGAÇÕES</span>
       <p class="voice-help">A nova execução preserva o histórico desta campanha. Reenvie todos os contatos elegíveis ou somente quem não atendeu.</p>
     </div>
-    <div class="voice-actions">
-      <a class="button button-secondary" href="/voice/campaigns/{{ campaign.id }}/resend?mode=ALL">Reenviar campanha</a>
-      <a class="button button-primary" href="/voice/campaigns/{{ campaign.id }}/resend?mode=UNANSWERED">Reenviar somente não atendidos</a>
-    </div>
+    <form method="post" action="/voice/campaigns/{{ campaign.id }}/resend" class="stack-form voice-resend-inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="authorization" value="sim">
+      <label><input type="checkbox" name="legal_confirmation" value="confirmado" required>
+        Confirmo que posso contatar os números selecionados, respeitando a blacklist.
+      </label>
+      <div class="voice-actions">
+        <button class="button button-secondary" type="submit" name="mode" value="ALL">Reenviar campanha inteira</button>
+        <button class="button button-primary" type="submit" name="mode" value="UNANSWERED">Reenviar somente não atendidos</button>
+      </div>
+      <p class="voice-help">A segunda opção exclui qualquer número que já tenha atendido. Não exige outra tela ou digitar o nome da campanha. Fora do horário, a nova rodada aguarda a próxima janela.</p>
+    </form>
   </div>
   {% endif %}
   <div class="voice-campaign-meta">
