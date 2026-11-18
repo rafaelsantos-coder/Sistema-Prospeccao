@@ -10,12 +10,18 @@ from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
 from app.database import get_db
-from app.models import Lead, VoiceCampaign, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall
+from app.models import Lead, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall, VoiceTransferTest
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.dispatch_queue import parse_dispatch_csv
 from app.services.media_storage import MediaStorage
 from app.services.secret_store import encrypt_secret
+from app.services.voice_runtime import (
+    check_campaign_ready, validate_routing_options, outbound_guard,
+    MAX_CALLS_PER_DAY, ENGINE_HEARTBEAT_MAX
+)
+from app.services.voice_test import aware
+from datetime import datetime, timezone
 from app.services.voice_test import is_agent_online, now_utc, validate_test_phone, verify_test_allowed
 from app.services.voice import (
     VOICE_STATUS_HOMOLOGACAO,
@@ -64,6 +70,7 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
     accounts = list(db.scalars(select(VoiceSipAccount).order_by(VoiceSipAccount.id.desc())))
     groups = list(db.scalars(select(VoiceGroup).order_by(VoiceGroup.id.desc())))
     campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
+    engine = db.get(VoiceDialerEngine, 1)
     recipient_count = db.scalar(select(func.count(VoiceRecipient.id))) or 0
     stats = {
         "accounts": len(accounts),
@@ -79,7 +86,7 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
     return render(
         request, "voice/dashboard.html", user=actor, active_nav="voice",
         voice_section="dashboard", page_title="Prospecta VOZ · Dashboard",
-        accounts=accounts, campaigns=campaigns[:5], stats=stats,
+        accounts=accounts, campaigns=campaigns[:5], stats=stats, engine=engine,
     )
 
 
@@ -137,13 +144,15 @@ def voice_campaigns(request: Request, db: Session = Depends(get_db)):
     if redirect:
         return redirect
     campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
+    engine = db.get(VoiceDialerEngine, 1)
+    checklist = {item.id: check_campaign_ready(db, item) for item in campaigns}
     counts = dict(db.execute(
         select(VoiceRecipient.campaign_id, func.count(VoiceRecipient.id)).group_by(VoiceRecipient.campaign_id)
     ).all())
     return render(
         request, "voice/campaigns.html", user=actor, active_nav="voice",
         voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
-        campaigns=campaigns, counts=counts,
+        campaigns=campaigns, counts=counts, engine=engine, readiness=checklist,
     )
 
 
@@ -186,7 +195,11 @@ def confirm_delete_group(group_id: int, request: Request, db: Session = Depends(
 def update_account(account_id: int, request: Request, csrf_token: str = Form(...),
                    name: str = Form(...), domain: str = Form(...),
                    username: str = Form(...), transport: str = Form("UDP"),
-                   password: str = Form(""), db: Session = Depends(get_db)):
+                   sip_port: int = Form(5060), proxy_host: str = Form(""),
+                   proxy_port: int = Form(5060), dial_domain: str = Form(""),
+                   dial_prefix: str = Form(""), strip_brazil_ddi: str = Form(""),
+                   caller_id: str = Form(""), password: str = Form(""),
+                   db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
@@ -196,6 +209,8 @@ def update_account(account_id: int, request: Request, csrf_token: str = Form(...
         return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
     try:
         host, user, proto = validate_sip(domain, username, transport)
+        routing = validate_routing_options(sip_port, proxy_host, proxy_port,
+                                           dial_domain, dial_prefix, caller_id)
         if not name.strip() or len(name.strip()) > 120 or len(password) > 300:
             raise ValueError("Nome ou senha invalida.")
     except ValueError as exc:
@@ -204,6 +219,13 @@ def update_account(account_id: int, request: Request, csrf_token: str = Form(...
     account.domain = host
     account.username = user
     account.transport = proto
+    for key, value in routing.items():
+        setattr(account, key, value)
+    account.strip_brazil_ddi = strip_brazil_ddi.lower() in {"on", "true", "yes", "1"}
+    # Never reuse a prior SIP status after changing credentials or routing.
+    account.sip_check_at = None
+    account.sip_check_code = None
+    account.sip_check_message = "Configuracao alterada; teste SIP necessario."
     if password.strip():
         account.password_encrypted = encrypt_secret(password)
     write_audit(db, user=actor, action="VOICE_SIP_UPDATED", entity_type="voice_sip_account",
@@ -328,7 +350,11 @@ def delete_group(group_id: int, request: Request, csrf_token: str = Form(...),
 @router.post("/accounts")
 def add_account(request: Request, csrf_token: str = Form(...), name: str = Form(...),
                 domain: str = Form(...), username: str = Form(...), password: str = Form(...),
-                transport: str = Form("UDP"), db: Session = Depends(get_db)):
+                transport: str = Form("UDP"), sip_port: int = Form(5060),
+                proxy_host: str = Form(""), proxy_port: int = Form(5060),
+                dial_domain: str = Form(""), dial_prefix: str = Form(""),
+                strip_brazil_ddi: str = Form(""), caller_id: str = Form(""),
+                db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
@@ -336,6 +362,8 @@ def add_account(request: Request, csrf_token: str = Form(...), name: str = Form(
     require_roles(actor, "ADMIN")
     try:
         host, user, proto = validate_sip(domain, username, transport)
+        routing = validate_routing_options(sip_port, proxy_host, proxy_port,
+                                           dial_domain, dial_prefix, caller_id)
         if not password.strip() or len(password) > 300:
             raise ValueError("Informe a senha SIP (maximo 300 caracteres).")
         if not name.strip() or len(name.strip()) > 120:
@@ -344,7 +372,9 @@ def add_account(request: Request, csrf_token: str = Form(...), name: str = Form(
         return _error(request, str(exc))
     account = VoiceSipAccount(name=name.strip(), domain=host, username=user,
                               password_encrypted=encrypt_secret(password),
-                              transport=proto, created_by_id=actor.id)
+                              transport=proto, created_by_id=actor.id,
+                              strip_brazil_ddi=strip_brazil_ddi.lower() in {"on", "true", "yes", "1"},
+                              **routing)
     db.add(account)
     db.flush()
     write_audit(db, user=actor, action="VOICE_SIP_CREATED", entity_type="voice_sip_account",
