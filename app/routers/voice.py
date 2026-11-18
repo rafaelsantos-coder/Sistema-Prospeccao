@@ -486,12 +486,13 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
     campaign = db.get(VoiceCampaign, campaign_id)
     if not campaign or campaign.mode != "AUDIO" or campaign.status != "RASCUNHO":
         return _error(request, "Campanha nao permite upload de audio.")
-    data = await audio.read(2_000_001)
     try:
-        validate_wav(data)
         storage = MediaStorage()
         if not storage.configured:
             raise ValueError("Configure armazenamento de midia seguro antes do upload.")
+        # Limite operacional do armazenamento; sem teto arbitrario de 2 MB / 60 segundos.
+        data = await audio.read(storage.max_bytes + 1)
+        validate_wav(data, max_bytes=storage.max_bytes)
         uri, _ = storage.upload_campaign_bytes(
             data=data, campaign_id=campaign.id,
             filename=f"voice-{uuid4().hex}.wav", mime_type="audio/wav")
@@ -504,7 +505,7 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
     write_audit(db, user=actor, action="VOICE_AUDIO_UPDATED",
                 entity_type="voice_campaign", entity_id=campaign.id)
     db.commit()
-    flash(request, "Audio PCM carregado. Campanha ainda em rascunho.")
+    flash(request, "Áudio carregado. Verifique o checklist e inicie a campanha quando estiver pronto.")
     return RedirectResponse("/voice/campaigns", status_code=303)
 
 
