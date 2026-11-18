@@ -2599,3 +2599,9 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .voice-campaign-resend-options .voice-actions { width: 100%; }
   .voice-campaign-resend-options .voice-actions .button { flex: 1 1 auto; text-align: center; }
 }
+
+/* Agenda explícita para campanhas em espera, sem mascarar "em execução". */
+.voice-window-note { color: #9d561b; font-weight: 700; }
+.voice-resend-inline-form { margin-top: 9px; }
+.voice-resend-inline-form > label { display: inline-flex; align-items: start; gap: 7px; font-size: 12px; }
+.voice-resend-inline-form > label > input { margin-top: 2px; flex-shrink: 0; }
