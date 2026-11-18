@@ -85,7 +85,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _show_corporate_differentials,
 )
 from app.services.ai_sdr_policy import MAX_AI_REPLIES_PER_HOUR, SULIA_SYSTEM_PROMPT, UNTRUSTED_INPUT_NOTICE
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, manual_queue_control_enabled
 from app.services.audit import write_audit
 from app.services.queue_routing import (
     AI_WHEN_HUMAN_IDLE,
@@ -107,7 +107,7 @@ DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
 def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None:
     if not queue_id or not ai_allowed_for_queue(queue_id):
         return None
-    return db.scalar(
+    stmt = (
         select(AIQueueBinding)
         .options(
             selectinload(AIQueueBinding.agent),
@@ -118,6 +118,19 @@ def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None
             AIQueueBinding.active.is_(True),
         )
     )
+    if manual_queue_control_enabled():
+        stmt = stmt.where(AIQueueBinding.manual_authorized.is_(True))
+    binding = db.scalar(stmt)
+    if manual_queue_control_enabled() and (
+        not binding
+        or not binding.agent
+        or not binding.agent.active
+        or binding.agent.role_type != "SDR"
+        or not binding.queue
+        or not binding.queue.active
+    ):
+        return None
+    return binding
 
 
 def is_ai_test_phone(phone: str | None) -> bool:
@@ -153,7 +166,7 @@ def is_human_only_queue(queue: ServiceQueue | None) -> bool:
     """Natine é humana; com escopo exclusivo, só a Fila IA pode receber IA."""
     return bool(
         queue and (
-            queue.name.strip().casefold() == "natine"
+            (not manual_queue_control_enabled() and queue.name.strip().casefold() == "natine")
             or not ai_allowed_for_queue(queue.id)
         )
     )
@@ -163,7 +176,11 @@ def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBindin
     queue = queue_for_conversation(db, conversation_id)
     if not queue or is_human_only_queue(queue):
         return None
-    return queue_ai_binding(db, queue.id) or _test_phone_binding(db, conversation_id, queue)
+    binding = queue_ai_binding(db, queue.id)
+    if manual_queue_control_enabled():
+        # Mesmo numeros de teste nunca podem furar a autorizacao do gestor.
+        return binding
+    return binding or _test_phone_binding(db, conversation_id, queue)
 
 
 HUMAN_STEP_IN_WINDOW = timedelta(hours=2)

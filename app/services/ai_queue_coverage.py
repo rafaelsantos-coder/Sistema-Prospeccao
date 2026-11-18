@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AIAgentProfile, AIQueueBinding, AuditLog, ServiceQueue
-from app.services.ai_queue_scope import ai_allowed_for_queue
+from app.services.ai_queue_scope import ai_allowed_for_queue, manual_queue_control_enabled
 from app.services.audit import write_audit
 from app.services.queue_routing import AI_WHEN_HUMAN_IDLE
 from app.services.zapi_instances import queue_instance
@@ -27,6 +27,9 @@ COVERAGE_ACTION = "AI_ALL_QUEUES_COVERAGE_APPLIED"
 
 
 def ensure_unanswered_coverage_all_queues(db: Session) -> dict[str, object]:
+    # Rotina legada de auto-habilitacao: proibida sob controle manual do gestor.
+    if manual_queue_control_enabled():
+        return {"already_applied": True, "enabled": [], "without_whatsapp": [], "manual_control": True}
     already = db.scalar(
         select(AuditLog.id).where(
             AuditLog.action == COVERAGE_ACTION,

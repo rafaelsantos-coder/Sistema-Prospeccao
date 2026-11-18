@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.constants import DEFAULT_TARGETS
+from app.services.ai_queue_scope import manual_queue_control_enabled
 from app.models import (
     Activity,
     AIAgentProfile,
@@ -402,6 +403,11 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         digital_queues.append(dedicated_ai_queue)
 
     for digital_queue in digital_queues:
+        # Modo individual: nunca criar vinculo ativo automaticamente em filas comuns.
+        if manual_queue_control_enabled() and (
+            not dedicated_ai_queue or digital_queue.id != dedicated_ai_queue.id
+        ):
+            continue
         if db.scalar(
             select(AIQueueBinding.id).where(
                 AIQueueBinding.queue_id == digital_queue.id
@@ -414,6 +420,11 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
                 agent_id=ai_agent.id,
                 handling_mode="AI_FIRST",
                 active=True,
+                manual_authorized=bool(
+                    manual_queue_control_enabled()
+                    and dedicated_ai_queue
+                    and digital_queue.id == dedicated_ai_queue.id
+                ),
                 fallback_to_human=True,
             )
         )

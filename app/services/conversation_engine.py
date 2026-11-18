@@ -7,6 +7,7 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.services.ai_queue_scope import ai_queue_enabled, manual_queue_control_enabled
 from app.models import (
     AIAgentProfile,
     AIConversationState,
@@ -137,6 +138,8 @@ def _queue_reserved_for_ai(
     conversation_id: int | None = None,
 ) -> bool:
     if not queue or not settings.ai_sdr_enabled or not settings.ai_autonomous_enabled:
+        return False
+    if not ai_queue_enabled(db, queue.id):
         return False
     binding = db.scalar(
         select(AIQueueBinding).where(
@@ -528,10 +531,19 @@ HUMAN_REQUESTED_AI_STATES = {"HANDOFF", "HUMAN_ACTIVE"}
 
 
 def _ai_reserved_queue_ids():
-    return select(AIQueueBinding.queue_id).where(
+    query = select(AIQueueBinding.queue_id).where(
         AIQueueBinding.active.is_(True),
         AIQueueBinding.handling_mode.in_({"AI_FIRST", "AI_ONLY"}),
     )
+    if manual_queue_control_enabled():
+        query = query.join(AIAgentProfile, AIAgentProfile.id == AIQueueBinding.agent_id).join(
+            ServiceQueue, ServiceQueue.id == AIQueueBinding.queue_id
+        ).where(
+            AIQueueBinding.manual_authorized.is_(True),
+            AIAgentProfile.active.is_(True),
+            ServiceQueue.active.is_(True),
+        )
+    return query
 
 
 def _ai_owned_offline_queue_conversation_ids():
@@ -540,6 +552,16 @@ def _ai_owned_offline_queue_conversation_ids():
         AIQueueBinding.active.is_(True),
         AIQueueBinding.handling_mode.in_({AI_WHEN_OFFLINE, AI_WHEN_HUMAN_IDLE}),
     )
+    if manual_queue_control_enabled():
+        offline_queue_ids = offline_queue_ids.join(
+            AIAgentProfile, AIAgentProfile.id == AIQueueBinding.agent_id
+        ).join(
+            ServiceQueue, ServiceQueue.id == AIQueueBinding.queue_id
+        ).where(
+            AIQueueBinding.manual_authorized.is_(True),
+            AIAgentProfile.active.is_(True),
+            ServiceQueue.active.is_(True),
+        )
     return (
         select(ConversationQueueLink.conversation_id)
         .join(

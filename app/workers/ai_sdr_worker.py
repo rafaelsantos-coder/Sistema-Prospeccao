@@ -14,7 +14,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, AuditLog, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_pending_scope import UNREAD_RECOVERY_SINCE_UTC, in_unread_recovery_window
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, enforce_exclusive_ai_queue, exclusive_ai_queue_id
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, ai_queue_enabled, manual_queue_control_enabled, enforce_exclusive_ai_queue, exclusive_ai_queue_id
 from app.services.ai_queue_coverage import (
     COVERAGE_ACTION,
     COVERAGE_CAMPAIGN_KEY,
@@ -95,10 +95,13 @@ def _ensure_bound_ai_agents_active() -> int:
     db = SessionLocal()
     activated = 0
     try:
-        bindings = list(db.scalars(select(AIQueueBinding).where(
+        stmt = select(AIQueueBinding).where(
             AIQueueBinding.active.is_(True),
             AIQueueBinding.handling_mode != "HUMAN",
-        )))
+        )
+        if manual_queue_control_enabled():
+            stmt = stmt.where(AIQueueBinding.manual_authorized.is_(True))
+        bindings = list(db.scalars(stmt))
         for binding in bindings:
             agent = db.get(AIAgentProfile, binding.agent_id)
             if agent and not agent.active:
@@ -845,7 +848,7 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
         )
         ai_users = {user_id for user_id in db.scalars(select(AIAgentProfile.user_id)) if user_id}
         for binding in bindings:
-            if not ai_allowed_for_queue(binding.queue_id):
+            if not ai_queue_enabled(db, binding.queue_id):
                 continue
             enabled_at = utc_naive(binding.updated_at)
             human_online = human_online_in_queue(db, binding.queue_id)

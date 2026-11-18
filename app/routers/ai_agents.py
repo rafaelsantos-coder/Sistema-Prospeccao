@@ -23,7 +23,7 @@ from app.models import (
     User,
 )
 from app.security import get_current_user, require_roles, validate_csrf
-from app.services.ai_queue_scope import ai_allowed_for_queue, exclusive_ai_queue_id
+from app.services.ai_queue_scope import ai_allowed_for_queue, exclusive_ai_queue_id, manual_queue_control_enabled, ai_queue_enabled
 from app.services.ai_sdr import ai_metrics
 from app.services.audit import write_audit
 from app.services.zapi_instances import queue_instance
@@ -99,8 +99,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         db.scalars(
             select(ServiceQueue)
             .options(selectinload(ServiceQueue.branch))
-            .where(ServiceQueue.active.is_(True))
-            .order_by(ServiceQueue.name)
+            .order_by(ServiceQueue.active.desc(), ServiceQueue.name)
         )
     )
     bindings = list(
@@ -160,6 +159,7 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         agents=agents,
         queues=queues,
         bindings=bindings,
+        bindings_by_queue={binding.queue_id: binding for binding in bindings},
         queue_instances=queue_instances,
         knowledge=knowledge,
         recent_runs=recent_runs,
@@ -171,6 +171,8 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         ai_sdr_enabled=settings.ai_sdr_enabled,
         autonomous_enabled=settings.ai_autonomous_enabled,
         exclusive_ai_queue_id=exclusive_ai_queue_id(),
+        manual_queue_control_enabled=manual_queue_control_enabled(),
+        ai_queue_enabled_ids={queue.id for queue in queues if ai_queue_enabled(db, queue.id)},
     )
 
 
@@ -816,7 +818,7 @@ def bind_queue(
         flash(request, "Fila inválida ou inativa.", "warning")
         return RedirectResponse("/ai", status_code=303)
     if not ai_allowed_for_queue(queue.id):
-        flash(request, "A IA está autorizada somente na Fila IA. As demais filas são humanas.", "warning")
+        flash(request, "Esta fila não está autorizada pela política de IA.", "warning")
         return RedirectResponse("/ai", status_code=303)
     if agent.role_type != "SDR":
         flash(
@@ -836,14 +838,22 @@ def bind_queue(
             queue_id=queue.id,
             agent_id=agent.id,
             handling_mode=mode,
-            active=True,
+            active=not manual_queue_control_enabled() and mode != "HUMAN",
+            manual_authorized=False,
             fallback_to_human=fallback_to_human,
         )
         db.add(binding)
     else:
         binding.agent_id = agent.id
         binding.handling_mode = mode
-        binding.active = True
+        # Salvar configuracao nao autoriza nem ativa a IA em modo manual.
+        # Uma fila previamente aprovada pode ser desligada, nunca religada aqui.
+        if manual_queue_control_enabled():
+            if mode == "HUMAN":
+                binding.active = False
+                binding.manual_authorized = False
+        else:
+            binding.active = mode != "HUMAN"
         binding.fallback_to_human = fallback_to_human
 
     write_audit(
@@ -862,7 +872,11 @@ def bind_queue(
     db.commit()
     flash(
         request,
-        f"Fila {queue.name} vinculada ao {agent.name}. Em Shadow Mode o atendimento humano continua funcionando normalmente.",
+        (
+            f"Fila {queue.name} configurada. A IA continua desativada até clicar em Ativar IA."
+            if manual_queue_control_enabled() and not ai_queue_enabled(db, queue.id)
+            else f"Fila {queue.name} vinculada ao {agent.name}. Autorização existente preservada."
+        ),
     )
     return RedirectResponse("/ai", status_code=303)
 
@@ -884,16 +898,29 @@ def toggle_queue_binding(
     if not binding:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if not ai_allowed_for_queue(queue_id):
-        flash(request, "A IA não pode ser ativada fora da Fila IA.", "warning")
+        flash(request, "A fila não é elegível para IA pela política atual.", "warning")
         return RedirectResponse("/ai", status_code=303)
-    binding.active = not binding.active
+    queue = db.get(ServiceQueue, queue_id)
+    agent = db.get(AIAgentProfile, binding.agent_id)
+    if not queue or not queue.active:
+        flash(request, "Fila inexistente ou inativa.", "warning")
+        return RedirectResponse("/ai", status_code=303)
+    if manual_queue_control_enabled():
+        enabled = bool(binding.active and binding.manual_authorized and binding.handling_mode != "HUMAN")
+        if not enabled and (not agent or not agent.active or agent.role_type != "SDR" or binding.handling_mode == "HUMAN"):
+            flash(request, "Configure uma fila com agente SDR ativo e modo de IA antes de ativar.", "warning")
+            return RedirectResponse("/ai", status_code=303)
+        binding.active = not enabled
+        binding.manual_authorized = not enabled
+    else:
+        binding.active = not binding.active
     write_audit(
         db,
         user=actor,
         action="AI_QUEUE_ACTIVATED" if binding.active else "AI_QUEUE_DEACTIVATED",
         entity_type="service_queue",
         entity_id=queue_id,
-        payload={"agent_id": binding.agent_id},
+        payload={"agent_id": binding.agent_id, "manual_authorized": binding.manual_authorized, "active": binding.active},
     )
     db.commit()
     return RedirectResponse("/ai", status_code=303)

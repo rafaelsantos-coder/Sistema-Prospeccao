@@ -769,6 +769,9 @@ class AIQueueBinding(Base):
     )
     handling_mode: Mapped[str] = mapped_column(String(30), default="AI_FIRST", index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Somente a autorizacao individual de um gestor libera IA no modo manual.
+    # Vinculos legados nao ganham permissao de envio automaticamente.
+    manual_authorized: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     fallback_to_human: Mapped[bool] = mapped_column(Boolean, default=True)
     handoff_score_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
