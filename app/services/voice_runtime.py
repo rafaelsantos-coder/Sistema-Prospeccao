@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient,
-    VoiceSipAccount, VoiceTestCall,
+    VoiceSipAccount, VoiceTestCall, VoiceTransferTest,
 )
 from app.services.global_blacklist import is_globally_blocked
 from app.services.voice_test import aware, validate_test_phone
@@ -111,7 +111,7 @@ def outbound_guard(db: Session, phone: str) -> None:
         raise VoiceReadinessError("Falha ao consultar blacklist global. Chamada suspensa.") from exc
 
 
-def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | None = None) -> list[str]:
+def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | None = None, *, require_pending: bool = True) -> list[str]:
     """All unmet prerequisites; never assume ACTIVE means the SIP account is online."""
     now = at or datetime.now(timezone.utc)
     errors: list[str] = []
@@ -136,6 +136,16 @@ def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | No
         now - aware(group.transfer_verified_at) > TRANSFER_VERIFICATION_MAX
     ):
         errors.append("Transferencia ao grupo nao foi comprovada com teste real de REFER.")
+    else:
+        # Verification is scoped to both the SAME account and the SAME group.
+        pair_verified = db.scalar(select(VoiceTransferTest.id).where(
+            VoiceTransferTest.account_id == campaign.sip_account_id,
+            VoiceTransferTest.group_id == campaign.group_id,
+            VoiceTransferTest.result == "TRANSFERIDA",
+            VoiceTransferTest.finished_at >= now - TRANSFER_VERIFICATION_MAX,
+        ).limit(1))
+        if not pair_verified:
+            errors.append("A conta desta campanha nao tem teste de transferencia aprovado para o grupo.")
     if not campaign.legal_basis_verified:
         errors.append("Base legal e autorizacao de contato nao foram verificadas.")
     if campaign.mode == "AUDIO" and not campaign.audio_uri:
@@ -144,7 +154,7 @@ def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | No
         VoiceRecipient.campaign_id == campaign.id,
         VoiceRecipient.status == "PENDENTE"
     )) or 0
-    if pending < 1:
+    if require_pending and pending < 1:
         errors.append("Nao ha contatos pendentes na campanha.")
     return errors
 
