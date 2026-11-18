@@ -2,22 +2,22 @@
 {% block content %}
 <div class="page-lead split">
   <div><span class="eyebrow">PROSPECTA VOZ · CAMPANHAS</span><h2>Nova campanha de voz</h2>
-    <p>Selecione uma conta SIP, o grupo de destino e como o cliente será atendido.</p></div>
+    <p>Selecione uma conta SIP, o tipo de ligação e escolha se deseja transferir para vendedores ou apenas reproduzir um áudio.</p></div>
   <a class="button button-secondary" href="/voice/campaigns">Ver campanhas</a>
 </div>
-<div class="voice-notice"><strong>Campanhas criadas em rascunho.</strong><p>Os dois modos estão disponíveis para configuração, mas ainda não são realizadas ligações reais.</p></div>
+<div class="voice-notice"><strong>Campanhas criadas em rascunho.</strong><p>Para uma campanha sem transferência, escolha <b>Áudio automático</b> e <b>Não transferir</b>. O áudio será reproduzido e a chamada encerrada; a operação só começará após autorização e checklist SIP.</p></div>
 
 <section class="panel voice-panel">
-  {% if accounts and groups %}
+  {% if accounts %}
   <span class="eyebrow">CONFIGURAÇÃO DO DISPARO</span><h3>Dados da campanha</h3>
   <form method="post" action="/voice/campaigns" class="stack-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
       <label class="field field-span-2"><span>Nome da campanha</span><input name="name" maxlength="180" required placeholder="Ex.: Oferta telefonia fixa B2B"></label>
       <label class="field"><span>Conta SIP de saída</span><select name="sip_account_id" required>{% for account in accounts %}<option value="{{ account.id }}">{{ account.name }} · {{ account.username }}@{{ account.domain }}</option>{% endfor %}</select></label>
-      <label class="field"><span>Grupo para transferência</span><select name="group_id" required>{% for group in groups %}<option value="{{ group.id }}">{{ group.name }} · ramal {{ group.target_extension }}</option>{% endfor %}</select></label>
-      <label class="field field-span-2"><span>Modalidade</span><select name="mode" required><option value="DIRECT">Cliente atende → transfere diretamente</option><option value="AUDIO">Cliente atende → ouve áudio → digita tecla → transfere</option></select></label>
-      <label class="field"><span>Tecla de confirmação (modo áudio)</span><input name="dtmf_digit" value="1" maxlength="1" required></label>
+      <label class="field"><span>Destino após atendimento</span><select name="group_id"><option value="">Não transferir para grupo — reproduzir áudio e encerrar</option>{% for group in groups %}<option value="{{ group.id }}" {% if loop.first %}selected{% endif %}>{{ group.name }} · ramal {{ group.target_extension }}</option>{% endfor %}</select><small>Sem grupo, utilize a modalidade Áudio automático. Não é necessário testar transferência REFER.</small></label>
+      <label class="field field-span-2"><span>Modalidade</span><select name="mode" required><option value="DIRECT">Cliente atende → transfere diretamente para o grupo</option><option value="AUDIO">Cliente atende → ouve áudio (com grupo: digita tecla e transfere; sem grupo: encerra)</option></select></label>
+      <label class="field"><span>Tecla de confirmação (somente com transferência)</span><input name="dtmf_digit" value="1" maxlength="1" required></label>
       <label class="field"><span>Intervalo entre tentativas (segundos)</span><input type="number" name="interval_seconds" min="10" max="3600" value="30" required></label>
       <label class="field"><span>Janela de início</span><input type="time" name="window_start" value="09:00" required></label>
       <label class="field"><span>Janela de fim</span><input type="time" name="window_end" value="18:00" required></label>
@@ -28,7 +28,7 @@
   {% else %}
     <h3>Finalize os cadastros anteriores</h3>
     {% if not accounts %}<p>Falta uma conta SIP ativa.</p><a class="button button-secondary" href="/voice/accounts">Cadastrar conta SIP</a>{% endif %}
-    {% if not groups %}<p>Falta um grupo de destino ativo.</p><a class="button button-secondary" href="/voice/groups">Cadastrar grupo</a>{% endif %}
+
   {% endif %}
 </section>
 {% endblock %}
