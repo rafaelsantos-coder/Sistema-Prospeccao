@@ -18,7 +18,7 @@ from app.services.media_storage import MediaStorage
 from app.services.voice_reporting import campaign_operational_report
 from app.services.secret_store import encrypt_secret
 from app.services.voice_runtime import (
-    check_campaign_ready, validate_routing_options, outbound_guard,
+    check_campaign_ready, validate_routing_options, outbound_guard, make_dial_uri,
     MAX_CALLS_PER_DAY, ENGINE_HEARTBEAT_MAX
 )
 from app.services.voice_test import aware
@@ -157,6 +157,20 @@ def voice_campaigns(request: Request, db: Session = Depends(get_db)):
     campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
     engine = db.get(VoiceDialerEngine, 1)
     checklist = {item.id: check_campaign_ready(db, item) for item in campaigns}
+    # Mostra exatamente o numero que o PABX vai receber, sem expor tokens SIP.
+    sip_preview = {}
+    for item in campaigns:
+        recipient = db.scalar(select(VoiceRecipient).where(
+            VoiceRecipient.campaign_id == item.id
+        ).order_by(VoiceRecipient.id.asc()).limit(1))
+        if recipient is None:
+            continue
+        try:
+            uri = make_dial_uri(item.sip_account, recipient.phone,
+                                dial_format=item.dial_format or "NATIONAL")
+            sip_preview[item.id] = uri.partition("@")[0].removeprefix("sip:")
+        except ValueError:
+            sip_preview[item.id] = "Número inválido — revisar CSV"
     reports = {item.id: campaign_operational_report(db, item, checklist[item.id]) for item in campaigns}
     counts = dict(db.execute(
         select(VoiceRecipient.campaign_id, func.count(VoiceRecipient.id)).group_by(VoiceRecipient.campaign_id)
@@ -165,7 +179,7 @@ def voice_campaigns(request: Request, db: Session = Depends(get_db)):
         request, "voice/campaigns.html", user=actor, active_nav="voice",
         voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
         campaigns=campaigns, counts=counts, engine=engine, readiness=checklist,
-        reports=reports,
+        reports=reports, sip_preview=sip_preview,
         engine_online=bool(engine and engine.heartbeat_at and
             datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
@@ -459,6 +473,7 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
                  mode: str = Form(...), dtmf_digit: str = Form("1"),
                  window_start: str = Form("09:00"), window_end: str = Form("18:00"),
                  daily_limit: int = Form(30), interval_seconds: int = Form(30),
+                 dial_format: str = Form("NATIONAL"),
                  db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
     if redirect:
@@ -480,6 +495,8 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
         return _error(request, "Informe o nome da campanha.")
     if not 1 <= daily_limit <= 300 or not 10 <= interval_seconds <= 3600:
         return _error(request, "Limite diario ou intervalo invalido.")
+    if dial_format not in {"NATIONAL", "E164"}:
+        return _error(request, "Formato de discagem invalido.")
     try:
         # AUDIO pode ser criado como rascunho antes do upload, mas nunca aprovado sem WAV.
         clean_mode = validate_campaign(mode, window_start, window_end, dtmf_digit,
@@ -488,15 +505,17 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
         return _error(request, str(exc))
     campaign = VoiceCampaign(name=name.strip(), mode=clean_mode, sip_account_id=account.id,
                              group_id=selected_group_id, dtmf_digit=dtmf_digit, daily_limit=daily_limit,
-                             interval_seconds=interval_seconds, window_start=window_start,
-                             window_end=window_end, created_by_id=actor.id,
+                             interval_seconds=interval_seconds, dial_format=dial_format,
+                             window_start=window_start, window_end=window_end,
+                             created_by_id=actor.id,
                              status="RASCUNHO", legal_basis_verified=False)
     db.add(campaign)
     db.flush()
     write_audit(db, user=actor, action="VOICE_CAMPAIGN_CREATED",
                 entity_type="voice_campaign", entity_id=campaign.id,
                 payload={"mode": clean_mode, "group_id": selected_group_id,
-                         "without_transfer": selected_group_id is None})
+                         "without_transfer": selected_group_id is None,
+                         "dial_format": dial_format})
     db.commit()
     flash(request, "Campanha criada. Importe os contatos, anexe o áudio e confira o checklist para iniciar.")
     return RedirectResponse("/voice/campaigns", status_code=303)
