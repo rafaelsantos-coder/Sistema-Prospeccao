@@ -105,7 +105,7 @@
     </div>
     <p class="voice-live-updated" data-voice-updated>Atualização automática a cada 10 segundos</p>
   </section>
-  {% if campaign.status == 'RASCUNHO' %}
+  {% if campaign.status in ['RASCUNHO', 'PAUSADA'] %}
   <div class="voice-preparation-grid">
     <form method="post" action="/voice/campaigns/{{ campaign.id }}/contacts" enctype="multipart/form-data" class="stack-form voice-subpanel">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
