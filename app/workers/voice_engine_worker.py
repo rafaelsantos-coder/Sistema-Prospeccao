@@ -69,7 +69,7 @@ def outbound_allowed() -> bool:
 
 
 def _load_wav(s3_uri: str) -> str:
-    # No requests to arbitrary URLs or untrusted hosts.
+    """Download large campaign audio directly to a temporary file, not into RAM."""
     if not s3_uri.startswith("s3://"):
         raise VoiceEngineError("Audio fora do armazenamento privado.")
     bucket, _, key = s3_uri[5:].partition("/")
@@ -87,17 +87,16 @@ def _load_wav(s3_uri: str) -> str:
         aws_access_key_id=settings.media_s3_access_key_id,
         aws_secret_access_key=settings.media_s3_secret_access_key,
     )
-    obj = client.get_object(Bucket=bucket, Key=key)
-    data = obj["Body"].read(2_000_001)
-    from app.services.voice import validate_wav
-    validate_wav(data)
     fd, path = tempfile.mkstemp(prefix="voice-", suffix=".wav")
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
+            client.download_fileobj(Bucket=bucket, Key=key, Fileobj=stream)
+        from app.services.voice import validate_wav_file
+        with open(path, "rb") as stream:
+            validate_wav_file(stream)
         return path
     except Exception:
-        os.close(fd)
+        Path(path).unlink(missing_ok=True)
         raise
 
 
