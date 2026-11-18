@@ -321,6 +321,7 @@ class SulnetCRMClient:
             base_url=settings.sulnet_crm_base_url.rstrip("/"),
             bearer_token=settings.sulnet_crm_bearer_token,
             integration_key=settings.sulnet_ai_integration_key,
+            lead_integration_key=settings.sulnet_crm_lead_integration_key,
         )
 
     @staticmethod
@@ -733,7 +734,11 @@ class SulnetCRMClient:
                 "clientPhone": client_phone,
                 "origin": origin,
             },
-            auth_mode="integration",
+            auth_mode="none" if self.lead_integration_key else "integration",
+            extra_headers=(
+                {"X-Integration-Key": self.lead_integration_key}
+                if self.lead_integration_key else None
+            ),
         )
         if not isinstance(result, dict):
             raise CRMIntegrationError(
