@@ -169,6 +169,20 @@ def test_campaign_uses_registered_group_without_prior_refer_test():
             )).first()
             db.commit()
             assert check_campaign_ready(db, campaign) == []
+            group.active = False
+            db.commit()
+            assert any("Grupo de ramais ausente ou pausado" in x
+                       for x in check_campaign_ready(db, campaign))
+            group.active = True
+            db.commit()
+            assert check_campaign_ready(db, campaign) == []
+        groups_page = client.get("/voice/groups")
+        assert groups_page.status_code == 200
+        assert "Teste real de transferência SIP REFER" not in groups_page.text
+        assert "Transferência não validada" not in groups_page.text
+        campaign_page = client.get("/voice/campaigns")
+        assert campaign_page.status_code == 200
+        assert "A transferência exige teste real de REFER" not in campaign_page.text
 
         started = client.post(f"/voice/campaigns/{cid}/start",
                               data={"csrf_token": token, "authorization": "sim"},
