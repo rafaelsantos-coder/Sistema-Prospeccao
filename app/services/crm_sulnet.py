@@ -701,6 +701,46 @@ class SulnetCRMClient:
                         continue
         return None
 
+    def find_opportunities_by_phone(self, phone: str) -> dict[str, Any] | list[dict[str, Any]]:
+        """Pesquisa CRM por telefone antes do registro manual, com Bearer de leitura.
+
+        O CRM pode retornar lista direta ou coleção paginada. A validação dos
+        dados e da completude da pesquisa ocorre no serviço de registro.
+        """
+        return self._request(
+            "GET",
+            "/api/opportunities",
+            params={"search": phone},
+            auth_mode="bearer",
+        )
+
+    def create_seller_lead(
+        self,
+        *,
+        seller_username: str,
+        client_name: str,
+        client_phone: str,
+        origin: str = "Sulnet Prospecta",
+    ) -> dict[str, Any]:
+        """Webhook comercial independente do token personificado do SDR IA."""
+        result = self._request(
+            "POST",
+            "/webhook/leads",
+            json_body={
+                "sellerUsername": seller_username,
+                "clientName": client_name,
+                "clientPhone": client_phone,
+                "origin": origin,
+            },
+            auth_mode="integration",
+        )
+        if not isinstance(result, dict):
+            raise CRMIntegrationError(
+                "Webhook do CRM retornou resposta inválida.",
+                error_code="CRM_INVALID_WEBHOOK_RESPONSE",
+            )
+        return result
+
     def create_opportunity(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_payload = dict(payload)
         request_payload.setdefault("runConsult", False)
