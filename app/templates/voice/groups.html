@@ -68,7 +68,7 @@
         <label class="field"><span>Número autorizado (DDD + telefone)</span><input name="phone" type="tel" required placeholder="Ex.: 55 55 99999-9999"></label>
       </div>
       <label><input name="authorized" type="checkbox" value="sim" required> Confirmo autorização do número para receber esta ligação de teste, sem campanha automática.</label>
-      <div><button type="submit" class="button button-secondary" {% if not engine or not engine.enabled or not engine.test_runtime_enabled or not group.active %}disabled{% endif %}>Testar transferência real</button></div>
+      <div><button type="submit" class="button button-secondary" {% if not engine_online or not engine or not engine.enabled or not engine.test_runtime_enabled or not group.active %}disabled{% endif %}>Testar transferência real</button></div>
     </form>
   </div>
   {% endfor %}
