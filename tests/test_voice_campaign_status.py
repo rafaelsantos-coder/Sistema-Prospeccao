@@ -91,7 +91,7 @@ def test_voice_campaign_tracking_and_denied_start_are_persisted():
 
         page = client.get("/voice/campaigns").text
         assert "ACOMPANHAMENTO DA CAMPANHA" in page
-        assert "Solicitar início da campanha" in page
+        assert "Iniciar campanha" in page
         assert "voice_campaign_status.js" in page
         assert 'data-voice-stat="attempted"' in page
 
