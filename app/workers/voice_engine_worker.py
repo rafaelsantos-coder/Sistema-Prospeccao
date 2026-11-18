@@ -51,6 +51,8 @@ def heartbeat(error: str = "") -> None:
         engine.heartbeat_at = now()
         engine.worker_id = WORKER_ID
         engine.backend = "PJSUA2"
+        engine.campaign_runtime_enabled = CAMPAIGNS_ENABLED
+        engine.test_runtime_enabled = TRANSFER_TESTS_ENABLED
         engine.last_error = (error or "")[:200]
         db.commit()
 
