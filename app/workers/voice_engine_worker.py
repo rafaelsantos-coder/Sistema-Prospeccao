@@ -248,7 +248,7 @@ def _run_campaign_call(recipient_id: int) -> None:
             if not item or item.status != "INICIANDO":
                 return
             campaign = db.get(VoiceCampaign, item.campaign_id)
-            if not campaign or campaign.status != "EM_EXECUCAO" or check_campaign_ready(db, campaign):
+            if not campaign or campaign.status != "EM_EXECUCAO" or check_campaign_ready(db, campaign, require_pending=False):
                 raise VoiceEngineError("Campanha ficou indisponivel para discagem.")
             account = db.get(VoiceSipAccount, campaign.sip_account_id)
             group = db.get(VoiceGroup, campaign.group_id)
