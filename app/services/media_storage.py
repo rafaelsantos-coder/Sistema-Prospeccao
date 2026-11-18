@@ -4,6 +4,7 @@ import mimetypes
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 from uuid import uuid4
 
 import boto3
@@ -12,7 +13,7 @@ import httpx
 from urllib.parse import urljoin
 
 from app.config import settings
-from app.services.antivirus import AntivirusError, MalwareDetectedError, scan_bytes
+from app.services.antivirus import AntivirusError, MalwareDetectedError, scan_bytes, scan_file
 from app.services.network_security import RemoteURLValidationError, validate_remote_url
 
 
@@ -136,6 +137,57 @@ class MediaStorage:
             raise MediaStorageError("Nao foi possivel armazenar o arquivo.") from exc
         return self.storage_uri(key), safe_name
 
+    def upload_campaign_file(
+        self,
+        *,
+        fileobj: BinaryIO,
+        campaign_id: int,
+        filename: str | None,
+        mime_type: str | None,
+    ) -> tuple[str, str]:
+        """Stream WAV into S3. No application-imposed size limit for voice audio.
+
+        The antivirus, storage provider, proxy and temporary disk may still
+        enforce infrastructure limits. Never load a whole large WAV in memory.
+        """
+        fileobj.seek(0, 2)
+        if fileobj.tell() == 0:
+            raise MediaStorageError("O arquivo de áudio está vazio.")
+        fileobj.seek(0)
+        try:
+            scan_file(fileobj)
+        except MalwareDetectedError as exc:
+            raise MediaStorageError(str(exc)) from exc
+        except AntivirusError as exc:
+            raise MediaStorageError(
+                "Não foi possível validar o áudio no antivírus."
+            ) from exc
+        safe_name = _safe_filename(filename, mime_type)
+        now = datetime.now(timezone.utc)
+        key = (
+            f"campaigns/{now:%Y/%m}/{campaign_id}/"
+            f"{uuid4().hex}-{safe_name}"
+        )
+        extra = {
+            "ContentType": mime_type or "audio/wav",
+            "ContentDisposition": f'inline; filename="{safe_name}"',
+        }
+        try:
+            fileobj.seek(0)
+            self._client().upload_fileobj(
+                fileobj,
+                self.bucket,
+                key,
+                ExtraArgs=extra,
+            )
+        except Exception as exc:
+            raise MediaStorageError(
+                "Não foi possível armazenar o áudio da campanha."
+            ) from exc
+        finally:
+            fileobj.seek(0)
+        return self.storage_uri(key), safe_name
+
     def upload_campaign_bytes(
         self,
         *,
@@ -144,40 +196,14 @@ class MediaStorage:
         filename: str | None,
         mime_type: str | None,
     ) -> tuple[str, str]:
-        if not data:
-            raise MediaStorageError("O arquivo esta vazio.")
-        if len(data) > self.max_bytes:
-            raise MediaStorageError(
-                f"O arquivo excede o limite de {settings.media_max_upload_mb} MB."
-            )
-        try:
-            scan_bytes(data)
-        except MalwareDetectedError as exc:
-            raise MediaStorageError(str(exc)) from exc
-        except AntivirusError as exc:
-            raise MediaStorageError(
-                "Não foi possível validar o arquivo no antivírus."
-            ) from exc
-        safe_name = _safe_filename(filename, mime_type)
-        now = datetime.now(timezone.utc)
-        key = (
-            f"campaigns/{now:%Y/%m}/{campaign_id}/"
-            f"{uuid4().hex}-{safe_name}"
+        """Backwards-compatible helper for callers already holding bytes."""
+        from io import BytesIO
+        return self.upload_campaign_file(
+            fileobj=BytesIO(data),
+            campaign_id=campaign_id,
+            filename=filename,
+            mime_type=mime_type,
         )
-        extra: dict[str, str] = {
-            "ContentType": mime_type or "application/octet-stream",
-            "ContentDisposition": f'inline; filename="{safe_name}"',
-        }
-        try:
-            self._client().put_object(
-                Bucket=self.bucket,
-                Key=key,
-                Body=data,
-                **extra,
-            )
-        except Exception as exc:
-            raise MediaStorageError("Nao foi possivel armazenar o arquivo da campanha.") from exc
-        return self.storage_uri(key), safe_name
 
     def archive_remote(
         self,
