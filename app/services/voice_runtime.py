@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient,
-    VoiceSipAccount, VoiceTestCall, VoiceTransferTest,
+    VoiceSipAccount, VoiceTestCall,
 )
 from app.services.global_blacklist import is_globally_blocked
 from app.services.voice_test import aware, validate_test_phone
@@ -23,7 +23,6 @@ from app.services.voice_test import aware, validate_test_phone
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 ENGINE_HEARTBEAT_MAX = timedelta(seconds=65)
 SIP_VERIFICATION_MAX = timedelta(hours=1)
-TRANSFER_VERIFICATION_MAX = timedelta(days=14)
 MAX_CALLS_PER_DAY = 30
 MIN_SECONDS_BETWEEN_CALLS = 60
 MAX_ACTIVE_CALLS_PER_INSTANCE = 1
@@ -145,27 +144,15 @@ def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | No
     ):
         errors.append("Conta SIP sem autenticacao recente confirmada pelo PABX.")
     if campaign.group_id is None:
-        # AUDIO sem grupo e puramente informativo; nao ha transferencia nem teste REFER.
+        # O modo AUDIO informativo encerra sem transferir a chamada.
         if campaign.mode != "AUDIO":
             errors.append("Transferencia direta exige um grupo de ramais ativo.")
     else:
+        # Execucao real: utiliza o grupo cadastrado e registra o retorno SIP REFER
+        # por ligacao. Nao exige teste de transferencia anterior nem certificado.
         group = db.get(VoiceGroup, campaign.group_id)
         if not group or not group.active:
             errors.append("Grupo de ramais ausente ou pausado.")
-        elif not group.transfer_verified_at or (
-            now - aware(group.transfer_verified_at) > TRANSFER_VERIFICATION_MAX
-        ):
-            errors.append("Transferencia ao grupo nao foi comprovada com teste real de REFER.")
-        else:
-            # Teste REFER validado para a conta e o grupo da campanha.
-            pair_verified = db.scalar(select(VoiceTransferTest.id).where(
-                VoiceTransferTest.account_id == campaign.sip_account_id,
-                VoiceTransferTest.group_id == campaign.group_id,
-                VoiceTransferTest.result == "TRANSFERIDA",
-                VoiceTransferTest.finished_at >= now - TRANSFER_VERIFICATION_MAX,
-            ).limit(1))
-            if not pair_verified:
-                errors.append("A conta desta campanha nao tem teste de transferencia aprovado para o grupo.")
     if not campaign.legal_basis_verified:
         errors.append("Base legal e autorizacao de contato nao foram verificadas.")
     if campaign.mode == "AUDIO" and not campaign.audio_uri:

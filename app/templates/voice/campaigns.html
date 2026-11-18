@@ -13,7 +13,7 @@
   </div>
 </div>
 <div class="voice-notice"><strong>Discagem progressiva com bloqueios de segurança</strong>
-<p>O Prospecta VOZ só disca com autorização ADMIN, motor PJSUA2 habilitado, conta SIP autenticada, transferência validada, base legal declarada e horário comercial. Nunca realiza discagem preditiva nem utiliza as filas WhatsApp.</p></div>
+<p>O Prospecta VOZ só disca com autorização ADMIN, motor PJSUA2 habilitado, conta SIP autenticada, grupo de destino ativo quando houver transferência, base legal declarada e horário comercial. Nunca realiza discagem preditiva nem utiliza as filas WhatsApp.</p></div>
 <section class="panel voice-panel">
   <div class="voice-campaign-title">
     <div><span class="eyebrow">CONTROLE GLOBAL</span><h3>Motor telefônico PJSUA2</h3>
@@ -132,7 +132,7 @@
             <ul>{% for reason in readiness[campaign.id] %}<li>{{ reason }}</li>{% endfor %}</ul>
           {% else %}<span class="voice-pill is-ready">Pré-requisitos verificados</span>{% endif %}
           </div>
-          <p class="voice-help">{% if campaign.group_id %}A transferência exige teste real de REFER no mesmo ramal SIP e grupo.{% else %}Campanha de áudio informativo: sem transferência ou teste REFER. É necessário autenticar a conta SIP e anexar o áudio.{% endif %}</p>
+          <p class="voice-help">{% if campaign.group_id %}A transferência será executada para o ramal cadastrado durante a chamada. O resultado real do PABX (sucesso ou falha SIP) aparecerá nos eventos, sem teste prévio obrigatório.{% else %}Campanha de áudio informativo: reproduz o áudio e encerra sem transferir. A conta SIP deve estar autenticada e o áudio carregado.{% endif %}</p>
         </div>
         <div class="voice-subpanel">
           <h4>Responsabilidade do administrador</h4>
@@ -153,7 +153,7 @@
           <form action="/voice/campaigns/{{ campaign.id }}/start" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label><input type="checkbox" name="authorization" value="sim" required> Autorizo iniciar as ligações desta campanha.</label>
-            <button class="button button-primary" type="submit">Solicitar início da campanha</button>
+            <button class="button button-primary" type="submit">Iniciar campanha</button>
             {% if readiness.get(campaign.id) %}
             <p class="voice-start-warning">Atenção: início bloqueado por {{ readiness[campaign.id]|length }} pendência(s). Ao solicitar, o sistema registra a tentativa e informa o motivo.</p>
             {% endif %}
