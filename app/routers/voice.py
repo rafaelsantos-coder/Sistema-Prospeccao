@@ -38,7 +38,7 @@ router = APIRouter(prefix="/voice")
 
 # Campanhas ja pausadas podem ter uma chamada encerrando em paralelo.
 # Nunca modificar/arquivar enquanto houver ligacao SIP em andamento.
-VOICE_CAMPAIGN_EDITABLE = {"RASCUNHO", "PRONTA", VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}
+VOICE_CAMPAIGN_EDITABLE = {"RASCUNHO", "PRONTA", VOICE_STATUS_HOMOLOGACAO, "PAUSADA", "CONCLUIDA"}
 VOICE_CALL_IN_FLIGHT = ("INICIANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERINDO")
 VOICE_CAMPAIGN_ARCHIVED = "EXCLUIDA"
 
@@ -264,6 +264,8 @@ def update_voice_campaign(campaign_id: int, request: Request,
         campaign.approved_by_id = None
     if campaign.status in {"PRONTA", VOICE_STATUS_HOMOLOGACAO}:
         campaign.status = "RASCUNHO"
+    elif campaign.status == "CONCLUIDA":
+        campaign.status = "PAUSADA"
     write_audit(db, user=actor, action="VOICE_CAMPAIGN_UPDATED",
                 entity_type="voice_campaign", entity_id=campaign.id,
                 payload={"before": previous, "after": changed,
@@ -737,8 +739,10 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
         return redirect
     validate_csrf(request, csrf_token)
     campaign = db.get(VoiceCampaign, campaign_id)
-    if not campaign or campaign.mode != "AUDIO" or campaign.status != "RASCUNHO":
-        return _error(request, "Campanha nao permite upload de audio.")
+    if not campaign or campaign.mode != "AUDIO" or campaign.status not in {"RASCUNHO", "PAUSADA"}:
+        return _error(request, "Pause a campanha antes de alterar o áudio.")
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Aguarde a finalização da ligação antes de trocar o áudio.", "/voice/campaigns")
     try:
         storage = MediaStorage()
         if not storage.configured:
@@ -755,6 +759,9 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
         # Nao exibir mensagem interna do armazenamento.
         return _error(request, "Falha ao validar ou salvar audio no armazenamento seguro.")
     campaign.audio_uri = uri
+    campaign.legal_basis_verified = False
+    campaign.approved_at = None
+    campaign.approved_by_id = None
     write_audit(db, user=actor, action="VOICE_AUDIO_UPDATED",
                 entity_type="voice_campaign", entity_id=campaign.id)
     db.commit()
@@ -771,8 +778,10 @@ async def import_contacts(campaign_id: int, request: Request,
         return redirect
     validate_csrf(request, csrf_token)
     campaign = db.get(VoiceCampaign, campaign_id)
-    if not campaign or campaign.status != "RASCUNHO":
-        return _error(request, "Importacao permitida somente em campanhas rascunho.")
+    if not campaign or campaign.status not in {"RASCUNHO", "PAUSADA"}:
+        return _error(request, "Pause a campanha antes de importar novos contatos.")
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Aguarde o encerramento da ligação antes de importar.", "/voice/campaigns")
     payload = await csv_file.read(1_000_001)
     if len(payload) > 1_000_000:
         return _error(request, "CSV acima de 1 MB.")
@@ -792,6 +801,11 @@ async def import_contacts(campaign_id: int, request: Request,
         lead = db.scalar(select(Lead).where(Lead.phone == item["phone"]).order_by(Lead.id.desc()).limit(1))
         db.add(VoiceRecipient(campaign_id=campaign_id, lead_id=lead.id if lead else None,
                               name=item["name"], phone=item["phone"]))
+    if clean:
+        # Novos destinatarios exigem nova confirmacao da base legal.
+        campaign.legal_basis_verified = False
+        campaign.approved_at = None
+        campaign.approved_by_id = None
     write_audit(db, user=actor, action="VOICE_CONTACTS_IMPORTED",
                 entity_type="voice_campaign", entity_id=campaign_id,
                 payload={"accepted": len(clean), "skipped": skipped, "invalid": summary["invalid"]})
