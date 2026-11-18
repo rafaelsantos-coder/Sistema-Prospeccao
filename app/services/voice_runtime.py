@@ -118,6 +118,8 @@ def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | No
     engine = db.get(VoiceDialerEngine, 1)
     if not engine or not engine.enabled:
         errors.append("Discador de campanhas esta pausado pelo administrador.")
+    if not engine or not engine.campaign_runtime_enabled:
+        errors.append("Worker de campanhas SIP ainda nao foi habilitado no Railway.")
     if not engine or not engine.heartbeat_at or (
         now - aware(engine.heartbeat_at) > ENGINE_HEARTBEAT_MAX
     ):
