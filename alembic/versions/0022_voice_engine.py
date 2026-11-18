@@ -42,6 +42,7 @@ def upgrade():
         sa.Column("account_id", sa.Integer(), sa.ForeignKey("voice_sip_accounts.id"), nullable=False),
         sa.Column("group_id", sa.Integer(), sa.ForeignKey("voice_groups.id"), nullable=False),
         sa.Column("phone_last4", sa.String(4), nullable=False),
+        sa.Column("phone_encrypted", sa.Text(), nullable=False, server_default=""),
         sa.Column("result", sa.String(35), nullable=False, server_default="PENDENTE"),
         sa.Column("sip_code", sa.Integer(), nullable=True),
         sa.Column("message", sa.String(200), nullable=False, server_default=""),
