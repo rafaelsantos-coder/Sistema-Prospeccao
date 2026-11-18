@@ -20,6 +20,7 @@ ACTIVE_CALL_STATES = ("INICIANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERI
 FAILED_CALL_STATES = (
     "FALHOU", "FALHA_TRANSFERENCIA", "TIMEOUT", "SEM_ATENDIMENTO",
     "SEM_RESPOSTA", "OCUPADO", "INTERROMPIDA", "ERRO",
+    "FALHA_AUDIO", "AUDIO_INTERROMPIDO",
 )
 COMMAND_LABELS = {
     "VOICE_CAMPAIGN_START_BLOCKED": "Tentativa de início bloqueada",
@@ -72,10 +73,11 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
         func.count(VoiceRecipient.id).filter(VoiceRecipient.transferred_at.is_not(None)),
         func.count(VoiceRecipient.id).filter(VoiceRecipient.status.in_(FAILED_CALL_STATES)),
         func.count(VoiceRecipient.id).filter(VoiceRecipient.status == "BLOQUEADA"),
+        func.count(VoiceRecipient.id).filter(VoiceRecipient.status == "AUDIO_CONCLUIDO"),
     ).where(VoiceRecipient.campaign_id == campaign.id)).one()
     stats = dict(zip(
         ("total", "pending", "attempted", "in_progress", "answered",
-         "transferred", "failed", "blocked"), map(int, summary), strict=True,
+         "transferred", "failed", "blocked", "audio_completed"), map(int, summary), strict=True,
     ))
 
     attempts = list(db.scalars(select(VoiceRecipient).where(
