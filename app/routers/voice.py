@@ -434,7 +434,7 @@ def voice_campaigns_live_status(request: Request, campaign_id: int | None = None
         str(item.id): campaign_operational_report(db, item, check_campaign_ready(db, item))
         for item in campaigns
     }
-    return JSONResponse({"campaigns": data}, headers={"Cache-Control": "private, no-store"})
+    return JSONResponse({"campaigns": data}, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/accounts/{account_id}/delete")
