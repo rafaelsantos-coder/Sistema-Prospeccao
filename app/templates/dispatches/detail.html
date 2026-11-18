@@ -41,19 +41,33 @@
 {% set progress = (sent / total * 100) if total else 0 %}
 <div class="metric-grid dispatch-metric-grid">
   <article class="metric-card"><span>{{ 'Total em revisão' if dispatch.status == 'RASCUNHO' else 'Total importado' }}</span><strong>{{ total }}</strong><small>{{ import_summary.get('duplicates', 0) }} duplicados · {{ import_summary.get('invalid', 0) }} inválidos{% if import_summary.get('removed_manual', 0) %} · {{ import_summary.get('removed_manual', 0) }} removidos na revisão{% endif %}</small></article>
-  <article class="metric-card"><span>Enviados</span><strong>{{ sent }}</strong><small>{{ '%.1f'|format(progress) }}% concluído</small></article>
-  <article class="metric-card"><span>Pendentes</span><strong>{{ counts.pending }}</strong><small>{{ counts.failed }} falhas · {{ counts.skipped }} ignorados</small></article>
+  <article class="metric-card"><span>Enviados</span><strong id="dispatch-sent-count">{{ sent }}</strong><small><span id="dispatch-card-progress">{{ '%.1f'|format(progress) }}</span>% concluído</small></article>
+  <article class="metric-card"><span>Pendentes</span><strong id="dispatch-pending-count">{{ counts.pending }}</strong><small id="dispatch-failed-count">{{ counts.failed }} falhas · {{ counts.skipped }} ignorados</small></article>
   <article class="metric-card"><span>Intervalo</span><strong>{{ dispatch.interval_seconds }}s</strong><small>entre cada mensagem</small></article>
-  <article class="metric-card"><span>Tempo estimado</span><strong>{{ estimated_duration }}</strong><small>para a lista completa, sem pausas diárias</small></article>
+  <article class="metric-card"><span>Previsão de conclusão</span><strong id="dispatch-eta">~{{ live_status.estimated_days_remaining }} dias</strong><small>considera janela e limite diário, sem novas falhas</small></article>
   <article class="metric-card"><span>Status</span><strong class="dispatch-status-text">{{ dispatch.status|replace('_',' ') }}</strong><small>{% if dispatch.started_at %}iniciado {{ dispatch.started_at|datetime_br }}{% else %}aguardando início{% endif %}</small></article>
 </div>
 
 <section class="panel dispatch-progress-panel">
   <div class="dispatch-progress-head">
-    <div><span class="eyebrow">PROGRESSO</span><h3>{{ sent }} de {{ total }} mensagens enviadas</h3></div>
-    <strong>{{ '%.1f'|format(progress) }}%</strong>
+    <div><span class="eyebrow">PROGRESSO</span><h3 id="dispatch-progress-text">{{ sent }} de {{ total }} mensagens enviadas</h3></div>
+    <strong id="dispatch-progress-percentage">{{ '%.1f'|format(progress) }}%</strong>
   </div>
-  <div class="dispatch-progress-track"><i style="width: {{ '%.1f'|format(progress) }}%"></i></div>
+  <div class="dispatch-progress-track"><i id="dispatch-progress-bar" style="width: {{ '%.1f'|format(progress) }}%"></i></div>
+</section>
+
+<section class="panel top-space" aria-live="polite">
+  <div class="panel-header">
+    <div><span class="eyebrow">MONITORAMENTO AO VIVO</span><h3>Último envio e próxima tentativa</h3></div>
+    <button type="button" class="button button-secondary" id="dispatch-refresh">Atualizar status</button>
+  </div>
+  <div class="info-box">
+    <strong id="dispatch-runtime-status">{{ live_status.status_label }}</strong>
+    <p>Última mensagem aceita pela Z-API: <strong id="dispatch-last-sent">{{ live_status.last_sent or 'Ainda não registrado' }}</strong></p>
+    <p>Próximo horário previsto: <strong id="dispatch-next-send">{{ live_status.next_send or '—' }}</strong></p>
+    <p>Enviados hoje: <strong id="dispatch-sent-today">{{ live_status.sent_today }}</strong> de {{ live_status.daily_limit }} permitidos · capacidade pela janela e intervalo: até {{ live_status.daily_capacity }}/dia</p>
+    <small id="dispatch-refresh-note">Dados atualizados automaticamente a cada 30 segundos. Última consulta: {{ live_status.checked_at }}.</small>
+  </div>
 </section>
 
 <div class="settings-grid top-space">
@@ -142,4 +156,46 @@
     </table>
   </div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+(() => {
+  const endpoint = "/dispatches/{{ dispatch.id }}/live";
+  const text = (id, value) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = String(value);
+  };
+  async function refreshStatus() {
+    try {
+      const response = await fetch(endpoint, { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) throw new Error("Resposta indisponível");
+      const info = await response.json();
+      const totals = info.counts || {};
+      const sent = Number(totals.sent || 0);
+      const total = Number(totals.total || 0);
+      const progress = total ? (100 * sent / total) : 0;
+      const formatted = progress.toFixed(1);
+      text("dispatch-runtime-status", info.status_label);
+      text("dispatch-last-sent", info.last_sent || "Ainda não registrado");
+      text("dispatch-next-send", info.next_send || "—");
+      text("dispatch-sent-today", info.sent_today);
+      text("dispatch-eta", "~" + info.estimated_days_remaining + " dias");
+      text("dispatch-sent-count", sent);
+      text("dispatch-card-progress", formatted);
+      text("dispatch-pending-count", totals.pending || 0);
+      text("dispatch-failed-count", (totals.failed || 0) + " falhas · " + (totals.skipped || 0) + " ignorados");
+      text("dispatch-progress-text", sent + " de " + total + " mensagens enviadas");
+      text("dispatch-progress-percentage", formatted + "%");
+      const bar = document.getElementById("dispatch-progress-bar");
+      if (bar) bar.style.width = formatted + "%";
+      text("dispatch-refresh-note", "Atualização automática a cada 30 segundos. Última consulta: " + info.checked_at + ".");
+    } catch (_error) {
+      text("dispatch-refresh-note", "Sem atualização recente. Clique em Atualizar status para tentar novamente.");
+    }
+  }
+  document.getElementById("dispatch-refresh")?.addEventListener("click", refreshStatus);
+  setInterval(() => { if (!document.hidden) refreshStatus(); }, 30000);
+})();
+</script>
 {% endblock %}
