@@ -1,9 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-lead split">
-  <div><span class="eyebrow">PROSPECTA VOZ · OPERAÇÃO</span><h2>Campanhas e preparação</h2>
-    <p>Gerencie as campanhas de ligações: importe contatos, envie áudios e inicie a discagem quando o checklist estiver aprovado.</p></div>
-  <a class="button button-primary" href="/voice/campaigns/new">＋ Nova campanha</a>
+  <div><span class="eyebrow">PROSPECTA VOZ · OPERAÇÃO</span><h2>{{ 'Campanhas excluídas' if show_archived else 'Campanhas e preparação' }}</h2>
+    <p>{{ 'Campanhas retiradas da operação com histórico de chamadas preservado.' if show_archived else 'Gerencie campanhas: edite as configurações, acompanhe resultados e pause ou exclua campanhas.' }}</p></div>
+  <div class="voice-actions">
+    {% if show_archived %}
+    <a class="button button-secondary" href="/voice/campaigns">← Campanhas ativas</a>
+    {% else %}
+    <a class="button button-secondary" href="/voice/campaigns?archived=1">Excluídas ({{ archived_count }})</a>
+    <a class="button button-primary" href="/voice/campaigns/new">＋ Nova campanha</a>
+    {% endif %}
+  </div>
 </div>
 <div class="voice-notice"><strong>Discagem progressiva com bloqueios de segurança</strong>
 <p>O Prospecta VOZ só disca com autorização ADMIN, motor PJSUA2 habilitado, conta SIP autenticada, transferência validada, base legal declarada e horário comercial. Nunca realiza discagem preditiva nem utiliza as filas WhatsApp.</p></div>
@@ -27,7 +34,20 @@
   <div class="voice-campaign-title">
     <div><span class="eyebrow">CAMPANHA #{{ campaign.id }}</span><h3>{{ campaign.name }}</h3>
       <p>{{ ('Áudio informativo (sem transferência)' if not campaign.group_id else 'Áudio + confirmação DTMF e transferência') if campaign.mode == 'AUDIO' else 'Transferência direta' }} · {{ counts.get(campaign.id, 0) }} contatos</p></div>
-    <span class="voice-pill is-unknown">{{ 'PREPARADA' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}</span>
+    <div class="voice-campaign-controls">
+      <span class="voice-pill {{ 'is-paused' if campaign.status in ['PAUSADA', 'EXCLUIDA'] else 'is-unknown' }}">{{ 'PREPARADA' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}</span>
+      {% if campaign.status == 'EXCLUIDA' %}
+      <form method="post" action="/voice/campaigns/{{ campaign.id }}/restore">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-secondary" type="submit">Restaurar</button>
+      </form>
+      {% elif campaign.status == 'EM_EXECUCAO' %}
+      <small class="voice-help">Pause para editar ou excluir</small>
+      {% else %}
+      <a class="button button-secondary" href="/voice/campaigns/{{ campaign.id }}/edit">Editar</a>
+      <a class="button button-secondary" href="/voice/campaigns/{{ campaign.id }}/delete">Excluir</a>
+      {% endif %}
+    </div>
   </div>
   <div class="voice-campaign-meta">
     <span><strong>Origem:</strong> {{ campaign.sip_account.name }}</span>
@@ -151,7 +171,11 @@
 </section>
 {% endfor %}
 {% else %}
-  <section class="panel voice-panel voice-empty"><h3>Nenhuma campanha de voz cadastrada</h3><p>Crie uma campanha para selecionar a conta de saída e o grupo de vendedores.</p><a class="button button-primary" href="/voice/campaigns/new">Criar primeira campanha</a></section>
+  <section class="panel voice-panel voice-empty">
+    <h3>{{ 'Nenhuma campanha excluída' if show_archived else 'Nenhuma campanha de voz cadastrada' }}</h3>
+    {% if show_archived %}<a class="button button-secondary" href="/voice/campaigns">Voltar às campanhas</a>
+    {% else %}<p>Crie uma campanha para selecionar a conta SIP e a modalidade de atendimento.</p><a class="button button-primary" href="/voice/campaigns/new">Criar primeira campanha</a>{% endif %}
+  </section>
 {% endif %}
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', path='/js/voice_campaign_status.js') }}" defer></script>{% endblock %}
