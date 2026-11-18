@@ -50,9 +50,11 @@ def validate_campaign(mode: str, start: str, end: str, digit: str, audio_uri: st
     return clean
 
 
-def validate_wav(data: bytes, max_bytes: int = 2_000_000) -> None:
-    if not data or len(data) > max_bytes:
-        raise ValueError("Audio WAV vazio ou maior que 2 MB.")
+def validate_wav(data: bytes, max_bytes: int | None = None) -> None:
+    if not data:
+        raise ValueError("Audio WAV vazio.")
+    if max_bytes is not None and len(data) > max_bytes:
+        raise ValueError("Audio WAV excede a capacidade configurada para armazenamento.")
     try:
         with wave.open(BytesIO(data), "rb") as player:
             if player.getcomptype() != "NONE" or player.getnchannels() != 1:
@@ -60,8 +62,8 @@ def validate_wav(data: bytes, max_bytes: int = 2_000_000) -> None:
             if player.getsampwidth() != 2 or player.getframerate() not in {8000, 16000}:
                 raise ValueError("Use WAV PCM 16-bit, mono, 8 ou 16 kHz.")
             duration = player.getnframes() / player.getframerate()
-            if not 0.5 <= duration <= 60:
-                raise ValueError("O audio deve durar de 0,5 a 60 segundos.")
+            if duration < 0.5:
+                raise ValueError("O audio deve durar pelo menos 0,5 segundo.")
     except (EOFError, wave.Error) as exc:
         raise ValueError("Arquivo WAV invalido.") from exc
 
