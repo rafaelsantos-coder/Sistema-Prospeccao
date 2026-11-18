@@ -18,7 +18,7 @@ from app.models import (
     ServiceQueueMember,
     User,
 )
-from app.services.ai_queue_scope import ai_allowed_for_queue
+from app.services.ai_queue_scope import ai_allowed_for_queue, manual_queue_control_enabled
 from app.services.whatsapp_presence import online_user_ids
 from app.timeutils import utcnow
 
@@ -430,7 +430,7 @@ def usable_ai_binding(db: Session, queue_id: int | None):
     """Vínculo de IA ativo e autorizado pela política de fila exclusiva."""
     if not queue_id or not ai_allowed_for_queue(queue_id):
         return None
-    binding = db.scalar(
+    stmt = (
         select(AIQueueBinding)
         .options(selectinload(AIQueueBinding.agent))
         .where(
@@ -438,6 +438,9 @@ def usable_ai_binding(db: Session, queue_id: int | None):
             AIQueueBinding.active.is_(True),
         )
     )
+    if manual_queue_control_enabled():
+        stmt = stmt.where(AIQueueBinding.manual_authorized.is_(True))
+    binding = db.scalar(stmt)
     if not binding or not binding.agent or not binding.agent.active:
         return None
     if binding.handling_mode == "HUMAN":
