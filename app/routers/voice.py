@@ -1,4 +1,4 @@
-"""Prospecta VOZ: configuracao e preparacao de campanhas. Nenhum endpoint origina ligacoes."""
+"""Prospecta VOZ: configuracao e controle de campanhas reais via worker isolado."""
 from __future__ import annotations
 
 import re
@@ -80,7 +80,7 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
         "groups_active": sum(1 for item in groups if item.active),
         "campaigns": len(campaigns),
         "campaigns_draft": sum(1 for item in campaigns if item.status == "RASCUNHO"),
-        "campaigns_review": sum(1 for item in campaigns if item.status == VOICE_STATUS_HOMOLOGACAO),
+        "campaigns_review": sum(1 for item in campaigns if item.status in {VOICE_STATUS_HOMOLOGACAO, "PRONTA"}),
         "campaigns_live": sum(1 for item in campaigns if item.status == "EM_EXECUCAO"),
         "recipients": recipient_count,
     }
@@ -472,7 +472,7 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
                 entity_type="voice_campaign", entity_id=campaign.id,
                 payload={"mode": clean_mode, "group_id": group.id})
     db.commit()
-    flash(request, "Campanha de voz criada em rascunho; chamadas reais permanecem bloqueadas.")
+    flash(request, "Campanha criada. Importe os contatos, anexe o áudio e confira o checklist para iniciar.")
     return RedirectResponse("/voice/campaigns", status_code=303)
 
 
@@ -486,12 +486,13 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
     campaign = db.get(VoiceCampaign, campaign_id)
     if not campaign or campaign.mode != "AUDIO" or campaign.status != "RASCUNHO":
         return _error(request, "Campanha nao permite upload de audio.")
-    data = await audio.read(2_000_001)
     try:
-        validate_wav(data)
         storage = MediaStorage()
         if not storage.configured:
             raise ValueError("Configure armazenamento de midia seguro antes do upload.")
+        # Limite operacional do armazenamento; sem teto arbitrario de 2 MB / 60 segundos.
+        data = await audio.read(storage.max_bytes + 1)
+        validate_wav(data, max_bytes=storage.max_bytes)
         uri, _ = storage.upload_campaign_bytes(
             data=data, campaign_id=campaign.id,
             filename=f"voice-{uuid4().hex}.wav", mime_type="audio/wav")
@@ -504,7 +505,7 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
     write_audit(db, user=actor, action="VOICE_AUDIO_UPDATED",
                 entity_type="voice_campaign", entity_id=campaign.id)
     db.commit()
-    flash(request, "Audio PCM carregado. Campanha ainda em rascunho.")
+    flash(request, "Áudio carregado. Verifique o checklist e inicie a campanha quando estiver pronto.")
     return RedirectResponse("/voice/campaigns", status_code=303)
 
 
@@ -696,7 +697,7 @@ def voice_engine_toggle(request: Request, csrf_token: str = Form(...),
     write_audit(db, user=actor, action="VOICE_ENGINE_ENABLED" if engine.enabled else "VOICE_ENGINE_STOPPED",
                 entity_type="voice_dialer_engine", entity_id=engine.id)
     db.commit()
-    flash(request, "Motor de voz habilitado para testes controlados." if engine.enabled
+    flash(request, "Motor de voz habilitado para operacao de producao." if engine.enabled
           else "PARADA GERAL: todas as campanhas foram pausadas.")
     return RedirectResponse("/voice/campaigns", status_code=303)
 
@@ -709,7 +710,7 @@ def verify_voice_legal_basis(campaign_id: int, request: Request, csrf_token: str
         return redirect
     validate_csrf(request, csrf_token)
     campaign = db.get(VoiceCampaign, campaign_id)
-    if not campaign or campaign.status not in {"RASCUNHO", VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
+    if not campaign or campaign.status not in {"RASCUNHO", "PRONTA", VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
         return _error(request, "Campanha nao permite alterar a declaracao de contato.", "/voice/campaigns")
     if confirmation != "confirmado":
         return _error(request, "Confirme a base legal e a lista de contatos antes de autorizar.", "/voice/campaigns")
@@ -734,8 +735,8 @@ def start_voice_campaign(campaign_id: int, request: Request, csrf_token: str = F
     campaign = db.scalar(select(VoiceCampaign).where(
         VoiceCampaign.id == campaign_id
     ).with_for_update())
-    if not campaign or campaign.status not in {VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
-        return _error(request, "Campanha precisa estar em homologacao ou pausada.", "/voice/campaigns")
+    if not campaign or campaign.status not in {"RASCUNHO", "PRONTA", VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
+        return _error(request, "Campanha nao pode ser iniciada neste estado.", "/voice/campaigns")
     if authorization != "sim":
         return _error(request, "Autorizacao explicita do administrador obrigatoria.", "/voice/campaigns")
     failures = check_campaign_ready(db, campaign)
