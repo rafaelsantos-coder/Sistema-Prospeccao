@@ -1,9 +1,9 @@
-"""Escopo operacional: IA exclusiva da fila configurada em produção.
+"""Politicas de autorizacao da IA por fila.
 
-Configuração de produção: AI_EXCLUSIVE_QUEUE_ID=1 (Fila IA). Quando definida,
-nenhum outro canal pode enfileirar, executar, retomar ou agendar mensagens
-de SDR ou Vendedor IA. A ausência da variável preserva instalações legadas.
-Uma variável inválida bloqueia TODAS as filas, por segurança.
+AI_QUEUE_MANUAL_CONTROL=true: todas as filas ficam configuraveis, porem
+somente vinculos ativos com aprovacao explicita do gestor podem atender.
+As demais permanecem humanas. A flag legado AI_EXCLUSIVE_QUEUE_ID so vale
+quando o modo manual estiver desligado.
 """
 
 from __future__ import annotations
@@ -30,7 +30,13 @@ from app.services.audit import write_audit
 LOG = logging.getLogger("sulnet_ai_queue_scope")
 
 
+def manual_queue_control_enabled() -> bool:
+    return os.getenv("AI_QUEUE_MANUAL_CONTROL", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def exclusive_ai_queue_id() -> int | None:
+    if manual_queue_control_enabled():
+        return None
     raw = os.getenv("AI_EXCLUSIVE_QUEUE_ID")
     if raw is None:
         return None
@@ -42,8 +48,34 @@ def exclusive_ai_queue_id() -> int | None:
 
 
 def ai_allowed_for_queue(queue_id: int | None) -> bool:
+    """Fila pode ser configurada; envio real tambem requer ai_queue_enabled."""
+    if manual_queue_control_enabled():
+        return queue_id is not None and int(queue_id) > 0
     exclusive = exclusive_ai_queue_id()
     return exclusive is None or bool(queue_id is not None and int(queue_id) == exclusive)
+
+
+def ai_queue_enabled(db: Session, queue_id: int | None) -> bool:
+    """Autorizacao efetiva: no modo manual falha fechado para vinculos legados."""
+    if not ai_allowed_for_queue(queue_id):
+        return False
+    if not manual_queue_control_enabled():
+        return True
+    binding = db.scalar(
+        select(AIQueueBinding)
+        .join(ServiceQueue, ServiceQueue.id == AIQueueBinding.queue_id)
+        .where(
+            AIQueueBinding.queue_id == queue_id,
+            AIQueueBinding.active.is_(True),
+            AIQueueBinding.manual_authorized.is_(True),
+            AIQueueBinding.handling_mode != "HUMAN",
+            ServiceQueue.active.is_(True),
+        )
+    )
+    if not binding:
+        return False
+    agent = db.get(AIAgentProfile, binding.agent_id)
+    return bool(agent and agent.active and agent.role_type == "SDR")
 
 
 def ai_allowed_for_conversation(
@@ -52,14 +84,15 @@ def ai_allowed_for_conversation(
     *,
     fallback_queue_id: int | None = None,
 ) -> bool:
-    if exclusive_ai_queue_id() is None:
+    if not manual_queue_control_enabled() and exclusive_ai_queue_id() is None:
         return True
     current = db.scalar(
         select(ConversationQueueLink.queue_id).where(
             ConversationQueueLink.conversation_id == conversation_id
         )
     )
-    return ai_allowed_for_queue(current if current is not None else fallback_queue_id)
+    queue_id = current if current is not None else fallback_queue_id
+    return ai_queue_enabled(db, queue_id) if manual_queue_control_enabled() else ai_allowed_for_queue(queue_id)
 
 
 def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
@@ -69,6 +102,8 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
     removidos, jobs pendentes cancelados e conversas de posse da IA são
     devolvidas à fila humana. Operação idempotente e auditável.
     """
+    if manual_queue_control_enabled():
+        return {"enabled": False, "mode": "manual_queue_control"}
     target_id = exclusive_ai_queue_id()
     if target_id is None:
         return {"enabled": False}
