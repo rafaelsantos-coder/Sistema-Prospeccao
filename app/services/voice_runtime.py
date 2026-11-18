@@ -169,30 +169,24 @@ def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | No
 
 
 def within_call_window(campaign: VoiceCampaign, at: datetime | None = None) -> bool:
-    now = (at or datetime.now(timezone.utc)).astimezone(SAO_PAULO)
-    # No weekends in the conservative first release; no nighttime calls.
-    if now.weekday() >= 5:
-        return False
-    current = now.strftime("%H:%M")
-    return campaign.window_start <= current < campaign.window_end and "09:00" <= current < "20:00"
+    """Respeita exclusivamente a janela de horario cadastrada na campanha."""
+    local = (at or datetime.now(timezone.utc)).astimezone(SAO_PAULO)
+    current = local.strftime("%H:%M")
+    return campaign.window_start <= current < campaign.window_end
 
 
 def next_call_window_start(campaign: VoiceCampaign, at: datetime | None = None) -> datetime | None:
-    """Proxima abertura real permitida, conforme campanha e limite 09h-20h."""
+    """Proxima abertura com base apenas na janela configurada na campanha."""
     local = (at or datetime.now(timezone.utc)).astimezone(SAO_PAULO)
-    opening = max(campaign.window_start, "09:00")
-    closing = min(campaign.window_end, "20:00")
+    opening = campaign.window_start
+    closing = campaign.window_end
     if opening >= closing:
         return None
     hours, minutes = map(int, opening.split(":"))
-    for days in range(8):
-        day = local + timedelta(days=days)
-        if day.weekday() >= 5:
-            continue
-        start = day.replace(hour=hours, minute=minutes, second=0, microsecond=0)
-        if start > local:
-            return start
-    return None
+    start = local.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+    if start <= local:
+        start += timedelta(days=1)
+    return start
 
 
 def campaign_daily_count(db: Session, campaign: VoiceCampaign, at: datetime | None = None) -> int:
