@@ -125,7 +125,7 @@ def test_call_schedule_conservative_weekdays():
     assert not within_call_window(camp, datetime(2026, 11, 22, 13, 30, tzinfo=timezone.utc))
 
 
-def test_no_campaign_start_until_account_group_pair_and_legal_cleared():
+def test_campaign_uses_registered_group_without_prior_refer_test():
     with TestClient(app) as client:
         token = _login(client)
         aid, gid, cid = _scenario()
@@ -159,17 +159,40 @@ def test_no_campaign_start_until_account_group_pair_and_legal_cleared():
             engine.heartbeat_at = datetime.now(timezone.utc)
             db.commit()
             campaign = db.get(VoiceCampaign, cid)
-            assert any("A conta desta campanha" in x for x in check_campaign_ready(db, campaign))
-
-            db.add(VoiceTransferTest(account_id=aid, group_id=gid, phone_last4="0100",
-                  result="TRANSFERIDA", sip_code=200, message="SIP REFER confirmado",
-                  finished_at=datetime.now(timezone.utc)))
+            # Nenhuma homologacao de REFER foi realizada; o grupo cadastrado
+            # sera usado diretamente na chamada real.
+            group = db.get(VoiceGroup, gid)
+            group.transfer_verified_at = None
+            assert not db.scalars(select(VoiceTransferTest).where(
+                VoiceTransferTest.account_id == aid,
+                VoiceTransferTest.group_id == gid,
+            )).first()
             db.commit()
             assert check_campaign_ready(db, campaign) == []
+
+        started = client.post(f"/voice/campaigns/{cid}/start",
+                              data={"csrf_token": token, "authorization": "sim"},
+                              follow_redirects=False)
+        assert started.status_code == 303
+        with SessionLocal() as db:
+            campaign = db.get(VoiceCampaign, cid)
+            assert campaign.status == "EM_EXECUCAO"
+            # O resultado REFER e da chamada real, e nao um prerequisito.
             campaign.last_call_at = datetime.now(timezone.utc)
             db.commit()
-            # Even with approvals, the progressive worker applies a minimum delay.
             assert not next_attempt_allowed(db, campaign, datetime.now(timezone.utc))
+
+        paused = client.post(f"/voice/campaigns/{cid}/pause",
+                             data={"csrf_token": token}, follow_redirects=False)
+        assert paused.status_code == 303
+        with SessionLocal() as db:
+            engine = _ensure_engine(db)
+            campaign = db.get(VoiceCampaign, cid)
+            assert campaign.status == "PAUSADA"
+            campaign.mode = "AUDIO"
+            campaign.audio_uri = "s3://wave-placeholder/camp.wav"
+            db.commit()
+            assert check_campaign_ready(db, campaign) == []
             engine.enabled = False
             db.commit()
 
