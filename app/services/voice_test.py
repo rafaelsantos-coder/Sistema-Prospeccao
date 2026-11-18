@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import VoiceTestAgent, VoiceTestCall, VoiceSipAccount
+from app.services.global_blacklist import is_globally_blocked
 
 TERMINAL = {"TOCOU", "ATENDIDA", "OCUPADO", "FALHOU", "SEM_RESPOSTA", "EXPIRADO", "SIP_VALIDADO"}
 ACTIVE = {"PENDENTE", "REGISTRANDO", "REGISTRADO", "CHAMANDO", "TOCANDO"}
@@ -58,6 +59,15 @@ def verify_test_allowed(db: Session, account: VoiceSipAccount, phone: str, now: 
         raise ValueError("Nesta fase, o teste real de chamada suporta somente contas SIP UDP.")
     if not is_agent_online(db, at):
         raise ValueError("Agente SIP de testes indisponivel. Nenhuma chamada foi iniciada.")
+    # Every voice channel shares the same opt-out blacklist. SIP_ONLY is no call.
+    if phone != "SIP_ONLY":
+        try:
+            if is_globally_blocked(db, phone):
+                raise ValueError("Este telefone esta na blacklist global. Ligacao bloqueada.")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("Nao foi possivel verificar a blacklist. Chamada bloqueada.") from exc
     # Force sequential tests per SIP account to avoid account registration conflicts.
     active = db.scalar(select(func.count(VoiceTestCall.id)).where(VoiceTestCall.status.in_(ACTIVE))) or 0
     if active:
