@@ -87,7 +87,8 @@ def _digest(challenge: str, method: str, uri: str, username: str, password: str)
 
 class SipProbe:
     def __init__(self, host: str, username: str, password: str, phone: str | None,
-                 notify: Callable[[str, int | None, int | None, str], None]):
+                 notify: Callable[[str, int | None, int | None, str], None],
+                 port: int = 5060, proxy_host: str = "", proxy_port: int = 5060):
         if not re.fullmatch(r"[A-Za-z0-9.-]{3,190}", host):
             raise SipProbeError("Servidor SIP invalido.")
         if not re.fullmatch(r"[0-9*#]{1,20}", username):
@@ -95,6 +96,13 @@ class SipProbe:
         if phone is not None and not re.fullmatch(r"\d{10,14}", phone):
             raise SipProbeError("Numero de teste invalido.")
         self.host = host
+        self.port = int(port)
+        self.proxy_host = proxy_host.strip()
+        self.proxy_port = int(proxy_port)
+        if not 1 <= self.port <= 65535 or not 1 <= self.proxy_port <= 65535:
+            raise SipProbeError("Porta SIP fora do intervalo valido.")
+        if self.proxy_host and not re.fullmatch(r"[A-Za-z0-9.-]{3,190}", self.proxy_host):
+            raise SipProbeError("Proxy SIP invalido.")
         self.username = username
         self.password = password
         self.phone = phone
@@ -186,7 +194,7 @@ class SipProbe:
 
     def _register(self, expires: int = 75) -> None:
         callid = f"{self.callid_prefix}-{'reg' if expires else 'unreg'}@{self.host}"
-        target = f"sip:{self.host}"
+        target = f"sip:{self.host}:{self.port}"
         to = f"<sip:{self.username}@{self.host}>"
         code, _, _, _, _, _ = self._exchange(
             "REGISTER", target, callid, to, expires=expires, timeout=12,
@@ -232,7 +240,7 @@ class SipProbe:
             raise SipProbeError("Teste sem telefone nao pode originar chamada.")
         self.media = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.media.bind((self.local_ip, 0))
-        target = f"sip:{self.phone}@{self.host}"
+        target = f"sip:{self.phone}@{self.host}:{self.port}"
         to_header = f"<{target}>"
         callid = f"{self.callid_prefix}-call@{self.host}"
         self.notify("CHAMANDO", 200, None, "Central SIP autenticada. Originando chamada de teste.")
@@ -286,7 +294,9 @@ class SipProbe:
         self.notify("REGISTRANDO", None, None, "Validando autenticacao SIP sem realizar ligacao.")
         registered = False
         try:
-            resolved = socket.getaddrinfo(self.host, 5060, socket.AF_INET, socket.SOCK_DGRAM)
+            resolved = socket.getaddrinfo(self.proxy_host or self.host,
+                                           self.proxy_port if self.proxy_host else self.port,
+                                           socket.AF_INET, socket.SOCK_DGRAM)
             if not resolved:
                 raise SipProbeError("Dominio SIP sem endereco IPv4.")
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -313,7 +323,9 @@ class SipProbe:
     def run(self) -> SipDiagnostic:
         self.notify("REGISTRANDO", None, None, "Registrando temporariamente o ramal SIP.")
         try:
-            resolved = socket.getaddrinfo(self.host, 5060, socket.AF_INET, socket.SOCK_DGRAM)
+            resolved = socket.getaddrinfo(self.proxy_host or self.host,
+                                           self.proxy_port if self.proxy_host else self.port,
+                                           socket.AF_INET, socket.SOCK_DGRAM)
             if not resolved:
                 raise SipProbeError("Dominio SIP sem endereco IPv4.")
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -325,6 +337,11 @@ class SipProbe:
         except (socket.gaierror, OSError) as exc:
             raise SipProbeError("Falha de rede ao acessar a central SIP; verifique DNS, porta 5060 e UDP.") from exc
         finally:
+            if self.sock:
+                try:
+                    self._register(expires=0)
+                except (SipProbeError, OSError):
+                    pass
             if self.media:
                 self.media.close()
             if self.sock:
