@@ -17,6 +17,18 @@
     {% endif %}
   </div>
 </div>
+  {% if campaign.status in ['PAUSADA', 'CONCLUIDA'] %}
+  <div class="voice-campaign-resend-options">
+    <div>
+      <span class="eyebrow">NOVA RODADA DE LIGAÇÕES</span>
+      <p class="voice-help">A nova execução preserva o histórico desta campanha. Reenvie todos os contatos elegíveis ou somente quem não atendeu.</p>
+    </div>
+    <div class="voice-actions">
+      <a class="button button-secondary" href="/voice/campaigns/{{ campaign.id }}/resend?mode=ALL">Reenviar campanha</a>
+      <a class="button button-primary" href="/voice/campaigns/{{ campaign.id }}/resend?mode=UNANSWERED">Reenviar somente não atendidos</a>
+    </div>
+  </div>
+  {% endif %}
   <div class="voice-campaign-meta">
     <span><strong>Origem:</strong> {{ campaign.sip_account.name }}</span>
     <span><strong>Destino:</strong> {{ (campaign.group.name ~ ' (' ~ campaign.group.target_extension ~ ')') if campaign.group else 'Sem transferência — áudio e encerramento' }}</span>
