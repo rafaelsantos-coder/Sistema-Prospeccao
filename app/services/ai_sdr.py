@@ -120,7 +120,17 @@ def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None
     )
     if manual_queue_control_enabled():
         stmt = stmt.where(AIQueueBinding.manual_authorized.is_(True))
-    return db.scalar(stmt)
+    binding = db.scalar(stmt)
+    if manual_queue_control_enabled() and (
+        not binding
+        or not binding.agent
+        or not binding.agent.active
+        or binding.agent.role_type != "SDR"
+        or not binding.queue
+        or not binding.queue.active
+    ):
+        return None
+    return binding
 
 
 def is_ai_test_phone(phone: str | None) -> bool:
