@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app.database import get_db
 from app.models import (
@@ -27,6 +27,7 @@ from app.services.dispatch_queue import (
     parse_dispatch_csv,
     parse_window,
 )
+from app.services.dispatch_monitor import dispatch_live_snapshot
 from app.services.queue_routing import available_queues_for_user, get_queue
 from app.services.scoring import normalize_phone
 from app.services.telegram import configured as telegram_configured, ensure_telegram_queue
@@ -310,6 +311,8 @@ def dispatch_detail(
     except (TypeError, ValueError):
         import_summary = {}
 
+    live_status = dispatch_live_snapshot(db, dispatch)
+
     return render(
         request,
         "dispatches/detail.html",
@@ -320,13 +323,21 @@ def dispatch_detail(
         recipients=recipients,
         counts=counts,
         import_summary=import_summary,
-        estimated_duration=format_duration(
-            estimated_duration_seconds(
-                counts["total"],
-                dispatch.interval_seconds,
-            )
-        ),
+        live_status=live_status,
     )
+
+
+@router.get("/{dispatch_id}/live")
+def dispatch_live_status(
+    dispatch_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    dispatch = _dispatch_or_404(db, dispatch_id)
+    return JSONResponse(dispatch_live_snapshot(db, dispatch), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/{dispatch_id}/configuration")
