@@ -266,7 +266,7 @@ class PjSession:
             def onCallMediaState(self, prm):
                 try:
                     info = self.getInfo()
-                    for index, media in enumerate(info.media):
+                    for media in info.media:
                         if media.type != pj.PJMEDIA_TYPE_AUDIO:
                             continue
                         if media.status == pj.PJSUA_CALL_MEDIA_ACTIVE:
