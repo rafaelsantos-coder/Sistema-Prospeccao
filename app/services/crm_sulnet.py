@@ -307,6 +307,7 @@ class SulnetCRMClient:
     base_url: str
     bearer_token: str = ""
     integration_key: str = ""
+    lead_integration_key: str = ""
     timeout: float = 25.0
     _profile_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
