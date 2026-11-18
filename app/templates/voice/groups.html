@@ -17,7 +17,10 @@
     <tr>
       <td><strong>{{ group.name }}</strong></td><td><strong>{{ group.target_extension }}</strong></td>
       <td>{{ group.member_extensions or 'Não informados' }}</td>
-      <td><span class="voice-pill {{ 'is-ready' if group.active else 'is-paused' }}">{{ 'Ativo' if group.active else 'Pausado' }}</span></td>
+      <td><span class="voice-pill {{ 'is-ready' if group.active else 'is-paused' }}">{{ 'Ativo' if group.active else 'Pausado' }}</span>
+        {% if group.transfer_verified_at %}<small>REFER certificado em {{ group.transfer_verified_at.strftime('%d/%m/%Y') }}</small>
+        {% else %}<small>Transferência não validada</small>{% endif %}
+      </td>
       <td><div class="voice-actions">
         <a class="button button-secondary" href="/voice/groups?edit_id={{ group.id }}">Editar</a>
         <form action="/voice/groups/{{ group.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -43,5 +46,48 @@
     <div class="voice-actions"><button class="button button-primary" type="submit">{{ 'Salvar alterações' if edit_group else 'Cadastrar grupo' }}</button>
       {% if edit_group %}<a class="button button-secondary" href="/voice/groups">Cancelar edição</a>{% endif %}</div>
   </form>
+</section>
+<section class="panel voice-panel">
+  <span class="eyebrow">HOMOLOGAÇÃO CONTROLADA</span>
+  <h3>Teste real de transferência SIP REFER</h3>
+  <p>O administrador informa um número autorizado para uma única chamada. Após o atendimento, a central deverá encaminhar para o ramal do grupo configurado. O motor de voz deve estar habilitado e o resultado real será exibido abaixo.</p>
+  {% if engine_online and engine and engine.test_runtime_enabled and engine.enabled %}
+    <span class="voice-pill is-ready">Motor de testes habilitado</span>
+  {% else %}
+    <span class="voice-pill is-paused">Motor de testes bloqueado — ativar somente após validar o SIP</span>
+  {% endif %}
+  {% for group in groups %}
+  <div class="voice-subpanel" style="margin-top:16px">
+    <h4>{{ group.name }} · ramal {{ group.target_extension }}</h4>
+    <form action="/voice/groups/{{ group.id }}/test-transfer" method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field"><span>Conta SIP de origem</span><select name="sip_account_id" required>
+          {% for account in accounts %}<option value="{{ account.id }}">{{ account.name }} ({{ account.username }})</option>{% endfor %}
+        </select></label>
+        <label class="field"><span>Número autorizado (DDD + telefone)</span><input name="phone" type="tel" required placeholder="Ex.: 55 55 99999-9999"></label>
+      </div>
+      <label><input name="authorized" type="checkbox" value="sim" required> Confirmo autorização do número para receber esta ligação de teste, sem campanha automática.</label>
+      <div><button type="submit" class="button button-secondary" {% if not engine_online or not engine or not engine.enabled or not engine.test_runtime_enabled or not group.active %}disabled{% endif %}>Testar transferência real</button></div>
+    </form>
+  </div>
+  {% endfor %}
+</section>
+<section class="panel voice-panel">
+  <span class="eyebrow">RESULTADOS DO PABX</span><h3>Últimos testes de transferência</h3>
+  {% if transfers %}
+    <div class="voice-table-wrap"><table class="voice-table"><thead>
+      <tr><th>Grupo / conta</th><th>Destino</th><th>Status</th><th>SIP</th><th>Diagnóstico</th></tr></thead><tbody>
+      {% for test in transfers %}
+      <tr><td>#{{ test.group_id }} / #{{ test.account_id }}</td>
+      <td>•••• {{ test.phone_last4 }}</td>
+      <td><span class="voice-pill {{ 'is-ready' if test.result == 'TRANSFERIDA' else 'is-unknown' }}">{{ test.result }}</span></td>
+      <td>{{ test.sip_code if test.sip_code else '—' }}</td>
+      <td>{{ test.message }}</td></tr>
+      {% endfor %}
+      </tbody></table></div>
+  {% else %}
+  <p class="voice-help">Nenhuma transferência certificada até agora.</p>
+  {% endif %}
 </section>
 {% endblock %}

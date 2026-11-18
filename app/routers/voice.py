@@ -10,12 +10,18 @@ from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
 from app.database import get_db
-from app.models import Lead, VoiceCampaign, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall
+from app.models import Lead, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall, VoiceTransferTest
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.dispatch_queue import parse_dispatch_csv
 from app.services.media_storage import MediaStorage
 from app.services.secret_store import encrypt_secret
+from app.services.voice_runtime import (
+    check_campaign_ready, validate_routing_options, outbound_guard,
+    MAX_CALLS_PER_DAY, ENGINE_HEARTBEAT_MAX
+)
+from app.services.voice_test import aware
+from datetime import datetime, timezone, timedelta
 from app.services.voice_test import is_agent_online, now_utc, validate_test_phone, verify_test_allowed
 from app.services.voice import (
     VOICE_STATUS_HOMOLOGACAO,
@@ -64,6 +70,7 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
     accounts = list(db.scalars(select(VoiceSipAccount).order_by(VoiceSipAccount.id.desc())))
     groups = list(db.scalars(select(VoiceGroup).order_by(VoiceGroup.id.desc())))
     campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
+    engine = db.get(VoiceDialerEngine, 1)
     recipient_count = db.scalar(select(func.count(VoiceRecipient.id))) or 0
     stats = {
         "accounts": len(accounts),
@@ -74,12 +81,15 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
         "campaigns": len(campaigns),
         "campaigns_draft": sum(1 for item in campaigns if item.status == "RASCUNHO"),
         "campaigns_review": sum(1 for item in campaigns if item.status == VOICE_STATUS_HOMOLOGACAO),
+        "campaigns_live": sum(1 for item in campaigns if item.status == "EM_EXECUCAO"),
         "recipients": recipient_count,
     }
     return render(
         request, "voice/dashboard.html", user=actor, active_nav="voice",
         voice_section="dashboard", page_title="Prospecta VOZ · Dashboard",
-        accounts=accounts, campaigns=campaigns[:5], stats=stats,
+        accounts=accounts, campaigns=campaigns[:5], stats=stats, engine=engine,
+        engine_online=bool(engine and engine.heartbeat_at and
+            datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
 
 
@@ -110,10 +120,17 @@ def voice_groups(request: Request, edit_id: int | None = None, db: Session = Dep
         return redirect
     groups = list(db.scalars(select(VoiceGroup).order_by(VoiceGroup.id.desc())))
     edit_group = db.get(VoiceGroup, edit_id) if edit_id else None
+    accounts = list(db.scalars(select(VoiceSipAccount).where(VoiceSipAccount.active.is_(True))))
+    transfers = list(db.scalars(select(VoiceTransferTest).order_by(
+        VoiceTransferTest.id.desc()).limit(30)))
+    engine = db.get(VoiceDialerEngine, 1)
     return render(
         request, "voice/groups.html", user=actor, active_nav="voice",
         voice_section="groups", page_title="Prospecta VOZ · Ramais e grupos",
-        groups=groups, edit_group=edit_group,
+        groups=groups, edit_group=edit_group, accounts=accounts, engine=engine,
+        transfers=transfers,
+        engine_online=bool(engine and engine.heartbeat_at and
+            datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
 
 
@@ -137,13 +154,17 @@ def voice_campaigns(request: Request, db: Session = Depends(get_db)):
     if redirect:
         return redirect
     campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
+    engine = db.get(VoiceDialerEngine, 1)
+    checklist = {item.id: check_campaign_ready(db, item) for item in campaigns}
     counts = dict(db.execute(
         select(VoiceRecipient.campaign_id, func.count(VoiceRecipient.id)).group_by(VoiceRecipient.campaign_id)
     ).all())
     return render(
         request, "voice/campaigns.html", user=actor, active_nav="voice",
         voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
-        campaigns=campaigns, counts=counts,
+        campaigns=campaigns, counts=counts, engine=engine, readiness=checklist,
+        engine_online=bool(engine and engine.heartbeat_at and
+            datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
 
 
@@ -186,7 +207,11 @@ def confirm_delete_group(group_id: int, request: Request, db: Session = Depends(
 def update_account(account_id: int, request: Request, csrf_token: str = Form(...),
                    name: str = Form(...), domain: str = Form(...),
                    username: str = Form(...), transport: str = Form("UDP"),
-                   password: str = Form(""), db: Session = Depends(get_db)):
+                   sip_port: int = Form(5060), proxy_host: str = Form(""),
+                   proxy_port: int = Form(5060), dial_domain: str = Form(""),
+                   dial_prefix: str = Form(""), strip_brazil_ddi: str = Form(""),
+                   caller_id: str = Form(""), password: str = Form(""),
+                   db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
@@ -196,6 +221,8 @@ def update_account(account_id: int, request: Request, csrf_token: str = Form(...
         return _error(request, "Conta SIP nao encontrada.", "/voice/accounts")
     try:
         host, user, proto = validate_sip(domain, username, transport)
+        routing = validate_routing_options(sip_port, proxy_host, proxy_port,
+                                           dial_domain, dial_prefix, caller_id)
         if not name.strip() or len(name.strip()) > 120 or len(password) > 300:
             raise ValueError("Nome ou senha invalida.")
     except ValueError as exc:
@@ -204,6 +231,20 @@ def update_account(account_id: int, request: Request, csrf_token: str = Form(...
     account.domain = host
     account.username = user
     account.transport = proto
+    for key, value in routing.items():
+        setattr(account, key, value)
+    account.strip_brazil_ddi = strip_brazil_ddi.lower() in {"on", "true", "yes", "1"}
+    # Never reuse a prior SIP status after changing credentials or routing.
+    account.sip_check_at = None
+    account.sip_check_code = None
+    account.sip_check_message = "Configuracao alterada; teste SIP necessario."
+    # Transfer results from the previous account configuration cannot certify this one.
+    for prior in db.scalars(select(VoiceTransferTest).where(
+        VoiceTransferTest.account_id == account.id,
+        VoiceTransferTest.result == "TRANSFERIDA",
+    )):
+        prior.result = "INVALIDADO"
+        prior.message = "Conta SIP alterada; novo teste de transferencia necessario."
     if password.strip():
         account.password_encrypted = encrypt_secret(password)
     write_audit(db, user=actor, action="VOICE_SIP_UPDATED", entity_type="voice_sip_account",
@@ -276,6 +317,13 @@ def update_group(group_id: int, request: Request, csrf_token: str = Form(...),
     group.name = name.strip()
     group.target_extension = target
     group.member_extensions = ",".join(sorted(set(members)))
+    group.transfer_verified_at = None
+    for prior in db.scalars(select(VoiceTransferTest).where(
+        VoiceTransferTest.group_id == group.id,
+        VoiceTransferTest.result == "TRANSFERIDA",
+    )):
+        prior.result = "INVALIDADO"
+        prior.message = "Grupo alterado; transferencia precisa ser retestada."
     write_audit(db, user=actor, action="VOICE_GROUP_UPDATED", entity_type="voice_group",
                 entity_id=group.id, payload={"target": target, "members": members})
     db.commit()
@@ -328,7 +376,11 @@ def delete_group(group_id: int, request: Request, csrf_token: str = Form(...),
 @router.post("/accounts")
 def add_account(request: Request, csrf_token: str = Form(...), name: str = Form(...),
                 domain: str = Form(...), username: str = Form(...), password: str = Form(...),
-                transport: str = Form("UDP"), db: Session = Depends(get_db)):
+                transport: str = Form("UDP"), sip_port: int = Form(5060),
+                proxy_host: str = Form(""), proxy_port: int = Form(5060),
+                dial_domain: str = Form(""), dial_prefix: str = Form(""),
+                strip_brazil_ddi: str = Form(""), caller_id: str = Form(""),
+                db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
@@ -336,6 +388,8 @@ def add_account(request: Request, csrf_token: str = Form(...), name: str = Form(
     require_roles(actor, "ADMIN")
     try:
         host, user, proto = validate_sip(domain, username, transport)
+        routing = validate_routing_options(sip_port, proxy_host, proxy_port,
+                                           dial_domain, dial_prefix, caller_id)
         if not password.strip() or len(password) > 300:
             raise ValueError("Informe a senha SIP (maximo 300 caracteres).")
         if not name.strip() or len(name.strip()) > 120:
@@ -344,7 +398,9 @@ def add_account(request: Request, csrf_token: str = Form(...), name: str = Form(
         return _error(request, str(exc))
     account = VoiceSipAccount(name=name.strip(), domain=host, username=user,
                               password_encrypted=encrypt_secret(password),
-                              transport=proto, created_by_id=actor.id)
+                              transport=proto, created_by_id=actor.id,
+                              strip_brazil_ddi=strip_brazil_ddi.lower() in {"on", "true", "yes", "1"},
+                              **routing)
     db.add(account)
     db.flush()
     write_audit(db, user=actor, action="VOICE_SIP_CREATED", entity_type="voice_sip_account",
@@ -533,7 +589,13 @@ def account_test_page(account_id: int, request: Request, db: Session = Depends(g
         request, "voice/account_test.html", user=actor, active_nav="voice",
         voice_section="accounts", page_title="Prospecta VOZ · Testar ligação SIP",
         account=account, recent=recent, agent_online=is_agent_online(db),
-        processing=bool(recent and recent[0].status in {"PENDENTE","REGISTRANDO","REGISTRADO","CHAMANDO","TOCANDO"}),
+        engine=db.get(VoiceDialerEngine, 1),
+        engine_online=bool((eng := db.get(VoiceDialerEngine, 1)) and eng.heartbeat_at
+                           and datetime.now(timezone.utc) - aware(eng.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
+        processing=bool(recent and recent[0].status in {
+            "PENDENTE", "REGISTRANDO", "REGISTRADO", "CHAMANDO", "TOCANDO",
+            "PENDENTE_PJSIP", "REGISTRANDO_PJSIP",
+        }),
     )
 
 
@@ -605,4 +667,211 @@ def verify_account_registration(account_id: int, request: Request,
                 payload={"account_id": account.id, "operation": "REGISTER_ONLY"})
     db.commit()
     flash(request, "Verificacao SIP iniciada sem discagem. Consulte o resultado abaixo.")
+    return RedirectResponse(f"/voice/accounts/{account_id}/test", status_code=303)
+
+
+@router.post("/engine/toggle")
+def voice_engine_toggle(request: Request, csrf_token: str = Form(...),
+                        db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    engine = db.scalar(select(VoiceDialerEngine).where(VoiceDialerEngine.id == 1).with_for_update())
+    if not engine:
+        return _error(request, "Motor de voz nao foi instalado no banco.", "/voice/campaigns")
+    if not engine.enabled:
+        # The emergency stop must be usable even while the worker is offline.
+        if not engine.heartbeat_at or (
+            datetime.now(timezone.utc) - aware(engine.heartbeat_at) > ENGINE_HEARTBEAT_MAX
+        ):
+            return _error(request, "O motor PJSUA2 esta offline; nao pode ser ativado.", "/voice/campaigns")
+    engine.enabled = not engine.enabled
+    if not engine.enabled:
+        for campaign in db.scalars(select(VoiceCampaign).where(
+            VoiceCampaign.status == "EM_EXECUCAO"
+        )):
+            campaign.status = "PAUSADA"
+            campaign.stopped_at = datetime.now(timezone.utc)
+    write_audit(db, user=actor, action="VOICE_ENGINE_ENABLED" if engine.enabled else "VOICE_ENGINE_STOPPED",
+                entity_type="voice_dialer_engine", entity_id=engine.id)
+    db.commit()
+    flash(request, "Motor de voz habilitado para testes controlados." if engine.enabled
+          else "PARADA GERAL: todas as campanhas foram pausadas.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/campaigns/{campaign_id}/legal")
+def verify_voice_legal_basis(campaign_id: int, request: Request, csrf_token: str = Form(...),
+                             confirmation: str = Form(""), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.get(VoiceCampaign, campaign_id)
+    if not campaign or campaign.status not in {"RASCUNHO", VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
+        return _error(request, "Campanha nao permite alterar a declaracao de contato.", "/voice/campaigns")
+    if confirmation != "confirmado":
+        return _error(request, "Confirme a base legal e a lista de contatos antes de autorizar.", "/voice/campaigns")
+    campaign.legal_basis_verified = True
+    campaign.approved_by_id = actor.id
+    campaign.approved_at = datetime.now(timezone.utc)
+    write_audit(db, user=actor, action="VOICE_LEGAL_BASIS_CONFIRMED",
+                entity_type="voice_campaign", entity_id=campaign_id,
+                payload={"confirmed_by_id": actor.id})
+    db.commit()
+    flash(request, "Base legal confirmada para esta campanha. Nenhuma chamada foi iniciada.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/campaigns/{campaign_id}/start")
+def start_voice_campaign(campaign_id: int, request: Request, csrf_token: str = Form(...),
+                         authorization: str = Form(""), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.scalar(select(VoiceCampaign).where(
+        VoiceCampaign.id == campaign_id
+    ).with_for_update())
+    if not campaign or campaign.status not in {VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
+        return _error(request, "Campanha precisa estar em homologacao ou pausada.", "/voice/campaigns")
+    if authorization != "sim":
+        return _error(request, "Autorizacao explicita do administrador obrigatoria.", "/voice/campaigns")
+    failures = check_campaign_ready(db, campaign)
+    if failures:
+        return _error(request, "Campanha bloqueada: " + " / ".join(failures[:3]), "/voice/campaigns")
+    campaign.status = "EM_EXECUCAO"
+    campaign.started_at = datetime.now(timezone.utc)
+    campaign.stopped_at = None
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_STARTED",
+                entity_type="voice_campaign", entity_id=campaign_id,
+                payload={"manual_authorization": True, "single_call_at_a_time": True})
+    db.commit()
+    flash(request, "Campanha habilitada. Discagem progressiva com no maximo uma chamada por vez.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/campaigns/{campaign_id}/pause")
+def pause_voice_campaign(campaign_id: int, request: Request, csrf_token: str = Form(...),
+                         db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.get(VoiceCampaign, campaign_id)
+    if not campaign or campaign.status != "EM_EXECUCAO":
+        return _error(request, "Campanha nao esta em execucao.", "/voice/campaigns")
+    campaign.status = "PAUSADA"
+    campaign.stopped_at = datetime.now(timezone.utc)
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_PAUSED",
+                entity_type="voice_campaign", entity_id=campaign_id)
+    db.commit()
+    flash(request, "Campanha pausada. Nao serao originadas novas chamadas.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/groups/{group_id}/test-transfer")
+def test_group_transfer(group_id: int, request: Request, csrf_token: str = Form(...),
+                        sip_account_id: int = Form(...), phone: str = Form(...),
+                        authorized: str = Form(""), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    account = db.get(VoiceSipAccount, sip_account_id)
+    group = db.get(VoiceGroup, group_id)
+    if not account or not account.active or not group or not group.active:
+        return _error(request, "Conta SIP e grupo precisam estar ativos.", "/voice/groups")
+    engine = db.get(VoiceDialerEngine, 1)
+    at = datetime.now(timezone.utc)
+    if not engine or not engine.enabled or not engine.test_runtime_enabled:
+        return _error(request, "Habilite o motor PJSUA2 e o modulo de testes de transferencia.", "/voice/groups")
+    if not engine.heartbeat_at or at - aware(engine.heartbeat_at) > ENGINE_HEARTBEAT_MAX:
+        return _error(request, "Worker SIP de transferencia offline.", "/voice/groups")
+    if authorized != "sim":
+        return _error(request, "Confirme que o numero pode receber a ligacao de teste.", "/voice/groups")
+    try:
+        clean = validate_test_phone(phone)
+        outbound_guard(db, clean)
+    except ValueError as exc:
+        return _error(request, str(exc), "/voice/groups")
+    recent = list(db.scalars(select(VoiceTransferTest).where(
+        VoiceTransferTest.account_id == account.id,
+        VoiceTransferTest.created_at >= at - timedelta(hours=1)
+    )))
+    if len(recent) >= 3 or any(row.result not in {
+        "FALHOU", "TRANSFERIDA", "EXPIRADO", "INDETERMINADO", "SEM_ATENDIMENTO",
+        "SEM_INTERESSE", "TIMEOUT", "FALHA_TRANSFERENCIA", "INTERROMPIDA"
+    } for row in recent):
+        return _error(request, "Aguarde o fim de outro teste ou o limite de tres testes/hora.", "/voice/groups")
+    row = VoiceTransferTest(
+        account_id=account.id, group_id=group.id, phone_last4=clean[-4:],
+        phone_encrypted=encrypt_secret(clean), created_by_id=actor.id,
+        result="PENDENTE", message="Teste unico solicitado por ADMIN.", created_at=at,
+    )
+    db.add(row)
+    db.flush()
+    write_audit(db, user=actor, action="VOICE_TRANSFER_TEST_REQUESTED",
+                entity_type="voice_transfer_test", entity_id=row.id,
+                payload={"account_id": account.id, "group_id": group.id, "phone_last4": clean[-4:]})
+    db.commit()
+    flash(request, "Teste de transferencia iniciado. Acompanhe o status abaixo.")
+    return RedirectResponse("/voice/groups", status_code=303)
+
+
+@router.post("/accounts/{account_id}/test-native")
+def request_native_sip_test(account_id: int, request: Request,
+                            csrf_token: str = Form(...), phone: str = Form(...),
+                            authorized: str = Form(""), db: Session = Depends(get_db)):
+    """One authorized native SIP/RTP call, no campaign and no transfer."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    account = db.scalar(select(VoiceSipAccount).where(
+        VoiceSipAccount.id == account_id
+    ).with_for_update())
+    if not account or not account.active:
+        return _error(request, "Conta SIP nao encontrada ou pausada.", "/voice/accounts")
+    engine = db.get(VoiceDialerEngine, 1)
+    now = datetime.now(timezone.utc)
+    if not engine or not engine.enabled or not engine.test_runtime_enabled:
+        return _error(request, "Motor nativo PJSUA2 ainda esta bloqueado para testes.", f"/voice/accounts/{account_id}/test")
+    if not engine.heartbeat_at or now - aware(engine.heartbeat_at) > ENGINE_HEARTBEAT_MAX:
+        return _error(request, "Motor PJSUA2 offline.", f"/voice/accounts/{account_id}/test")
+    if authorized != "sim":
+        return _error(request, "Confirmacao de autorizacao do destino obrigatoria.",
+                      f"/voice/accounts/{account_id}/test")
+    try:
+        clean = validate_test_phone(phone)
+        outbound_guard(db, clean)
+    except ValueError as exc:
+        return _error(request, str(exc), f"/voice/accounts/{account_id}/test")
+    recent = list(db.scalars(select(VoiceTestCall).where(
+        VoiceTestCall.account_id == account.id,
+        VoiceTestCall.created_at >= now - timedelta(hours=1),
+        VoiceTestCall.status != "SIP_VALIDADO",
+    )))
+    in_progress = list(db.scalars(select(VoiceTestCall).where(
+        VoiceTestCall.status.in_({"PENDENTE_PJSIP", "REGISTRANDO_PJSIP"})
+    )))
+    if len(recent) >= 3 or in_progress or any(
+        t.target_phone == clean and now - aware(t.created_at) < timedelta(minutes=3)
+        for t in recent
+    ):
+        return _error(request, "Limite de testes atingido ou ha uma chamada em andamento.",
+                      f"/voice/accounts/{account_id}/test")
+    test = VoiceTestCall(
+        account_id=account.id, account_label=account.name, target_phone=clean,
+        status="PENDENTE_PJSIP", message="Chamada nativa PJSUA2 autorizada pelo administrador.",
+        initiator_user_id=actor.id, created_at=now,
+    )
+    db.add(test)
+    db.flush()
+    write_audit(db, user=actor, action="VOICE_NATIVE_TEST_REQUESTED",
+                entity_type="voice_test_call", entity_id=test.id,
+                payload={"account_id": account.id, "target_last4": clean[-4:]})
+    db.commit()
+    flash(request, "Teste SIP/RTP solicitado. Acompanhe o resultado real nesta pagina.")
     return RedirectResponse(f"/voice/accounts/{account_id}/test", status_code=303)

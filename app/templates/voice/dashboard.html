@@ -10,15 +10,18 @@
 </div>
 
 <div class="voice-notice" role="status">
-  <strong>Discador ainda não conectado à central telefônica.</strong>
-  <p>Os cadastros já podem ser administrados, mas o registro SIP, a conexão dos ramais e as transferências ainda não foram homologados. O sistema não realiza chamadas. Somente o administrador pode fazer configurações.</p>
+  <strong>O ramal só está operacional após registro e transferência comprovados pelo PABX.</strong>
+  <p>Motor de voz: {{ 'online' if engine_online else 'offline / sem heartbeat recente' }} ·
+  Trava geral: {{ 'habilitada para testes' if engine and engine.enabled else 'DESLIGADA' }} ·
+  Campanhas: {{ 'worker habilitado' if engine and engine.campaign_runtime_enabled else 'envios bloqueados no Railway' }}.
+  Somente o administrador pode configurar e autorizar chamadas.</p>
 </div>
 
 <div class="voice-metrics" aria-label="Indicadores do Prospecta VOZ">
   <div class="voice-metric"><span>Contas SIP</span><strong>{{ stats.accounts }}</strong><small>{{ stats.accounts_active }} ativas para cadastro · {{ stats.accounts_paused }} pausadas</small></div>
   <div class="voice-metric"><span>Grupos de ramais</span><strong>{{ stats.groups }}</strong><small>{{ stats.groups_active }} disponíveis para configurar</small></div>
   <div class="voice-metric"><span>Campanhas de voz</span><strong>{{ stats.campaigns }}</strong><small>{{ stats.campaigns_draft }} rascunhos · {{ stats.campaigns_review }} em homologação</small></div>
-  <div class="voice-metric"><span>Contatos preparados</span><strong>{{ stats.recipients }}</strong><small>Nenhuma discagem automática ativada</small></div>
+  <div class="voice-metric"><span>Contatos preparados</span><strong>{{ stats.recipients }}</strong><small>{{ stats.campaigns_live or 0 }} campanhas em execução, sem discagem preditiva</small></div>
 </div>
 
 <div class="voice-dashboard-columns">
@@ -36,7 +39,15 @@
           <tr>
             <td><strong>{{ account.name }}</strong><small>{{ account.username }}@{{ account.domain }}</small></td>
             <td><span class="voice-pill {{ 'is-ready' if account.active else 'is-paused' }}">{{ 'Ativa' if account.active else 'Pausada' }}</span></td>
-            <td><span class="voice-pill is-unknown">Não verificado</span></td>
+            <td>{% if account.sip_check_code == 200 %}
+              <span class="voice-pill is-ready">SIP 200 no teste</span>
+              <small>Não indica registro contínuo</small>
+            {% elif account.sip_check_at %}
+              <span class="voice-pill is-paused">Falha SIP / DNS</span>
+              <small>{{ account.sip_check_message }}</small>
+            {% else %}
+              <span class="voice-pill is-unknown">Não verificado</span>
+            {% endif %}</td>
           </tr>
         {% endfor %}
         </tbody>

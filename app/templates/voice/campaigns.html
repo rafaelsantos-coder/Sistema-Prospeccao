@@ -5,7 +5,21 @@
     <p>Acompanhe campanhas criadas, importe contatos, envie áudios e prepare a homologação.</p></div>
   <a class="button button-primary" href="/voice/campaigns/new">＋ Nova campanha</a>
 </div>
-<div class="voice-notice"><strong>Discagem de voz ainda desativada.</strong><p>Importar contatos e solicitar homologação não faz chamadas nem altera os disparos do WhatsApp.</p></div>
+<div class="voice-notice"><strong>Discagem progressiva com bloqueios de segurança</strong>
+<p>O Prospecta VOZ só disca com autorização ADMIN, motor PJSUA2 habilitado, conta SIP autenticada, transferência validada, base legal declarada e horário comercial. Nunca realiza discagem preditiva nem utiliza as filas WhatsApp.</p></div>
+<section class="panel voice-panel">
+  <div class="voice-campaign-title">
+    <div><span class="eyebrow">CONTROLE GLOBAL</span><h3>Motor telefônico PJSUA2</h3>
+      <p>Serviço: {{ 'online (heartbeat recente)' if engine_online else 'offline / não verificado' }} ·
+      Discagem automática: {{ 'permitida pelo motor' if engine and engine.campaign_runtime_enabled else 'bloqueada no Railway' }}</p></div>
+    <span class="voice-pill {{ 'is-ready' if engine and engine.enabled else 'is-paused' }}">{{ 'HABILITADO' if engine and engine.enabled else 'PARADA GERAL' }}</span>
+  </div>
+  <form action="/voice/engine/toggle" method="post" class="voice-review">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="button {{ 'button-secondary' if engine and engine.enabled else 'button-primary' }}">{{ 'Parar motor e todas as campanhas' if engine and engine.enabled else 'Habilitar motor para testes controlados' }}</button>
+  </form>
+  <p class="voice-help">Ativar o motor não inicia nenhuma campanha. O trabalhador do Railway possui uma segunda trava de envio que deve estar habilitada separadamente.</p>
+</section>
 
 {% if campaigns %}
 {% for campaign in campaigns %}
@@ -43,7 +57,46 @@
     <button class="button button-primary" type="submit">Enviar para homologação (sem discagem)</button>
   </form>
   {% else %}
-    <p class="voice-help">Esta campanha está aguardando homologação técnica. Não está ligando automaticamente.</p>
+    {% if campaign.status in ['EM_HOMOLOGACAO', 'PAUSADA', 'EM_EXECUCAO'] %}
+      <div class="voice-preparation-grid">
+        <div class="voice-subpanel">
+          <h4>Checklist técnico para liberar</h4>
+          {% if readiness.get(campaign.id) %}
+            <ul>{% for reason in readiness[campaign.id] %}<li>{{ reason }}</li>{% endfor %}</ul>
+          {% else %}<span class="voice-pill is-ready">Pré-requisitos verificados</span>{% endif %}
+          <p class="voice-help">A transferência só é validada depois de teste real com o mesmo ramal SIP e o mesmo grupo.</p>
+        </div>
+        <div class="voice-subpanel">
+          <h4>Responsabilidade do administrador</h4>
+          {% if campaign.legal_basis_verified %}
+            <span class="voice-pill is-ready">Base legal confirmada</span>
+          {% else %}
+            <form action="/voice/campaigns/{{ campaign.id }}/legal" method="post" class="stack-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <label><input type="checkbox" name="confirmation" value="confirmado" required>
+                Confirmo que a lista possui base legal documentada, não contém contatos sem permissão e respeita a blacklist.</label>
+              <button class="button button-secondary" type="submit">Confirmar base legal</button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+      <div class="voice-actions voice-review">
+        {% if campaign.status in ['EM_HOMOLOGACAO','PAUSADA'] %}
+          <form action="/voice/campaigns/{{ campaign.id }}/start" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label><input type="checkbox" name="authorization" value="sim" required> Autorizo iniciar as ligações desta campanha.</label>
+            <button class="button button-primary" type="submit" {% if readiness.get(campaign.id) %}disabled{% endif %}>Iniciar campanha</button>
+          </form>
+        {% elif campaign.status == 'EM_EXECUCAO' %}
+          <form action="/voice/campaigns/{{ campaign.id }}/pause" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button button-secondary" type="submit">Pausar campanha</button>
+          </form>
+        {% endif %}
+      </div>
+    {% else %}
+      <p class="voice-help">Campanha finalizada, sem novas chamadas.</p>
+    {% endif %}
   {% endif %}
 </section>
 {% endfor %}
