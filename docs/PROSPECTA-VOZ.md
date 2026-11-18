@@ -106,3 +106,24 @@ Prospecta Web (Railway) — campanhas, leads, DNC, auditoria
 ```
 
 Importante: as filas de voz **não reutilizam** o roteamento Z-API/WhatsApp e o sistema atual segue com o estado de pausa global de disparos existente. Não assumir que `200 OK` prova atendimento humano, nem que `REFER` aceito prova atendimento pelo vendedor.
+
+
+## Motor de chamadas PJSUA2: controles e operacao
+
+O Prospecta VOZ utiliza a central SIP existente, sem criar Asterisk. O novo serviço independente voice-engine-worker usa PJSUA2 e Python 3.12 para registro SIP, chamada com RTP/RTCP, audio WAV, DTMF e transferencias SIP REFER/NOTIFY. Web/WhatsApp continuam em Python 3.14 e nao sao alterados.
+
+Configuracao pelo ADMIN:
+- Conta SIP: servidor DNS/IP, porta SIP, proxy e porta, usuario, senha criptografada, UDP/TCP/TLS, dominio de discagem, prefixo, remocao opcional do codigo 55 e identificador de chamada. O identificador real e controlado pela operadora.
+- Grupos: destino do ramal na central e teste real de transferencia para numero autorizado. Somente resultado REFER final bem-sucedido do mesmo par conta/grupo certifica transferencia. Alterar uma configuracao invalida certificacoes anteriores.
+- Campanhas: checklist, base legal confirmada pelo ADMIN, iniciar/pausar, parada geral e status/eventos reais. A interface nao pode iniciar uma campanha apenas porque a conta esta ativa no cadastro.
+
+Bloqueios preventivos:
+- Parada geral DESLIGADA por padrao, exigindo liberacao ADMIN; flags de worker independentes e heartbeat recente.
+- Chamadas progressivas, no maximo uma por worker, ate 30/dia por campanha, intervalo minimo de 60 s, uma tentativa por contato, de segunda a sexta, 09h-18h fuso Sao Paulo e janela configurada.
+- Verificacao fail-closed da blacklist global antes de selecionar contatos e imediatamente antes do INVITE SIP.
+- Sem nova discagem apos erro/crash de resultado incerto; parada geral e pausa interrompem chamadas.
+- Exclusivo ADMIN, controles CSRF e auditoria, sem ativacao de IA nem filas WhatsApp.
+
+Deploy em um servico Railway separado com Dockerfile docker/voice-engine.Dockerfile e uma replica. Variaveis: DATABASE_URL (referencia Postgres), DATA_ENCRYPTION_KEY e SECRET_KEY (referencias web), APP_ENV=production, VOICE_ENGINE_WORKER_ENABLED=true, VOICE_CAMPAIGN_OUTBOUND_ENABLED=true e VOICE_TRANSFER_TESTS_ENABLED=true. As duas ultimas variaveis liberam a capacidade do worker, mas nenhuma chamada ocorre sem a parada geral e uma campanha/teste autorizados no painel. Para audios: MEDIA_S3_ENDPOINT, MEDIA_S3_BUCKET, MEDIA_S3_REGION, MEDIA_S3_ACCESS_KEY_ID, MEDIA_S3_SECRET_ACCESS_KEY conforme web.
+
+Dependencias que nao podem ser inferidas pelo software: IP/DNS e acesso externo ao PABX, credenciais, limites e politica do tronco, autorizacao para ligacoes externas, NAT e RTP, suporte REFER/NOTIFY, disponibilidade real dos vendedores. SIP autenticado nao garante audio nem transferencia. Em testes observados em 18/11/2026 o dominio sip.sulnet.com.br respondeu NXDOMAIN a partir do Railway; o ADMIN precisa cadastrar um endereco DNS/IP efetivamente acessivel ao servidor.
