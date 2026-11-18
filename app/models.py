@@ -1312,6 +1312,7 @@ class VoiceTransferTest(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("voice_sip_accounts.id"))
     group_id: Mapped[int] = mapped_column(ForeignKey("voice_groups.id"))
     phone_last4: Mapped[str] = mapped_column(String(4))
+    phone_encrypted: Mapped[str] = mapped_column(Text, default="")
     result: Mapped[str] = mapped_column(String(35), default="PENDENTE")
     sip_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     message: Mapped[str] = mapped_column(String(200), default="")
