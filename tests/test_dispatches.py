@@ -16,6 +16,7 @@ from app.models import (
     Message,
     ServiceQueue,
 )
+from app.services.dispatch_monitor import daily_capacity
 from app.services.dispatch_queue import (
     claim_next_dispatch_recipient,
     dispatch_counts,
@@ -692,3 +693,60 @@ def test_cancelar_por_engano_e_retomar_devolve_os_contatos_para_a_fila():
             assert other.status == "IGNORADO", "quem foi ignorado por outro motivo não volta"
         finally:
             db.close()
+
+
+def test_dispatch_live_monitor_shows_last_next_and_realistic_daily_capacity():
+    from datetime import timedelta
+    from app.timeutils import utcnow
+
+    with TestClient(app) as client:
+        _login_admin(client)
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "MONITOR")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id,
+                queue_id=queue.id,
+                status="ATIVO",
+                interval_seconds=600,
+                daily_limit=100,
+                window_start="07:00",
+                window_end="20:00",
+                next_send_at=utcnow() + timedelta(minutes=10),
+            )
+            db.add(dispatch)
+            db.flush()
+            dispatch_id = dispatch.id
+            assert daily_capacity(dispatch) == 78
+            db.add_all([
+                CampaignDispatchRecipient(
+                    dispatch_id=dispatch.id, name="Destinatário 1",
+                    phone="5555999995011", message_body="Teste", status="ENVIADO",
+                    sent_at=utcnow(),
+                ),
+                CampaignDispatchRecipient(
+                    dispatch_id=dispatch.id, name="Destinatário 2",
+                    phone="5555999995012", message_body="Teste", status="PENDENTE",
+                ),
+            ])
+            db.commit()
+        finally:
+            db.close()
+
+        page = client.get(f"/dispatches/{dispatch_id}")
+        assert page.status_code == 200
+        assert "MONITORAMENTO AO VIVO" in page.text
+        assert "Aguardando intervalo" in page.text or "Fora do horário permitido" in page.text
+
+        response = client.get(f"/dispatches/{dispatch_id}/live")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        data = response.json()
+        assert data["counts"]["total"] == 2
+        assert data["counts"]["sent"] == 1
+        assert data["counts"]["pending"] == 1
+        assert data["daily_capacity"] == 78
+        assert data["estimated_days_remaining"] == 1
+        assert data["last_sent"] is not None
+        assert data["next_send"] is not None
+        assert data["status"] == "ATIVO"
