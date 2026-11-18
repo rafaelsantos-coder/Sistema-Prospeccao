@@ -88,9 +88,11 @@ def _load_wav(s3_uri: str) -> str:
         aws_secret_access_key=settings.media_s3_secret_access_key,
     )
     obj = client.get_object(Bucket=bucket, Key=key)
-    data = obj["Body"].read(2_000_001)
+    # Teto técnico configurável, compartilhado com o armazenamento de mídia da web.
+    max_bytes = max(1, settings.media_max_upload_mb) * 1024 * 1024
+    data = obj["Body"].read(max_bytes + 1)
     from app.services.voice import validate_wav
-    validate_wav(data)
+    validate_wav(data, max_bytes=max_bytes)
     fd, path = tempfile.mkstemp(prefix="voice-", suffix=".wav")
     try:
         with os.fdopen(fd, "wb") as stream:
