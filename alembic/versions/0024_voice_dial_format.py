@@ -17,10 +17,18 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("voice_campaigns", sa.Column(
-        "dial_format", sa.String(length=12), nullable=False, server_default="NATIONAL"
-    ))
+    # Baseline de instalacoes novas gera as tabelas com o modelo atual;
+    # bancos de producao existentes ainda nao possuem esta coluna.
+    bind = op.get_bind()
+    columns = {item["name"] for item in sa.inspect(bind).get_columns("voice_campaigns")}
+    if "dial_format" not in columns:
+        op.add_column("voice_campaigns", sa.Column(
+            "dial_format", sa.String(length=12), nullable=False, server_default="NATIONAL"
+        ))
 
 
 def downgrade():
-    op.drop_column("voice_campaigns", "dial_format")
+    if "dial_format" in {
+        item["name"] for item in sa.inspect(op.get_bind()).get_columns("voice_campaigns")
+    }:
+        op.drop_column("voice_campaigns", "dial_format")
