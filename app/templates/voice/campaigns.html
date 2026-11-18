@@ -35,6 +35,54 @@
     <span><strong>Janela:</strong> {{ campaign.window_start }}–{{ campaign.window_end }}</span>
     <span><strong>Limite:</strong> {{ campaign.daily_limit }}/dia</span>
   </div>
+  {% set report = reports[campaign.id] %}
+  <section class="voice-live-monitor" data-voice-campaign="{{ campaign.id }}" aria-label="Acompanhamento de {{ campaign.name }}">
+    <div class="voice-live-header">
+      <div>
+        <span class="eyebrow">ACOMPANHAMENTO DA CAMPANHA</span>
+        <h4 data-voice-headline aria-live="polite">{{ report.headline }}</h4>
+        <p class="voice-help">Dados registrados pelo servidor. Solicitar início não significa que uma ligação foi completada.</p>
+      </div>
+      <button type="button" class="button button-secondary voice-refresh" data-voice-refresh>Atualizar agora</button>
+    </div>
+    <div class="voice-last-action" role="status" aria-live="polite">
+      <strong>Última ação:</strong> <span data-voice-last-command>{{ report.last_command.label }}</span>
+      <small data-voice-last-time></small>
+      <p data-voice-last-detail>{{ report.last_command.detail }}</p>
+    </div>
+    <div class="voice-monitor-metrics">
+      {% for key, label in [('total','Contatos'), ('pending','Pendentes'), ('attempted','Tentativas'), ('in_progress','Em andamento'), ('answered','Atendidas'), ('transferred','Transferidas'), ('failed','Falhas'), ('blocked','Bloqueadas')] %}
+      <div class="voice-monitor-metric">
+        <strong data-voice-stat="{{ key }}">{{ report.stats[key] }}</strong>
+        <span>{{ label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="voice-no-attempts" data-voice-no-attempts {% if report.stats.attempted %}hidden{% endif %}>Nenhuma tentativa de discagem foi registrada para esta campanha.</p>
+    <div class="voice-monitor-timeline">
+      <div>
+        <h5>Últimas tentativas</h5>
+        <div data-voice-attempts>
+          {% if report.last_attempts %}
+          {% for attempt in report.last_attempts %}
+          <p class="voice-event-line"><strong>{{ attempt.name }}</strong> · final {{ attempt.phone_suffix }} · {{ attempt.status|replace('_',' ') }}{% if attempt.detail %}<small>{{ attempt.detail }}</small>{% endif %}</p>
+          {% endfor %}
+          {% else %}<p class="voice-help">Nenhuma tentativa registrada.</p>{% endif %}
+        </div>
+      </div>
+      <div>
+        <h5>Eventos das ligações (SIP)</h5>
+        <div data-voice-events>
+          {% if report.events %}
+          {% for event in report.events %}
+          <p class="voice-event-line"><strong>{{ event.event|replace('_',' ') }}</strong> · {{ event.contact }} · final {{ event.phone_suffix }}{% if event.detail %}<small>{{ event.detail }}</small>{% endif %}</p>
+          {% endfor %}
+          {% else %}<p class="voice-help">Nenhum evento SIP registrado.</p>{% endif %}
+        </div>
+      </div>
+    </div>
+    <p class="voice-live-updated" data-voice-updated>Atualização automática a cada 10 segundos</p>
+  </section>
   {% if campaign.status == 'RASCUNHO' %}
   <div class="voice-preparation-grid">
     <form method="post" action="/voice/campaigns/{{ campaign.id }}/contacts" enctype="multipart/form-data" class="stack-form voice-subpanel">
@@ -81,7 +129,10 @@
           <form action="/voice/campaigns/{{ campaign.id }}/start" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label><input type="checkbox" name="authorization" value="sim" required> Autorizo iniciar as ligações desta campanha.</label>
-            <button class="button button-primary" type="submit" {% if readiness.get(campaign.id) %}disabled{% endif %}>Iniciar campanha</button>
+            <button class="button button-primary" type="submit">Solicitar início da campanha</button>
+            {% if readiness.get(campaign.id) %}
+            <p class="voice-start-warning">Atenção: início bloqueado por {{ readiness[campaign.id]|length }} pendência(s). Ao solicitar, o sistema registra a tentativa e informa o motivo.</p>
+            {% endif %}
           </form>
         {% elif campaign.status == 'EM_EXECUCAO' %}
           <form action="/voice/campaigns/{{ campaign.id }}/pause" method="post">
@@ -99,3 +150,4 @@
   <section class="panel voice-panel voice-empty"><h3>Nenhuma campanha de voz cadastrada</h3><p>Crie uma campanha para selecionar a conta de saída e o grupo de vendedores.</p><a class="button button-primary" href="/voice/campaigns/new">Criar primeira campanha</a></section>
 {% endif %}
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/js/voice_campaign_status.js') }}" defer></script>{% endblock %}
