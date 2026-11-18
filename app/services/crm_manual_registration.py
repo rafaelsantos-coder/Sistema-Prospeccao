@@ -251,10 +251,8 @@ def register_conversation(
             }
             _log_result(db, conversation, actor, ACTION_REGISTERED, result)
             return {"already": True, **result}
-        # Uma antiga oportunidade exclusiva do SDR IA não substitui o funil
-        # comercial do vendedor; as demais exigem conferência de propriedade.
-        if owner_id == 35 and funnel_id == 22:
-            continue
+        # O SDR IA também é outro proprietário: jamais criar uma segunda
+        # oportunidade sem conferência ou transferência no CRM.
         raise CRMManualError(
             "Já existe oportunidade aberta deste telefone com outro responsável. "
             "Confira ou transfira essa oportunidade no CRM antes de registrar."
