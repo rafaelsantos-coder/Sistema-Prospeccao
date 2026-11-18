@@ -36,7 +36,7 @@
     <span><strong>Limite:</strong> {{ campaign.daily_limit }}/dia</span>
   </div>
   {% set report = reports[campaign.id] %}
-  <section class="voice-live-monitor" data-voice-campaign="{{ campaign.id }}" aria-label="Acompanhamento de {{ campaign.name }}">
+  <section class="voice-live-monitor" data-voice-campaign="{{ campaign.id }}" data-voice-status-code="{{ campaign.status }}" aria-label="Acompanhamento de {{ campaign.name }}">
     <div class="voice-live-header">
       <div>
         <span class="eyebrow">ACOMPANHAMENTO DA CAMPANHA</span>
@@ -105,9 +105,11 @@
       <div class="voice-preparation-grid">
         <div class="voice-subpanel">
           <h4>Checklist técnico para liberar</h4>
+          <div data-voice-readiness>
           {% if readiness.get(campaign.id) %}
             <ul>{% for reason in readiness[campaign.id] %}<li>{{ reason }}</li>{% endfor %}</ul>
           {% else %}<span class="voice-pill is-ready">Pré-requisitos verificados</span>{% endif %}
+          </div>
           <p class="voice-help">A transferência só é validada depois de teste real com o mesmo ramal SIP e o mesmo grupo.</p>
         </div>
         <div class="voice-subpanel">
