@@ -45,7 +45,7 @@ def dispatch_live_snapshot(db: Session, dispatch: CampaignDispatch) -> dict[str,
             select(func.count(CampaignDispatchRecipient.id)).where(
                 CampaignDispatchRecipient.dispatch_id == dispatch.id,
                 CampaignDispatchRecipient.status == "ENVIADO",
-                CampaignDispatchRecipient.sent_at >= local_day_start_utc(now),
+                CampaignDispatchRecipient.sent_at >= local_day_start_utc(),
             )
         )
         or 0
