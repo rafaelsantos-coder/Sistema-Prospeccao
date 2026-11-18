@@ -127,3 +127,16 @@ Bloqueios preventivos:
 Deploy em um servico Railway separado com Dockerfile docker/voice-engine.Dockerfile e uma replica. Variaveis: DATABASE_URL (referencia Postgres), DATA_ENCRYPTION_KEY e SECRET_KEY (referencias web), APP_ENV=production, VOICE_ENGINE_WORKER_ENABLED=true, VOICE_CAMPAIGN_OUTBOUND_ENABLED=true e VOICE_TRANSFER_TESTS_ENABLED=true. As duas ultimas variaveis liberam a capacidade do worker, mas nenhuma chamada ocorre sem a parada geral e uma campanha/teste autorizados no painel. Para audios: MEDIA_S3_ENDPOINT, MEDIA_S3_BUCKET, MEDIA_S3_REGION, MEDIA_S3_ACCESS_KEY_ID, MEDIA_S3_SECRET_ACCESS_KEY conforme web.
 
 Dependencias que nao podem ser inferidas pelo software: IP/DNS e acesso externo ao PABX, credenciais, limites e politica do tronco, autorizacao para ligacoes externas, NAT e RTP, suporte REFER/NOTIFY, disponibilidade real dos vendedores. SIP autenticado nao garante audio nem transferencia. Em testes observados em 18/11/2026 o dominio sip.sulnet.com.br respondeu NXDOMAIN a partir do Railway; o ADMIN precisa cadastrar um endereco DNS/IP efetivamente acessivel ao servidor.
+
+
+### Chamada individual, sem grupo
+
+Em Contas do discador > Testar ligação, o administrador também dispõe de Fazer ligação
+PJSUA2 sem grupo, que registra a conta e realiza uma única chamada para um número
+autorizado, com tentativa de negociação RTP e encerramento após o teste. A solicitação
+recebe o status PENDENTE_PJSIP, consumido apenas pelo voice-engine-worker (nunca pelo
+worker SIP antigo nem pela fila da campanha). O admin deve habilitar a parada geral
+e o worker de testes. Ao final, o histórico informa códigos SIP e se houve mídia
+RTP ativa; isso não comprova o que o destinatário ouviu sem verificação humana.
+A blacklist é consultada antes de solicitar e antes de executar a chamada, e
+uma falha nunca gera nova tentativa automática.
