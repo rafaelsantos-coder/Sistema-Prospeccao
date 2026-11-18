@@ -15,7 +15,7 @@ COPY requirements-voice.txt .
 RUN pip install --no-cache-dir -r requirements-voice.txt \
     && python -c "import pjsua2; print('PJSUA2 native import OK')"
 COPY app/ ./app/
-RUN addgroup --system voice && adduser --system --ingroup voice voice \
-    && mkdir -p /app/data && chown -R voice:voice /app
-USER voice
+RUN addgroup --system sulnetvoice && adduser --system --ingroup sulnetvoice sulnetvoice \
+    && mkdir -p /app/data && chown -R sulnetvoice:sulnetvoice /app
+USER sulnetvoice
 CMD ["python", "-m", "app.workers.voice_engine_worker"]
