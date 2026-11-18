@@ -279,9 +279,13 @@
     {% elif crm_manual_status and crm_manual_status.state != "CRM_MANUAL_REGISTERED" %}
     <div class="crm-manual-alert" role="status">O registro no CRM requer conferência manual. Não envie novamente antes de verificar no CRM Comercial.</div>
     {% elif crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
+    {% if crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
     <div class="crm-manual-success" role="status">
       Registrado no CRM{% if crm_manual_status.protocol %} · Protocolo {{ crm_manual_status.protocol }}{% endif %}
     </div>
+    {% else %}
+    <div class="crm-manual-alert" role="status">Este contato está registrado no CRM com outro vendedor. Confira a transferência antes de prosseguir.</div>
+    {% endif %}
     {% endif %}
 
     <div class="chat-stream" id="chat-stream">
