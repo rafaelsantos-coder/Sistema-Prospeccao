@@ -134,7 +134,7 @@ def test_voice_pages_auth_csrf_and_drafts():
         response = client.post(f"/voice/campaigns/{campaign_id}/review",
                                data={"csrf_token": csrf}, follow_redirects=False)
         assert response.status_code == 303
-        assert "Aguardando homologação" in client.get("/voice/campaigns").text
+        assert "PREPARADA" in client.get("/voice/campaigns").text
         db = SessionLocal()
         try:
             assert db.get(VoiceCampaign, campaign_id).status == VOICE_STATUS_HOMOLOGACAO
