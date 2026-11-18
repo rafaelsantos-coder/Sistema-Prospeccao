@@ -51,7 +51,7 @@
   <span class="eyebrow">HOMOLOGAÇÃO CONTROLADA</span>
   <h3>Teste real de transferência SIP REFER</h3>
   <p>O administrador informa um número autorizado para uma única chamada. Após o atendimento, a central deverá encaminhar para o ramal do grupo configurado. O motor de voz deve estar habilitado e o resultado real será exibido abaixo.</p>
-  {% if engine and engine.test_runtime_enabled and engine.enabled %}
+  {% if engine_online and engine and engine.test_runtime_enabled and engine.enabled %}
     <span class="voice-pill is-ready">Motor de testes habilitado</span>
   {% else %}
     <span class="voice-pill is-paused">Motor de testes bloqueado — ativar somente após validar o SIP</span>
