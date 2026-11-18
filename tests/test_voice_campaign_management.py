@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.database import SessionLocal
 from app.main import app
@@ -71,6 +71,25 @@ def _edit_payload(token: str, name: str, account_id: int) -> dict:
         "daily_limit": "15", "interval_seconds": "40",
         "dial_format": "E164",
     }
+
+
+def _purge_test_campaign(campaign_id: int, account_id: int) -> None:
+    """Limpa registros sintéticos para evitar contaminação entre testes de campanha."""
+    with SessionLocal() as db:
+        target_recipients = select(VoiceRecipient.id).where(
+            VoiceRecipient.campaign_id == campaign_id
+        )
+        db.execute(delete(VoiceCallEvent).where(
+            VoiceCallEvent.recipient_id.in_(target_recipients)
+        ))
+        db.execute(delete(VoiceRecipient).where(VoiceRecipient.campaign_id == campaign_id))
+        db.execute(delete(AuditLog).where(
+            AuditLog.entity_type == "voice_campaign",
+            AuditLog.entity_id == str(campaign_id),
+        ))
+        db.execute(delete(VoiceCampaign).where(VoiceCampaign.id == campaign_id))
+        db.execute(delete(VoiceSipAccount).where(VoiceSipAccount.id == account_id))
+        db.commit()
 
 
 def test_edit_and_archive_campaign_with_call_history_preserved():
@@ -149,6 +168,7 @@ def test_edit_and_archive_campaign_with_call_history_preserved():
             assert item.status == "PAUSADA"
             assert item.legal_basis_verified is False
             assert db.get(VoiceRecipient, recipient_id).attempts == 1
+    _purge_test_campaign(camp_id, account_id)
 
 
 def test_running_and_in_flight_campaign_cannot_be_edited_or_archived():
@@ -171,10 +191,11 @@ def test_running_and_in_flight_campaign_cannot_be_edited_or_archived():
                 record = db.get(VoiceCampaign, camp_id)
                 assert record.status == status
                 assert record.name == name
+        _purge_test_campaign(camp_id, account_id)
 
 
 def test_paused_campaign_allows_new_csv_without_resetting_previous_attempts():
-    camp_id, name, recipient_id, _ = _campaign()
+    camp_id, name, recipient_id, account_id = _campaign()
     with TestClient(app) as client:
         token = _login(client)
         page = client.get("/voice/campaigns").text
@@ -195,3 +216,4 @@ def test_paused_campaign_allows_new_csv_without_resetting_previous_attempts():
                 VoiceRecipient.campaign_id == camp_id,
                 VoiceRecipient.status == "PENDENTE",
             )) == 1
+    _purge_test_campaign(camp_id, account_id)
