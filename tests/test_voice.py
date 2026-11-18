@@ -79,7 +79,7 @@ def test_blocked_and_duplicate_contacts():
     assert valid[0]["phone"] == "5555999111000"
 
 
-def test_voice_pages_auth_csrf_and_drafts():
+def test_voice_pages_auth_csrf_and_drafts(monkeypatch):
     with TestClient(app) as client:
         assert client.get("/voice", follow_redirects=False).status_code == 303
         csrf = _login(client)
@@ -117,6 +117,42 @@ def test_voice_pages_auth_csrf_and_drafts():
                 "window_end": "18:00", "daily_limit": 10, "interval_seconds": 30,
             }, follow_redirects=False)
             assert response.status_code == 303
+        # Large recordings must reach S3 as streams rather than being
+        # rejected or truncated by an arbitrary 2 MB limit.
+        from app.routers import voice as voice_router
+        uploaded = []
+        class FakeStorage:
+            configured = True
+            def upload_campaign_file(self, *, fileobj, campaign_id, filename, mime_type):
+                assert mime_type == "audio/wav"
+                fileobj.seek(0, 2)
+                uploaded.append(fileobj.tell())
+                fileobj.seek(0)
+                return (f"s3://test-bucket/campaigns/{campaign_id}/{filename}", filename)
+        monkeypatch.setattr(voice_router, "MediaStorage", FakeStorage)
+        with BytesIO() as stream:
+            with wave.open(stream, "wb") as player:
+                player.setnchannels(1)
+                player.setsampwidth(2)
+                player.setframerate(8000)
+                player.writeframes(b"\x00" * (8000 * 2 * 190))
+            large_audio = stream.getvalue()
+        with SessionLocal() as db:
+            audio_campaign = db.scalar(select(VoiceCampaign).where(
+                VoiceCampaign.name == "Teste AUDIO"
+            ))
+            assert audio_campaign is not None
+            audio_id = audio_campaign.id
+        result = client.post(
+            f"/voice/campaigns/{audio_id}/audio",
+            data={"csrf_token": csrf},
+            files={"audio": ("convite.wav", large_audio, "audio/wav")},
+            follow_redirects=False,
+        )
+        assert result.status_code == 303
+        assert uploaded == [len(large_audio)]
+        with SessionLocal() as db:
+            assert db.get(VoiceCampaign, audio_id).audio_uri.startswith("s3://test-bucket/")
         db = SessionLocal()
         try:
             campaign = db.scalar(select(VoiceCampaign).where(VoiceCampaign.name == "Teste DIRECT"))
