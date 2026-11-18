@@ -176,3 +176,23 @@ a discagem automaticamente: a parada geral e o botão de iniciar continuam obrig
 - **Excluir:** somente com campanha parada e nenhuma chamada em andamento. Por motivos de auditoria, é uma **exclusão lógica** (status `EXCLUIDA`), que a remove do painel operacional e dos contadores ativos sem apagar contatos, tentativas, eventos SIP ou histórico de ações. Exige digitar o nome exato e CSRF.
 - **Restaurar:** em Campanhas → Excluídas, somente pelo administrador. Volta para `RASCUNHO` ou `PAUSADA` e invalida a confirmação anterior da base legal, exigindo início manual e novos pré-requisitos.
 - As rotas de operação continuam exclusivas para o perfil `ADMIN`; não existe discagem automática ao editar, excluir ou restaurar.
+
+
+## Produção — transferência direta sem homologação prévia (18/11/2026)
+
+A partir desta versão, o cadastro de uma campanha com grupo/ramal ativo autoriza o
+motor a **tentar a transferência SIP REFER durante a própria ligação**. Não é mais
+necessário realizar, aguardar ou renovar um teste REFER anterior para iniciar a
+campanha. O painel de grupos não apresenta mais a etapa de homologação obrigatória.
+Qualquer referência antiga neste documento a uma certificação prévia de REFER
+como requisito de início está obsoleta.
+
+Continua obrigatório: administração autorizada; conta SIP cadastrada, ativa e
+com autenticação exigida pelas verificações de conexão existentes; motor e worker
+online; grupo de destino ativo quando houver transferência; origem autorizada,
+blacklist, base legal, limites operacionais, janela de discagem e parada geral.
+O motor executa o REGISTER/INVITE/REFER reais usando as configurações cadastradas
+e registra o código SIP e o resultado de cada chamada, inclusive
+`TRANSFERIDA`, `FALHA_TRANSFERENCIA` e timeout. **Sem pré-teste não significa
+transferência garantida**: o resultado depende do PABX, do grupo e da resposta do
+destino. Falhas não são registradas como sucesso.
