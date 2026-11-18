@@ -159,7 +159,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 (() => {
   const endpoint = "/dispatches/{{ dispatch.id }}/live";
   const text = (id, value) => {
