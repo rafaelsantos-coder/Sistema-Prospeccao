@@ -196,3 +196,23 @@ e registra o código SIP e o resultado de cada chamada, inclusive
 `TRANSFERIDA`, `FALHA_TRANSFERENCIA` e timeout. **Sem pré-teste não significa
 transferência garantida**: o resultado depende do PABX, do grupo e da resposta do
 destino. Falhas não são registradas como sucesso.
+
+
+## Interface compacta de campanhas — carregamento sob demanda
+
+A listagem `/voice/campaigns` passa a exibir **uma linha por campanha**,
+com nome, número, quantidade de contatos e status. A seleção da linha expande
+os detalhes **sem navegar para outra página**. Somente uma campanha fica
+aberta por vez.
+
+- Os dados de checklist, histórico SIP, tentativas, indicadores e o número
+  de discagem são buscados **somente ao abrir** aquela campanha, por
+  `GET /voice/campaigns/{id}/details` (somente ADMIN, sem alteração de dados).
+- Depois de aberta, a atualização automática usa
+  `GET /voice/campaigns/status?campaign_id={id}` a cada dez segundos,
+  sem consultar os relatórios de todas as outras campanhas.
+- Editar, excluir, restaurar, importar CSV, atualizar WAV e iniciar/pausar
+  mantêm os mesmos controles do backend. Após uma ação de formulário, a
+  listagem reabre a campanha selecionada no mesmo navegador, quando presente.
+- As campanhas começam recolhidas, inclusive na página de excluídas; esta
+  alteração é exclusivamente de interface e **não inicia nem reinicia discagem**.
