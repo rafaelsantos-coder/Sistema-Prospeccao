@@ -94,6 +94,19 @@ def test_create_audio_campaign_without_group_and_check_readiness():
             engine.heartbeat_at = moment
             db.commit()
             assert check_campaign_ready(db, campaign) == []
+            # O áudio concluído não pode ser contabilizado como transferência.
+            recipient = db.scalar(select(VoiceRecipient).where(
+                VoiceRecipient.campaign_id == campaign_id
+            ))
+            recipient.status = "AUDIO_CONCLUIDO"
+            recipient.attempts = 1
+            recipient.answered_at = moment
+            db.commit()
+            from app.services.voice_reporting import campaign_operational_report
+            report = campaign_operational_report(db, campaign)
+            assert report["stats"]["audio_completed"] == 1
+            assert report["stats"]["answered"] == 1
+            assert report["stats"]["transferred"] == 0
             engine.enabled = False
             db.commit()
 
