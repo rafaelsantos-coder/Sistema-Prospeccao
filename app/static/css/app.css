@@ -2408,3 +2408,68 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .voice-preparation-grid { grid-template-columns:1fr; }
   .voice-panel { padding:14px; }
 }
+
+
+/* Prospecta VOZ: acompanhamento operacional e resultados reais das chamadas. */
+.voice-live-monitor {
+  margin: 18px 0 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px 20px;
+  background: var(--surface-2);
+}
+.voice-live-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.voice-live-header h4 { font-size: 16px; margin: 6px 0 0; color: var(--ink); }
+.voice-live-header .voice-help { margin: 5px 0 0; }
+.voice-live-header button { flex-shrink: 0; }
+.voice-last-action {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--orange);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 12px;
+}
+.voice-last-action > small { color: var(--muted); margin-left: 8px; }
+.voice-last-action > p { margin: 5px 0 0; color: var(--ink-2); }
+.voice-last-action > p:empty { display: none; }
+.voice-monitor-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.voice-monitor-metric {
+  display: flex;
+  flex-direction: column;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+}
+.voice-monitor-metric strong { font-size: 20px; font-weight: 800; line-height: 1.15; }
+.voice-monitor-metric span { font-size: 11px; color: var(--muted); }
+.voice-no-attempts { margin: 12px 0 0; font-size: 12px; color: var(--warning); }
+.voice-no-attempts[hidden] { display: none !important; }
+.voice-monitor-timeline {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.voice-monitor-timeline h5 { font-size: 12px; margin: 0 0 8px; }
+.voice-event-line { font-size: 12px; margin: 0 0 7px; overflow-wrap: anywhere; }
+.voice-event-line small { display: block; padding-left: 8px; color: var(--muted); }
+.voice-live-updated { color: var(--muted); font-size: 10px; margin: 11px 0 0; }
+.voice-start-warning { margin: 8px 0 0; color: var(--warning); font-size: 12px; }
+@media (max-width: 900px) {
+  .voice-monitor-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .voice-monitor-timeline { grid-template-columns: 1fr; }
+  .voice-live-header { flex-direction: column; }
+}
