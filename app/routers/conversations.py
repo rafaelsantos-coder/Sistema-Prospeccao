@@ -51,6 +51,12 @@ from app.services.conversation_engine import (
     mark_conversation_read,
     register_message,
 )
+from app.services.crm_manual_registration import (
+    CRMManualError,
+    register_conversation,
+    registration_status,
+    seller_for_user,
+)
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
@@ -663,6 +669,8 @@ def _render_inbox(
         selected_tags=commercial_tags.get(selected.id, []) if selected else [],
         selected_insight=commercial_insights.get(selected.id) if selected else None,
         globally_blacklisted=is_globally_blocked(db, selected.contact.phone) if selected else False,
+        crm_manual_seller=seller_for_user(selected.assigned_user) if selected else None,
+        crm_manual_status=registration_status(db, selected.contact_id) if selected else None,
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -1423,6 +1431,49 @@ def conversation_messages_api(
         ],
     }
 
+
+
+@router.post("/conversations/{conversation_id}/register-crm")
+def register_crm_manually(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    client_name: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Registro humano e explícito; não executa IA nem envia WhatsApp."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if conversation is None:
+        return _conversation_unavailable(request)
+    try:
+        result = register_conversation(
+            db,
+            conversation=conversation,
+            actor=user,
+            client_name=client_name,
+        )
+    except CRMManualError as exc:
+        db.rollback()
+        flash(request, str(exc), "warning")
+    except Exception:
+        db.rollback()
+        # Nunca mostrar chaves de integração ou detalhes internos no navegador.
+        flash(request, "Falha inesperada na integração. Nenhum novo envio deve ser repetido sem conferência no CRM.", "warning")
+        raise
+    else:
+        message = (
+            "Este contato já estava registrado no CRM."
+            if result.get("already") else "Oportunidade registrada no CRM."
+        )
+        if result.get("protocol"):
+            message += f" Protocolo: {result['protocol']}."
+        flash(request, message, "success")
+    return RedirectResponse(f"/conversations/{conversation_id}", status_code=303)
 
 
 @router.post("/conversations/{conversation_id}/blacklist")
