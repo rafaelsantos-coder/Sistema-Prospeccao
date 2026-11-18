@@ -2473,3 +2473,19 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .voice-monitor-timeline { grid-template-columns: 1fr; }
   .voice-live-header { flex-direction: column; }
 }
+
+/* Acoes de campanha de voz: editar, excluir e restaurar, acessiveis em todas as telas. */
+.voice-campaign-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.voice-campaign-controls form { margin: 0; }
+.voice-campaign-controls .voice-help { max-width: 220px; }
+@media (max-width: 700px) {
+  .voice-campaign-controls { justify-content: flex-start; width: 100%; }
+  .voice-campaign-title { flex-wrap: wrap; }
+  .voice-campaign-controls .button { min-height: 36px; }
+}

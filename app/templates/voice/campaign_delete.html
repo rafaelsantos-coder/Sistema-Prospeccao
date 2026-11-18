@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">PROSPECTA VOZ · SEGURANÇA</span>
+    <h2>Excluir campanha #{{ campaign.id }}</h2>
+    <p>Confirme a exclusão da campanha da operação. Nenhuma nova ligação será iniciada por esta campanha.</p>
+  </div>
+  <a class="button button-secondary" href="/voice/campaigns">Voltar às campanhas</a>
+</div>
+<section class="panel voice-panel">
+  <h3>{{ campaign.name }}</h3>
+  <div class="voice-notice">
+    <strong>Exclusão com preservação de histórico</strong>
+    <p>A campanha desaparecerá da lista operacional, mas os contatos, {{ total_calls }} tentativa(s) anterior(es), eventos SIP e auditoria ficarão registrados. É possível restaurar pela seção Campanhas excluídas.</p>
+    <p>Campanhas em execução ou com chamadas em andamento não podem ser excluídas. Pause a campanha primeiro.</p>
+  </div>
+  <p>Digite exatamente o nome da campanha para confirmar:</p>
+  <div class="voice-delete-name"><strong>{{ campaign.name }}</strong></div>
+  <form method="post" action="/voice/campaigns/{{ campaign.id }}/delete" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="field"><span>Nome da campanha</span><input name="confirm_value" autocomplete="off" required></label>
+    <div class="voice-actions">
+      <button class="button button-primary" type="submit">Excluir campanha da operação</button>
+      <a class="button button-secondary" href="/voice/campaigns">Cancelar</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

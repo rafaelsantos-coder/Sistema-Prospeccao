@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">PROSPECTA VOZ · CAMPANHAS</span>
+    <h2>Editar campanha #{{ campaign.id }}</h2>
+    <p>Atualize as configurações da campanha {{ campaign.name }}. Nenhuma ligação é iniciada ao salvar.</p>
+  </div>
+  <a class="button button-secondary" href="/voice/campaigns">Voltar às campanhas</a>
+</div>
+<div class="voice-notice">
+  <strong>Campanha {{ campaign.status|replace('_',' ') }}</strong>
+  <p>A edição é permitida somente com a campanha parada. Alterações no SIP, grupo, formato de número ou modalidade exigem nova confirmação da base legal. Após salvar, confira o checklist e inicie manualmente.</p>
+  {% if previous_attempts %}
+  <p><strong>{{ previous_attempts }} contato(s) com tentativas anteriores.</strong> As tentativas e eventos SIP históricos permanecem registrados. Contatos já processados não são discados novamente apenas por editar a campanha.</p>
+  {% endif %}
+</div>
+<section class="panel voice-panel">
+  <span class="eyebrow">CONFIGURAÇÃO DO DISPARO</span>
+  <h3>Dados da campanha</h3>
+  <form method="post" action="/voice/campaigns/{{ campaign.id }}/update" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field field-span-2"><span>Nome da campanha</span><input name="name" maxlength="180" value="{{ campaign.name }}" required></label>
+      <label class="field">
+        <span>Conta SIP de saída</span>
+        <select name="sip_account_id" required>
+          {% for account in accounts %}
+          <option value="{{ account.id }}" {% if account.id == campaign.sip_account_id %}selected{% endif %}>{{ account.name }} · {{ account.username }}@{{ account.domain }}{% if not account.active %} (Pausada){% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">
+        <span>Destino após atendimento</span>
+        <select name="group_id">
+          <option value="" {% if not campaign.group_id %}selected{% endif %}>Não transferir para grupo — reproduzir áudio e encerrar</option>
+          {% for group in groups %}
+          <option value="{{ group.id }}" {% if group.id == campaign.group_id %}selected{% endif %}>{{ group.name }} · ramal {{ group.target_extension }}{% if not group.active %} (Pausado){% endif %}</option>
+          {% endfor %}
+        </select>
+        <small>Sem grupo, selecione Áudio automático. Não ocorre transferência REFER.</small>
+      </label>
+      <label class="field field-span-2">
+        <span>Modalidade</span>
+        <select name="mode" required>
+          <option value="DIRECT" {% if campaign.mode == 'DIRECT' %}selected{% endif %}>Cliente atende → transfere diretamente</option>
+          <option value="AUDIO" {% if campaign.mode == 'AUDIO' %}selected{% endif %}>Cliente atende → reproduz áudio (com grupo: confirma e transfere; sem grupo: encerra)</option>
+        </select>
+      </label>
+      <label class="field"><span>Tecla de confirmação (somente com transferência)</span><input name="dtmf_digit" value="{{ campaign.dtmf_digit }}" maxlength="1" required></label>
+      <label class="field"><span>Intervalo entre tentativas (segundos)</span><input type="number" name="interval_seconds" min="10" max="3600" value="{{ campaign.interval_seconds }}" required></label>
+      <label class="field"><span>Janela de início</span><input type="time" name="window_start" value="{{ campaign.window_start }}" required></label>
+      <label class="field"><span>Janela de fim</span><input type="time" name="window_end" value="{{ campaign.window_end }}" required></label>
+      <label class="field field-span-2"><span>Limite diário</span><input type="number" name="daily_limit" min="1" max="300" value="{{ campaign.daily_limit }}" required></label>
+      <label class="field field-span-2"><span>Formato do número enviado ao PABX (SIP)</span>
+        <select name="dial_format" required>
+          <option value="NATIONAL" {% if campaign.dial_format == 'NATIONAL' %}selected{% endif %}>Nacional — DDD + número (sem DDI 55)</option>
+          <option value="E164" {% if campaign.dial_format == 'E164' %}selected{% endif %}>Internacional — DDI 55 + DDD + número</option>
+        </select>
+        <small>A formatação SIP não altera os telefones do CRM, nem a blacklist.</small>
+      </label>
+    </div>
+    <div class="voice-actions">
+      <button class="button button-primary" type="submit">Salvar alterações</button>
+      <a class="button button-secondary" href="/voice/campaigns">Cancelar</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -36,6 +36,19 @@ from app.web import flash, render
 
 router = APIRouter(prefix="/voice")
 
+# Campanhas ja pausadas podem ter uma chamada encerrando em paralelo.
+# Nunca modificar/arquivar enquanto houver ligacao SIP em andamento.
+VOICE_CAMPAIGN_EDITABLE = {"RASCUNHO", "PRONTA", VOICE_STATUS_HOMOLOGACAO, "PAUSADA", "CONCLUIDA"}
+VOICE_CALL_IN_FLIGHT = ("INICIANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERINDO")
+VOICE_CAMPAIGN_ARCHIVED = "EXCLUIDA"
+
+
+def _campaign_calls_in_flight(db: Session, campaign_id: int) -> bool:
+    return bool(db.scalar(select(VoiceRecipient.id).where(
+        VoiceRecipient.campaign_id == campaign_id,
+        VoiceRecipient.status.in_(VOICE_CALL_IN_FLIGHT),
+    ).limit(1)))
+
 
 def _actor(request: Request, db: Session):
     user = get_current_user(request, db)
@@ -70,9 +83,13 @@ def voice_home(request: Request, db: Session = Depends(get_db)):
         return redirect
     accounts = list(db.scalars(select(VoiceSipAccount).order_by(VoiceSipAccount.id.desc())))
     groups = list(db.scalars(select(VoiceGroup).order_by(VoiceGroup.id.desc())))
-    campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
+    campaigns = list(db.scalars(select(VoiceCampaign).where(
+        VoiceCampaign.status != VOICE_CAMPAIGN_ARCHIVED
+    ).order_by(VoiceCampaign.id.desc())))
     engine = db.get(VoiceDialerEngine, 1)
-    recipient_count = db.scalar(select(func.count(VoiceRecipient.id))) or 0
+    recipient_count = db.scalar(select(func.count(VoiceRecipient.id)).join(
+        VoiceCampaign, VoiceRecipient.campaign_id == VoiceCampaign.id
+    ).where(VoiceCampaign.status != VOICE_CAMPAIGN_ARCHIVED)) or 0
     stats = {
         "accounts": len(accounts),
         "accounts_active": sum(1 for item in accounts if item.active),
@@ -149,12 +166,202 @@ def voice_new_campaign(request: Request, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/campaigns")
-def voice_campaigns(request: Request, db: Session = Depends(get_db)):
+@router.get("/campaigns/{campaign_id}/edit")
+def edit_voice_campaign_page(campaign_id: int, request: Request,
+                             db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
-    campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
+    campaign = db.get(VoiceCampaign, campaign_id)
+    if not campaign:
+        return _error(request, "Campanha não encontrada.", "/voice/campaigns")
+    if campaign.status not in VOICE_CAMPAIGN_EDITABLE:
+        return _error(request, "Pause a campanha antes de editar. Campanhas excluídas não podem ser alteradas.", "/voice/campaigns")
+    if _campaign_calls_in_flight(db, campaign.id):
+        return _error(request, "Aguarde o encerramento da ligação em andamento antes de editar.", "/voice/campaigns")
+    accounts = list(db.scalars(select(VoiceSipAccount).where(
+        (VoiceSipAccount.active.is_(True)) | (VoiceSipAccount.id == campaign.sip_account_id)
+    ).order_by(VoiceSipAccount.name)))
+    groups = list(db.scalars(select(VoiceGroup).where(
+        (VoiceGroup.active.is_(True)) | (VoiceGroup.id == campaign.group_id)
+    ).order_by(VoiceGroup.name)))
+    previous_attempts = db.scalar(select(func.count(VoiceRecipient.id)).where(
+        VoiceRecipient.campaign_id == campaign.id,
+        VoiceRecipient.attempts > 0,
+    )) or 0
+    return render(
+        request, "voice/campaign_edit.html", user=actor, active_nav="voice",
+        voice_section="campaigns", page_title=f"Prospecta VOZ · Editar campanha #{campaign.id}",
+        campaign=campaign, accounts=accounts, groups=groups,
+        previous_attempts=previous_attempts,
+    )
+
+
+@router.post("/campaigns/{campaign_id}/update")
+def update_voice_campaign(campaign_id: int, request: Request,
+                          csrf_token: str = Form(...), name: str = Form(...),
+                          sip_account_id: int = Form(...), group_id: str = Form(""),
+                          mode: str = Form(...), dtmf_digit: str = Form("1"),
+                          window_start: str = Form("09:00"), window_end: str = Form("18:00"),
+                          daily_limit: int = Form(30), interval_seconds: int = Form(30),
+                          dial_format: str = Form("NATIONAL"),
+                          db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.scalar(select(VoiceCampaign).where(VoiceCampaign.id == campaign_id).with_for_update())
+    if not campaign:
+        return _error(request, "Campanha não encontrada.", "/voice/campaigns")
+    if campaign.status not in VOICE_CAMPAIGN_EDITABLE:
+        return _error(request, "Campanhas em execução ou excluídas não podem ser editadas.", "/voice/campaigns")
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Existe uma ligação ativa. Aguarde sua finalização antes de editar.", "/voice/campaigns")
+    account = db.get(VoiceSipAccount, sip_account_id)
+    if not account or (not account.active and account.id != campaign.sip_account_id):
+        return _error(request, "Selecione uma conta SIP válida e ativa.", f"/voice/campaigns/{campaign_id}/edit")
+    raw_group_id = group_id.strip()
+    if raw_group_id and not raw_group_id.isdecimal():
+        return _error(request, "Grupo de transferência inválido.", f"/voice/campaigns/{campaign_id}/edit")
+    selected_group_id = int(raw_group_id) if raw_group_id else None
+    group = db.get(VoiceGroup, selected_group_id) if selected_group_id is not None else None
+    if selected_group_id is not None and (
+        not group or (not group.active and selected_group_id != campaign.group_id)
+    ):
+        return _error(request, "Selecione um grupo ativo ou mantenha o atual.", f"/voice/campaigns/{campaign_id}/edit")
+    if selected_group_id is None and mode.upper() != "AUDIO":
+        return _error(request, "Campanhas sem grupo precisam usar Áudio automático.", f"/voice/campaigns/{campaign_id}/edit")
+    if not name.strip() or len(name.strip()) > 180:
+        return _error(request, "Informe um nome de até 180 caracteres.", f"/voice/campaigns/{campaign_id}/edit")
+    if not 1 <= daily_limit <= 300 or not 10 <= interval_seconds <= 3600:
+        return _error(request, "Limite diário ou intervalo inválido.", f"/voice/campaigns/{campaign_id}/edit")
+    if dial_format not in {"NATIONAL", "E164"}:
+        return _error(request, "Formato de discagem SIP inválido.", f"/voice/campaigns/{campaign_id}/edit")
+    try:
+        clean_mode = validate_campaign(mode, window_start, window_end, dtmf_digit,
+                                      campaign.audio_uri or ("PENDENTE" if mode.upper() == "AUDIO" else ""))
+    except ValueError as exc:
+        return _error(request, str(exc), f"/voice/campaigns/{campaign_id}/edit")
+    fields = ("name", "sip_account_id", "group_id", "mode", "dtmf_digit", "window_start",
+              "window_end", "daily_limit", "interval_seconds", "dial_format")
+    previous = {field: getattr(campaign, field) for field in fields}
+    changed = {
+        "name": name.strip(), "sip_account_id": account.id, "group_id": selected_group_id,
+        "mode": clean_mode, "dtmf_digit": dtmf_digit,
+        "window_start": window_start, "window_end": window_end,
+        "daily_limit": daily_limit, "interval_seconds": interval_seconds,
+        "dial_format": dial_format,
+    }
+    if all(previous[key] == value for key, value in changed.items()):
+        flash(request, "Nenhuma alteração necessária.")
+        return RedirectResponse("/voice/campaigns", status_code=303)
+    for field, value in changed.items():
+        setattr(campaign, field, value)
+    if any(previous[key] != changed[key] for key in ("sip_account_id", "group_id", "mode", "dial_format")):
+        # Mudancas materiais exigem nova verificacao pelo administrador.
+        campaign.legal_basis_verified = False
+        campaign.approved_at = None
+        campaign.approved_by_id = None
+    if campaign.status in {"PRONTA", VOICE_STATUS_HOMOLOGACAO}:
+        campaign.status = "RASCUNHO"
+    elif campaign.status == "CONCLUIDA":
+        campaign.status = "PAUSADA"
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_UPDATED",
+                entity_type="voice_campaign", entity_id=campaign.id,
+                payload={"before": previous, "after": changed,
+                         "requires_new_legal_confirmation": not campaign.legal_basis_verified})
+    db.commit()
+    flash(request, "Campanha atualizada. Confira o checklist antes de solicitar novas ligações.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.get("/campaigns/{campaign_id}/delete")
+def confirm_archive_voice_campaign(campaign_id: int, request: Request,
+                                   db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    campaign = db.get(VoiceCampaign, campaign_id)
+    if not campaign:
+        return _error(request, "Campanha não encontrada.", "/voice/campaigns")
+    if campaign.status not in VOICE_CAMPAIGN_EDITABLE and campaign.status != "CONCLUIDA":
+        return _error(request, "Pause a campanha antes de excluí-la.", "/voice/campaigns")
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Aguarde o encerramento de todas as ligações antes de excluir.", "/voice/campaigns")
+    total_calls = db.scalar(select(func.count(VoiceRecipient.id)).where(
+        VoiceRecipient.campaign_id == campaign_id, VoiceRecipient.attempts > 0
+    )) or 0
+    return render(
+        request, "voice/campaign_delete.html", user=actor, active_nav="voice",
+        voice_section="campaigns", page_title=f"Prospecta VOZ · Excluir campanha #{campaign.id}",
+        campaign=campaign, total_calls=total_calls,
+    )
+
+
+@router.post("/campaigns/{campaign_id}/delete")
+def archive_voice_campaign(campaign_id: int, request: Request,
+                           csrf_token: str = Form(...), confirm_value: str = Form(...),
+                           db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.scalar(select(VoiceCampaign).where(VoiceCampaign.id == campaign_id).with_for_update())
+    if not campaign:
+        return _error(request, "Campanha não encontrada.", "/voice/campaigns")
+    if campaign.status not in (VOICE_CAMPAIGN_EDITABLE | {"CONCLUIDA"}):
+        return _error(request, "Pause a campanha antes de excluí-la.", "/voice/campaigns")
+    if confirm_value.strip() != campaign.name:
+        return _error(request, "Digite o nome exato da campanha para confirmar a exclusão.", f"/voice/campaigns/{campaign_id}/delete")
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Ainda há uma chamada em andamento. Exclusão bloqueada.", "/voice/campaigns")
+    previous_status = campaign.status
+    campaign.status = VOICE_CAMPAIGN_ARCHIVED
+    campaign.stopped_at = datetime.now(timezone.utc)
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_ARCHIVED",
+                entity_type="voice_campaign", entity_id=campaign.id,
+                payload={"campaign_name": campaign.name, "previous_status": previous_status,
+                         "kept_recipients_and_call_events": True})
+    db.commit()
+    flash(request, "Campanha excluída da operação. Histórico de ligações preservado; pode ser restaurada.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/campaigns/{campaign_id}/restore")
+def restore_voice_campaign(campaign_id: int, request: Request,
+                           csrf_token: str = Form(...), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.scalar(select(VoiceCampaign).where(VoiceCampaign.id == campaign_id).with_for_update())
+    if not campaign or campaign.status != VOICE_CAMPAIGN_ARCHIVED:
+        return _error(request, "Campanha não está excluída.", "/voice/campaigns?archived=1")
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Não é possível restaurar enquanto há ligação ativa.", "/voice/campaigns?archived=1")
+    campaign.status = "RASCUNHO" if campaign.started_at is None else "PAUSADA"
+    campaign.legal_basis_verified = False
+    campaign.approved_at = None
+    campaign.approved_by_id = None
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_RESTORED",
+                entity_type="voice_campaign", entity_id=campaign.id,
+                payload={"restored_as": campaign.status, "manual_start_required": True})
+    db.commit()
+    flash(request, "Campanha restaurada. Nova autorização é obrigatória antes de iniciar.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.get("/campaigns")
+def voice_campaigns(request: Request, archived: bool = False, db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    predicate = (VoiceCampaign.status == VOICE_CAMPAIGN_ARCHIVED if archived
+                 else VoiceCampaign.status != VOICE_CAMPAIGN_ARCHIVED)
+    campaigns = list(db.scalars(select(VoiceCampaign).where(predicate).order_by(VoiceCampaign.id.desc())))
+    archived_count = db.scalar(select(func.count(VoiceCampaign.id)).where(
+        VoiceCampaign.status == VOICE_CAMPAIGN_ARCHIVED
+    )) or 0
     engine = db.get(VoiceDialerEngine, 1)
     checklist = {item.id: check_campaign_ready(db, item) for item in campaigns}
     # Mostra exatamente o numero que o PABX vai receber, sem expor tokens SIP.
@@ -179,7 +386,8 @@ def voice_campaigns(request: Request, db: Session = Depends(get_db)):
         request, "voice/campaigns.html", user=actor, active_nav="voice",
         voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
         campaigns=campaigns, counts=counts, engine=engine, readiness=checklist,
-        reports=reports, sip_preview=sip_preview,
+        reports=reports, sip_preview=sip_preview, show_archived=archived,
+        archived_count=archived_count,
         engine_online=bool(engine and engine.heartbeat_at and
             datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
@@ -191,7 +399,9 @@ def voice_campaigns_live_status(request: Request, db: Session = Depends(get_db))
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
-    campaigns = db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())).all()
+    campaigns = db.scalars(select(VoiceCampaign).where(
+        VoiceCampaign.status != VOICE_CAMPAIGN_ARCHIVED
+    ).order_by(VoiceCampaign.id.desc())).all()
     data = {
         str(item.id): campaign_operational_report(db, item, check_campaign_ready(db, item))
         for item in campaigns
@@ -529,8 +739,10 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
         return redirect
     validate_csrf(request, csrf_token)
     campaign = db.get(VoiceCampaign, campaign_id)
-    if not campaign or campaign.mode != "AUDIO" or campaign.status != "RASCUNHO":
-        return _error(request, "Campanha nao permite upload de audio.")
+    if not campaign or campaign.mode != "AUDIO" or campaign.status not in {"RASCUNHO", "PAUSADA"}:
+        return _error(request, "Pause a campanha antes de alterar o áudio.")
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Aguarde a finalização da ligação antes de trocar o áudio.", "/voice/campaigns")
     try:
         storage = MediaStorage()
         if not storage.configured:
@@ -547,6 +759,9 @@ async def upload_audio(campaign_id: int, request: Request, csrf_token: str = For
         # Nao exibir mensagem interna do armazenamento.
         return _error(request, "Falha ao validar ou salvar audio no armazenamento seguro.")
     campaign.audio_uri = uri
+    campaign.legal_basis_verified = False
+    campaign.approved_at = None
+    campaign.approved_by_id = None
     write_audit(db, user=actor, action="VOICE_AUDIO_UPDATED",
                 entity_type="voice_campaign", entity_id=campaign.id)
     db.commit()
@@ -563,8 +778,10 @@ async def import_contacts(campaign_id: int, request: Request,
         return redirect
     validate_csrf(request, csrf_token)
     campaign = db.get(VoiceCampaign, campaign_id)
-    if not campaign or campaign.status != "RASCUNHO":
-        return _error(request, "Importacao permitida somente em campanhas rascunho.")
+    if not campaign or campaign.status not in {"RASCUNHO", "PAUSADA"}:
+        return _error(request, "Pause a campanha antes de importar novos contatos.")
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Aguarde o encerramento da ligação antes de importar.", "/voice/campaigns")
     payload = await csv_file.read(1_000_001)
     if len(payload) > 1_000_000:
         return _error(request, "CSV acima de 1 MB.")
@@ -584,6 +801,11 @@ async def import_contacts(campaign_id: int, request: Request,
         lead = db.scalar(select(Lead).where(Lead.phone == item["phone"]).order_by(Lead.id.desc()).limit(1))
         db.add(VoiceRecipient(campaign_id=campaign_id, lead_id=lead.id if lead else None,
                               name=item["name"], phone=item["phone"]))
+    if clean:
+        # Novos destinatarios exigem nova confirmacao da base legal.
+        campaign.legal_basis_verified = False
+        campaign.approved_at = None
+        campaign.approved_by_id = None
     write_audit(db, user=actor, action="VOICE_CONTACTS_IMPORTED",
                 entity_type="voice_campaign", entity_id=campaign_id,
                 payload={"accepted": len(clean), "skipped": skipped, "invalid": summary["invalid"]})
