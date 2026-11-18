@@ -29,147 +29,30 @@
 </section>
 
 {% if campaigns %}
-{% for campaign in campaigns %}
-<section class="panel voice-panel">
-  <div class="voice-campaign-title">
-    <div><span class="eyebrow">CAMPANHA #{{ campaign.id }}</span><h3>{{ campaign.name }}</h3>
-      <p>{{ ('Áudio informativo (sem transferência)' if not campaign.group_id else 'Áudio + confirmação DTMF e transferência') if campaign.mode == 'AUDIO' else 'Transferência direta' }} · {{ counts.get(campaign.id, 0) }} contatos</p></div>
-    <div class="voice-campaign-controls">
-      <span class="voice-pill {{ 'is-paused' if campaign.status in ['PAUSADA', 'EXCLUIDA'] else 'is-unknown' }}">{{ 'PREPARADA' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}</span>
-      {% if campaign.status == 'EXCLUIDA' %}
-      <form method="post" action="/voice/campaigns/{{ campaign.id }}/restore">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button button-secondary" type="submit">Restaurar</button>
-      </form>
-      {% elif campaign.status == 'EM_EXECUCAO' %}
-      <small class="voice-help">Pause para editar ou excluir</small>
-      {% else %}
-      <a class="button button-secondary" href="/voice/campaigns/{{ campaign.id }}/edit">Editar</a>
-      <a class="button button-secondary" href="/voice/campaigns/{{ campaign.id }}/delete">Excluir</a>
-      {% endif %}
+<div class="voice-campaign-list" data-voice-accordion-list aria-label="Campanhas de voz">
+  {% for campaign in campaigns %}
+  <section class="voice-campaign-row-card" data-voice-campaign-item data-campaign-id="{{ campaign.id }}">
+    <button type="button" class="voice-campaign-toggle" data-voice-campaign-toggle
+      aria-expanded="false" aria-controls="voice-campaign-detail-{{ campaign.id }}"
+      aria-label="Abrir detalhes da campanha {{ campaign.name }}">
+      <span class="voice-campaign-summary-main">
+        <span class="voice-campaign-summary-name">{{ campaign.name }}</span>
+        <span class="voice-campaign-summary-info">#{{ campaign.id }} · {{ counts.get(campaign.id, 0) }} contato(s) · {{ 'Áudio sem transferência' if campaign.mode == 'AUDIO' and not campaign.group_id else ('Áudio + confirmação DTMF' if campaign.mode == 'AUDIO' else 'Transferência direta') }}</span>
+      </span>
+      <span class="voice-campaign-summary-side">
+        <span class="voice-pill {{ 'is-ready' if campaign.status in ['EM_EXECUCAO','CONCLUIDA'] else ('is-paused' if campaign.status in ['PAUSADA','EXCLUIDA'] else 'is-unknown') }}">
+          {{ 'PREPARADA' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}
+        </span>
+        <span class="voice-campaign-chevron" aria-hidden="true"></span>
+      </span>
+    </button>
+    <div class="voice-campaign-detail" id="voice-campaign-detail-{{ campaign.id }}"
+      data-voice-campaign-details hidden>
+      <p class="voice-help" role="status">Carregando dados da campanha...</p>
     </div>
-  </div>
-  <div class="voice-campaign-meta">
-    <span><strong>Origem:</strong> {{ campaign.sip_account.name }}</span>
-    <span><strong>Destino:</strong> {{ (campaign.group.name ~ ' (' ~ campaign.group.target_extension ~ ')') if campaign.group else 'Sem transferência — áudio e encerramento' }}</span>
-    <span><strong>Janela:</strong> {{ campaign.window_start }}–{{ campaign.window_end }}</span>
-    <span><strong>Limite:</strong> {{ campaign.daily_limit }}/dia</span>
-    <span><strong>Formato SIP:</strong> {{ 'DDD + número (sem DDI)' if campaign.dial_format == 'NATIONAL' else 'DDI 55 + DDD + número (E.164)' }}</span>
-    <span><strong>Próximo exemplo discado:</strong> {{ sip_preview.get(campaign.id) or 'Importe contatos' }}</span>
-  </div>
-  {% set report = reports[campaign.id] %}
-  <section class="voice-live-monitor" data-voice-campaign="{{ campaign.id }}" data-voice-status-code="{{ campaign.status }}" aria-label="Acompanhamento de {{ campaign.name }}">
-    <div class="voice-live-header">
-      <div>
-        <span class="eyebrow">ACOMPANHAMENTO DA CAMPANHA</span>
-        <h4 data-voice-headline aria-live="polite">{{ report.headline }}</h4>
-        <p class="voice-help">Dados registrados pelo servidor. Solicitar início não significa que uma ligação foi completada.</p>
-      </div>
-      <button type="button" class="button button-secondary voice-refresh" data-voice-refresh>Atualizar agora</button>
-    </div>
-    <div class="voice-last-action" role="status" aria-live="polite">
-      <strong>Última ação:</strong> <span data-voice-last-command>{{ report.last_command.label }}</span>
-      <small data-voice-last-time></small>
-      <p data-voice-last-detail>{{ report.last_command.detail }}</p>
-    </div>
-    <div class="voice-monitor-metrics">
-      {% for key, label in [('total','Contatos'), ('pending','Pendentes'), ('attempted','Tentativas'), ('in_progress','Em andamento'), ('answered','Atendidas'), ('transferred','Transferidas'), ('audio_completed','Áudios concluídos'), ('failed','Falhas'), ('blocked','Bloqueadas')] %}
-      <div class="voice-monitor-metric">
-        <strong data-voice-stat="{{ key }}">{{ report.stats[key] }}</strong>
-        <span>{{ label }}</span>
-      </div>
-      {% endfor %}
-    </div>
-    <p class="voice-no-attempts" data-voice-no-attempts {% if report.stats.attempted %}hidden{% endif %}>Nenhuma tentativa de discagem foi registrada para esta campanha.</p>
-    <div class="voice-monitor-timeline">
-      <div>
-        <h5>Últimas tentativas</h5>
-        <div data-voice-attempts>
-          {% if report.last_attempts %}
-          {% for attempt in report.last_attempts %}
-          <p class="voice-event-line"><strong>{{ attempt.name }}</strong> · final {{ attempt.phone_suffix }} · {{ attempt.status|replace('_',' ') }}{% if attempt.detail %}<small>{{ attempt.detail }}</small>{% endif %}</p>
-          {% endfor %}
-          {% else %}<p class="voice-help">Nenhuma tentativa registrada.</p>{% endif %}
-        </div>
-      </div>
-      <div>
-        <h5>Eventos das ligações (SIP)</h5>
-        <div data-voice-events>
-          {% if report.events %}
-          {% for event in report.events %}
-          <p class="voice-event-line"><strong>{{ event.event|replace('_',' ') }}</strong> · {{ event.contact }} · final {{ event.phone_suffix }}{% if event.detail %}<small>{{ event.detail }}</small>{% endif %}</p>
-          {% endfor %}
-          {% else %}<p class="voice-help">Nenhum evento SIP registrado.</p>{% endif %}
-        </div>
-      </div>
-    </div>
-    <p class="voice-live-updated" data-voice-updated>Atualização automática a cada 10 segundos</p>
   </section>
-  {% if campaign.status in ['RASCUNHO', 'PAUSADA'] %}
-  <div class="voice-preparation-grid">
-    <form method="post" action="/voice/campaigns/{{ campaign.id }}/contacts" enctype="multipart/form-data" class="stack-form voice-subpanel">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <h4>1. Importar contatos</h4>
-      <label class="field"><span>Arquivo CSV com nome e telefone</span><input name="csv_file" type="file" accept=".csv,text/csv" required></label>
-      <button class="button button-secondary" type="submit">Importar contatos</button>
-    </form>
-    {% if campaign.mode == 'AUDIO' %}
-    <form method="post" action="/voice/campaigns/{{ campaign.id }}/audio" enctype="multipart/form-data" class="stack-form voice-subpanel">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <h4>2. Áudio da campanha {% if campaign.audio_uri %}<span class="voice-pill is-ready">Carregado</span>{% else %}<span class="voice-pill is-unknown">Pendente</span>{% endif %}</h4>
-      <label class="field"><span>WAV PCM mono, 8/16 kHz (sem limite artificial de duração; sujeito à capacidade do armazenamento)</span><input name="audio" type="file" accept=".wav,audio/wav" required></label>
-      <button class="button button-secondary" type="submit">Salvar gravação</button>
-    </form>
-    {% endif %}
-  </div>
-  {% endif %}
-  {% if campaign.status in ['RASCUNHO', 'PRONTA', 'EM_HOMOLOGACAO', 'PAUSADA', 'EM_EXECUCAO'] %}
-      <div class="voice-preparation-grid">
-        <div class="voice-subpanel">
-          <h4>Checklist técnico para liberar</h4>
-          <div data-voice-readiness>
-          {% if readiness.get(campaign.id) %}
-            <ul>{% for reason in readiness[campaign.id] %}<li>{{ reason }}</li>{% endfor %}</ul>
-          {% else %}<span class="voice-pill is-ready">Pré-requisitos verificados</span>{% endif %}
-          </div>
-          <p class="voice-help">{% if campaign.group_id %}A transferência será executada para o ramal cadastrado durante a chamada. O resultado real do PABX (sucesso ou falha SIP) aparecerá nos eventos, sem teste prévio obrigatório.{% else %}Campanha de áudio informativo: reproduz o áudio e encerra sem transferir. A conta SIP deve estar autenticada e o áudio carregado.{% endif %}</p>
-        </div>
-        <div class="voice-subpanel">
-          <h4>Responsabilidade do administrador</h4>
-          {% if campaign.legal_basis_verified %}
-            <span class="voice-pill is-ready">Base legal confirmada</span>
-          {% else %}
-            <form action="/voice/campaigns/{{ campaign.id }}/legal" method="post" class="stack-form">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <label><input type="checkbox" name="confirmation" value="confirmado" required>
-                Confirmo que a lista possui base legal documentada, não contém contatos sem permissão e respeita a blacklist.</label>
-              <button class="button button-secondary" type="submit">Confirmar base legal</button>
-            </form>
-          {% endif %}
-        </div>
-      </div>
-      <div class="voice-actions voice-review">
-        {% if campaign.status in ['RASCUNHO','PRONTA','EM_HOMOLOGACAO','PAUSADA'] %}
-          <form action="/voice/campaigns/{{ campaign.id }}/start" method="post">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label><input type="checkbox" name="authorization" value="sim" required> Autorizo iniciar as ligações desta campanha.</label>
-            <button class="button button-primary" type="submit">Iniciar campanha</button>
-            {% if readiness.get(campaign.id) %}
-            <p class="voice-start-warning">Atenção: início bloqueado por {{ readiness[campaign.id]|length }} pendência(s). Ao solicitar, o sistema registra a tentativa e informa o motivo.</p>
-            {% endif %}
-          </form>
-        {% elif campaign.status == 'EM_EXECUCAO' %}
-          <form action="/voice/campaigns/{{ campaign.id }}/pause" method="post">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button button-secondary" type="submit">Pausar campanha</button>
-          </form>
-        {% endif %}
-      </div>
-  {% else %}
-    <p class="voice-help">Campanha finalizada, sem novas chamadas.</p>
-  {% endif %}
-</section>
-{% endfor %}
+  {% endfor %}
+</div>
 {% else %}
   <section class="panel voice-panel voice-empty">
     <h3>{{ 'Nenhuma campanha excluída' if show_archived else 'Nenhuma campanha de voz cadastrada' }}</h3>
