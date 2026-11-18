@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page-lead split">
   <div><span class="eyebrow">PROSPECTA VOZ · OPERAÇÃO</span><h2>Campanhas e preparação</h2>
-    <p>Acompanhe campanhas criadas, importe contatos, envie áudios e prepare a homologação.</p></div>
+    <p>Gerencie as campanhas de ligações: importe contatos, envie áudios e inicie a discagem quando o checklist estiver aprovado.</p></div>
   <a class="button button-primary" href="/voice/campaigns/new">＋ Nova campanha</a>
 </div>
 <div class="voice-notice"><strong>Discagem progressiva com bloqueios de segurança</strong>
@@ -16,7 +16,7 @@
   </div>
   <form action="/voice/engine/toggle" method="post" class="voice-review">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit" class="button {{ 'button-secondary' if engine and engine.enabled else 'button-primary' }}">{{ 'Parar motor e todas as campanhas' if engine and engine.enabled else 'Habilitar motor para testes controlados' }}</button>
+    <button type="submit" class="button {{ 'button-secondary' if engine and engine.enabled else 'button-primary' }}">{{ 'Parar motor e todas as campanhas' if engine and engine.enabled else 'Habilitar motor para produção' }}</button>
   </form>
   <p class="voice-help">Ativar o motor não inicia nenhuma campanha. O trabalhador do Railway possui uma segunda trava de envio que deve estar habilitada separadamente.</p>
 </section>
@@ -27,7 +27,7 @@
   <div class="voice-campaign-title">
     <div><span class="eyebrow">CAMPANHA #{{ campaign.id }}</span><h3>{{ campaign.name }}</h3>
       <p>{{ 'Áudio automático + confirmação DTMF' if campaign.mode == 'AUDIO' else 'Transferência direta' }} · {{ counts.get(campaign.id, 0) }} contatos</p></div>
-    <span class="voice-pill is-unknown">{{ 'Aguardando homologação' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}</span>
+    <span class="voice-pill is-unknown">{{ 'PRONTA' if campaign.status == 'EM_HOMOLOGACAO' else campaign.status|replace('_',' ') }}</span>
   </div>
   <div class="voice-campaign-meta">
     <span><strong>Origem:</strong> {{ campaign.sip_account.name }}</span>
@@ -52,12 +52,8 @@
     </form>
     {% endif %}
   </div>
-  <form method="post" action="/voice/campaigns/{{ campaign.id }}/review" class="voice-review">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button class="button button-primary" type="submit">Enviar para homologação (sem discagem)</button>
-  </form>
-  {% else %}
-    {% if campaign.status in ['EM_HOMOLOGACAO', 'PAUSADA', 'EM_EXECUCAO'] %}
+  {% endif %}
+  {% if campaign.status in ['RASCUNHO', 'PRONTA', 'EM_HOMOLOGACAO', 'PAUSADA', 'EM_EXECUCAO'] %}
       <div class="voice-preparation-grid">
         <div class="voice-subpanel">
           <h4>Checklist técnico para liberar</h4>
@@ -81,7 +77,7 @@
         </div>
       </div>
       <div class="voice-actions voice-review">
-        {% if campaign.status in ['EM_HOMOLOGACAO','PAUSADA'] %}
+        {% if campaign.status in ['RASCUNHO','PRONTA','EM_HOMOLOGACAO','PAUSADA'] %}
           <form action="/voice/campaigns/{{ campaign.id }}/start" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label><input type="checkbox" name="authorization" value="sim" required> Autorizo iniciar as ligações desta campanha.</label>
@@ -94,9 +90,8 @@
           </form>
         {% endif %}
       </div>
-    {% else %}
-      <p class="voice-help">Campanha finalizada, sem novas chamadas.</p>
-    {% endif %}
+  {% else %}
+    <p class="voice-help">Campanha finalizada, sem novas chamadas.</p>
   {% endif %}
 </section>
 {% endfor %}
