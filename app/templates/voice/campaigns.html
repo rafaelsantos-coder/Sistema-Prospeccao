@@ -10,7 +10,7 @@
 <section class="panel voice-panel">
   <div class="voice-campaign-title">
     <div><span class="eyebrow">CONTROLE GLOBAL</span><h3>Motor telefônico PJSUA2</h3>
-      <p>Serviço: {{ 'online (heartbeat registrado)' if engine and engine.heartbeat_at else 'não verificado' }} ·
+      <p>Serviço: {{ 'online (heartbeat recente)' if engine_online else 'offline / não verificado' }} ·
       Discagem automática: {{ 'permitida pelo motor' if engine and engine.campaign_runtime_enabled else 'bloqueada no Railway' }}</p></div>
     <span class="voice-pill {{ 'is-ready' if engine and engine.enabled else 'is-paused' }}">{{ 'HABILITADO' if engine and engine.enabled else 'PARADA GERAL' }}</span>
   </div>
