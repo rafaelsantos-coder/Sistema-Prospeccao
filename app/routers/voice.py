@@ -232,6 +232,13 @@ def update_account(account_id: int, request: Request, csrf_token: str = Form(...
     account.sip_check_at = None
     account.sip_check_code = None
     account.sip_check_message = "Configuracao alterada; teste SIP necessario."
+    # Transfer results from the previous account configuration cannot certify this one.
+    for prior in db.scalars(select(VoiceTransferTest).where(
+        VoiceTransferTest.account_id == account.id,
+        VoiceTransferTest.result == "TRANSFERIDA",
+    )):
+        prior.result = "INVALIDADO"
+        prior.message = "Conta SIP alterada; novo teste de transferencia necessario."
     if password.strip():
         account.password_encrypted = encrypt_secret(password)
     write_audit(db, user=actor, action="VOICE_SIP_UPDATED", entity_type="voice_sip_account",
@@ -304,6 +311,13 @@ def update_group(group_id: int, request: Request, csrf_token: str = Form(...),
     group.name = name.strip()
     group.target_extension = target
     group.member_extensions = ",".join(sorted(set(members)))
+    group.transfer_verified_at = None
+    for prior in db.scalars(select(VoiceTransferTest).where(
+        VoiceTransferTest.group_id == group.id,
+        VoiceTransferTest.result == "TRANSFERIDA",
+    )):
+        prior.result = "INVALIDADO"
+        prior.message = "Grupo alterado; transferencia precisa ser retestada."
     write_audit(db, user=actor, action="VOICE_GROUP_UPDATED", entity_type="voice_group",
                 entity_id=group.id, payload={"target": target, "members": members})
     db.commit()
