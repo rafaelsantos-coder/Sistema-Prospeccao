@@ -129,6 +129,16 @@
         <h1>{{ page_title }}</h1>
       </div>
       <div class="topbar-actions">
+        {% if page_title == "Conversas" and conversation is defined and conversation %}
+          {% if crm_manual_status is defined and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
+          <span class="button button-secondary crm-manual-topbar-state" title="Oportunidade já vinculada ao CRM">✓ Registrado no CRM</span>
+          {% elif crm_manual_seller is defined and crm_manual_seller %}
+          <button type="button" class="button button-primary crm-manual-topbar-button" data-crm-manual-open
+             {% if crm_manual_status is defined and crm_manual_status %}disabled title="Registro pendente de conferência no CRM"{% endif %}>Registrar CRM</button>
+          {% else %}
+          <button type="button" class="button button-secondary crm-manual-topbar-button" disabled title="Atribua a conversa a um vendedor cadastrado no CRM">Registrar CRM</button>
+          {% endif %}
+        {% endif %}
         <div class="whatsapp-presence-control" data-whatsapp-presence data-csrf="{{ csrf_token }}" data-role="{{ current_user.role }}">
           <span class="whatsapp-presence-dot" data-whatsapp-dot></span>
           <div class="whatsapp-presence-copy">
