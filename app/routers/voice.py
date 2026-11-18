@@ -21,7 +21,7 @@ from app.services.voice_runtime import (
     MAX_CALLS_PER_DAY, ENGINE_HEARTBEAT_MAX
 )
 from app.services.voice_test import aware
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from app.services.voice_test import is_agent_online, now_utc, validate_test_phone, verify_test_allowed
 from app.services.voice import (
     VOICE_STATUS_HOMOLOGACAO,
@@ -636,3 +636,153 @@ def verify_account_registration(account_id: int, request: Request,
     db.commit()
     flash(request, "Verificacao SIP iniciada sem discagem. Consulte o resultado abaixo.")
     return RedirectResponse(f"/voice/accounts/{account_id}/test", status_code=303)
+
+
+@router.post("/engine/toggle")
+def voice_engine_toggle(request: Request, csrf_token: str = Form(...),
+                        db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    engine = db.scalar(select(VoiceDialerEngine).where(VoiceDialerEngine.id == 1).with_for_update())
+    if not engine:
+        return _error(request, "Motor de voz nao foi instalado no banco.", "/voice/campaigns")
+    if not engine.enabled:
+        # The emergency stop must be usable even while the worker is offline.
+        if not engine.heartbeat_at or (
+            datetime.now(timezone.utc) - aware(engine.heartbeat_at) > ENGINE_HEARTBEAT_MAX
+        ):
+            return _error(request, "O motor PJSUA2 esta offline; nao pode ser ativado.", "/voice/campaigns")
+    engine.enabled = not engine.enabled
+    if not engine.enabled:
+        for campaign in db.scalars(select(VoiceCampaign).where(
+            VoiceCampaign.status == "EM_EXECUCAO"
+        )):
+            campaign.status = "PAUSADA"
+            campaign.stopped_at = datetime.now(timezone.utc)
+    write_audit(db, user=actor, action="VOICE_ENGINE_ENABLED" if engine.enabled else "VOICE_ENGINE_STOPPED",
+                entity_type="voice_dialer_engine", entity_id=engine.id)
+    db.commit()
+    flash(request, "Motor de voz habilitado para testes controlados." if engine.enabled
+          else "PARADA GERAL: todas as campanhas foram pausadas.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/campaigns/{campaign_id}/legal")
+def verify_voice_legal_basis(campaign_id: int, request: Request, csrf_token: str = Form(...),
+                             confirmation: str = Form(""), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.get(VoiceCampaign, campaign_id)
+    if not campaign or campaign.status not in {"RASCUNHO", VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
+        return _error(request, "Campanha nao permite alterar a declaracao de contato.", "/voice/campaigns")
+    if confirmation != "confirmado":
+        return _error(request, "Confirme a base legal e a lista de contatos antes de autorizar.", "/voice/campaigns")
+    campaign.legal_basis_verified = True
+    campaign.approved_by_id = actor.id
+    campaign.approved_at = datetime.now(timezone.utc)
+    write_audit(db, user=actor, action="VOICE_LEGAL_BASIS_CONFIRMED",
+                entity_type="voice_campaign", entity_id=campaign_id,
+                payload={"confirmed_by_id": actor.id})
+    db.commit()
+    flash(request, "Base legal confirmada para esta campanha. Nenhuma chamada foi iniciada.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/campaigns/{campaign_id}/start")
+def start_voice_campaign(campaign_id: int, request: Request, csrf_token: str = Form(...),
+                         authorization: str = Form(""), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.scalar(select(VoiceCampaign).where(
+        VoiceCampaign.id == campaign_id
+    ).with_for_update())
+    if not campaign or campaign.status not in {VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
+        return _error(request, "Campanha precisa estar em homologacao ou pausada.", "/voice/campaigns")
+    if authorization != "sim":
+        return _error(request, "Autorizacao explicita do administrador obrigatoria.", "/voice/campaigns")
+    failures = check_campaign_ready(db, campaign)
+    if failures:
+        return _error(request, "Campanha bloqueada: " + " / ".join(failures[:3]), "/voice/campaigns")
+    campaign.status = "EM_EXECUCAO"
+    campaign.started_at = datetime.now(timezone.utc)
+    campaign.stopped_at = None
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_STARTED",
+                entity_type="voice_campaign", entity_id=campaign_id,
+                payload={"manual_authorization": True, "single_call_at_a_time": True})
+    db.commit()
+    flash(request, "Campanha habilitada. Discagem progressiva com no maximo uma chamada por vez.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/campaigns/{campaign_id}/pause")
+def pause_voice_campaign(campaign_id: int, request: Request, csrf_token: str = Form(...),
+                         db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    campaign = db.get(VoiceCampaign, campaign_id)
+    if not campaign or campaign.status != "EM_EXECUCAO":
+        return _error(request, "Campanha nao esta em execucao.", "/voice/campaigns")
+    campaign.status = "PAUSADA"
+    campaign.stopped_at = datetime.now(timezone.utc)
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_PAUSED",
+                entity_type="voice_campaign", entity_id=campaign_id)
+    db.commit()
+    flash(request, "Campanha pausada. Nao serao originadas novas chamadas.")
+    return RedirectResponse("/voice/campaigns", status_code=303)
+
+
+@router.post("/groups/{group_id}/test-transfer")
+def test_group_transfer(group_id: int, request: Request, csrf_token: str = Form(...),
+                        sip_account_id: int = Form(...), phone: str = Form(...),
+                        authorized: str = Form(""), db: Session = Depends(get_db)):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    account = db.get(VoiceSipAccount, sip_account_id)
+    group = db.get(VoiceGroup, group_id)
+    if not account or not account.active or not group or not group.active:
+        return _error(request, "Conta SIP e grupo precisam estar ativos.", "/voice/groups")
+    engine = db.get(VoiceDialerEngine, 1)
+    at = datetime.now(timezone.utc)
+    if not engine or not engine.enabled or not engine.test_runtime_enabled:
+        return _error(request, "Habilite o motor PJSUA2 e o modulo de testes de transferencia.", "/voice/groups")
+    if not engine.heartbeat_at or at - aware(engine.heartbeat_at) > ENGINE_HEARTBEAT_MAX:
+        return _error(request, "Worker SIP de transferencia offline.", "/voice/groups")
+    if authorized != "sim":
+        return _error(request, "Confirme que o numero pode receber a ligacao de teste.", "/voice/groups")
+    try:
+        clean = validate_test_phone(phone)
+        outbound_guard(db, clean)
+    except ValueError as exc:
+        return _error(request, str(exc), "/voice/groups")
+    recent = list(db.scalars(select(VoiceTransferTest).where(
+        VoiceTransferTest.account_id == account.id,
+        VoiceTransferTest.created_at >= at - timedelta(hours=1)
+    )))
+    if len(recent) >= 3 or any(row.result not in {
+        "FALHOU", "TRANSFERIDA", "EXPIRADO", "INDETERMINADO", "SEM_ATENDIMENTO",
+        "SEM_INTERESSE", "TIMEOUT", "FALHA_TRANSFERENCIA", "INTERROMPIDA"
+    } for row in recent):
+        return _error(request, "Aguarde o fim de outro teste ou o limite de tres testes/hora.", "/voice/groups")
+    row = VoiceTransferTest(
+        account_id=account.id, group_id=group.id, phone_last4=clean[-4:],
+        phone_encrypted=encrypt_secret(clean), created_by_id=actor.id,
+        result="PENDENTE", message="Teste unico solicitado por ADMIN.", created_at=at,
+    )
+    db.add(row)
+    db.flush()
+    write_audit(db, user=actor, action="VOICE_TRANSFER_TEST_REQUESTED",
+                entity_type="voice_transfer_test", entity_id=row.id,
+                payload={"account_id": account.id, "group_id": group.id, "phone_last4": clean[-4:]})
+    db.commit()
+    flash(request, "Teste de transferencia iniciado. Acompanhe o status abaixo.")
+    return RedirectResponse("/voice/groups", status_code=303)
