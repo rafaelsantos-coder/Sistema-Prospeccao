@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">PROSPECTA VOZ · NOVA RODADA</span>
+    <h2>{{ 'Reenviar somente não atendidos' if mode == 'UNANSWERED' else 'Reenviar campanha completa' }}</h2>
+    <p>Campanha original #{{ campaign.id }} · {{ campaign.name }}</p>
+  </div>
+  <a href="/voice/campaigns" class="button button-secondary">Voltar às campanhas</a>
+</div>
+<div class="voice-notice">
+  <strong>Reenvio com histórico independente</strong>
+  <p>Será criada uma <strong>nova campanha</strong> com a mesma conta SIP, grupo, áudio e horários.
+     O histórico e os indicadores da campanha original não serão alterados.
+     As chamadas só começarão após a confirmação abaixo e se o motor estiver habilitado.</p>
+  {% if mode == 'UNANSWERED' %}
+  <p>Esta opção considera somente contatos com tentativa e resultado sem atendimento.
+     Exclui números que já atenderam em qualquer rodada, inclusive quando houve falha posterior
+     de áudio ou transferência. Resultados indeterminados não são tratados como não atendidos.</p>
+  {% else %}
+  <p><strong>Atenção:</strong> o reenvio completo poderá ligar novamente também para quem já atendeu.
+     Contatos em blacklist, com bloqueio de contato ou telefone inválido serão excluídos.</p>
+  {% endif %}
+</div>
+<section class="panel voice-panel">
+  <span class="eyebrow">PRÉVIA DA SELEÇÃO</span>
+  <h3>{{ 'Não atendidos' if mode == 'UNANSWERED' else 'Todos os contatos elegíveis' }}</h3>
+  <div class="voice-monitor-metrics">
+    <div class="voice-monitor-metric"><strong>{{ selection.total }}</strong><span>Na campanha original</span></div>
+    <div class="voice-monitor-metric"><strong>{{ selection.eligible_count }}</strong><span>Selecionados para reenvio</span></div>
+    <div class="voice-monitor-metric"><strong>{{ selection.blocked }}</strong><span>Bloqueados / inválidos</span></div>
+    {% if mode == 'UNANSWERED' %}
+    <div class="voice-monitor-metric"><strong>{{ selection.answered_excluded }}</strong><span>Atenderam e foram excluídos</span></div>
+    <div class="voice-monitor-metric"><strong>{{ selection.never_attempted }}</strong><span>Ainda sem tentativa</span></div>
+    <div class="voice-monitor-metric"><strong>{{ selection.other_excluded }}</strong><span>Outros resultados / indeterminados</span></div>
+    {% endif %}
+  </div>
+  {% if selection.eligible_count %}
+  <form action="/voice/campaigns/{{ campaign.id }}/resend" method="post" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="mode" value="{{ mode }}">
+    <label><input type="checkbox" name="legal_confirmation" value="confirmado" required>
+      Confirmo que há base legal documentada para <strong>esta nova rodada</strong>, respeitando a blacklist e solicitações de não contato.</label>
+    <label><input type="checkbox" name="authorization" value="sim" required>
+      Autorizo iniciar as ligações de {{ selection.eligible_count }} contato(s) selecionado(s), conforme horário e limite diário cadastrados.</label>
+    <label class="field">
+      <span>Digite o nome exato da campanha para confirmar</span>
+      <input name="confirm_name" maxlength="180" required autocomplete="off" placeholder="{{ campaign.name }}">
+    </label>
+    <div class="voice-actions">
+      <button type="submit" class="button button-primary">Confirmar e iniciar reenvio</button>
+      <a href="/voice/campaigns" class="button button-secondary">Cancelar</a>
+    </div>
+    <p class="voice-help">A lista será verificada novamente no momento da confirmação e antes de cada ligação. Nenhum número atendido será incluído no modo Não atendidos.</p>
+  </form>
+  {% else %}
+  <p class="voice-start-warning">Nenhum contato elegível para esta modalidade. Nenhuma ligação será iniciada.</p>
+  <div class="voice-actions">
+    <a class="button button-secondary" href="/voice/campaigns">Voltar às campanhas</a>
+    {% if mode == 'UNANSWERED' %}
+    <a class="button button-secondary" href="/voice/campaigns/{{ campaign.id }}/resend?mode=ALL">Conferir reenvio completo</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
