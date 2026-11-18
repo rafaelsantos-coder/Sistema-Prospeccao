@@ -110,33 +110,38 @@
 <section class="panel top-space">
   <div class="panel-header">
     <div><span class="eyebrow">FILAS</span><h3>Onde o SulIA atua</h3></div>
-    <span class="panel-note">{% if exclusive_ai_queue_id is not none %}IA exclusiva da Fila IA. Todas as demais filas: somente humano.{% else %}AI First em Shadow mantém a distribuição humana atual e analisa em paralelo.{% endif %}</span>
+    <span class="panel-note">{% if manual_queue_control_enabled %}Todas as filas disponíveis · IA desligada por padrão · ativação individual pelo gestor{% elif exclusive_ai_queue_id is not none %}Atendimento IA restrito à fila autorizada.{% else %}Modo de atendimento conforme vínculo da fila.{% endif %}</span>
   </div>
   <div class="data-table-wrap">
     <table class="data-table">
       <thead><tr><th>Fila</th><th>WhatsApp</th><th>Equipe</th><th>Agente</th><th>Modo</th><th>Fallback</th><th>Status</th><th>Ação</th></tr></thead>
       <tbody>
-      {% for binding in bindings %}
+      {% for queue in queues %}
+        {% set binding = bindings_by_queue.get(queue.id) %}
+        {% set qi = queue_instances.get(queue.id) %}
+        {% set eligible = manual_queue_control_enabled or exclusive_ai_queue_id is none or queue.id == exclusive_ai_queue_id %}
+        {% set enabled = queue.active and binding and binding.active and binding.handling_mode != 'HUMAN' and eligible and queue.id in ai_queue_enabled_ids %}
         <tr>
-          {% set qi = queue_instances.get(binding.queue.id) %}
-          <td><strong>{{ binding.queue.name }}</strong><span class="table-subline">{{ binding.queue.code }}</span></td>
+          <td><strong>{{ queue.name }}</strong><span class="table-subline">{{ queue.code }}</span></td>
           <td><strong>{{ qi.name if qi else 'Sem instância' }}</strong><span class="table-subline">{{ qi.phone_label if qi and qi.phone_label else '—' }}</span></td>
-          <td>{{ constants.teams.get(binding.queue.team, binding.queue.team) }}</td>
-          <td>{{ binding.agent.name }}</td>
-          <td><span class="ai-mode-badge">{{ handling_modes.get(binding.handling_mode, binding.handling_mode) }}</span></td>
-          <td>{{ 'Humano' if binding.fallback_to_human else 'Sem fallback' }}</td>
-          <td>{% set enabled_scope = exclusive_ai_queue_id is none or binding.queue_id == exclusive_ai_queue_id %}<span class="connection-status {% if binding.active and enabled_scope %}on{% endif %}">{{ 'Ativo' if binding.active and enabled_scope else 'Somente humano' }}</span></td>
+          <td>{{ constants.teams.get(queue.team, queue.team) }}</td>
+          <td>{{ binding.agent.name if binding and binding.agent else 'Não configurado' }}</td>
+          <td>{{ handling_modes.get(binding.handling_mode, binding.handling_mode) if binding else '—' }}</td>
+          <td>{{ 'Humano' if binding and binding.fallback_to_human else '—' }}</td>
+          <td><span class="connection-status {% if enabled %}on{% endif %}">{{ 'Inativa' if not queue.active else ('IA ativa' if enabled else 'Somente humano') }}</span></td>
           <td>
-            {% if exclusive_ai_queue_id is none or binding.queue_id == exclusive_ai_queue_id %}
-            <form action="/ai/queues/{{ binding.queue_id }}/toggle" method="post">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="button button-ghost" type="submit">{{ 'Pausar IA' if binding.active else 'Ativar IA' }}</button>
-            </form>
-            {% else %}<span class="table-subline">IA desabilitada por política</span>{% endif %}
+            {% if binding and queue.active and eligible %}
+              <form action="/ai/queues/{{ queue.id }}/toggle" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="button button-ghost" type="submit">{{ 'Pausar IA' if enabled else 'Ativar IA' }}</button>
+              </form>
+            {% elif not queue.active %}<span class="table-subline">Fila inativa</span>
+            {% elif not binding %}<span class="table-subline">Configure abaixo</span>
+            {% else %}<span class="table-subline">IA bloqueada por política</span>{% endif %}
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="8"><div class="empty-state"><strong>Nenhuma fila ligada à IA</strong><span>Vincule uma fila abaixo para iniciar o atendimento do agente.</span></div></td></tr>
+        <tr><td colspan="8"><div class="empty-state"><strong>Nenhuma fila cadastrada</strong><span>Cadastre uma fila operacional para configurar o agente.</span></div></td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -147,11 +152,19 @@
     <div class="panel-header"><div><span class="eyebrow">VINCULAR FILA</span><h3>Configurar atuação do agente</h3></div></div>
     <form action="/ai/queues/bind" method="post" class="form-grid">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label class="field"><span>Fila</span><select name="queue_id" required><option value="">Selecione</option>{% for queue in queues %}{% if exclusive_ai_queue_id is none or queue.id == exclusive_ai_queue_id %}{% set qi = queue_instances.get(queue.id) %}<option value="{{ queue.id }}">{{ queue.name }} · WhatsApp: {{ qi.name if qi else 'sem instância' }} · {{ constants.teams.get(queue.team, queue.team) }}</option>{% endif %}{% endfor %}</select><small>Selecione a fila operacional. A instância WhatsApp vinculada aparece no próprio nome da opção.</small></label>
+      <label class="field"><span>Fila</span><select name="queue_id" required>
+        <option value="">Selecione</option>
+        {% for queue in queues %}
+          {% if manual_queue_control_enabled or exclusive_ai_queue_id is none or queue.id == exclusive_ai_queue_id %}
+            {% set qi = queue_instances.get(queue.id) %}
+            <option value="{{ queue.id }}" {% if not queue.active %}disabled{% endif %}>{{ queue.name }} · WhatsApp: {{ qi.name if qi else 'sem instância' }} · {{ constants.teams.get(queue.team, queue.team) }}{% if not queue.active %} (inativa){% endif %}</option>
+          {% endif %}
+        {% endfor %}
+      </select><small>Selecione a fila. Salvar o vínculo não ativa o atendimento automático.</small></label>
       <label class="field"><span>Agente</span><select name="agent_id" required>{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select></label>
       <label class="field"><span>Modo da fila</span><select name="handling_mode">{% for key, label in handling_modes.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
       <label class="queue-check"><input type="checkbox" name="fallback_to_human" value="true" checked><span>Usar humano como fallback</span></label>
-      <div class="field field-span-2"><button class="button button-primary" type="submit">Salvar vínculo da fila</button></div>
+      <div class="field field-span-2"><button class="button button-primary" type="submit">Salvar configuração da fila</button>{% if manual_queue_control_enabled %}<small>A IA continuará desligada até você clicar em Ativar IA na lista acima.</small>{% endif %}</div>
     </form>
   </div>
   {% endif %}
