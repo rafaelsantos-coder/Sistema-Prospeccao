@@ -443,6 +443,8 @@ def usable_ai_binding(db: Session, queue_id: int | None):
     binding = db.scalar(stmt)
     if not binding or not binding.agent or not binding.agent.active:
         return None
+    if manual_queue_control_enabled() and binding.agent.role_type != "SDR":
+        return None
     if binding.handling_mode == "HUMAN":
         return None
     return binding
