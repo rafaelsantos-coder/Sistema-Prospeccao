@@ -123,7 +123,7 @@ def _set_recipient(recipient_id: int, status: str, code: int | None,
         if row:
             row.status = status[:25]
             row.last_event = (status or "")[:40]
-            row.last_error = (message or "")[:200] if status not in {"TRANSFERIDA", "ATENDIDA"} else ""
+            row.last_error = (message or "")[:200] if status not in {"TRANSFERIDA", "ATENDIDA", "AUDIO_CONCLUIDO"} else ""
             if answered:
                 row.answered_at = now()
             if transferred:
@@ -354,16 +354,19 @@ def _run_campaign_call(recipient_id: int) -> None:
             if not campaign or campaign.status != "EM_EXECUCAO" or check_campaign_ready(db, campaign, require_pending=False):
                 raise VoiceEngineError("Campanha ficou indisponivel para discagem.")
             account = db.get(VoiceSipAccount, campaign.sip_account_id)
-            group = db.get(VoiceGroup, campaign.group_id)
-            if not account or not group:
+            group = db.get(VoiceGroup, campaign.group_id) if campaign.group_id is not None else None
+            if not account or (campaign.group_id is not None and not group):
                 raise VoiceEngineError("Conta SIP ou grupo removido.")
+            if campaign.group_id is None and campaign.mode != "AUDIO":
+                raise VoiceEngineError("Campanha sem grupo deve utilizar áudio informativo.")
             phone = item.phone
             outbound_guard(db, phone)
             secret = decrypt_secret(account.password_encrypted)
             mode, dtmf, audio_uri = campaign.mode, campaign.dtmf_digit, campaign.audio_uri
             aid = account.id
             db.expunge(account)
-            db.expunge(group)
+            if group is not None:
+                db.expunge(group)
         if mode == "AUDIO":
             file_path = _load_wav(audio_uri)
         with PjSession(account, secret) as driver:

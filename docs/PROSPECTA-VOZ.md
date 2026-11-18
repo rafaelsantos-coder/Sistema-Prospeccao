@@ -140,3 +140,30 @@ e o worker de testes. Ao final, o histórico informa códigos SIP e se houve mí
 RTP ativa; isso não comprova o que o destinatário ouviu sem verificação humana.
 A blacklist é consultada antes de solicitar e antes de executar a chamada, e
 uma falha nunca gera nova tentativa automática.
+
+
+## Campanha de áudio sem transferência (produção)
+
+O administrador pode selecionar **Não transferir para grupo — reproduzir áudio e encerrar**
+no cadastro de campanhas. Essa opção exige modalidade **AUDIO**; transferência
+**DIRECT** continua exigindo um grupo ativo. A migration
+`0023_voice_no_transfer` torna `voice_campaigns.group_id` anulável e preserva
+campanhas preexistentes. Quando não há grupo:
+
+- O checklist **não exige** teste REFER nem grupo cadastrado, mas mantém verificação
+  real de SIP, motor ativo, áudio WAV, autorização ADMIN, base legal, contatos,
+  blacklist, janela e limites aplicáveis.
+- Após atendimento confirmado e mídia RTP disponível, o motor envia o WAV completo,
+  espera o tempo de reprodução e encerra a chamada por BYE, sem solicitar tecla DTMF,
+  sem transferir e sem enviar SIP REFER.
+- A duração máxima não é artificial; a chamada tem timeout dinâmico calculado pela
+  duração do arquivo e ainda depende da capacidade real do armazenamento.
+- Status finais: `AUDIO_CONCLUIDO` significa reprodução concluída no motor
+  (não confirma que a pessoa ouviu o conteúdo); `AUDIO_INTERROMPIDO` significa
+  desligamento antecipado, e `FALHA_AUDIO` registra ausência de mídia RTP.
+- Os indicadores de execução mostram **Áudios concluídos** separadamente das
+  ligações atendidas, falhas ou transferidas.
+
+Campanhas existentes que selecionam grupos mantêm o fluxo anterior de DIRECT
+ou AUDIO com tecla DTMF e transferência validada. A opção sem grupo jamais habilita
+a discagem automaticamente: a parada geral e o botão de iniciar continuam obrigatórios.

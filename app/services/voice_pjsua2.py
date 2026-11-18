@@ -10,6 +10,7 @@ import importlib
 import logging
 import socket
 import time
+import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -196,10 +197,18 @@ class PjSession:
         call_mode = mode.upper()
         if call_mode not in {"DIRECT", "AUDIO", "PROBE"}:
             raise VoiceEngineError("Modo de chamada invalido.")
-        if call_mode != "PROBE" and group is None:
-            raise VoiceEngineError("A transferencia exige grupo de destino.")
+        if call_mode == "DIRECT" and group is None:
+            raise VoiceEngineError("A transferencia direta exige grupo de destino.")
         if call_mode == "AUDIO" and (not audio_wav or not Path(audio_wav).is_file()):
             raise VoiceEngineError("Audio WAV indisponivel no motor de chamadas.")
+        audio_seconds = 0.0
+        if call_mode == "AUDIO":
+            # Usar a duracao real do WAV: nao limitar campanhas informativas a 55 s.
+            try:
+                with wave.open(str(audio_wav), "rb") as wav:
+                    audio_seconds = wav.getnframes() / wav.getframerate()
+            except (OSError, wave.Error, ZeroDivisionError) as exc:
+                raise VoiceEngineError("Nao foi possivel ler a duracao do audio.") from exc
         target_uri = make_dial_uri(self.account_model, phone)
         transfer_uri = make_transfer_uri(self.account_model, group) if group is not None else None
 
@@ -217,6 +226,24 @@ class PjSession:
                 self.transfer_failed = False
                 self.transfer_code = None
                 self._audio_connected = False
+                self.audio_started_at = None
+
+            def _start_audio_if_ready(self):
+                if call_mode != "AUDIO" or self._audio_connected or not self.answered:
+                    return
+                info = self.getInfo()
+                for index, media in enumerate(info.media):
+                    if media.type != pj.PJMEDIA_TYPE_AUDIO or media.status != pj.PJSUA_CALL_MEDIA_ACTIVE:
+                        continue
+                    if session._player is None:
+                        session._player = pj.AudioMediaPlayer()
+                        session._player.createPlayer(audio_wav, pj.PJMEDIA_FILE_NO_LOOP)
+                    session._player.startTransmit(self.getAudioMedia(index))
+                    self._audio_connected = True
+                    self.audio_started_at = time.monotonic()
+                    if on_status:
+                        on_status("REPRODUZINDO_AUDIO", self.sip_code)
+                    return
 
             def onCallState(self, prm):
                 try:
@@ -228,6 +255,7 @@ class PjSession:
                         self.answered = True
                         if on_status:
                             on_status("ATENDIDA", self.sip_code)
+                        self._start_audio_if_ready()
                     elif info.state == pj.PJSIP_INV_STATE_DISCONNECTED:
                         self.disconnected = True
                     elif on_status and self.sip_code in {180, 183}:
@@ -238,21 +266,18 @@ class PjSession:
             def onCallMediaState(self, prm):
                 try:
                     info = self.getInfo()
-                    for index, media in enumerate(info.media):
+                    for media in info.media:
                         if media.type != pj.PJMEDIA_TYPE_AUDIO:
                             continue
                         if media.status == pj.PJSUA_CALL_MEDIA_ACTIVE:
                             self.media_active = True
-                            if call_mode == "AUDIO" and not self._audio_connected:
-                                if session._player is None:
-                                    session._player = pj.AudioMediaPlayer()
-                                    session._player.createPlayer(audio_wav, pj.PJMEDIA_FILE_NO_LOOP)
-                                session._player.startTransmit(self.getAudioMedia(index))
-                                self._audio_connected = True
+                    self._start_audio_if_ready()
                 except Exception:
                     LOG.exception("Audio RTP indisponivel em chamada SIP")
 
             def onDtmfDigit(self, prm):
+                if group is None:
+                    return
                 self.digit_confirmed = bool(str(getattr(prm, "digit", "")) == dtmf_digit)
                 if self.digit_confirmed and on_status:
                     on_status("CONFIRMADO_DTMF", None)
@@ -273,7 +298,10 @@ class PjSession:
             call.makeCall(target_uri, prm)
             if on_status:
                 on_status("CHAMANDO", None)
-            deadline = time.monotonic() + min(90, max(15, timeout))
+            # Aguarda toque, arquivo inteiro e eventual confirmacao/transferencia.
+            call_timeout = (max(55, audio_seconds + 80)
+                            if call_mode == "AUDIO" else min(90, max(15, timeout)))
+            deadline = time.monotonic() + call_timeout
             answered_at = None
             transfer_at = None
             while time.monotonic() < deadline:
@@ -291,6 +319,16 @@ class PjSession:
                         return VoiceCallResult("FALHA_TRANSFERENCIA", call.transfer_code or call.sip_code,
                                                False, "Chamada encerrada sem confirmacao de transferencia.",
                                                call.answered, call.media_active)
+                    if call_mode == "AUDIO" and group is None and call.answered:
+                        complete = (call.audio_started_at is not None
+                                    and time.monotonic() - call.audio_started_at >= audio_seconds)
+                        return VoiceCallResult(
+                            "AUDIO_CONCLUIDO" if complete else "AUDIO_INTERROMPIDO",
+                            call.sip_code, False,
+                            ("Reproducao local do audio encerrada; recepcao no aparelho nao confirmada."
+                             if complete else "Destino encerrou a chamada antes do fim do audio."),
+                            True, call.media_active,
+                        )
                     return VoiceCallResult("FINALIZADA" if call.answered else "SEM_ATENDIMENTO",
                                            call.sip_code, False,
                                            "Chamada encerrada pelo destino ou pela central.",
@@ -302,6 +340,26 @@ class PjSession:
                         return VoiceCallResult("ATENDIDA", call.sip_code, False,
                                                "Chamada atendida, sem transferencia.",
                                                True, call.media_active)
+                    if call_mode == "AUDIO" and not call._audio_connected and (
+                        time.monotonic() - answered_at >= 12
+                    ):
+                        return VoiceCallResult("FALHA_AUDIO", call.sip_code, False,
+                                               "Midia RTP indisponivel para reproduzir o audio.",
+                                               True, call.media_active)
+                    if call_mode == "AUDIO" and group is None:
+                        # Campanha informativa: toca o WAV integralmente e encerra,
+                        # sem solicitar tecla, enviar REFER ou encaminhar para grupo.
+                        if call.audio_started_at is not None and (
+                            time.monotonic() - call.audio_started_at >= audio_seconds + 0.25
+                        ):
+                            if on_status:
+                                on_status("AUDIO_CONCLUIDO", call.sip_code)
+                            return VoiceCallResult(
+                                "AUDIO_CONCLUIDO", call.sip_code, False,
+                                "Reproducao local do audio concluida; nenhuma transferencia solicitada.",
+                                True, call.media_active,
+                            )
+                        continue
                     ready_for_transfer = (
                         call_mode == "DIRECT" and time.monotonic() - answered_at >= 0.35
                     ) or (call_mode == "AUDIO" and call.digit_confirmed)
@@ -329,9 +387,10 @@ class PjSession:
                                                "Timeout da confirmacao da transferencia SIP REFER.",
                                                True, call.media_active)
                     if call_mode == "AUDIO" and not call.digit_confirmed:
-                        if time.monotonic() - answered_at >= 25:
+                        if (call.audio_started_at is not None
+                                and time.monotonic() - call.audio_started_at >= audio_seconds + 10):
                             return VoiceCallResult("SEM_INTERESSE", call.sip_code, False,
-                                                   "Nao houve confirmacao DTMF do destinatario.",
+                                                   "Nao houve confirmacao DTMF apos o audio.",
                                                    True, call.media_active)
             return VoiceCallResult("TIMEOUT", call.sip_code, False,
                                    "Limite de duracao da chamada atingido.", call.answered, call.media_active)

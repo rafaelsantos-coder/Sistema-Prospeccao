@@ -1205,7 +1205,7 @@ class VoiceCampaign(Base):
     mode: Mapped[str] = mapped_column(String(20), default="AUDIO")
     status: Mapped[str] = mapped_column(String(20), default="RASCUNHO", index=True)
     sip_account_id: Mapped[int] = mapped_column(ForeignKey("voice_sip_accounts.id"))
-    group_id: Mapped[int] = mapped_column(ForeignKey("voice_groups.id"))
+    group_id: Mapped[int | None] = mapped_column(ForeignKey("voice_groups.id"), nullable=True)
     audio_uri: Mapped[str] = mapped_column(Text, default="")
     dtmf_digit: Mapped[str] = mapped_column(String(1), default="1")
     daily_limit: Mapped[int] = mapped_column(Integer, default=30)
@@ -1222,7 +1222,7 @@ class VoiceCampaign(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     sip_account: Mapped[VoiceSipAccount] = relationship()
-    group: Mapped[VoiceGroup] = relationship()
+    group: Mapped[VoiceGroup | None] = relationship()
 
 
 class VoiceRecipient(Base):

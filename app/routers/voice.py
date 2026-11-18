@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from app.database import get_db
 from app.models import Lead, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall, VoiceTransferTest
@@ -15,6 +15,7 @@ from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.dispatch_queue import parse_dispatch_csv
 from app.services.media_storage import MediaStorage
+from app.services.voice_reporting import campaign_operational_report
 from app.services.secret_store import encrypt_secret
 from app.services.voice_runtime import (
     check_campaign_ready, validate_routing_options, outbound_guard,
@@ -156,6 +157,7 @@ def voice_campaigns(request: Request, db: Session = Depends(get_db)):
     campaigns = list(db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())))
     engine = db.get(VoiceDialerEngine, 1)
     checklist = {item.id: check_campaign_ready(db, item) for item in campaigns}
+    reports = {item.id: campaign_operational_report(db, item, checklist[item.id]) for item in campaigns}
     counts = dict(db.execute(
         select(VoiceRecipient.campaign_id, func.count(VoiceRecipient.id)).group_by(VoiceRecipient.campaign_id)
     ).all())
@@ -163,9 +165,24 @@ def voice_campaigns(request: Request, db: Session = Depends(get_db)):
         request, "voice/campaigns.html", user=actor, active_nav="voice",
         voice_section="campaigns", page_title="Prospecta VOZ · Campanhas e preparação",
         campaigns=campaigns, counts=counts, engine=engine, readiness=checklist,
+        reports=reports,
         engine_online=bool(engine and engine.heartbeat_at and
             datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
     )
+
+
+@router.get("/campaigns/status")
+def voice_campaigns_live_status(request: Request, db: Session = Depends(get_db)):
+    """Polling de status, somente para ADMIN; nao dispara chamadas."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    campaigns = db.scalars(select(VoiceCampaign).order_by(VoiceCampaign.id.desc())).all()
+    data = {
+        str(item.id): campaign_operational_report(db, item, check_campaign_ready(db, item))
+        for item in campaigns
+    }
+    return JSONResponse({"campaigns": data}, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/accounts/{account_id}/delete")
@@ -438,7 +455,7 @@ def add_group(request: Request, csrf_token: str = Form(...), name: str = Form(..
 
 @router.post("/campaigns")
 def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form(...),
-                 sip_account_id: int = Form(...), group_id: int = Form(...),
+                 sip_account_id: int = Form(...), group_id: str = Form(""),
                  mode: str = Form(...), dtmf_digit: str = Form("1"),
                  window_start: str = Form("09:00"), window_end: str = Form("18:00"),
                  daily_limit: int = Form(30), interval_seconds: int = Form(30),
@@ -448,9 +465,17 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
         return redirect
     validate_csrf(request, csrf_token)
     account = db.get(VoiceSipAccount, sip_account_id)
-    group = db.get(VoiceGroup, group_id)
-    if not account or not account.active or not group or not group.active:
-        return _error(request, "Selecione conta SIP e grupo ativos.")
+    if not account or not account.active:
+        return _error(request, "Selecione uma conta SIP ativa.")
+    raw_group_id = group_id.strip()
+    if raw_group_id and not raw_group_id.isdecimal():
+        return _error(request, "Grupo de transferência inválido.")
+    selected_group_id = int(raw_group_id) if raw_group_id else None
+    group = db.get(VoiceGroup, selected_group_id) if selected_group_id is not None else None
+    if selected_group_id is not None and (not group or not group.active):
+        return _error(request, "O grupo de transferência selecionado está indisponível.")
+    if selected_group_id is None and mode.upper() != "AUDIO":
+        return _error(request, "Sem transferência, escolha a modalidade Áudio automático.")
     if not name.strip() or len(name.strip()) > 180:
         return _error(request, "Informe o nome da campanha.")
     if not 1 <= daily_limit <= 300 or not 10 <= interval_seconds <= 3600:
@@ -462,7 +487,7 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
     except ValueError as exc:
         return _error(request, str(exc))
     campaign = VoiceCampaign(name=name.strip(), mode=clean_mode, sip_account_id=account.id,
-                             group_id=group.id, dtmf_digit=dtmf_digit, daily_limit=daily_limit,
+                             group_id=selected_group_id, dtmf_digit=dtmf_digit, daily_limit=daily_limit,
                              interval_seconds=interval_seconds, window_start=window_start,
                              window_end=window_end, created_by_id=actor.id,
                              status="RASCUNHO", legal_basis_verified=False)
@@ -470,7 +495,8 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
     db.flush()
     write_audit(db, user=actor, action="VOICE_CAMPAIGN_CREATED",
                 entity_type="voice_campaign", entity_id=campaign.id,
-                payload={"mode": clean_mode, "group_id": group.id})
+                payload={"mode": clean_mode, "group_id": selected_group_id,
+                         "without_transfer": selected_group_id is None})
     db.commit()
     flash(request, "Campanha criada. Importe os contatos, anexe o áudio e confira o checklist para iniciar.")
     return RedirectResponse("/voice/campaigns", status_code=303)
@@ -738,10 +764,20 @@ def start_voice_campaign(campaign_id: int, request: Request, csrf_token: str = F
     if not campaign or campaign.status not in {"RASCUNHO", "PRONTA", VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
         return _error(request, "Campanha nao pode ser iniciada neste estado.", "/voice/campaigns")
     if authorization != "sim":
-        return _error(request, "Autorizacao explicita do administrador obrigatoria.", "/voice/campaigns")
+        write_audit(db, user=actor, action="VOICE_CAMPAIGN_START_BLOCKED",
+                    entity_type="voice_campaign", entity_id=campaign_id,
+                    payload={"reasons": ["Autorização explícita do administrador não confirmada."]})
+        db.commit()
+        return _error(request, "Campanha não iniciada: confirme a autorização do administrador.", "/voice/campaigns")
     failures = check_campaign_ready(db, campaign)
     if failures:
-        return _error(request, "Campanha bloqueada: " + " / ".join(failures[:3]), "/voice/campaigns")
+        # Registra inclusive tentativas rejeitadas: o operador ve o motivo no painel.
+        write_audit(db, user=actor, action="VOICE_CAMPAIGN_START_BLOCKED",
+                    entity_type="voice_campaign", entity_id=campaign_id,
+                    payload={"reasons": failures})
+        db.commit()
+        return _error(request, "NENHUMA LIGAÇÃO INICIADA: " + " / ".join(failures[:3]),
+                      "/voice/campaigns")
     campaign.status = "EM_EXECUCAO"
     campaign.started_at = datetime.now(timezone.utc)
     campaign.stopped_at = None
@@ -749,7 +785,7 @@ def start_voice_campaign(campaign_id: int, request: Request, csrf_token: str = F
                 entity_type="voice_campaign", entity_id=campaign_id,
                 payload={"manual_authorization": True, "single_call_at_a_time": True})
     db.commit()
-    flash(request, "Campanha habilitada. Discagem progressiva com no maximo uma chamada por vez.")
+    flash(request, "Início registrado! Campanha em execução; acompanhe ligações e resultados no painel abaixo.")
     return RedirectResponse("/voice/campaigns", status_code=303)
 
 
