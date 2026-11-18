@@ -39,6 +39,20 @@ def _login(client: TestClient) -> str:
     return _csrf(client.get("/voice").text)
 
 
+def _ensure_engine(db):
+    # The pytest SQLite fixture creates metadata directly; Alembic seeds this
+    # singleton in production, so tests must seed it explicitly.
+    engine = db.get(VoiceDialerEngine, 1)
+    if engine is None:
+        engine = VoiceDialerEngine(
+            id=1, enabled=False, campaign_runtime_enabled=False,
+            test_runtime_enabled=False, backend="PJSUA2", worker_id="", last_error="",
+        )
+        db.add(engine)
+        db.flush()
+    return engine
+
+
 def _scenario():
     key = uuid4().hex[:8]
     moment = datetime.now(timezone.utc)
@@ -116,7 +130,7 @@ def test_no_campaign_start_until_account_group_pair_and_legal_cleared():
         token = _login(client)
         aid, gid, cid = _scenario()
         with SessionLocal() as db:
-            engine = db.get(VoiceDialerEngine, 1)
+            engine = _ensure_engine(db)
             assert engine is not None
             engine.enabled = False
             engine.campaign_runtime_enabled = False
@@ -139,7 +153,7 @@ def test_no_campaign_start_until_account_group_pair_and_legal_cleared():
              follow_redirects=False)
         assert accepted.status_code == 303
         with SessionLocal() as db:
-            engine = db.get(VoiceDialerEngine, 1)
+            engine = _ensure_engine(db)
             engine.enabled = True
             engine.campaign_runtime_enabled = True
             engine.heartbeat_at = datetime.now(timezone.utc)
@@ -199,7 +213,7 @@ def test_emergency_stop_requires_admin_and_prevents_calls():
     with TestClient(app) as client:
         token = _login(client)
         with SessionLocal() as db:
-            engine = db.get(VoiceDialerEngine, 1)
+            engine = _ensure_engine(db)
             engine.enabled = True
             engine.campaign_runtime_enabled = False
             engine.heartbeat_at = datetime.now(timezone.utc)
