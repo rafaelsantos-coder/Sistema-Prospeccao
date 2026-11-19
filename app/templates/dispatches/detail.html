@@ -9,6 +9,7 @@
   </div>
   <div class="page-actions">
     <a class="button button-secondary" href="/dispatches">Voltar</a>
+    <a class="button button-secondary" href="/dispatches/reconciliation">Envios a conferir</a>
     {% if dispatch.status in ['RASCUNHO','PAUSADO'] and counts.pending %}
     <form action="/dispatches/{{ dispatch.id }}/start" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
