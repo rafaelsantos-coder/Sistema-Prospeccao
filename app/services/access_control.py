@@ -376,6 +376,8 @@ _HOME_ROUTES = (
     ("dispatches.view", "/dispatches"),
     ("voice.view", "/voice"),
     ("reports.view", "/reports/whatsapp"),
+    ("credit_map.view", "/reports/credit-map"),
+    ("blacklist.view", "/blacklist"),
     ("ai.view", "/ai"),
     ("settings.view", "/settings"),
 )
