@@ -345,6 +345,11 @@ class SulnetCRMClient:
             "debito_agencia",
             "debito_banco",
             "pdfbase64",
+            "justification",
+            "contestation_justification",
+            "filename",
+            "file",
+            "documentcontent",
         }
         key_folded = re.sub(r"[^a-z0-9_]+", "", str(key or "").casefold())
         if key_folded in sensitive_keys:
@@ -404,6 +409,8 @@ class SulnetCRMClient:
         *,
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
         timeout: float | None = None,
         auth_mode: Literal["bearer", "integration", "none"] = "bearer",
         extra_headers: dict[str, str] | None = None,
@@ -429,6 +436,8 @@ class SulnetCRMClient:
                     url,
                     json=json_body,
                     params=params,
+                    data=data,
+                    files=files,
                 )
         except httpx.HTTPError as exc:
             LOG.warning(
@@ -782,6 +791,95 @@ class SulnetCRMClient:
                 error_code="CRM_INVALID_CREDIT_RESPONSE",
             )
         return result
+
+    def _seller_contest_webhook(
+        self,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        multipart_data: dict[str, Any] | None = None,
+        upload: tuple[str, bytes, str] | None = None,
+    ) -> dict[str, Any]:
+        """Somente chave S2S comercial; nunca usar o Bearer SDR IA."""
+        result = self._request(
+            "POST",
+            path,
+            json_body=payload,
+            data=multipart_data,
+            files={"file": upload} if upload else None,
+            auth_mode="none" if self.lead_integration_key else "integration",
+            extra_headers=(
+                {"X-Integration-Key": self.lead_integration_key}
+                if self.lead_integration_key else None
+            ),
+            timeout=20.0,
+        )
+        if not isinstance(result, dict):
+            raise CRMIntegrationError(
+                "O CRM retornou dados inválidos na integração de contestação.",
+                error_code="CRM_INVALID_CONTEST_RESPONSE",
+            )
+        return result
+
+    def seller_contestation_status(
+        self, *, opportunity_id: int, analysis_id: int, seller_username: str
+    ) -> dict[str, Any]:
+        """Consulta SOMENTE LEITURA; jamais chama /webhook/leads/consult."""
+        return self._seller_contest_webhook(
+            "/webhook/leads/credit-status",
+            payload={
+                "opportunityId": opportunity_id,
+                "analysisId": analysis_id,
+                "sellerUsername": seller_username,
+            },
+        )
+
+    def seller_contestation_reasons(
+        self, *, opportunity_id: int, analysis_id: int, seller_username: str
+    ) -> dict[str, Any]:
+        return self._seller_contest_webhook(
+            "/webhook/leads/contest-reasons",
+            payload={
+                "opportunityId": opportunity_id,
+                "analysisId": analysis_id,
+                "sellerUsername": seller_username,
+            },
+        )
+
+    def upload_seller_contestation_file(
+        self, *, opportunity_id: int, analysis_id: int,
+        seller_username: str, document_type: str,
+        filename: str, mime_type: str, data: bytes,
+    ) -> dict[str, Any]:
+        return self._seller_contest_webhook(
+            "/webhook/leads/contest-attachment",
+            multipart_data={
+                "opportunityId": str(opportunity_id),
+                "analysisId": str(analysis_id),
+                "sellerUsername": seller_username,
+                "docType": document_type,
+            },
+            upload=(filename, data, mime_type),
+        )
+
+    def submit_seller_contestation(
+        self, *, opportunity_id: int, analysis_id: int,
+        seller_username: str, reason_type: str,
+        justification: str, doc_confirmed: bool,
+        attachment_ids: list[int],
+    ) -> dict[str, Any]:
+        return self._seller_contest_webhook(
+            "/webhook/leads/contest",
+            payload={
+                "opportunityId": opportunity_id,
+                "analysisId": analysis_id,
+                "sellerUsername": seller_username,
+                "reasonType": reason_type,
+                "justification": justification,
+                "docConfirmed": doc_confirmed,
+                "attachmentIds": attachment_ids,
+            },
+        )
 
     def create_opportunity(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_payload = dict(payload)
