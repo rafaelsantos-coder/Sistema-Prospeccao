@@ -33,6 +33,7 @@ from app.services.voice_runtime import (
 )
 from app.services.voice_test import aware
 from app.workers.graceful_shutdown import GracefulShutdown
+from app.workers.voice_singleton import VoiceLeaderLease, VoiceLeadershipLost, voice_engine_leadership
 
 LOG = logging.getLogger(__name__)
 WORKER_ID = f"{socket.gethostname()}-{uuid4().hex[:9]}"[:120]
@@ -183,7 +184,7 @@ def _native_record(test_id: int, status: str, register_code: int | None,
         db.commit()
 
 
-def _run_native_test(test_id: int):
+def _run_native_test(test_id: int, leader: VoiceLeaderLease):
     try:
         with SessionLocal() as db:
             test = db.get(VoiceTestCall, test_id)
@@ -208,12 +209,13 @@ def _run_native_test(test_id: int):
                 outbound_guard(db, number)
             if not outbound_allowed():
                 raise VoiceEngineError("Chamada interrompida antes de discar.")
+            leader.assert_held(force=True)
             result = driver.perform_call(
                 number, mode="PROBE",
                 on_status=lambda status, sip: _native_record(
                     test_id, status, 200, sip, f"Teste PJSIP: {status}"
                 ),
-                should_abort=lambda: not outbound_allowed(),
+                should_abort=lambda: not outbound_allowed() or not leader.healthy(),
                 timeout=30,
             )
             detail = result.message + (
@@ -246,7 +248,7 @@ def _claim_transfer_test() -> int | None:
         return row.id
 
 
-def _run_transfer_test(test_id: int) -> None:
+def _run_transfer_test(test_id: int, leader: VoiceLeaderLease) -> None:
     try:
         with SessionLocal() as db:
             row = db.get(VoiceTransferTest, test_id)
@@ -273,11 +275,12 @@ def _run_transfer_test(test_id: int) -> None:
                 outbound_guard(db, phone)
             if not outbound_allowed():
                 raise VoiceEngineError("Discador pausado antes da chamada.")
+            leader.assert_held(force=True)
             result = driver.perform_call(
                 phone, mode="DIRECT", group=group,
                 on_status=lambda status, code: _set_transfer(
                     test_id, status, code, f"Teste {status.lower()}"),
-                should_abort=lambda: not outbound_allowed(),
+                should_abort=lambda: not outbound_allowed() or not leader.healthy(),
             )
             _set_transfer(test_id, result.status, result.sip_code, result.message, True)
             if result.transferred:
@@ -360,7 +363,7 @@ def campaign_call_permitted(recipient_id: int) -> bool:
         return False
 
 
-def _run_campaign_call(recipient_id: int) -> None:
+def _run_campaign_call(recipient_id: int, leader: VoiceLeaderLease) -> None:
     file_path = None
     try:
         with SessionLocal() as db:
@@ -401,12 +404,13 @@ def _run_campaign_call(recipient_id: int) -> None:
                     raise VoiceEngineError("Campanha interrompida antes de discar.")
             if not outbound_allowed():
                 raise VoiceEngineError("Discador interrompido.")
+            leader.assert_held(force=True)
             result = driver.perform_call(
                 phone, mode=mode, group=group,
                 audio_wav=file_path, dtmf_digit=dtmf, dial_format=dial_format,
                 on_status=lambda status, code: _set_recipient(
                     recipient_id, status, code, ""),
-                should_abort=lambda: not campaign_call_permitted(recipient_id),
+                should_abort=lambda: not campaign_call_permitted(recipient_id) or not leader.healthy(),
             )
             _set_recipient(recipient_id, result.status, result.sip_code, result.message,
                            True, result.answered, result.transferred)
@@ -452,40 +456,75 @@ def main() -> None:
         raise SystemExit("VOICE_ENGINE_WORKER_ENABLED=false: motor de campanhas permanece desativado.")
     shutdown = GracefulShutdown(LOG)
     shutdown.install()
-    LOG.info("Prospecta VOZ PJSUA2 iniciado. Campanhas=%s, testes de transferencia=%s.",
-             CAMPAIGNS_ENABLED, TRANSFER_TESTS_ENABLED)
-    _expire_crashed_calls()
-    last_beat = 0.0
-    while not shutdown.requested:
-        try:
-            t = time.monotonic()
-            if t - last_beat >= 8:
-                heartbeat()
-                last_beat = t
-            if shutdown.requested:
-                break
+    LOG.info(
+        "Prospecta VOZ PJSUA2 iniciado. Campanhas=%s, testes de transferencia=%s.",
+        CAMPAIGNS_ENABLED, TRANSFER_TESTS_ENABLED,
+    )
 
-            native_id = _claim_native_test()
-            if native_id is not None:
-                # Claim já reservado: concluir essa operação antes de encerrar.
-                _run_native_test(native_id)
-                last_beat = 0
-            elif not shutdown.requested and (test_id := _claim_transfer_test()) is not None:
-                _run_transfer_test(test_id)
-                last_beat = 0
-            elif not shutdown.requested and (recipient_id := _claim_recipient()) is not None:
-                # Não interromper voluntariamente uma chamada SIP em andamento.
-                _run_campaign_call(recipient_id)
-                last_beat = 0
-            else:
-                shutdown.wait(2)
-        except Exception as exc:
-            LOG.exception("Falha no loop do motor de voz")
-            try:
-                heartbeat(type(exc).__name__)
-            except Exception:
-                pass
-            shutdown.wait(4)
+    # Em deploy com overlap, a nova replica aguarda sem discar enquanto a antiga
+    # mantem o lock de sessao no PostgreSQL. Apenas o lider registra heartbeat.
+    standby_logged = False
+    try:
+        while not shutdown.requested:
+            with voice_engine_leadership() as leader:
+                if leader is None:
+                    if not standby_logged:
+                        LOG.warning("Motor SIP em standby: outra instancia possui lock exclusivo.")
+                        standby_logged = True
+                    shutdown.wait(3)
+                    continue
+
+                standby_logged = False
+                LOG.info("Motor SIP adquiriu lideranca exclusiva no PostgreSQL.")
+                leader.assert_held(force=True)
+                _expire_crashed_calls()
+                last_beat = 0.0
+                while not shutdown.requested:
+                    # Falha de conexao revoga imediatamente autorizacao para novos claims.
+                    leader.assert_held()
+                    try:
+                        t = time.monotonic()
+                        if t - last_beat >= 8:
+                            heartbeat()
+                            last_beat = t
+                        if shutdown.requested:
+                            break
+
+                        native_id = _claim_native_test()
+                        if native_id is not None:
+                            leader.assert_held(force=True)
+                            _run_native_test(native_id, leader)
+                            last_beat = 0
+                        elif not shutdown.requested and (test_id := _claim_transfer_test()) is not None:
+                            leader.assert_held(force=True)
+                            _run_transfer_test(test_id, leader)
+                            last_beat = 0
+                        elif not shutdown.requested and (recipient_id := _claim_recipient()) is not None:
+                            leader.assert_held(force=True)
+                            # Uma chamada ativa continua ate o encerramento/aborto seguro.
+                            _run_campaign_call(recipient_id, leader)
+                            last_beat = 0
+                        else:
+                            shutdown.wait(2)
+                    except VoiceLeadershipLost:
+                        raise
+                    except Exception as exc:
+                        LOG.exception("Falha no loop do motor de voz")
+                        try:
+                            heartbeat(type(exc).__name__)
+                        except Exception:
+                            pass
+                        shutdown.wait(4)
+
+                # O SIGTERM pediu parada: liberar sessao apenas depois da chamada
+                # atual voltar do driver e do seu processamento.
+                break
+    except VoiceLeadershipLost:
+        LOG.critical("Motor SIP perdeu lideranca; sair sem originar novas chamadas.", exc_info=True)
+        raise SystemExit(1) from None
+    except Exception:
+        LOG.critical("Motor SIP falhou no lock exclusivo; encerrar por seguranca.", exc_info=True)
+        raise SystemExit(1) from None
 
     LOG.info("Motor de voz encerrado apos processamento em andamento.")
 
