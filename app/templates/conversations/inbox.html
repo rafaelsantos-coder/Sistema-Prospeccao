@@ -378,6 +378,7 @@
               <button class="compose-tool-button" type="button" data-attach-button title="Anexar foto, vídeo, áudio ou documento">📎<span>Anexar</span></button>
               <button class="compose-tool-button" type="button" data-record-button title="Gravar áudio">🎙<span>Áudio</span></button>
               <span class="recording-status" data-recording-status hidden></span>
+              <span class="mic-permission-inline" data-mic-permission-inline hidden>Microfone bloqueado. <button type="button" data-mic-instructions>Permitir acesso</button></span>
             </div>
             <span class="compose-hint">Enter envia · Shift+Enter quebra linha</span>
           </div>
@@ -766,7 +767,57 @@
   </form>
 </dialog>
 {% endif %}
+{% if 'conversations.reply' in current_user.permissions and conversation and conversation.status not in closed_statuses and not globally_blacklisted %}
+<dialog class="inbox-mic-permission-dialog" data-mic-permission-dialog aria-labelledby="inbox-mic-permission-title">
+  <div class="inbox-mic-permission-panel">
+    <div class="inbox-mic-permission-heading">
+      <span class="inbox-mic-permission-symbol" aria-hidden="true">🎙️</span>
+      <div>
+        <span class="eyebrow">ÁUDIO NO WHATSAPP</span>
+        <h3 id="inbox-mic-permission-title">Permitir acesso ao microfone</h3>
+      </div>
+      <button type="button" class="inbox-mic-permission-close" data-mic-close aria-label="Fechar">×</button>
+    </div>
+    <p class="inbox-mic-permission-message" data-mic-permission-message role="status">
+      Clique em “Solicitar permissão” e selecione “Permitir” quando o Chrome perguntar.
+    </p>
+    <div class="inbox-mic-permission-steps">
+      <strong>Se o Chrome já bloqueou o microfone:</strong>
+      <ol>
+        <li>Clique no ícone de <strong>controles do site</strong> à esquerda do endereço, na barra do Chrome.</li>
+        <li>Em <strong>Microfone</strong>, selecione <strong>Permitir</strong>. Se necessário, abra “Configurações do site”.</li>
+        <li>Volte ao Sulnet Prospecta e clique em <strong>Solicitar permissão</strong> novamente. Atualize a página se o Chrome pedir.</li>
+      </ol>
+    </div>
+    <div class="inbox-mic-permission-actions">
+      <button type="button" class="button button-primary" data-mic-retry>Solicitar permissão</button>
+      <button type="button" class="button button-secondary" data-mic-close>Agora não</button>
+    </div>
+    <small>O navegador exige sua autorização. O Sulnet Prospecta não pode ativar uma permissão que você bloqueou sem sua ação.</small>
+  </div>
+</dialog>
+{% endif %}
 <style>
+.mic-permission-inline{display:inline-flex;align-items:center;gap:5px;color:#9a3412;font-size:11px;font-weight:700}
+.mic-permission-inline[hidden]{display:none}
+.mic-permission-inline button{border:0;background:transparent;color:#b45309;text-decoration:underline;cursor:pointer;font-size:11px;font-weight:800}
+.inbox-mic-permission-dialog{border:0;border-radius:17px;padding:0;width:min(480px,calc(100vw - 28px));max-height:90vh;overflow:auto;background:#fff;color:#233043;box-shadow:0 24px 72px rgba(20,30,45,.28)}
+.inbox-mic-permission-dialog::backdrop{background:rgba(15,23,42,.58)}
+.inbox-mic-permission-panel{display:grid;gap:17px;padding:24px}
+.inbox-mic-permission-heading{display:flex;gap:12px;align-items:center}
+.inbox-mic-permission-heading .eyebrow{font-size:10px;color:#b45309;letter-spacing:.08em}
+.inbox-mic-permission-heading h3{font-size:19px;line-height:1.25;margin:5px 0 0}
+.inbox-mic-permission-symbol{display:grid;place-items:center;width:44px;height:44px;flex:none;border-radius:12px;background:#fff1e7;font-size:22px}
+.inbox-mic-permission-close{margin-left:auto;align-self:flex-start;border:1px solid #e2e8f0;background:#fff;border-radius:8px;cursor:pointer;color:#64748b;font-size:23px;width:34px;height:34px;flex:none}
+.inbox-mic-permission-message{margin:0;font-size:13px;line-height:1.6;color:#475569}
+.inbox-mic-permission-steps{padding:14px;border-radius:11px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155}
+.inbox-mic-permission-steps strong{font-size:12px}
+.inbox-mic-permission-steps ol{padding-left:19px;margin:10px 0 0;display:grid;gap:10px;font-size:12px;line-height:1.55}
+.inbox-mic-permission-actions{display:flex;gap:10px;flex-wrap:wrap}
+.inbox-mic-permission-actions .button{flex:1;min-width:155px}
+.inbox-mic-permission-panel>small{font-size:11px;color:#64748b;line-height:1.5}
+@media(max-width:520px){.inbox-mic-permission-panel{padding:18px}.inbox-mic-permission-actions{flex-direction:column}}
+
 .inbox-commercial-filter{flex:none;display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:11px;flex-wrap:wrap}
 .inbox-commercial-filter label{color:#64748b;font-weight:600}
 .inbox-commercial-filter select{min-width:0;max-width:108px;flex:1;border:1px solid #d1d5db;border-radius:6px;background:#fff;padding:5px 2px;font-size:11px}
@@ -1408,6 +1459,11 @@
   const attachButton = document.querySelector('[data-attach-button]');
   const recordButton = document.querySelector('[data-record-button]');
   const recordingStatus = document.querySelector('[data-recording-status]');
+  const microphoneDialog = document.querySelector('[data-mic-permission-dialog]');
+  const microphoneMessage = document.querySelector('[data-mic-permission-message]');
+  const microphoneRetry = document.querySelector('[data-mic-retry]');
+  const microphoneInline = document.querySelector('[data-mic-permission-inline]');
+  const microphoneInstructions = document.querySelector('[data-mic-instructions]');
   const mediaForm = document.querySelector('[data-media-form]');
   const mediaInput = document.querySelector('[data-media-input]');
   const mediaName = document.querySelector('[data-media-name]');
@@ -1539,13 +1595,58 @@
     if (seconds >= 300 && recorder?.state === 'recording') recorder.stop();
   };
 
+  const openMicrophonePermissionHelp = error => {
+    const reason = error?.name || String(error || '');
+    if (microphoneMessage) {
+      if (reason === 'NotAllowedError' || reason === 'PermissionDeniedError' || reason === 'SecurityError') {
+        microphoneMessage.textContent = 'O Chrome está impedindo o acesso ao microfone. Se o botão “Permitir” não aparecer, a permissão já está bloqueada: utilize os controles do site abaixo.';
+      } else if (reason === 'NotFoundError' || reason === 'DevicesNotFoundError') {
+        microphoneMessage.textContent = 'Não encontramos um microfone disponível. Conecte um microfone, confirme a seleção no Windows e tente novamente.';
+      } else if (reason === 'NotReadableError' || reason === 'TrackStartError') {
+        microphoneMessage.textContent = 'O microfone está ocupado ou indisponível. Feche outros aplicativos que estejam usando o dispositivo e tente novamente.';
+      } else if (reason === 'unsupported') {
+        microphoneMessage.textContent = 'Este navegador não disponibiliza gravação de áudio para o site. Use o Chrome atualizado em uma conexão segura (HTTPS).';
+      } else {
+        microphoneMessage.textContent = 'Não foi possível iniciar a gravação. Tente solicitar a permissão novamente; se o Chrome estiver bloqueando, siga as orientações abaixo.';
+      }
+    }
+    if (microphoneDialog && !microphoneDialog.open) microphoneDialog.showModal();
+  };
+
+  microphoneDialog?.querySelectorAll('[data-mic-close]').forEach(button => {
+    button.addEventListener('click', () => microphoneDialog.close());
+  });
+  microphoneInstructions?.addEventListener('click', () => openMicrophonePermissionHelp('NotAllowedError'));
+  microphoneDialog?.addEventListener('click', event => {
+    if (event.target === microphoneDialog) microphoneDialog.close();
+  });
+  // Detecta bloqueio previamente salvo pelo Chrome sem solicitar o microfone ao carregar a pagina.
+  if (recordButton && navigator.permissions?.query) {
+    navigator.permissions.query({name: 'microphone'}).then(permission => {
+      const syncPermission = () => {
+        const denied = permission.state === 'denied';
+        if (microphoneInline) microphoneInline.hidden = !denied;
+        recordButton.title = denied ? 'Microfone bloqueado — clique para permitir' : 'Gravar áudio';
+      };
+      syncPermission();
+      permission.addEventListener?.('change', syncPermission);
+    }).catch(() => {});
+  }
+
+  let microphoneRequestPending = false;
   const beginRecording = async () => {
+    if (microphoneRequestPending) return;
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      alert('Seu navegador não permite gravação de áudio nesta página.');
+      openMicrophonePermissionHelp('unsupported');
       return;
     }
+    microphoneRequestPending = true;
+    if (microphoneRetry) microphoneRetry.disabled = true;
     try {
+      // A solicitacao parte exclusivamente de um clique do usuario; o Chrome controla a escolha.
       recorderStream = await navigator.mediaDevices.getUserMedia({audio: true});
+      if (microphoneDialog?.open) microphoneDialog.close();
+      if (microphoneInline) microphoneInline.hidden = true;
       const candidates = ['audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
       const mimeType = candidates.find(value => MediaRecorder.isTypeSupported(value)) || '';
       recorderChunks = [];
@@ -1577,11 +1678,15 @@
         updateRecordingClock();
       }
       recorderTimer = window.setInterval(updateRecordingClock, 1000);
-    } catch (_) {
+    } catch (error) {
       stopRecorderTracks();
-      alert('Não foi possível acessar o microfone. Verifique a permissão do navegador.');
+      openMicrophonePermissionHelp(error);
+    } finally {
+      microphoneRequestPending = false;
+      if (microphoneRetry) microphoneRetry.disabled = false;
     }
   };
+  microphoneRetry?.addEventListener('click', () => { void beginRecording(); });
 
   recordButton?.addEventListener('click', () => {
     if (recorder?.state === 'recording') {
