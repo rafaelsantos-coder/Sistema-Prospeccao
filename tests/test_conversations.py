@@ -80,7 +80,7 @@ def test_inbox_native_microphone_javascript_syntax():
     if not shutil.which("node"):
         pytest.skip("Node.js indisponível no ambiente de teste")
     template = Path(__file__).parents[1] / "app/templates/conversations/inbox.html"
-    scripts = re.findall(r"<script[^>]*>([\\s\\S]*?)</script>", template.read_text(encoding="utf-8"))
+    scripts = re.findall(r"<script[^>]*>([\s\S]*?)</script>", template.read_text(encoding="utf-8"))
     assert scripts, "O inbox precisa inicializar os controles de gravação"
     for script in scripts:
         result = subprocess.run(
