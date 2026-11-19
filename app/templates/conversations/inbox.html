@@ -11,6 +11,18 @@
       <span class="inbox-live"><i></i> Z-API</span>
     </div>
 
+    {% if 'conversations.reply' in current_user.permissions %}
+    <div class="inbox-quick-chat-action">
+      <button type="button" class="inbox-quick-chat-open" data-quick-chat-open
+              {% if not quick_outbound_queues %}disabled title="Nenhuma fila com WhatsApp ativo"{% endif %}>
+        <span aria-hidden="true">＋</span> Nova conversa por telefone
+      </button>
+      {% if not quick_outbound_queues %}
+      <small>Não há fila de WhatsApp conectada para este usuário.</small>
+      {% endif %}
+    </div>
+    {% endif %}
+
     <form class="inbox-search" action="/conversations" method="get">
       <input type="hidden" name="view" value="{{ view }}">
       {% if queue_id %}<input type="hidden" name="queue" value="{{ queue_id }}">{% endif %}
@@ -722,6 +734,38 @@
     {% endif %}
   </aside>
 </div>
+{% if 'conversations.reply' in current_user.permissions and quick_outbound_queues %}
+<dialog class="inbox-quick-chat-dialog" id="inbox-quick-chat-dialog" aria-labelledby="inbox-quick-chat-title">
+  <form method="post" action="/conversations/start" class="inbox-quick-chat-form" data-quick-chat-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="inbox-quick-chat-heading">
+      <div>
+        <span class="eyebrow">WHATSAPP COMERCIAL</span>
+        <h3 id="inbox-quick-chat-title">Nova conversa</h3>
+        <p>Informe o telefone do cliente para abrir o chat. Sem template ou cadastro de lead.</p>
+      </div>
+      <button type="button" class="inbox-quick-chat-close" aria-label="Fechar" data-quick-chat-close>×</button>
+    </div>
+    <label for="inbox-quick-chat-phone">Telefone com DDD</label>
+    <input id="inbox-quick-chat-phone" name="phone" type="tel" inputmode="tel"
+           placeholder="(55) 99999-9999" autocomplete="tel" minlength="10" maxlength="24"
+           required>
+    {% if quick_outbound_queues|length > 1 %}
+    <label for="inbox-quick-chat-queue">Número de saída / fila</label>
+    <select name="queue_id" id="inbox-quick-chat-queue" required>
+      {% for item in quick_outbound_queues %}
+      <option value="{{ item.id }}" {% if item.id == quick_preferred_queue_id %}selected{% endif %}>{{ item.name }}</option>
+      {% endfor %}
+    </select>
+    {% else %}
+    <input type="hidden" name="queue_id" value="{{ quick_outbound_queues[0].id }}">
+    <span class="inbox-quick-chat-queue-note">Saída: {{ quick_outbound_queues[0].name }}</span>
+    {% endif %}
+    <button class="button button-primary inbox-quick-chat-submit" type="submit" data-quick-chat-submit>Abrir conversa</button>
+    <small>O chat será aberto para você escrever a primeira mensagem. Nada é enviado automaticamente.</small>
+  </form>
+</dialog>
+{% endif %}
 <style>
 .inbox-commercial-filter{flex:none;display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:11px;flex-wrap:wrap}
 .inbox-commercial-filter label{color:#64748b;font-weight:600}
@@ -780,6 +824,27 @@
 .chat-blacklist-action form button{background:#b91c1c;color:white;border:0;padding:10px;border-radius:7px;font-weight:750;font-size:11px;cursor:pointer}
 .chat-blocked-banner{background:#fff1f2;color:#991b1b;border-top-color:#fecaca}
 @media(max-width:760px){.chat-blacklist-action form{right:auto;left:-100px}.chat-blacklist-action summary{font-size:10px;padding:6px}}
+
+/* Acesso rápido: um telefone abre uma conversa manual, sem modelos. */
+.inbox-quick-chat-action{padding:0 12px 10px;display:grid;gap:4px}
+.inbox-quick-chat-open{display:flex;justify-content:center;align-items:center;gap:8px;width:100%;min-height:38px;background:#fff2e8;color:#ab4911;border:1px solid #fdba74;border-radius:9px;font-size:12px;font-weight:800;cursor:pointer}
+.inbox-quick-chat-open:hover:not(:disabled){background:#ffdfc7}
+.inbox-quick-chat-open:focus-visible{outline:2px solid #f97316;outline-offset:2px}
+.inbox-quick-chat-open:disabled{cursor:not-allowed;opacity:.55}
+.inbox-quick-chat-action small{font-size:10px;color:#a16207}
+.inbox-quick-chat-dialog{border:0;border-radius:16px;padding:0;width:min(420px,calc(100vw - 28px));max-height:90vh;box-shadow:0 24px 80px rgba(20,30,45,.28);color:#263445}
+.inbox-quick-chat-dialog::backdrop{background:rgba(15,23,42,.55)}
+.inbox-quick-chat-form{padding:22px;display:grid;gap:11px}
+.inbox-quick-chat-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.inbox-quick-chat-heading h3{margin:4px 0 6px;font-size:20px}
+.inbox-quick-chat-heading p{color:#64748b;font-size:12px;line-height:1.5;margin:0 0 10px}
+.inbox-quick-chat-close{flex:none;border:1px solid #e2e8f0;background:#fff;border-radius:8px;font-size:23px;color:#64748b;width:34px;height:34px;cursor:pointer}
+.inbox-quick-chat-form label{font-size:12px;font-weight:750;color:#334155}
+.inbox-quick-chat-form input[type=tel],.inbox-quick-chat-form select{width:100%;height:46px;border:1px solid #cbd5e1;border-radius:9px;padding:0 12px;font:inherit;font-size:15px;background:#fff;box-sizing:border-box}
+.inbox-quick-chat-form input:focus,.inbox-quick-chat-form select:focus{outline:2px solid #fb923c;outline-offset:1px}
+.inbox-quick-chat-form .inbox-quick-chat-queue-note{font-size:11px;color:#64748b}
+.inbox-quick-chat-form .inbox-quick-chat-submit{width:100%;min-height:44px;margin-top:3px}
+.inbox-quick-chat-form>small{font-size:11px;line-height:1.45;color:#64748b}
 
 /* Menu enxuto: filtros não competem com a lista de conversas. */
 .inbox-list-head{padding:15px 15px 10px}
@@ -959,6 +1024,25 @@
       creditSubmit.textContent = 'Consultando...';
     }
   });
+  const quickChatDialog = document.getElementById('inbox-quick-chat-dialog');
+  const quickPhone = document.getElementById('inbox-quick-chat-phone');
+  document.querySelector('[data-quick-chat-open]')?.addEventListener('click', () => {
+    quickChatDialog?.showModal();
+    quickPhone?.focus();
+  });
+  document.querySelector('[data-quick-chat-close]')?.addEventListener('click', () => {
+    quickChatDialog?.close();
+  });
+  quickChatDialog?.querySelector('[data-quick-chat-form]')?.addEventListener('submit', () => {
+    const btn = quickChatDialog.querySelector('[data-quick-chat-submit]');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Abrindo conversa...';
+    }
+  });
+  if (new URLSearchParams(window.location.search).get('quick') === '1') {
+    document.querySelector('[data-chat-input]')?.focus();
+  }
   const crmDialog = document.getElementById('crm-manual-dialog');
   const crmOpen = document.querySelector('[data-crm-manual-open]');
   const crmClose = document.querySelector('[data-crm-manual-close]');

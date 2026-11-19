@@ -5,7 +5,14 @@ import re
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.models import Conversation, User
+from sqlalchemy import func, select
+
+from app.database import SessionLocal
+from app.models import (
+    Contact, Conversation, ConversationQueueLink, ConversationZApiInstance,
+    Message, ServiceQueue, User,
+)
+from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
 from app.services.conversation_engine import conversation_visible_to_user, payload_message_content
 from app.services.media_storage import MediaStorage
 from app.services.zapi import ZApiService
@@ -230,3 +237,126 @@ def test_send_audio_from_inbox(monkeypatch):
         assert sent.json()["type"] == "AUDIO"
         page = client.get(location)
         assert "message-audio-wrap" in page.text
+
+
+def test_quick_start_from_phone_opens_chat_without_template_or_message():
+    """Vendedor digita só o número e vê o chat; primeiro envio continua manual."""
+    with TestClient(app) as client:
+        _login(client)
+        with SessionLocal() as db:
+            queue = ServiceQueue(
+                name="Fila Rápida WhatsApp Teste",
+                code="QUICK-CHAT-TEST-01",
+                team="LOJA",
+                routing_strategy="MANUAL",
+                active=True,
+            )
+            db.add(queue)
+            db.flush()
+            instance = create_zapi_instance(
+                db, name="Z-API Chat Rápido Teste",
+                phone_label="Teste", base_url="https://api.z-api.io",
+                instance_id="test-quick-chat-zapi-2026",
+                instance_token="test-quick-chat-token",
+                client_token="test-quick-chat-client-token",
+                created_by_id=None,
+            )
+            bind_queue_instance(db, queue.id, instance.id)
+            queue_id, instance_id = queue.id, instance.id
+            db.commit()
+
+        inbox = client.get("/conversations")
+        assert inbox.status_code == 200
+        assert "Nova conversa por telefone" in inbox.text
+        assert 'action="/conversations/start"' in inbox.text
+        token = _csrf(inbox.text)
+        created = client.post(
+            "/conversations/start",
+            data={"csrf_token": token, "queue_id": queue_id,
+                  "phone": "(88) 99992-1143"},
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+        assert created.headers["location"].startswith("/conversations/")
+        assert "?quick=1" in created.headers["location"]
+        conversation_id = int(created.headers["location"].split("/")[2].split("?")[0])
+        page = client.get(created.headers["location"])
+        assert page.status_code == 200
+        assert 'class="chat-send-form"' in page.text
+        assert "5588999921143" in page.text or "99992-1143" in page.text
+        with SessionLocal() as db:
+            convo = db.get(Conversation, conversation_id)
+            assert convo.source == "MANUAL"
+            assert convo.status == "ATRIBUIDO"
+            assert convo.assigned_user_id is not None
+            link = db.scalar(select(ConversationQueueLink).where(
+                ConversationQueueLink.conversation_id == conversation_id
+            ))
+            assert link is not None and link.queue_id == queue_id
+            conn = db.scalar(select(ConversationZApiInstance).where(
+                ConversationZApiInstance.conversation_id == conversation_id
+            ))
+            assert conn is not None and conn.zapi_instance_id == instance_id
+            assert db.scalar(select(func.count(Message.id)).where(
+                Message.conversation_id == conversation_id
+            )) == 0, "Abrir uma conversa não pode disparar mensagem automática"
+
+        opened_again = client.post(
+            "/conversations/start",
+            data={"csrf_token": token, "queue_id": queue_id,
+                  "phone": "5588999921143"},
+            follow_redirects=False,
+        )
+        assert opened_again.status_code == 303
+        assert opened_again.headers["location"] == created.headers["location"]
+        with SessionLocal() as db:
+            contact = db.scalar(select(Contact).where(Contact.phone == "5588999921143"))
+            assert contact is not None
+            assert db.scalar(select(func.count(Conversation.id)).where(
+                Conversation.contact_id == contact.id
+            )) == 1
+
+
+def test_quick_start_rejects_unavailable_queue_and_bad_phone():
+    """Apenas filas autorizadas podem ser usadas: sem desvio de instância."""
+    with TestClient(app) as client:
+        _login(client)
+        token = _csrf(client.get("/conversations").text)
+        unknown_queue = client.post(
+            "/conversations/start",
+            data={"csrf_token": token, "queue_id": 999999,
+                  "phone": "(88) 99992-1155"},
+            follow_redirects=False,
+        )
+        assert unknown_queue.status_code == 303
+        assert unknown_queue.headers["location"] == "/conversations"
+        with SessionLocal() as db:
+            assert db.scalar(select(Contact.id).where(
+                Contact.phone == "5588999921155"
+            )) is None
+
+        with SessionLocal() as db:
+            queue = ServiceQueue(
+                name="Fila Rápida Inválido", code="QUICK-CHAT-INVALID-01",
+                team="LOJA", active=True, routing_strategy="MANUAL",
+            )
+            db.add(queue)
+            db.flush()
+            instance = create_zapi_instance(
+                db, name="Z-API Chat Rápido Inválido",
+                phone_label="Teste", base_url="https://api.z-api.io",
+                instance_id="test-quick-chat-invalid-zapi-2026",
+                instance_token="test-quick-chat-token-invalid",
+                client_token="test-quick-chat-client-invalid",
+                created_by_id=None,
+            )
+            bind_queue_instance(db, queue.id, instance.id)
+            queue_id = queue.id
+            db.commit()
+        invalid = client.post(
+            "/conversations/start",
+            data={"csrf_token": token, "queue_id": queue_id, "phone": "123"},
+            follow_redirects=False,
+        )
+        assert invalid.status_code == 303
+        assert invalid.headers["location"] == "/conversations"

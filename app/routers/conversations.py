@@ -16,6 +16,7 @@ from app.models import (
     Conversation,
     ConversationAssignment,
     ConversationQueueLink,
+    ConversationZApiInstance,
     ConversationCommercialInsight,
     ConversationCommercialTag,
     Lead,
@@ -24,6 +25,7 @@ from app.models import (
     User,
 )
 from app.security import get_current_user, require_roles, validate_csrf
+from app.services.access_control import has_permission
 from app.services.ai_sdr import enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
 from app.services.global_blacklist import (
@@ -71,6 +73,7 @@ from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
 from app.services.pii import redact_pii_text
+from app.services.scoring import normalize_phone
 from app.services.upload_security import UploadValidationError, validate_upload
 from app.services.queue_routing import (
     MANUAL_TRANSFER_ORIGIN,
@@ -87,7 +90,11 @@ from app.services.queue_routing import (
 from app.services.whatsapp_presence import is_user_whatsapp_online, online_user_ids
 from app.services.paced_outbound import needs_pacing, queue_manual_message
 from app.services.zapi import ZApiError
-from app.services.zapi_instances import service_for_conversation
+from app.services.zapi_instances import (
+    bind_conversation_instance,
+    queue_instance,
+    service_for_conversation,
+)
 from app.timeutils import utcnow
 from app.web import flash, render
 
@@ -599,6 +606,15 @@ def _validate_queue_filter(user: User, queue_id: int | None, queues: list[dict])
         )
 
 
+def _manual_outbound_queues(db: Session, user: User) -> list[tuple[ServiceQueue, object]]:
+    """Somente filas ativas do usuario com instância Z-API ativa vinculada."""
+    return [
+        (queue, instance)
+        for queue in available_queues_for_user(db, user)
+        if (instance := queue_instance(db, queue.id)) is not None
+    ]
+
+
 def _render_inbox(
     request: Request,
     db: Session,
@@ -671,6 +687,21 @@ def _render_inbox(
     conversation_queue_labels = _conversation_queue_labels(db, visible_ids)
     commercial_tags = tag_map(db, visible_ids)
     commercial_insights = insight_map(db, visible_ids)
+    quick_queues = (
+        _manual_outbound_queues(db, user)
+        if has_permission(user, "conversations.reply") else []
+    )
+    quick_queue_ids = {queue.id for queue, _ in quick_queues}
+    quick_preferred_queue_id = next(
+        (
+            item_id for item_id in (
+                queue_id,
+                selected_queue.id if selected_queue else None,
+            )
+            if item_id in quick_queue_ids
+        ),
+        quick_queues[0][0].id if quick_queues else None,
+    )
     return render(
         request,
         "conversations/inbox.html",
@@ -688,6 +719,8 @@ def _render_inbox(
         transfer_queues=transfer_queues,
         selected_queue=selected_queue,
         conversation_queue_labels=conversation_queue_labels,
+        quick_outbound_queues=[q for q, _instance in quick_queues],
+        quick_preferred_queue_id=quick_preferred_queue_id,
         latest_ai_run=latest_ai_run,
         counts=counts,
         query=q,
@@ -764,6 +797,129 @@ def conversation_detail(
         view=view,
         tag_code=tag,
         temperature=temperature,
+    )
+
+
+@router.post("/conversations/start")
+def quick_start_whatsapp_conversation(
+    request: Request,
+    csrf_token: str = Form(...),
+    phone: str = Form(...),
+    queue_id: int | None = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Telefone -> conversa no inbox -> vendedor escreve a mensagem, sem template."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    if not has_permission(user, "conversations.reply"):
+        raise HTTPException(status_code=403, detail="Sem permissão para iniciar conversas.")
+
+    queues = _manual_outbound_queues(db, user)
+    if not queues:
+        flash(request, "Nenhuma fila WhatsApp com Z-API ativa está disponível para você.", "warning")
+        return RedirectResponse("/conversations", status_code=303)
+    allowed = {queue.id: (queue, instance) for queue, instance in queues}
+    if queue_id is None and len(queues) == 1:
+        queue_id = queues[0][0].id
+    if queue_id not in allowed:
+        flash(request, "Selecione uma fila WhatsApp autorizada para iniciar a conversa.", "warning")
+        return RedirectResponse("/conversations", status_code=303)
+    queue, instance = allowed[queue_id]
+
+    normalized = normalize_phone(phone)
+    if not normalized:
+        flash(request, "Informe um telefone válido com DDD (fixo ou celular).", "warning")
+        return RedirectResponse("/conversations", status_code=303)
+    if is_globally_blocked(db, normalized):
+        flash(request, "Este contato está na blacklist e não pode receber mensagens.", "warning")
+        return RedirectResponse("/conversations", status_code=303)
+
+    existing_contact = db.scalar(select(Contact).where(Contact.phone == normalized))
+    lead = db.scalar(select(Lead).where(Lead.phone == normalized).limit(1))
+    if not lead and existing_contact and existing_contact.lead_id:
+        lead = db.get(Lead, existing_contact.lead_id)
+    if lead and (lead.do_not_contact or lead.stage == "NAO_CONTATAR"):
+        flash(request, "Este cliente não autoriza contato por WhatsApp.", "warning")
+        return RedirectResponse("/conversations", status_code=303)
+
+    contact = ensure_contact(db, normalized, lead=lead)
+    existing = db.scalar(
+        select(Conversation)
+        .outerjoin(
+            ConversationZApiInstance,
+            ConversationZApiInstance.conversation_id == Conversation.id,
+        )
+        .where(
+            Conversation.contact_id == contact.id,
+            Conversation.source != "TELEGRAM",
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            or_(
+                ConversationZApiInstance.zapi_instance_id == instance.id,
+                ConversationZApiInstance.id.is_(None),
+            ),
+        )
+        .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+        .limit(1)
+    )
+    if existing and existing.assigned_user_id not in (None, user.id):
+        db.rollback()
+        flash(
+            request,
+            "Este número já tem uma conversa ativa com outro atendente. "
+            "Solicite a transferência para não dividir o atendimento.",
+            "warning",
+        )
+        return RedirectResponse("/conversations", status_code=303)
+    existing_queue = queue_for_conversation(db, existing.id) if existing else None
+    if existing and existing_queue and existing_queue.id != queue.id:
+        db.rollback()
+        if existing.assigned_user_id == user.id:
+            flash(request, "Conversa existente localizada na fila original.", "warning")
+            return RedirectResponse(f"/conversations/{existing.id}?quick=1", status_code=303)
+        flash(
+            request,
+            "Este número já possui conversa ativa em outra fila. "
+            "Use a fila correta ou solicite transferência.",
+            "warning",
+        )
+        return RedirectResponse("/conversations", status_code=303)
+
+    if existing:
+        conversation = existing
+        # Não deslocar atendimento existente de fila/numero ao abrir o atalho.
+        bind_conversation_instance(db, conversation.id, instance.id)
+        if not existing_queue:
+            bind_conversation_queue(db, conversation.id, queue.id, origin="MANUAL_OUTBOUND")
+            conversation.team = queue.team
+        if conversation.source.startswith(("DISPARO:", "CAMPANHA:")):
+            # Quando o vendedor assume ativamente, passa a aparecer na caixa.
+            conversation.source = "MANUAL"
+    else:
+        conversation = ensure_open_conversation(
+            db, contact, lead=lead, source="MANUAL",
+            queue_id=queue.id, queue_origin="MANUAL_OUTBOUND",
+            assign_if_unowned=False, zapi_instance_id=instance.id,
+        )
+
+    if conversation.assigned_user_id is None:
+        conversation.assigned_user_id = user.id
+        conversation.status = "ATRIBUIDO"
+        db.add(ConversationAssignment(
+            conversation_id=conversation.id,
+            user_id=user.id, assigned_by_id=user.id, event="CLAIMED",
+        ))
+    write_audit(
+        db, user=user, action="CONVERSATION_QUICK_STARTED",
+        entity_type="conversation", entity_id=conversation.id,
+        payload={"queue_id": queue_for_conversation(db, conversation.id).id,
+                 "zapi_instance_id": instance.id,
+                 "reused": bool(existing), "message_sent": False},
+    )
+    db.commit()
+    return RedirectResponse(
+        f"/conversations/{conversation.id}?quick=1", status_code=303,
     )
 
 
