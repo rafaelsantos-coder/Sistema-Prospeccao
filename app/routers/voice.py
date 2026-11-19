@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from app.database import get_db
 from app.models import AuditLog, Lead, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall, VoiceTransferTest
 from app.security import get_current_user, require_roles, validate_csrf
+from app.services.access_control import has_permission
 from app.services.audit import write_audit
 from app.services.dispatch_queue import parse_dispatch_csv
 from app.services.media_storage import MediaStorage
@@ -56,9 +57,9 @@ def _actor(request: Request, db: Session):
     user = get_current_user(request, db)
     if not user:
         return None, RedirectResponse("/login", status_code=303)
-    # Centralizar o RBAC: TODOS os GETs e POSTs do VOZ exigem ADMIN.
-    # Gestores, supervisores e consultores nao acessam painel nem mutacoes.
-    if user.role != "ADMIN":
+    # Acesso delegado apenas quando explicitamente autorizado no cadastro.
+    # Rotas de SIP e ações sensíveis permanecem admin-only no guard de sessão.
+    if not has_permission(user, "voice.view"):
         return None, RedirectResponse("/dashboard", status_code=303)
     return user, None
 
