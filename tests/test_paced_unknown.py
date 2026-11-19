@@ -74,3 +74,37 @@ def test_manual_deterministic_rejection_remains_failed(monkeypatch):
         with SessionLocal() as db:
             assert db.get(PacedOutboundMessage, slot_id).status == "FAILED"
             assert db.get(Message, msg_id).status == "FAILED"
+
+
+def test_orphaned_processing_becomes_unknown_and_unblocks_next_contact(monkeypatch):
+    """Reinicio apos SIGKILL nao repete o antigo nem paralisa o mesmo numero."""
+    sent = []
+
+    def accepted(self, *, phone, message):
+        sent.append(message)
+        return {"messageId": "ACK-TEST-SAFE"}
+
+    monkeypatch.setattr(ZApiService, "send_text", accepted)
+    with TestClient(app):
+        msg_id, slot_id = _prepare_due_message()
+        with SessionLocal() as db:
+            first = db.get(PacedOutboundMessage, slot_id)
+            first.status = "PROCESSING"
+            first.claimed_at = utcnow() - timedelta(minutes=30)
+            first_message = db.get(Message, msg_id)
+            conversation = db.get(Conversation, first_message.conversation_id)
+            next_msg, next_slot = queue_manual_message(
+                db, conversation, message_type="TEXT",
+                body="Segundo contato ficticio", sender_user_id=1,
+            )
+            next_slot.scheduled_at = utcnow() - timedelta(seconds=1)
+            db.commit()
+            next_ids = next_msg.id, next_slot.id
+
+        assert process_one_pending() == "sent"
+        with SessionLocal() as db:
+            assert db.get(PacedOutboundMessage, slot_id).status == "UNKNOWN"
+            assert db.get(Message, msg_id).status == "UNKNOWN"
+            assert db.get(PacedOutboundMessage, next_ids[1]).status == "SENT"
+            assert db.get(Message, next_ids[0]).status == "SENT"
+        assert sent == ["Segundo contato ficticio"]
