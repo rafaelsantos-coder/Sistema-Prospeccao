@@ -57,4 +57,4 @@ Para `Aprovado com taxa`, devolver `status` com essa descrição exata. Para `Re
 - A consulta segue a oportunidade vinculada ao contato; não cria uma nova.
 - Em caso de timeout, retorno incompleto ou proprietário divergente, o Prospecta bloqueia reenvio automático e pede conferência.
 - Endpoint e formulário ficam **desabilitados** até definir `SULNET_CRM_MANUAL_CREDIT_ENABLED=true` no serviço web do Railway, depois de validar o CRM em ambiente de testes.
-- Credencial preferencial: `SULNET_CRM_LEAD_INTEGRATION_KEY`; sem ela, o Prospecta usa `SULNET_AI_INTEGRATION_KEY` apenas para o webhook comercial, mas **nunca** usa `SULNET_CRM_BEARER_TOKEN` para CPF manual.
+- A consulta exige **obrigatoriamente** `SULNET_CRM_LEAD_INTEGRATION_KEY` configurada no serviço web. Não usa nem faz fallback para `SULNET_AI_INTEGRATION_KEY` ou `SULNET_CRM_BEARER_TOKEN`.
