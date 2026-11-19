@@ -64,12 +64,18 @@ def seller_accepts_funnel(seller: CRMSeller, funnel_id: int | None) -> bool:
     return funnel_id is not None and funnel_id in (seller.funnel_id, *seller.additional_funnel_ids)
 
 
-def _verified_stage(seller: CRMSeller, funnel_id: int | None, stage_id: int | None) -> bool:
-    """Nunca usar a etapa 63 de Santa Rosa como se fosse a etapa do Upgrade."""
+def _verified_stage(
+    seller: CRMSeller,
+    funnel_id: int | None,
+    stage_id: int | None,
+    *,
+    newly_created: bool = True,
+) -> bool:
+    """Respeita a etapa atual de oportunidade existente sem inventar etapa do Upgrade."""
     return (
         seller_accepts_funnel(seller, funnel_id)
         and stage_id is not None and stage_id > 0
-        and (funnel_id != seller.funnel_id or stage_id == seller.stage_id)
+        and (not newly_created or funnel_id != seller.funnel_id or stage_id == seller.stage_id)
     )
 
 
@@ -282,7 +288,7 @@ def register_conversation(
             existing_stage = _as_int(item.get("stageId"))
             if existing_stage is None and existing_funnel == seller.funnel_id:
                 existing_stage = seller.stage_id
-            if not _verified_stage(seller, existing_funnel, existing_stage):
+            if not _verified_stage(seller, existing_funnel, existing_stage, newly_created=False):
                 raise CRMManualError(
                     "O CRM encontrou oportunidade do vendedor, mas o funil ou a etapa "
                     "não foram confirmados. Confira antes de prosseguir."
