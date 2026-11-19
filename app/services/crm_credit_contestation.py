@@ -221,7 +221,10 @@ def get_contestation_panel(db: Session, *, conversation: Conversation, actor: Us
         if actor.role not in CREDIT_ROLES:
             status["canContest"] = False
             status["readOnly"] = True
-        elif actor.role == "CONSULTOR" and actor.id != conversation.assigned_user_id:
+        elif actor.id != conversation.assigned_user_id:
+            # O webhook comercial identifica apenas sellerUsername; não
+            # personificar um supervisor de outra conversa sem contrato de
+            # delegação/auditoria próprio.
             status["canContest"] = False
             status["readOnly"] = True
         else:
@@ -255,10 +258,10 @@ def send_contestation(
 ) -> dict[str, Any]:
     if not settings.sulnet_crm_contestation_enabled:
         raise CRMManualError("Contestação ainda não habilitada na integração com o CRM.")
-    if actor.role not in CREDIT_ROLES or (
-        actor.role == "CONSULTOR" and actor.id != conversation.assigned_user_id
-    ):
-        raise CRMManualError("A contestação deve ser enviada pelo vendedor responsável ou sua supervisão autorizada.")
+    if actor.role not in CREDIT_ROLES or actor.id != conversation.assigned_user_id:
+        raise CRMManualError(
+            "A contestação deve ser enviada pelo vendedor responsável por esta conversa."
+        )
 
     ctx = _context(db, conversation)
     _guard_contact_lock(db, conversation.contact_id)
