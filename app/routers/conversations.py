@@ -52,6 +52,11 @@ from app.services.conversation_engine import (
     mark_conversation_read,
     register_message,
 )
+from app.services.crm_credit_contestation import (
+    MAX_FILE_SIZE as CONTEST_MAX_FILE_SIZE,
+    get_contestation_panel,
+    send_contestation,
+)
 from app.services.crm_manual_credit import (
     consult_registered_cpf,
     credit_status as manual_credit_status,
@@ -678,6 +683,7 @@ def _render_inbox(
         crm_manual_status=registration_status(db, selected.contact_id) if selected else None,
         crm_credit_enabled=settings.sulnet_crm_manual_credit_enabled,
         crm_credit_status=manual_credit_status(db, selected.contact_id) if selected else None,
+        crm_contestation_enabled=settings.sulnet_crm_contestation_enabled,
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -1516,6 +1522,90 @@ def consult_cpf_manually(
             ) + str(result.get("statusLabel") or "Em análise"),
             "success",
         )
+    return RedirectResponse(f"/conversations/{conversation_id}", status_code=303)
+
+
+@router.get("/conversations/{conversation_id}/credit-contestation")
+def get_credit_contestation_info(
+    conversation_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Leitura pontual de motivos e elegibilidade na análise já existente.
+
+    Nunca dispara Serasa, não expõe CPF, não usa dados antigos para autorizar.
+    """
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if conversation is None:
+        return JSONResponse({"ok": False, "message": "Conversa indisponível."}, status_code=404)
+    try:
+        result = get_contestation_panel(db, conversation=conversation, actor=user)
+    except CRMManualError as exc:
+        return JSONResponse(
+            {"ok": False, "message": str(exc)},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        {"ok": True, **result},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/conversations/{conversation_id}/credit-contestation")
+def submit_credit_contestation(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    reason_type: str = Form(...),
+    justification: str = Form(""),
+    doc_confirmed: bool = Form(False),
+    files: list[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+):
+    """Contestação explícita do vendedor; anexa documentos somente no CRM."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "CONSULTOR", "SUPERVISOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if conversation is None:
+        return _conversation_unavailable(request)
+    try:
+        documents: list[tuple[str, str, bytes]] = []
+        for uploaded in files:
+            if not uploaded.filename:
+                continue
+            blob = uploaded.file.read(CONTEST_MAX_FILE_SIZE + 1)
+            if len(blob) > CONTEST_MAX_FILE_SIZE:
+                raise CRMManualError("Cada documento pode ter no máximo 10 MB.")
+            documents.append((
+                uploaded.filename,
+                uploaded.content_type or "application/octet-stream",
+                blob,
+            ))
+        send_contestation(
+            db,
+            conversation=conversation,
+            actor=user,
+            reason_type=reason_type,
+            justification=justification,
+            doc_confirmed=doc_confirmed,
+            documents=documents,
+        )
+    except CRMManualError as exc:
+        db.rollback()
+        flash(request, str(exc), "warning")
+    else:
+        flash(request, "Contestação enviada ao CRM Comercial. Aguardando decisão gerencial.", "success")
+    finally:
+        for uploaded in files:
+            uploaded.file.close()
     return RedirectResponse(f"/conversations/{conversation_id}", status_code=303)
 
 
