@@ -76,6 +76,8 @@ def dispatch_live_snapshot(db: Session, dispatch: CampaignDispatch) -> dict[str,
         label = "Concluído"
     elif dispatch.status != "ATIVO":
         label = "Aguardando início"
+    elif counts["pending"] + counts["sending"] == 0 and counts["unknown"]:
+        label = "Envios a conferir: resultado externo incerto"
     elif counts["pending"] + counts["sending"] == 0:
         label = "Sem destinatários pendentes"
     elif sent_today >= limit:

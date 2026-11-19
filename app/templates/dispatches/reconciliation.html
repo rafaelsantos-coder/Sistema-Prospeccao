@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">SEGURANÇA DOS DISPAROS</span>
+    <h2>Conferência de envios incertos</h2>
+    <p>Contatos que podem ter recebido a mensagem, mas ainda precisam de confirmação. Esta tela é somente leitura e não efetua novos envios.</p>
+  </div>
+  <div class="page-actions">
+    <a class="button button-secondary" href="/dispatches">Voltar aos disparos</a>
+    <a class="button button-secondary" href="/dispatches/reconciliation/export.csv?status={{ snapshot.status }}{% if snapshot.queue_id %}&amp;queue_id={{ snapshot.queue_id }}{% endif %}">Exportar CSV para conferência</a>
+  </div>
+</div>
+
+<div class="info-box">
+  <strong>Atenção: não reenviar automaticamente</strong>
+  <p>INDETERMINADO significa que não houve confirmação confiável do provedor. ENVIANDO aparece aqui somente após {{ snapshot.stale_minutes }} minutos sem atualização. Verifique na instância Z-API da fila, no histórico do WhatsApp e nos eventos do provedor antes de decidir qualquer nova ação.</p>
+  <small>Um registro nesta tela não comprova que a mensagem foi entregue, nem que ela falhou. O sistema não altera o status ao consultar esta página.</small>
+</div>
+
+<div class="metric-grid top-space">
+  <article class="metric-card"><span>Total para conferir</span><strong>{{ snapshot.total }}</strong><small>Todos os canais e campanhas</small></article>
+  <article class="metric-card"><span>Disparos CSV</span><strong>{{ snapshot.dispatched_total }}</strong><small>Por fila e campanha</small></article>
+  <article class="metric-card"><span>Campanhas anteriores</span><strong>{{ snapshot.legacy_total }}</strong><small>Envios do funil legado</small></article>
+</div>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">FILTROS</span><h3>Revisar os registros</h3></div>
+    <span class="panel-note">Página {{ snapshot.page }} · até {{ snapshot.page_size }} registros por origem</span>
+  </div>
+  <form action="/dispatches/reconciliation" method="get" class="stack-form">
+    <div class="form-grid">
+      <label class="field">
+        <span>Situação</span>
+        <select name="status">
+          <option value="TODOS" {% if snapshot.status == 'TODOS' %}selected{% endif %}>Todos a conferir</option>
+          <option value="INDETERMINADO" {% if snapshot.status == 'INDETERMINADO' %}selected{% endif %}>Resultado indeterminado</option>
+          <option value="ENVIANDO" {% if snapshot.status == 'ENVIANDO' %}selected{% endif %}>Em envio há mais de {{ snapshot.stale_minutes }} minutos</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Fila de origem</span>
+        <select name="queue_id">
+          <option value="">Todas as filas</option>
+          {% for queue in snapshot.queues %}
+          <option value="{{ queue.id }}" {% if snapshot.queue_id == queue.id %}selected{% endif %}>{{ queue.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <button class="button button-secondary" type="submit">Aplicar filtro</button>
+  </form>
+</section>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">DISPAROS CSV</span><h3>Contatos por campanha e fila</h3></div>
+    <span class="count-badge">{{ snapshot.dispatched_total }}</span>
+  </div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Contato</th><th>Disparo / Fila</th><th>Situação</th><th>Tentativas</th><th>Última atualização</th><th>Provedor</th><th></th></tr></thead>
+      <tbody>
+        {% for item in snapshot.dispatched %}
+        <tr>
+          <td><strong>{{ item.name or 'Contato sem nome' }}</strong><span class="table-subline">{{ item.phone|phone_br }}</span></td>
+          <td><strong>{{ item.dispatch.campaign.name }}</strong><span class="table-subline">{{ item.dispatch.queue.name }} · #{{ item.dispatch_id }} · {{ item.dispatch.channel }}</span></td>
+          <td><span class="dispatch-status status-{{ item.status|lower }}">{{ 'Em envio sem atualização' if item.status == 'ENVIANDO' else 'Indeterminado' }}</span></td>
+          <td>{{ item.attempts }}</td>
+          <td>{{ item.updated_at|datetime_br }}</td>
+          <td>{{ item.provider_message_id[:50] if item.provider_message_id else 'Sem ID confirmado' }}</td>
+          <td><a class="button button-ghost" href="/dispatches/{{ item.dispatch_id }}">Abrir disparo</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7"><div class="empty-state">Nenhum disparo CSV precisando de conferência neste filtro.</div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div><span class="eyebrow">CAMPANHAS DO FUNIL</span><h3>Contatos em conferência</h3></div>
+    <span class="count-badge">{{ snapshot.legacy_total }}</span>
+  </div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Lead</th><th>Campanha</th><th>Situação</th><th>Tentativas</th><th>Última atualização</th><th>Provedor</th></tr></thead>
+      <tbody>
+        {% for item in snapshot.legacy %}
+        <tr>
+          <td><strong>{{ item.lead.business_name or item.lead.contact_name }}</strong><span class="table-subline">{{ item.lead.phone|phone_br }}</span></td>
+          <td>{{ item.campaign.name }}<span class="table-subline">{{ snapshot.legacy_queue_names.get(item.campaign_id, "Fila não definida") }} · Campanha #{{ item.campaign_id }}</span></td>
+          <td><span class="dispatch-status status-{{ item.status|lower }}">{{ 'Em envio sem atualização' if item.status == 'ENVIANDO' else 'Indeterminado' }}</span></td>
+          <td>{{ item.attempts }}</td>
+          <td>{{ item.updated_at|datetime_br }}</td>
+          <td>{{ item.provider_message_id[:50] if item.provider_message_id else 'Sem ID confirmado' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6"><div class="empty-state">Nenhuma campanha legada precisando de conferência neste filtro.</div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="page-actions top-space">
+  {% if snapshot.has_previous %}
+  <a class="button button-secondary" href="/dispatches/reconciliation?status={{ snapshot.status }}&amp;page={{ snapshot.page - 1 }}{% if snapshot.queue_id %}&amp;queue_id={{ snapshot.queue_id }}{% endif %}">Página anterior</a>
+  {% endif %}
+  {% if snapshot.has_next %}
+  <a class="button button-secondary" href="/dispatches/reconciliation?status={{ snapshot.status }}&amp;page={{ snapshot.page + 1 }}{% if snapshot.queue_id %}&amp;queue_id={{ snapshot.queue_id }}{% endif %}">Próxima página</a>
+  {% endif %}
+</div>
+
+<div class="info-box top-space">
+  <strong>Procedimento gerencial</strong>
+  <p>Confirme o resultado diretamente na instância do provedor correspondente ao disparo. Registre a decisão em sua rotina operacional. Esta tela não oferece botão de reenviar ou alteração direta do banco para evitar contato duplicado com clientes.</p>
+</div>
+{% endblock %}
