@@ -508,10 +508,18 @@ def create_user(
         flash(request, str(exc), "error")
         return RedirectResponse("/settings/users", status_code=303)
     branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
-    selected_permissions = (
-        validate_selection(user, role, permissions)
-        if permissions_configured == "1" else None
-    )
+    if permissions_configured == "1":
+        selected_permissions = validate_selection(user, role, permissions)
+    elif user.role == "GESTOR" and user.access_permissions is not None:
+        # A API antiga (sem checkboxes) não pode criar usuários com mais
+        # acessos do que o gestor possui por meio da herança do perfil.
+        eligible = [
+            code for code in role_default_permissions(role)
+            if has_permission(user, code)
+        ]
+        selected_permissions = validate_selection(user, role, eligible)
+    else:
+        selected_permissions = None
     selected_queues = (
         _validated_user_queue_ids(db, user, queue_ids)
         if queue_memberships_configured == "1" else set()
@@ -672,6 +680,17 @@ def update_user(
                 )
             else:
                 target.access_permissions = selected_permissions
+
+    if (permissions_configured != "1" and target.id != actor.id
+            and target.role != before["role"]
+            and actor.role == "GESTOR" and actor.access_permissions is not None):
+        # A alteração legada de perfil não expande silenciosamente os direitos
+        # além daqueles que o próprio gestor tem autorização para conceder.
+        allowed_defaults = [
+            code for code in role_default_permissions(target.role)
+            if has_permission(actor, code)
+        ]
+        target.access_permissions = validate_selection(actor, target.role, allowed_defaults)
 
     if selected_queues is not None and target.id != actor.id:
         _sync_user_queue_memberships(db, target, actor, selected_queues)
