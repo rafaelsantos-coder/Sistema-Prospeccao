@@ -150,9 +150,18 @@ def get_current_user(request: Request, db: Session) -> User | None:
         )
     # O check acontece em TODA requisição autenticada; remover um menu
     # jamais deixa URL direta ou POST liberado.
-    needed = permission_for_request(request.url.path, request.method)
+    request_method = getattr(request, "method", "GET")
+    needed = permission_for_request(request.url.path, request_method)
     if needed and not has_permission(user, needed):
-        if request.url.path == "/dashboard" and request.method == "GET":
+        # Preserva os redirecionamentos já usados pelos usuários antigos
+        # (sem matriz personalizada) nos módulos VOZ. Novos usuários
+        # explicitamente restritos recebem 403.
+        if request.url.path.startswith("/voice") and user.access_permissions is None:
+            raise HTTPException(
+                status_code=status.HTTP_303_SEE_OTHER,
+                headers={"Location": "/dashboard"},
+            )
+        if request.url.path == "/dashboard" and request_method == "GET":
             destination = first_accessible_page(user)
             if destination != "/dashboard":
                 raise HTTPException(
