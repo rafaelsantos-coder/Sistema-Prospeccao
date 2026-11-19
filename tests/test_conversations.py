@@ -49,6 +49,10 @@ def test_open_conversation_from_lead():
         assert "Caixa de entrada" in inbox.text
         assert "conversation-page-content" in inbox.text
         assert "Clínica Horizonte" in inbox.text
+    assert 'class="chat-queue-context-name' in inbox.text
+    assert 'class="chat-queue-chip' in inbox.text
+    assert 'class="conversation-queue-row"' in inbox.text
+    assert "Fila do atendimento" in inbox.text
 
 
 def test_send_message_from_inbox(monkeypatch):
@@ -134,6 +138,7 @@ def test_realtime_inbox_api_lists_new_conversation():
         payload = state.json()
         assert payload["counts"]["active"] >= 1
         assert any(item["name"] == "Clínica Horizonte" for item in payload["items"])
+    assert all("queue_id" in item and "queue_name" in item for item in payload["items"])
 
 
 def test_send_image_from_inbox(monkeypatch):
