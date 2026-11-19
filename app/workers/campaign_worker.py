@@ -41,6 +41,9 @@ def run() -> None:
                 break
             if dispatch_recipient:
                 used_dispatch = True
+                # Durable reservation before any external Z-API/Telegram side effect.
+                # An abrupt SIGKILL after send must never restore this row to PENDENTE.
+                db.commit()
                 outcome = process_dispatch_recipient(db, dispatch_recipient)
                 db.commit()
                 LOG.info(
@@ -58,6 +61,8 @@ def run() -> None:
                 if not recipient:
                     db.commit()
                 else:
+                    # Commit the claim first: a provider ACK may precede our final commit.
+                    db.commit()
                     outcome = process_recipient(db, recipient)
                     # Se SIGTERM chegou durante o envio, gravar o resultado antes de sair.
                     db.commit()
