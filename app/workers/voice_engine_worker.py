@@ -7,6 +7,7 @@ all readiness checks pass, and an ADMIN explicitly starts each campaign.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 import os
 import re
 import socket
@@ -34,11 +35,24 @@ from app.services.voice_runtime import (
 from app.services.voice_test import aware
 from app.workers.graceful_shutdown import GracefulShutdown
 from app.workers.voice_singleton import VoiceLeaderLease, VoiceLeadershipLost, voice_engine_leadership
+from app.workers.sip_account_guard import SIPAccountLease, sip_account_lock
 
 LOG = logging.getLogger(__name__)
 WORKER_ID = f"{socket.gethostname()}-{uuid4().hex[:9]}"[:120]
 CAMPAIGNS_ENABLED = os.getenv("VOICE_CAMPAIGN_OUTBOUND_ENABLED", "").lower() == "true"
 TRANSFER_TESTS_ENABLED = os.getenv("VOICE_TRANSFER_TESTS_ENABLED", "").lower() == "true"
+
+@contextmanager
+def _protected_pj_session(account, secret: str, leader: VoiceLeaderLease):
+    """Garante exclusividade da conta SIP entre campanha e agente de testes."""
+    with sip_account_lock(int(account.id)) as account_lease:
+        if account_lease is None:
+            raise VoiceEngineError("Conta SIP em uso por outra chamada ou teste.")
+        leader.assert_held(force=True)
+        account_lease.assert_held(force=True)
+        with PjSession(account, secret) as driver:
+            yield driver, account_lease
+
 
 
 def now() -> datetime:
@@ -198,7 +212,7 @@ def _run_native_test(test_id: int, leader: VoiceLeaderLease):
             secret = decrypt_secret(account.password_encrypted)
             account_id = account.id
             db.expunge(account)
-        with PjSession(account, secret) as driver:
+        with _protected_pj_session(account, secret, leader) as (driver, account_lease):
             code, message = driver.wait_for_registration()
             mark_registration(account_id, code, message)
             _native_record(test_id, "REGISTRADO" if code == 200 else "FALHOU", code,
@@ -215,7 +229,7 @@ def _run_native_test(test_id: int, leader: VoiceLeaderLease):
                 on_status=lambda status, sip: _native_record(
                     test_id, status, 200, sip, f"Teste PJSIP: {status}"
                 ),
-                should_abort=lambda: not outbound_allowed() or not leader.healthy(),
+                should_abort=lambda: not outbound_allowed() or not leader.healthy() or not account_lease.healthy(),
                 timeout=30,
             )
             detail = result.message + (
@@ -265,7 +279,7 @@ def _run_transfer_test(test_id: int, leader: VoiceLeaderLease) -> None:
             # Data materialized only for the bounded native SIP session.
             db.expunge(account)
             db.expunge(group)
-        with PjSession(account, secret) as driver:
+        with _protected_pj_session(account, secret, leader) as (driver, account_lease):
             code, message = driver.wait_for_registration()
             mark_registration(aid, code, message)
             if code != 200:
@@ -280,7 +294,7 @@ def _run_transfer_test(test_id: int, leader: VoiceLeaderLease) -> None:
                 phone, mode="DIRECT", group=group,
                 on_status=lambda status, code: _set_transfer(
                     test_id, status, code, f"Teste {status.lower()}"),
-                should_abort=lambda: not outbound_allowed() or not leader.healthy(),
+                should_abort=lambda: not outbound_allowed() or not leader.healthy() or not account_lease.healthy(),
             )
             _set_transfer(test_id, result.status, result.sip_code, result.message, True)
             if result.transferred:
@@ -390,7 +404,7 @@ def _run_campaign_call(recipient_id: int, leader: VoiceLeaderLease) -> None:
                 db.expunge(group)
         if mode == "AUDIO":
             file_path = _load_wav(audio_uri)
-        with PjSession(account, secret) as driver:
+        with _protected_pj_session(account, secret, leader) as (driver, account_lease):
             code, msg = driver.wait_for_registration()
             mark_registration(aid, code, msg)
             if code != 200:
@@ -410,7 +424,7 @@ def _run_campaign_call(recipient_id: int, leader: VoiceLeaderLease) -> None:
                 audio_wav=file_path, dtmf_digit=dtmf, dial_format=dial_format,
                 on_status=lambda status, code: _set_recipient(
                     recipient_id, status, code, ""),
-                should_abort=lambda: not campaign_call_permitted(recipient_id) or not leader.healthy(),
+                should_abort=lambda: not campaign_call_permitted(recipient_id) or not leader.healthy() or not account_lease.healthy(),
             )
             _set_recipient(recipient_id, result.status, result.sip_code, result.message,
                            True, result.answered, result.transferred)
