@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import crm_credit_contestation as contest
-from app.services.crm_manual_registration import CRMManualError
+from app.services.crm_manual_registration import CRMManualError, ACTION_REGISTERED
+from app.services.crm_manual_credit import ACTION_CREDIT
+from app.models import User
 from app.services.crm_sulnet import SulnetCRMClient
 
 
@@ -268,3 +270,39 @@ def test_s2s_webhooks_use_commercial_key_and_no_bearer(monkeypatch):
         assert "NEVER_USE" not in str(kwargs)
     assert seen[2][2]["files"]["file"][0] == "doc.pdf"
     assert seen[3][2]["json_body"]["analysisId"] == 3501
+
+
+@pytest.mark.parametrize(
+    ("name", "username", "crm_id"),
+    [
+        ("Gabriele Naiane Barbosa", "gabriele.barbosa", 42),
+        ("Michele Zandona", "michele.zandona", 43),
+    ],
+)
+def test_new_seller_contestation_is_scoped_to_upgrade_funnel(
+    monkeypatch, name, username, crm_id,
+):
+    user = User(name=name, email="teste@sulnet.local", password_hash="x", active=True)
+    monkeypatch.setattr(
+        contest, "registration_status",
+        lambda *_: {"state": ACTION_REGISTERED, "opportunityId": 17234,
+                    "sellerUsername": username, "funnelId": 23},
+    )
+    monkeypatch.setattr(
+        contest, "credit_status",
+        lambda *_: {"state": ACTION_CREDIT, "opportunityId": 17234,
+                    "analysisId": 9876, "sellerUsername": username, "funnelId": 23},
+    )
+    ctx = contest._context(None, SimpleNamespace(assigned_user=user, contact_id=55))
+    assert ctx.seller_username == username
+    assert ctx.seller_user_id == crm_id
+    assert ctx.funnel_id == 23
+    same = {
+        "opportunityId": 17234, "analysisId": 9876,
+        "assignedUserId": crm_id, "sellerUsername": username, "funnelId": 23,
+    }
+    assert contest._verify_response(ctx, same) == same
+    with pytest.raises(CRMManualError):
+        contest._verify_response(ctx, {**same, "funnelId": 17})
+
+
