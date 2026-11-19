@@ -31,6 +31,7 @@
       <label class="field"><span>Equipe</span><select name="team" required>{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
       <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Todas / corporativo</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
       {% include "_user_access_matrix.html" %}
+      {% include "_user_queue_permissions.html" %}
       <div class="field field-span-2"><button class="button button-primary" type="submit">Criar usuário com os acessos selecionados</button></div>
     </form>
   </article>
