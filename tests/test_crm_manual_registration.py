@@ -75,7 +75,9 @@ def test_new_santa_rosa_sellers_allow_upgrade_without_inventing_upgrade_stage(
     assert manual.seller_accepts_funnel(seller, 23)
     assert not manual.seller_accepts_funnel(seller, 16)
     assert manual._verified_stage(seller, 17, 63)
-    assert not manual._verified_stage(seller, 17, 55)
+    assert not manual._verified_stage(seller, 17, 55)  # Criação deve confirmar etapa inicial
+    assert manual._verified_stage(seller, 17, 65, newly_created=False)  # Já estava em negociação
+    assert not manual._verified_stage(seller, 16, 65, newly_created=False)
     assert manual._verified_stage(seller, 23, 77)  # Etapa informada pelo CRM, sem presumir ID
     assert not manual._verified_stage(seller, 23, None)
     assert not manual._verified_stage(seller, 23, 0)
