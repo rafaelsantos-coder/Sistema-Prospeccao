@@ -2774,3 +2774,100 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .crm-contest-confirm { display: flex; align-items: flex-start; gap: 7px; font-weight: 500 !important; }
 .crm-contest-confirm input { margin: 2px 0 0; flex-shrink: 0; }
 .crm-contest-form .button { margin-top: 4px; }
+
+
+/* Matriz de permissões por usuário: formulário agrupado e responsivo. */
+.user-access-matrix {
+  min-width: 0;
+  margin-top: 5px;
+  border: 1px solid #e5e9ee;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fffaf6 0%, #fff 110px);
+  padding: 19px;
+}
+.user-access-matrix-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 15px; margin-bottom: 15px;
+}
+.user-access-matrix-header h4 {
+  margin: 5px 0 6px; color: #263444; font-size: 16px;
+  letter-spacing: -.02em;
+}
+.user-access-matrix-header p {
+  margin: 0; max-width: 680px; line-height: 1.5;
+  font-size: 11px; color: #74818d;
+}
+.user-access-selection-counter {
+  flex-shrink: 0; padding: 9px 11px; background: #fff;
+  border: 1px solid #f1dccb; border-radius: 9px;
+  font-weight: 800; font-size: 10px; color: #aa581d;
+}
+.user-access-matrix-actions {
+  display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0 14px;
+}
+.user-access-matrix-actions .button {
+  font-size: 10px; min-height: 34px; padding: 8px 11px;
+}
+.user-access-groups {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start; gap: 11px;
+}
+.user-access-group {
+  min-width: 0; border: 1px solid #e3e9ef; border-radius: 12px;
+  background: #fff; overflow: hidden;
+}
+.user-access-group > summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px; cursor: pointer; user-select: none;
+  list-style: none; background: #f8fafc;
+}
+.user-access-group > summary::-webkit-details-marker { display: none; }
+.user-access-group[open] > summary { border-bottom: 1px solid #eef1f4; }
+.user-access-group-title {
+  font-weight: 800; font-size: 12px; color: #293747; flex: 1; min-width: 0;
+}
+.user-access-group-count {
+  color: #9b5a34; background: #fff0e5; padding: 3px 6px;
+  border-radius: 6px; font-size: 10px; font-weight: 800; flex-shrink: 0;
+}
+.user-access-chevron { color: #89939e; font-size: 13px; flex-shrink: 0; }
+.user-access-group-body { padding: 10px 12px 13px; }
+.user-access-group-body > p {
+  margin: 0 0 11px; line-height: 1.5; color: #82909b; font-size: 10px;
+}
+.user-access-choices { display: grid; gap: 5px; }
+.user-access-choice {
+  display: flex; gap: 9px; align-items: flex-start; min-width: 0;
+  padding: 9px 10px; border: 1px solid #eef0f3;
+  border-radius: 8px; background: #fff; cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.user-access-choice input {
+  flex-shrink: 0; width: 15px; height: 15px;
+  margin: 1px 0 0; accent-color: #f36f21;
+}
+.user-access-choice span {
+  color: #566373; font-weight: 650; font-size: 11px; line-height: 1.4;
+}
+.user-access-choice.is-checked { background: #fff7f0; border-color: #ffd7b9; }
+.user-access-choice.is-checked span { color: #9c4d1a; }
+.user-access-choice.is-locked { opacity: .6; cursor: not-allowed; }
+.user-access-warning { color: #aa4925; font-size: 11px; margin: 10px 0 0; }
+.user-access-warning:empty { display: none; }
+.user-access-footnote {
+  margin: 12px 0 0; padding: 10px 12px; background: #f8fafb;
+  border-radius: 9px; color: #64717d; font-size: 10px; line-height: 1.6;
+}
+.user-access-lock-note {
+  color: #996724; font-weight: 700; font-size: 11px;
+  background: #fff5db; padding: 10px; border-radius: 8px;
+}
+@media (max-width: 900px) {
+  .user-access-groups { grid-template-columns: 1fr; }
+  .user-access-matrix-header { flex-wrap: wrap; }
+  .user-access-selection-counter { flex-shrink: 1; }
+}
+@media (max-width: 560px) {
+  .user-access-matrix { padding: 12px; }
+  .user-access-matrix-actions { display: grid; }
+}
