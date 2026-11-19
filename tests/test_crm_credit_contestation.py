@@ -94,7 +94,7 @@ def test_panel_reasons_and_readonly_for_admin(monkeypatch):
 
         def seller_contestation_reasons(self, **kwargs):
             calls.append(("reasons", kwargs))
-            return _identity(reasons=REASONS)
+            return _identity(reasons=REASONS, billMonthExpectedLabel="10/2026")
 
     monkeypatch.setattr(
         contest.SulnetCRMClient, "from_settings",
@@ -103,6 +103,7 @@ def test_panel_reasons_and_readonly_for_admin(monkeypatch):
     monkeypatch.setattr(contest, "_state", lambda db, contact: None)
     panel = contest.get_contestation_panel(None, conversation=conv, actor=actor)
     assert panel["canContest"] is True
+    assert panel["billMonthExpected"] == "10/2026"
     assert len(panel["reasons"]) == 4
     assert [c[0] for c in calls] == ["status", "reasons"]
     admin = SimpleNamespace(id=9, role="ADMIN")
