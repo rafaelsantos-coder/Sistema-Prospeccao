@@ -60,6 +60,7 @@ PERMISSION_GROUPS: tuple[dict[str, Any], ...] = (
      "items": [
          ("dispatches.view", "Ver campanhas de disparo", ALL_HUMAN_ROLES),
          ("dispatches.manage", "Criar, iniciar, pausar e gerenciar disparos", ALL_HUMAN_ROLES),
+         ("dispatches.reconcile", "Conferir envios incertos (somente leitura)", MANAGEMENT_ROLES),
      ]},
     {"key": "voice", "title": "Prospecta VOZ",
      "description": "Campanhas telefônicas e gestão da telefonia",
@@ -126,6 +127,7 @@ REQUIRES: dict[str, str] = {
     "campaigns.manage": "campaigns.view",
     "campaigns.approve": "campaigns.view",
     "dispatches.manage": "dispatches.view",
+    "dispatches.reconcile": "dispatches.view",
     "voice.campaigns.manage": "voice.view",
     "voice.accounts.manage": "voice.view",
     "ai.manage": "ai.view",
@@ -159,6 +161,7 @@ _BASE_SUPERVISOR = _BASE_CONSULTOR | {
 }
 _BASE_GESTOR = _BASE_SUPERVISOR | {
     "campaigns.approve", "dispatches.view", "dispatches.manage",
+    "dispatches.reconcile",
     "ai.view", "ai.manage", "blacklist.view", "blacklist.manage",
     "credit_map.import", "settings.users.manage",
     "settings.connections.view", "settings.connections.manage",
