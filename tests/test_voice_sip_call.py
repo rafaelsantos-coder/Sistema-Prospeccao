@@ -311,3 +311,66 @@ def test_registration_only_never_sends_invite(monkeypatch):
     assert result.invite_code is None
     assert seen and all(x.startswith("REGISTER") for x in seen)
     assert any("Expires: 0" in x for x in seen)
+
+
+def test_local_fake_pbx_rejects_invite_after_leadership_lost(monkeypatch):
+    """Emula REGISTER SIP local e retira autorizacao antes do INVITE."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+    server.settimeout(2)
+    local_port = server.getsockname()[1]
+    seen: list[str] = []
+    registration_done = threading.Event()
+
+    def pbx() -> None:
+        try:
+            while True:
+                try:
+                    raw, peer = server.recvfrom(65535)
+                except socket.timeout:
+                    break
+                message = raw.decode("utf-8", "replace")
+                method = message.split(" ", 1)[0]
+                seen.append(method)
+                if method == "INVITE":
+                    raise AssertionError("INVITE enviado sem lideranca valida")
+                assert method == "REGISTER"
+                call_id = re.search(r"^Call-ID:\s*(.+)$", message, re.M).group(1).strip()
+                cseq = re.search(r"^CSeq:\s*(.+)$", message, re.M).group(1).strip()
+                response = (
+                    f"SIP/2.0 200 OK\r\n"
+                    f"Call-ID: {call_id}\r\n"
+                    f"CSeq: {cseq}\r\n"
+                    f"Content-Length: 0\r\n\r\n"
+                )
+                server.sendto(response.encode(), peer)
+                if "Expires: 0" in message:
+                    break
+        finally:
+            server.close()
+
+    original = socket.getaddrinfo
+
+    def redirect(host, port, family=0, type=0, proto=0, flags=0):
+        if host == "sip.example.com" and port == 5060:
+            return original("127.0.0.1", local_port, family, type, proto, flags)
+        return original(host, port, family, type, proto, flags)
+
+    monkeypatch.setattr(socket, "getaddrinfo", redirect)
+    thread = threading.Thread(target=pbx, daemon=True)
+    thread.start()
+
+    def on_status(status, *_args):
+        if status == "REGISTRADO":
+            registration_done.set()
+
+    with pytest.raises(SipProbeError, match="exclusividade"):
+        SipProbe(
+            host="sip.example.com", username="200", password="local-fake",
+            phone="5555999991001", notify=on_status,
+            should_abort=registration_done.is_set,
+        ).run()
+    thread.join(timeout=3)
+    assert not thread.is_alive()
+    assert registration_done.is_set()
+    assert seen and all(method == "REGISTER" for method in seen)
