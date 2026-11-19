@@ -65,11 +65,13 @@ def test_open_conversation_from_lead():
     assert 'class="conversation-queue-row"' in inbox.text
     assert "Fila do atendimento" in inbox.text
     # Um botao Audio comum; autorizacao nativa so quando Chrome bloqueia.
-    assert '<microphone class="inbox-microphone-control"' in inbox.text
+    assert '<microphone data-native-microphone class="inbox-microphone-control"' in inbox.text
+    assert 'class="inbox-microphone-dialog"' in inbox.text
     assert '<usermedia' not in inbox.text
     assert 'HTMLMicrophoneElement' in inbox.text
     assert 'data-record-standard title="Gravar áudio"' in inbox.text
-    assert "nativeMicrophone.addEventListener('track'" in inbox.text
+    assert "element.addEventListener('track'" in inbox.text
+    assert 'startRecorder(new MediaStream([track]), true)' in inbox.text
     assert 'getUserMedia(audioOnlyConstraints)' in inbox.text
     assert 'video: false' in inbox.text
     assert 'data-record-stop-button' in inbox.text

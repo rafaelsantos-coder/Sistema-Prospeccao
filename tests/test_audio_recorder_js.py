@@ -1,8 +1,4 @@
-"""Testa cliques e gravacao do chat com API estavel e recuperacao do Chrome.
-
-Roda a logica real de JavaScript da pagina no Node. Verifica o primeiro envio,
-outra gravacao, codecs com falha, permissao negada e recuperacao in-page.
-"""
+"""Testa gravacao e recuperacao de permissao usando o JS real do chat."""
 from __future__ import annotations
 
 import shutil
@@ -13,7 +9,7 @@ import pytest
 
 
 TEMPLATE = Path(__file__).parents[1] / "app/templates/conversations/inbox.html"
-START = "  // Prioridade: API de gravacao estavel, somente audio. O <microphone> nativo"
+START = "  // Gravar pela API padrão; se o Chrome negou acesso, o elemento nativo"
 END = "\n  if (form && input) {"
 
 HARNESS = r"""
@@ -22,130 +18,143 @@ const assert = require('node:assert/strict');
 const makeElement = () => {
   const events = {};
   return {
-    hidden: false, disabled: false, textContent: '', title: '',
-    classList: {toggle() {}, add() {}, remove() {}},
-    addEventListener(name, fn) {(events[name] ||= []).push(fn);},
-    emit(name) {for (const fn of events[name] || []) fn();},
-    setConstraints(value) {this.constraints = value;}
+    hidden:false, disabled:false, textContent:'', open:false, track:null, error:null,
+    classList:{toggle(){},add(){},remove(){}},
+    addEventListener(name, fn){(events[name] ||= []).push(fn);},
+    emit(name, data){for(const fn of events[name] || []) fn(data || {});},
+    setConstraints(value){this.constraints=value;},
+    showModal(){this.open=true;},
+    close(){this.open=false;},
+    cloneNode(){return makeElement();},
+    replaceWith(){}
   };
 };
-const recordButton = makeElement();
-const nativeMicrophone = makeElement();
-const standardRecordButton = makeElement();
-const recordStopButton = makeElement();
-recordStopButton.hidden = true;
-const recordingStatus = makeElement();
-recordingStatus.hidden = true;
-const previews = [];
-const showMediaPreview = file => {previews.push(file);};
-const calls = [];
-let denyPermission = __DENY__;
-const createTrack = () => ({
-  kind: 'audio', readyState: 'live',
-  stop() {this.readyState = 'ended';}
-});
+let nativeMicrophone=makeElement();
+const microphoneDialog=makeElement();
+const microphoneDialogTitle=makeElement();
+const microphoneDialogMessage=makeElement();
+const microphoneDialogStop=makeElement();
+microphoneDialogStop.hidden=true;
+const microphoneDialogClose=makeElement();
+const standardRecordButton=makeElement();
+const recordStopButton=makeElement();
+recordStopButton.hidden=true;
+const recordingStatus=makeElement();
+const previews=[];
+const showMediaPreview=file=>previews.push(file);
+const calls=[];
+let denyPermission=__DENY__;
+const makeTrack=()=>({kind:'audio',readyState:'live',stop(){this.readyState='ended'}});
 class FakeStream {
-  constructor(tracks) {this.tracks = tracks || [createTrack()];}
-  getTracks() {return this.tracks;}
-  getAudioTracks() {return this.tracks.filter(t => t.kind === 'audio');}
-  getVideoTracks() {return this.tracks.filter(t => t.kind === 'video');}
+  constructor(tracks){this.tracks=tracks||[makeTrack()]}
+  getTracks(){return this.tracks}
+  getAudioTracks(){return this.tracks.filter(t=>t.kind==='audio')}
+  getVideoTracks(){return this.tracks.filter(t=>t.kind==='video')}
 }
 class MockRecorder {
-  constructor(stream, options = {}) {
-    this.stream = stream;
-    this.mimeType = options.mimeType || 'audio/webm';
-    this.state = 'inactive';
-  }
-  static isTypeSupported(type) {
-    return type === 'audio/webm;codecs=opus' || type === 'audio/webm';
-  }
-  start() {
-    // Mesmo se o navegador anuncia suporte, o codec Opus pode falhar.
-    if (this.mimeType === 'audio/webm;codecs=opus') {
-      const error = new Error('codec error'); error.name = 'NotSupportedError';
-      throw error;
+  constructor(stream,options={}){this.stream=stream;this.mimeType=options.mimeType||'audio/webm';this.state='inactive'}
+  static isTypeSupported(type){return type==='audio/webm;codecs=opus'||type==='audio/webm'}
+  start(){
+    if(this.mimeType==='audio/webm;codecs=opus') {
+      const err=new Error('codec error');err.name='NotSupportedError';throw err;
     }
-    this.state = 'recording';
+    if(this.state!=='inactive'){const err=new Error();err.name='InvalidStateError';throw err}
+    this.state='recording';
   }
-  stop() {
-    this.state = 'inactive';
+  stop(){
+    this.state='inactive';
     this.ondataavailable?.({data:new Blob([new Uint8Array([1,2,3])],{type:this.mimeType})});
     this.onstop?.();
   }
 }
-const MediaRecorder = MockRecorder;
-const MediaStream = FakeStream;
-const window = {
-  MediaRecorder: MockRecorder,
-  setInterval() {return 1;},
-  clearInterval() {},
-  addEventListener() {}
+const MediaRecorder=MockRecorder;
+const MediaStream=FakeStream;
+const window={
+  MediaRecorder:MockRecorder,
+  setInterval(){return 1},
+  clearInterval(){},
+  addEventListener(){}
 };
-if (__NATIVE__) window.HTMLMicrophoneElement = function HTMLMicrophoneElement() {};
-const navigator = {
-  mediaDevices: {
-    async getUserMedia(options) {
+if(__NATIVE__)window.HTMLMicrophoneElement=function HTMLMicrophoneElement(){};
+const navigator={
+  mediaDevices:{
+    async getUserMedia(options){
       calls.push(options);
-      if (denyPermission) {
-        const err = new Error('denied');
-        err.name = 'NotAllowedError';
-        throw err;
+      if(denyPermission){
+        const err=new Error('denied');err.name='NotAllowedError';throw err;
       }
       return new FakeStream();
     }
   }
 };
-let recorder = null;
-let recorderStream = null;
-let recorderChunks = [];
-let recorderStartedAt = 0;
-let recorderTimer = null;
+let recorder=null;
+let recorderStream=null;
+let recorderChunks=[];
+let recorderStartedAt=0;
+let recorderTimer=null;
 __LOGIC__
-
-const tick = () => new Promise(resolve => setImmediate(resolve));
-(async () => {
-  assert.equal(supportsNativeMicrophone, __NATIVE__);
-  assert.equal(nativeMicrophone.hidden, true, 'nao mostrar UI especial inicialmente');
-  assert.equal(standardRecordButton.hidden, false, 'mostrar botao Audio normal inicialmente');
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+(async()=>{
+  assert.equal(supportsNativeMicrophone,__NATIVE__);
+  assert.equal(standardRecordButton.hidden,false);
+  assert.equal(microphoneDialog.open,false,'modal nao aberto por padrao');
   standardRecordButton.emit('click');
   await tick();
-
-  if (__DENY__ && __NATIVE__) {
-    assert.equal(recorder, null, 'acesso negado nao pode iniciar gravacao');
-    assert.equal(nativeMicrophone.hidden, false, 'liberacao nativa deve aparecer apos negar');
-    assert.equal(standardRecordButton.hidden, true);
-    denyPermission = false;
-    nativeMicrophone.track = createTrack();
+  if(__DENY__ && __NATIVE__){
+    assert.equal(recorder,null,'negativa nao inicia gravacao');
+    assert.equal(microphoneDialog.open,true,'abre recuperacao numa modal');
+    assert.equal(calls.length,1,'tentativa inicial somente');
+    assert.equal(microphoneDialogMessage.textContent.includes('Chrome'),true);
+    // Evento nativo InvalidStateError deve manter modal aberta e nao reabrir
+    // getUserMedia enquanto o Chromium valida a posicao do controle.
+    nativeMicrophone.error=new DOMException(
+      'The permission element is disabled due to: intersection occluded or distorted',
+      'InvalidStateError'
+    );
+    nativeMicrophone.emit('error');
+    assert.equal(microphoneDialog.open,true);
+    assert.equal(microphoneDialogMessage.textContent.includes('Aguarde'),true);
+    nativeMicrophone.track=makeTrack();
     nativeMicrophone.emit('track');
-    await tick();
-    assert.equal(nativeMicrophone.track.readyState, 'ended', 'liberar track do Chrome');
-  }
-  if (__DENY__ && !__NATIVE__) {
-    assert.equal(recorder, null);
-    assert.equal(standardRecordButton.hidden, false);
-    denyPermission = false; // autorizacao liberada pelo controle do navegador
+    assert.equal(calls.length,1,'a faixa nativa nao pode causar segunda captura');
+    assert.equal(recorder.state,'recording');
+    assert.equal(microphoneDialogStop.hidden,false,'botao Parar dentro da modal');
+    assert.equal(recordStopButton.hidden,true,'botao Parar oculto atras da modal');
+    microphoneDialogStop.emit('click');
+    assert.equal(previews.length,1);
+    assert.equal(microphoneDialog.open,false,'fecha modal apos gravacao');
+    assert.equal(nativeMicrophone.track,null,'novo controle nativo e criado');
+    denyPermission=false;
+  } else if(__DENY__ && !__NATIVE__){
+    assert.equal(recorder,null);
+    assert.equal(microphoneDialog.open,false);
+    denyPermission=false;
     standardRecordButton.emit('click');
     await tick();
+    assert.equal(recorder.state,'recording');
+    recordStopButton.emit('click');
+    assert.equal(previews.length,1);
+  } else {
+    assert.equal(recorder.state,'recording');
+    assert.equal(microphoneDialog.open,false);
+    assert.equal(recordStopButton.hidden,false);
+    recordStopButton.emit('click');
+    assert.equal(previews.length,1);
   }
 
-  assert.equal(recorder.state, 'recording', 'gravador deve iniciar no clique');
-  assert.equal(recordStopButton.hidden, false, 'botao Parar aparece');
-  assert.equal(standardRecordButton.hidden, true, 'botao Audio nao duplica durante captura');
-  assert.equal(recorder.mimeType, 'audio/webm', 'recupera falha do codec preferido');
-  recordStopButton.emit('click');
-  assert.equal(previews.length, 1, 'audio precisa de previa');
-  assert.ok(previews[0].size > 0);
-  assert.equal(recordStopButton.hidden, true);
-  assert.equal(standardRecordButton.hidden, false, 'botao Audio reaparece');
+  assert.equal(standardRecordButton.hidden,false,'Audio reaparece');
+  assert.equal(recordStopButton.hidden,true);
   standardRecordButton.emit('click');
   await tick();
-  assert.equal(recorder.state, 'recording', 'segunda gravacao deve funcionar');
+  assert.equal(recorder.state,'recording','segunda gravacao funciona');
   recordStopButton.emit('click');
-  assert.equal(previews.length, 2, 'segunda gravacao gera nova previa');
-  assert.ok(calls.every(o => o.audio === true && o.video === false), 'nunca solicita camera');
-  assert.ok(calls.length >= 2);
-  console.log('pass');
-})().catch(error => {console.error(error.stack || error);process.exitCode = 1;});
+  assert.equal(previews.length,2);
+  assert.ok(previews.every(x=>x.size>0));
+  assert.ok(calls.every(x=>x.audio===true && x.video===false),'nunca pede camera');
+  const expected=__DENY__&&!__NATIVE__?3:2;
+  assert.equal(calls.length,expected);
+  console.log('passed');
+})().catch(err=>{console.error(err.stack||err);process.exitCode=1});
 """
 
 
@@ -153,30 +162,33 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     ("native", "denied"),
     [(False, False), (True, False), (False, True), (True, True)],
 )
-def test_recording_click_stop_preview_repeat_and_permission(native, denied):
+def test_recording_and_native_recovery(native, denied):
     if not shutil.which("node"):
         pytest.skip("Node.js indisponivel no CI")
     html = TEMPLATE.read_text(encoding="utf-8")
     assert START in html and END in html
     logic = html.split(START, 1)[1].split(END, 1)[0]
-    script = (
+    js = (
         HARNESS.replace("__LOGIC__", logic)
         .replace("__NATIVE__", "true" if native else "false")
         .replace("__DENY__", "true" if denied else "false")
     )
-    result = subprocess.run(
-        ["node"], input=script, text=True, capture_output=True, timeout=25, check=False,
-    )
-    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    p = subprocess.run(["node"], input=js, text=True, capture_output=True, timeout=25)
+    assert p.returncode == 0, p.stdout + "\n" + p.stderr
 
 
-def test_audio_only_and_no_manual_workaround():
+def test_native_button_is_outside_clipped_composer_and_never_requests_camera():
     html = TEMPLATE.read_text(encoding="utf-8")
+    assert "data-native-microphone" in html
     assert "<usermedia" not in html
-    assert "<camera" not in html
-    assert 'data-record-standard title="Gravar áudio"' in html
-    assert '<microphone class="inbox-microphone-control"' in html
+    assert '<microphone data-native-microphone' in html
+    assert "<dialog class=\"inbox-microphone-dialog\"" in html
+    first_form = html.index('class="chat-send-form"')
+    close_form = html.index("</form>", first_form)
+    native_button = html.index("<microphone data-native-microphone")
+    assert native_button > close_form, "Chrome capability nao deve ficar dentro de overflow:hidden"
     assert "getUserMedia(audioOnlyConstraints)" in html
+    assert "startRecorder(new MediaStream([track]), true)" in html
+    assert "data-mic-dialog-stop" in html
     assert "video: false" in html
-    assert "data-media-audio-preview" in html
     assert "chrome://settings" not in html
