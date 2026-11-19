@@ -13,6 +13,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.main import app
 from app.models import ServiceQueue, ServiceQueueMember, User
+from app.security import hash_password
 from app.services.access_control import (
     ALL_PERMISSION_CODES,
     effective_permissions,
@@ -165,6 +166,46 @@ def test_admin_can_create_user_with_only_conversations_access():
             assert "Leads e CRM</span>" not in inbox.text
             assert "Prospecta VOZ</span>" not in inbox.text
             assert "Conversas</span>" in inbox.text
+
+
+def test_delegated_voice_and_dispatch_access_without_sip_administration():
+    email = "delegated.voice.access@sulnet.local"
+    password = "VozAutorizada@2026"
+    with SessionLocal() as db:
+        u = db.scalar(select(User).where(User.email == email))
+        if u is None:
+            u = User(
+                name="Operador de Campanhas",
+                email=email,
+                password_hash=hash_password(password),
+                role="CONSULTOR",
+                team="LOJA",
+                active=True,
+                must_change_password=False,
+                access_permissions=json.dumps([
+                    "dashboard.view",
+                    "voice.view", "voice.campaigns.manage",
+                    "dispatches.view", "dispatches.manage",
+                ]),
+            )
+            db.add(u)
+        else:
+            u.must_change_password = False
+            u.access_permissions = json.dumps([
+                "dashboard.view",
+                "voice.view", "voice.campaigns.manage",
+                "dispatches.view", "dispatches.manage",
+            ])
+        db.commit()
+
+    with TestClient(app) as client:
+        _login(client, email, password)
+        assert client.get("/voice", follow_redirects=False).status_code == 200
+        assert client.get("/voice/campaigns/new", follow_redirects=False).status_code == 200
+        assert client.get("/dispatches", follow_redirects=False).status_code == 200
+        assert client.get("/voice/accounts", follow_redirects=False).status_code == 403
+        assert client.get("/ai", follow_redirects=False).status_code == 403
+        assert client.get("/settings/users", follow_redirects=False).status_code == 403
 
 
 def test_manager_cannot_grant_rights_it_does_not_have():
