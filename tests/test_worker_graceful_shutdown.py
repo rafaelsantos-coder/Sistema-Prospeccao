@@ -88,6 +88,8 @@ def test_campaign_commits_result_before_stopping(monkeypatch):
     )
 
     def send(_db, _row):
+        # O claim precisa ter commit antes de qualquer efeito externo.
+        assert db.commits == 1
         calls.append("sent")
         stop.requested = True
         return "sent"
@@ -95,7 +97,7 @@ def test_campaign_commits_result_before_stopping(monkeypatch):
     monkeypatch.setattr(campaign_worker, "process_dispatch_recipient", send)
     campaign_worker.run()
     assert calls == ["sent"]
-    assert db.commits == 1
+    assert db.commits == 2  # reserva duravel e resultado final
     assert db.rollbacks == 0
     assert db.closes == 1
 
