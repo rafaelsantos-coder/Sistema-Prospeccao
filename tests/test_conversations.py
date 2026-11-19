@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -68,6 +71,23 @@ def test_open_conversation_from_lead():
     assert "beginRecordingFromStream(nativeMicrophone.stream)" in inbox.text
     assert "HTMLUserMediaElement" in inbox.text
     assert "chrome://settings/content/siteDetails?site=" not in inbox.text
+
+
+def test_inbox_native_microphone_javascript_syntax():
+    """Garante que o código inline do gravador continue executável no Chrome."""
+    import pytest
+
+    if not shutil.which("node"):
+        pytest.skip("Node.js indisponível no ambiente de teste")
+    template = Path(__file__).parents[1] / "app/templates/conversations/inbox.html"
+    scripts = re.findall(r"<script[^>]*>([\\s\\S]*?)</script>", template.read_text(encoding="utf-8"))
+    assert scripts, "O inbox precisa inicializar os controles de gravação"
+    for script in scripts:
+        result = subprocess.run(
+            ["node", "--check"], input=script, text=True,
+            capture_output=True, check=False, timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_send_message_from_inbox(monkeypatch):
