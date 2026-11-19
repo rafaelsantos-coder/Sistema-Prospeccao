@@ -10,7 +10,7 @@ from __future__ import annotations
 import hmac
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -40,7 +40,16 @@ def _iso(value) -> str | None:
     return value.isoformat() if value else None
 
 
-@router.get("/{secret}")
+@router.get("")
+def diagnostico_via_header(
+    x_diagnostics_secret: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Endpoint preferencial: segredo no header, nunca na URL nem no log de acesso."""
+    return diagnostico(x_diagnostics_secret or "", db)
+
+
+@router.get("/{secret}", deprecated=True)
 def diagnostico(secret: str, db: Session = Depends(get_db)):
     expected = (settings.diagnostics_secret or "").strip()
     if len(expected) < 24 or not hmac.compare_digest(secret, expected):
