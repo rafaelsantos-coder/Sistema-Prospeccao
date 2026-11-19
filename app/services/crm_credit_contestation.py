@@ -241,6 +241,16 @@ def get_contestation_panel(db: Session, *, conversation: Conversation, actor: Us
             })
             _verify_response(ctx, reason_payload)
             status["reasons"] = _reason_list(reason_payload)
+            # O CRM fornece a competência esperada da fatura; o Prospecta
+            # apenas a apresenta, sem calcular ou impor mês alternativo.
+            expected_month = (
+                reason_payload.get("billMonthExpectedLabel")
+                or reason_payload.get("billMonthExpected")
+                or status_payload.get("billMonthExpectedLabel")
+                or status_payload.get("billMonthExpected")
+            )
+            if isinstance(expected_month, (str, int)) and len(str(expected_month)) <= 32:
+                status["billMonthExpected"] = str(expected_month)
         return status
     except CRMIntegrationError as exc:
         LOG.warning("crm_contestation_read_failed status=%s code=%s", exc.status_code, exc.error_code)
