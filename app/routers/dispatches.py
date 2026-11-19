@@ -28,6 +28,7 @@ from app.services.dispatch_queue import (
     parse_window,
 )
 from app.services.dispatch_monitor import dispatch_live_snapshot
+from app.services.delivery_reconciliation import reconciliation_snapshot
 from app.services.queue_routing import available_queues_for_user, get_queue
 from app.services.scoring import normalize_phone
 from app.services.telegram import configured as telegram_configured, ensure_telegram_queue
@@ -284,6 +285,35 @@ async def create_dispatch(
         f"Disparo #{dispatch.id} preparado com {created} contato(s). Revise e clique em Iniciar.",
     )
     return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+
+@router.get("/reconciliation")
+def dispatch_reconciliation(
+    request: Request,
+    status: str = "TODOS",
+    page: int = 1,
+    db: Session = Depends(get_db),
+):
+    """Revisão gerencial somente leitura; jamais libera um reenvio."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    try:
+        snapshot = reconciliation_snapshot(db, status=status, page=page)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Filtro de conferência inválido.")
+
+    response = render(
+        request,
+        "dispatches/reconciliation.html",
+        user=actor,
+        active_nav="dispatches",
+        page_title="Conferência de envios",
+        snapshot=snapshot,
+    )
+    # A listagem contém telefones e dados comerciais de clientes.
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @router.get("/{dispatch_id}")
