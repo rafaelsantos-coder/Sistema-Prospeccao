@@ -10,7 +10,7 @@
 </div>
 
 <div class="settings-hub-grid">
-  {% if current_user.role in ['ADMIN','GESTOR'] %}
+  {% if 'settings.connections.view' in current_user.permissions %}
   <a class="settings-hub-card" href="/settings/whatsapp">
     <span class="settings-hub-icon">Z</span>
     <div><span class="eyebrow">WHATSAPP</span><h3>Números e conexões Z-API</h3><p>Cadastre instâncias, números, credenciais, webhooks e faça testes de conexão.</p></div>
@@ -18,34 +18,44 @@
   </a>
   {% endif %}
 
+  {% if 'settings.queues.view' in current_user.permissions %}
   <a class="settings-hub-card" href="/settings/queues">
     <span class="settings-hub-icon">F</span>
     <div><span class="eyebrow">DISTRIBUIÇÃO</span><h3>Filas de atendimento</h3><p>Organize filas, atendentes, instância WhatsApp, unidade e estratégia de distribuição.</p></div>
     <div class="settings-hub-meta"><strong>{{ settings_stats.queues }}</strong><span>filas</span><b>→</b></div>
   </a>
 
+  {% endif %}
+  {% if 'settings.users.view' in current_user.permissions %}
   <a class="settings-hub-card" href="/settings/users">
     <span class="settings-hub-icon">U</span>
     <div><span class="eyebrow">ACESSOS</span><h3>Usuários e acessos</h3><p>Consulte usuários, perfis, equipes e unidades. Administradores podem criar e editar acessos.</p></div>
     <div class="settings-hub-meta"><strong>{{ settings_stats.users }}</strong><span>usuários</span><b>→</b></div>
   </a>
 
+  {% endif %}
+  {% if 'settings.operations.view' in current_user.permissions %}
   <a class="settings-hub-card" href="/settings/operations">
     <span class="settings-hub-icon">M</span>
     <div><span class="eyebrow">ESTRUTURA</span><h3>Metas e unidades</h3><p>Consulte as metas diárias das frentes comerciais e a estrutura de unidades cadastradas.</p></div>
     <div class="settings-hub-meta"><strong>{{ settings_stats.branches }}</strong><span>unidades</span><b>→</b></div>
   </a>
 
+  {% endif %}
+  {% if 'settings.integrations.view' in current_user.permissions %}
   <a class="settings-hub-card" href="/settings/integrations">
     <span class="settings-hub-icon">I</span>
     <div><span class="eyebrow">AMBIENTE</span><h3>Integrações e ambiente</h3><p>Visualize Apify, e-mail, OpenAI, motor legado e a capacidade de envios do ambiente.</p></div>
     <div class="settings-hub-meta"><span>status geral</span><b>→</b></div>
   </a>
 
+  {% endif %}
+  {% if 'settings.audit.view' in current_user.permissions %}
   <a class="settings-hub-card" href="/settings/audit">
     <span class="settings-hub-icon">A</span>
     <div><span class="eyebrow">GOVERNANÇA</span><h3>Auditoria</h3><p>Acompanhe alterações de usuários, filas, integrações e demais eventos administrativos.</p></div>
     <div class="settings-hub-meta"><strong>{{ settings_stats.audit }}</strong><span>eventos recentes</span><b>→</b></div>
   </a>
+  {% endif %}
 </div>
 {% endblock %}

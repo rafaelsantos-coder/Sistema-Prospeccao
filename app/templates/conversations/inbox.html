@@ -234,7 +234,7 @@
       <div class="chat-header-actions">
         {% if globally_blacklisted %}
         <span class="chat-blacklist-indicator" role="status" title="Bloqueio aplicado a todas as filas e instâncias">⛔ Blacklist global</span>
-        {% else %}
+        {% elif 'conversations.blacklist' in current_user.permissions %}
         <details class="chat-blacklist-action">
           <summary title="Impedir novas mensagens por qualquer fila">⊘ Bloquear contato</summary>
           <form action="/conversations/{{ conversation.id }}/blacklist" method="post">
@@ -267,7 +267,7 @@
       </div>
     </header>
 
-    {% if crm_manual_seller and not crm_manual_status %}
+    {% if 'crm.register' in current_user.permissions and crm_manual_seller and not crm_manual_status %}
     <dialog class="crm-manual-dialog" id="crm-manual-dialog" aria-labelledby="crm-manual-title">
       <form method="post" action="/conversations/{{ conversation.id }}/register-crm" class="crm-manual-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -355,7 +355,7 @@
       {% endfor %}
     </div>
 
-    {% if conversation.status not in closed_statuses and not globally_blacklisted %}
+    {% if 'conversations.reply' in current_user.permissions and conversation.status not in closed_statuses and not globally_blacklisted %}
     <div class="chat-compose">
       <form action="/conversations/{{ conversation.id }}/send" method="post" class="chat-send-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -436,7 +436,7 @@
       <small>{% if selected_queue %}Código {{ selected_queue.code }} · {% endif %}Responsável: {{ conversation.assigned_user.name if conversation.assigned_user else 'Sem responsável' }}</small>
     </div>
 
-    {% if crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" and crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
+    {% if 'crm.credit' in current_user.permissions and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" and crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
     <div class="context-section crm-credit-section">
       <div class="context-title">Consulta de CPF · CRM Comercial</div>
       <p>Oportunidade #{{ crm_manual_status.opportunityId }} · {{ crm_manual_seller.funnel_name }}</p>
@@ -467,7 +467,7 @@
     </div>
     {% endif %}
 
-    {% if crm_contestation_enabled and crm_credit_status and crm_credit_status.state == "CRM_MANUAL_CREDIT" and crm_credit_status.analysisId
+    {% if 'crm.contest' in current_user.permissions and crm_contestation_enabled and crm_credit_status and crm_credit_status.state == "CRM_MANUAL_CREDIT" and crm_credit_status.analysisId
           and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED"
           and crm_credit_status.opportunityId == crm_manual_status.opportunityId
           and crm_manual_seller and crm_credit_status.sellerUsername == crm_manual_seller.username %}
@@ -640,6 +640,7 @@
     </div>
     {% endif %}
 
+    {% if 'conversations.transfer' in current_user.permissions %}
     <div class="context-section conversation-transfer-section">
       <div class="context-title">Transferir atendimento</div>
       {% if ai_transfer_queue %}
@@ -687,7 +688,9 @@
       </form>
       {% endif %}
     </div>
+    {% endif %}
 
+    {% if 'conversations.reply' in current_user.permissions %}
     <div class="context-section">
       <div class="context-title">Fluxo da conversa</div>
       <form action="/conversations/{{ conversation.id }}/status" method="post" class="stack-form compact">
@@ -709,6 +712,7 @@
         <button class="button button-dark full-width" type="submit">Atualizar status</button>
       </form>
     </div>
+    {% endif %}
     {% else %}
     <div class="context-placeholder">
       <span class="eyebrow">CONTEXTO</span>

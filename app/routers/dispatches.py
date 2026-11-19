@@ -17,7 +17,8 @@ from app.models import (
     ServiceQueue,
     User,
 )
-from app.security import get_current_user, require_roles, validate_csrf
+from app.security import get_current_user, require_permission, validate_csrf
+from app.services.access_control import has_permission
 from app.services.audit import write_audit
 from app.services.campaign_queue import campaign_message_template, personalize_message
 from app.services.chat_reports import format_duration
@@ -44,8 +45,8 @@ def _actor(request: Request, db: Session) -> tuple[User | None, RedirectResponse
     user = get_current_user(request, db)
     if not user:
         return None, RedirectResponse("/login", status_code=303)
-    if user.role not in {"ADMIN", "GESTOR"}:
-        flash(request, "Somente gestores podem criar e controlar disparos.", "warning")
+    if not has_permission(user, "dispatches.view"):
+        flash(request, "Você não possui acesso aos disparos.", "warning")
         return None, RedirectResponse("/dashboard", status_code=303)
     return user, None
 
@@ -150,7 +151,7 @@ async def create_dispatch(
     if redirect:
         return redirect
     validate_csrf(request, csrf_token)
-    require_roles(actor, "ADMIN", "GESTOR")
+    require_permission(actor, "dispatches.manage")
 
     campaign = db.get(Campaign, campaign_id)
     if (

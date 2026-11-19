@@ -35,6 +35,8 @@ class User(Base):
     team: Mapped[str] = mapped_column(String(30), default="LOJA", index=True)
     branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # NULL = matriz histórica por perfil; JSON array = concessões explícitas.
+    access_permissions: Mapped[str | None] = mapped_column(Text, nullable=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
     session_version: Mapped[int] = mapped_column(Integer, default=1)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

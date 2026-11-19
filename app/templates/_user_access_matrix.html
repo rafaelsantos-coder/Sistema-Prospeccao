@@ -1,0 +1,60 @@
+{# Matriz reutilizada na criação e na edição de usuários. #}
+<section class="user-access-matrix field-span-2"
+         data-access-matrix
+         data-access-locked="{{ 'true' if target_user is defined and target_user and target_user.id == current_user.id else 'false' }}"
+         data-access-presets='{{ access_presets | tojson }}'>
+  <input type="hidden" name="permissions_configured" value="1">
+  <div class="user-access-matrix-header">
+    <div>
+      <span class="eyebrow">ACESSO PERSONALIZADO</span>
+      <h4>O que este usuário poderá acessar?</h4>
+      <p>Escolha os menus e as ações permitidas. O perfil determina o limite máximo;
+         para Conversas também se aplicam as filas e os responsáveis vinculados.</p>
+    </div>
+    <div class="user-access-selection-counter" data-access-count aria-live="polite">Permissões selecionadas</div>
+  </div>
+  {% if target_user is defined and target_user and target_user.id == current_user.id %}
+  <p class="user-access-lock-note">Por segurança, você não pode alterar suas próprias permissões nesta tela.</p>
+  {% else %}
+  <div class="user-access-matrix-actions" aria-label="Seleção de permissões">
+    <button type="button" class="button button-secondary" data-access-preset>Aplicar padrão do perfil</button>
+    <button type="button" class="button button-secondary" data-access-all>Selecionar disponíveis</button>
+    <button type="button" class="button button-ghost" data-access-none>Limpar seleção</button>
+  </div>
+  {% endif %}
+  <div class="user-access-groups">
+    {% for group in access_groups %}
+    <details class="user-access-group" open>
+      <summary>
+        <span class="user-access-group-title">{{ group.title }}</span>
+        <span class="user-access-group-count" data-access-group-count="{{ group.key }}"></span>
+        <span class="user-access-chevron" aria-hidden="true">⌄</span>
+      </summary>
+      <div class="user-access-group-body">
+        <p>{{ group.description }}</p>
+        <div class="user-access-choices">
+          {% for access in group["items"] %}
+          <label class="user-access-choice">
+            <input type="checkbox"
+                   name="permissions"
+                   value="{{ access.code }}"
+                   data-access-code="{{ access.code }}"
+                   data-access-parent="{{ access.parent }}"
+                   data-access-roles="{{ access.allowed_roles|join(',') }}"
+                   data-access-actor="{{ 'true' if access.actor_allowed else 'false' }}"
+                   {% if access.code in access_selected %}checked{% endif %}
+                   {% if not access.grantable or (target_user is defined and target_user and target_user.id == current_user.id) %}disabled{% endif %}>
+            <span>{{ access.label }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  <p class="user-access-warning" data-access-warning aria-live="polite"></p>
+  <p class="user-access-footnote">
+    <strong>Importante:</strong> conceder acesso ao menu não muda automaticamente a fila do usuário nem ativa a IA.
+    Funções protegidas, como administração de usuários, contas SIP e decisões gerenciais, mantêm limites de perfil.
+  </p>
+</section>

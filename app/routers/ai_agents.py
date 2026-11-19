@@ -25,6 +25,7 @@ from app.models import (
     ZApiInstance,
 )
 from app.security import get_current_user, require_roles, validate_csrf
+from app.services.access_control import has_permission
 from app.services.ai_queue_scope import ai_allowed_for_queue, exclusive_ai_queue_id, manual_queue_control_enabled, ai_queue_enabled
 from app.services.ai_sdr import ai_metrics
 from app.services.audit import write_audit
@@ -66,8 +67,8 @@ def _actor(request: Request, db: Session) -> tuple[User | None, RedirectResponse
     user = get_current_user(request, db)
     if not user:
         return None, RedirectResponse("/login", status_code=303)
-    if user.role not in {"ADMIN", "GESTOR"}:
-        flash(request, "A configuração dos agentes de IA é restrita a gestores.", "warning")
+    if not has_permission(user, "ai.view"):
+        flash(request, "Você não possui acesso aos painéis de IA.", "warning")
         return None, RedirectResponse("/dashboard", status_code=303)
     return user, None
 
