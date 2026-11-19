@@ -123,7 +123,7 @@ def test_reconciliation_lists_only_uncertain_and_stale_without_sending(monkeypat
         assert f"Contato recente {unique}" not in page
         assert f"Contato pendente {unique}" not in page
         assert "Sem ID confirmado" in page
-        assert "Não reenviar automaticamente" in page
+        assert "não reenviar automaticamente" in page
 
         only_uncertain = client.get(
             "/dispatches/reconciliation?status=INDETERMINADO"
