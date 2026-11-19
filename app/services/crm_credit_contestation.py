@@ -203,7 +203,10 @@ def get_contestation_panel(db: Session, *, conversation: Conversation, actor: Us
     if not settings.sulnet_crm_contestation_enabled:
         raise CRMManualError("Contestação ainda não habilitada na integração com o CRM.")
     ctx = _context(db, conversation)
-    client = SulnetCRMClient.from_settings()
+    try:
+        client = SulnetCRMClient.from_settings()
+    except CRMIntegrationError as exc:
+        raise CRMManualError("Conexão com o CRM não configurada para contestação.") from exc
     try:
         status_payload = client.seller_contestation_status(**{
             "opportunity_id": ctx.opportunity_id,
@@ -304,6 +307,9 @@ def send_contestation(
 
     try:
         crm = SulnetCRMClient.from_settings()
+    except CRMIntegrationError as exc:
+        raise CRMManualError("Conexão com o CRM não configurada para contestação.") from exc
+    try:
         attachment_ids: list[int] = []
         for filename, mimetype, blob in documents:
             # Nome aleatório elimina CPF/nome de arquivo original em storage/logs.
