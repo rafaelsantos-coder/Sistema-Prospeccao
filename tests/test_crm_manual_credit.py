@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
 
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
@@ -245,3 +248,68 @@ def test_webhook_credit_uses_integration_key_not_sdr_bearer(monkeypatch):
     )
     assert captured["headers"]["X-Integration-Key"] == "existing-leads-webhook-key"
     assert "Authorization" not in captured["headers"]
+
+
+@pytest.mark.parametrize(
+    ("name", "username", "crm_id"),
+    [
+        ("Gabriele Naiane Barbosa", "gabriele.barbosa", 42),
+        ("Michele Zandona", "michele.zandona", 43),
+    ],
+)
+def test_new_santa_rosa_seller_credit_uses_registered_upgrade_funnel(
+    monkeypatch, name, username, crm_id,
+):
+    """Consulta usa sellerUsername oficial e confirma funil 23 da oportunidade."""
+    monkeypatch.setattr(
+        credit, "settings",
+        replace(credit.settings, sulnet_crm_manual_credit_enabled=True),
+    )
+    registered = {
+        "state": manual.ACTION_REGISTERED,
+        "opportunityId": 17234,
+        "sellerUsername": username,
+        "funnelId": 23,
+        "stageId": 77,
+    }
+    calls = []
+    audits = []
+
+    class FakeCRM:
+        def consult_seller_credit(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "opportunityId": 17234,
+                "assignedUserId": crm_id,
+                "sellerUsername": username,
+                "funnelId": 23,
+                "analysisId": 9876,
+                "result": "Em análise",
+            }
+
+    monkeypatch.setattr(credit, "_guard_contact_lock", lambda *_: None)
+    monkeypatch.setattr(credit, "registration_status", lambda *_: registered)
+    monkeypatch.setattr(credit, "credit_status", lambda *_: None)
+    monkeypatch.setattr(credit, "_audit", lambda *args, **kwargs: audits.append(kwargs))
+    monkeypatch.setattr(
+        credit.SulnetCRMClient, "from_settings", classmethod(lambda cls: FakeCRM())
+    )
+    user = User(name=name, email="vendedor@sulnet.local",
+                password_hash="x", active=True, role="CONSULTOR")
+    user.id = 88
+    conversation = SimpleNamespace(
+        id=22, contact_id=33, assigned_user=user, assigned_user_id=user.id
+    )
+    result = credit.consult_registered_cpf(
+        None, conversation=conversation, actor=user, cpf="111.444.777-35"
+    )
+    assert result["funnelId"] == 23
+    assert result["sellerUsername"] == username
+    assert calls == [{
+        "opportunity_id": 17234,
+        "seller_username": username,
+        "cpf": "11144477735",
+    }]
+    assert audits[0]["action"] == credit.ACTION_CREDIT
+    assert "cpf" not in str(audits[0]).lower()
+

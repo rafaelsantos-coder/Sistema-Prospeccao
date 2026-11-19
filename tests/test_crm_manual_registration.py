@@ -40,6 +40,8 @@ def _login(client: TestClient) -> None:
         ("Claudia Linde", "claudia.linde", 16, 55),
         ("Natine Dauana Dalla Lana Hirt", "natine.hirt", 17, 63),
         ("Fabiano Braga", "fabiano.braga", 17, 63),
+        ("Gabriele Naiane Barbosa", "gabriele.barbosa", 17, 63),
+        ("Michele Zandona", "michele.zandona", 17, 63),
     ],
 )
 def test_seller_mapping_is_exact(name, username, funnel, stage):
@@ -49,6 +51,36 @@ def test_seller_mapping_is_exact(name, username, funnel, stage):
     assert (target.username, target.funnel_id, target.stage_id) == (username, funnel, stage)
     actor.active = False
     assert manual.seller_for_user(actor) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "username", "crm_user_id"),
+    [
+        ("Gabriele Naiane Barbosa", "gabriele.barbosa", 42),
+        ("Michele Zandona", "michele.zandona", 43),
+    ],
+)
+def test_new_santa_rosa_sellers_allow_upgrade_without_inventing_upgrade_stage(
+    name, username, crm_user_id,
+):
+    user = User(name=name, email="conta@sulnet.local", password_hash="x", active=True)
+    seller = manual.seller_for_user(user)
+    assert seller is not None
+    assert seller.username == username
+    assert seller.user_id == crm_user_id
+    assert seller.funnel_id == 17
+    assert seller.stage_id == 63
+    assert seller.additional_funnel_ids == (23,)
+    assert manual.seller_accepts_funnel(seller, 17)
+    assert manual.seller_accepts_funnel(seller, 23)
+    assert not manual.seller_accepts_funnel(seller, 16)
+    assert manual._verified_stage(seller, 17, 63)
+    assert not manual._verified_stage(seller, 17, 55)
+    assert manual._verified_stage(seller, 23, 77)  # Etapa informada pelo CRM, sem presumir ID
+    assert not manual._verified_stage(seller, 23, None)
+    assert not manual._verified_stage(seller, 23, 0)
+    user.active = False
+    assert manual.seller_for_user(user) is None
 
 
 def test_crm_search_rejects_incomplete_pagination_and_unknown_shape():

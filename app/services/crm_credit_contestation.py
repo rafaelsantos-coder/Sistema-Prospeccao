@@ -26,6 +26,7 @@ from app.services.crm_manual_registration import (
     _guard_contact_lock,
     registration_status,
     seller_for_user,
+    seller_accepts_funnel,
 )
 from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
 from app.services.upload_security import UploadValidationError, validate_upload
@@ -92,6 +93,7 @@ def _context(db: Session, conversation: Conversation) -> ContestedOpportunity:
             "É necessário registrar a oportunidade e consultar o CPF antes da contestação."
         )
     opp_id = _as_int(registered.get("opportunityId"))
+    registered_funnel = _as_int(registered.get("funnelId")) or (seller.funnel_id if seller else None)
     analysis_id = _as_int(consulted.get("analysisId"))
     if (
         registered.get("state") != "CRM_MANUAL_REGISTERED"
@@ -101,6 +103,11 @@ def _context(db: Session, conversation: Conversation) -> ContestedOpportunity:
         or _as_int(consulted.get("opportunityId")) != opp_id
         or registered.get("sellerUsername") != seller.username
         or consulted.get("sellerUsername") != seller.username
+        or not seller_accepts_funnel(seller, registered_funnel)
+        or (
+            _as_int(consulted.get("funnelId")) is not None
+            and _as_int(consulted.get("funnelId")) != registered_funnel
+        )
     ):
         raise CRMManualError(
             "O vínculo entre conversa, vendedor, oportunidade e análise precisa ser conferido no CRM."
@@ -110,7 +117,7 @@ def _context(db: Session, conversation: Conversation) -> ContestedOpportunity:
         analysis_id=analysis_id,
         seller_username=seller.username,
         seller_user_id=seller.user_id,
-        funnel_id=seller.funnel_id,
+        funnel_id=registered_funnel,
     )
 
 
