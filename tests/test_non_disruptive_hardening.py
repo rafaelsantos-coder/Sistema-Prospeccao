@@ -1,6 +1,8 @@
 """Regressões de controles que não dependem de serviços externos."""
 import logging
 
+import pytest
+
 from app.main import _RedactWebhookSecretFilter
 from app.services.commercial_intelligence import run_commercial_observer_loop
 
@@ -42,11 +44,9 @@ def test_diagnostic_header_uses_same_secret_validation(monkeypatch):
         diagnostic_router, "settings",
         SimpleNamespace(diagnostics_secret="x" * 32),
     )
-    try:
+    with pytest.raises(HTTPException) as exc:
         diagnostic_router.diagnostico_via_header("incorrect-key", None)
-        assert False, "invalid diagnostic header must be denied"
-    except HTTPException as exc:
-        assert exc.status_code == 404
+    assert exc.value.status_code == 404
 
 
 def test_diagnostic_path_secret_redaction_preserves_query():
