@@ -221,7 +221,7 @@ def get_contestation_panel(db: Session, *, conversation: Conversation, actor: Us
         if actor.role not in CREDIT_ROLES:
             status["canContest"] = False
             status["readOnly"] = True
-        elif actor.id != conversation.assigned_user_id:
+        elif actor.role == "CONSULTOR" and actor.id != conversation.assigned_user_id:
             status["canContest"] = False
             status["readOnly"] = True
         else:
@@ -255,7 +255,9 @@ def send_contestation(
 ) -> dict[str, Any]:
     if not settings.sulnet_crm_contestation_enabled:
         raise CRMManualError("Contestação ainda não habilitada na integração com o CRM.")
-    if actor.role not in CREDIT_ROLES or actor.id != conversation.assigned_user_id:
+    if actor.role not in CREDIT_ROLES or (
+        actor.role == "CONSULTOR" and actor.id != conversation.assigned_user_id
+    ):
         raise CRMManualError("A contestação deve ser enviada pelo vendedor responsável ou sua supervisão autorizada.")
 
     ctx = _context(db, conversation)
@@ -269,6 +271,10 @@ def send_contestation(
     panel = get_contestation_panel(db, conversation=conversation, actor=actor)
     if not panel["canContest"]:
         raise CRMManualError("O CRM não permite contestação neste momento.")
+    # Após uma contestação local, exigir decisão gerencial antes de um novo
+    # envio; assim recontestar uma reprovação é possível, mas duplo clique não.
+    if past and past.get("state") == CONTEST_SENT and not panel.get("managementDecision"):
+        raise CRMManualError("Contestação já enviada. Aguarde a decisão gerencial do CRM.")
     chosen = next((r for r in panel["reasons"] if r["key"] == reason_type), None)
     if not chosen:
         raise CRMManualError("Selecione um motivo válido retornado pelo CRM.")
