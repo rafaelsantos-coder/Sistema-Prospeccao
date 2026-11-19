@@ -405,7 +405,7 @@ def _eligible_recent(db: Session, limit: int) -> list[int]:
 
 def run_commercial_observer_loop(stop_event: threading.Event | None = None) -> None:
     """Trabalha apenas em tabelas internas. Não depende de fila com IA ativa."""
-    if os.getenv("COMMERCIAL_OBSERVER_ENABLED", "true").lower() not in {"1", "true", "yes", "on"}:
+    if os.getenv("COMMERCIAL_OBSERVER_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         LOG.info("Observador comercial desativado por configuracao.")
         return
     poll = max(20, int(os.getenv("COMMERCIAL_OBSERVER_POLL_SECONDS", "30")))

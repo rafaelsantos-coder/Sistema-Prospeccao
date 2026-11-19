@@ -32,6 +32,21 @@ def _clean(text: str | None, limit: int = MAX_CHARS) -> str:
     return " ".join(value.split())[:limit]
 
 
+def _weekly_conversations_query(ai_messages):
+    """Usa um alias SQL único para agrupar e ordenar semanas no PostgreSQL.
+
+    Repetir date_trunc("week", ...) cria parâmetros independentes no driver,
+    e o PostgreSQL não considera essas expressões idênticas no GROUP BY.
+    """
+    week_start = func.date_trunc("week", Message.created_at).label("week_start")
+    return (
+        select(week_start, func.count(func.distinct(Message.conversation_id)))
+        .where(ai_messages)
+        .group_by("week_start")
+        .order_by("week_start")
+    )
+
+
 def log_ai_history_audit(db) -> None:
     since = utcnow() - timedelta(days=DAYS)
     ai_user_ids = [row for row in db.scalars(select(AIAgentProfile.user_id)) if row]
@@ -83,12 +98,7 @@ def log_ai_history_audit(db) -> None:
             select(func.count(func.distinct(Message.conversation_id))).where(ai_messages, Message.body.ilike(term))
         ) or 0
         LOG.info("ai_audit funil etapa=%s conversas=%s de=%s", label, qty, convs)
-    for week, qty in db.execute(
-        select(func.date_trunc("week", Message.created_at), func.count(func.distinct(Message.conversation_id)))
-        .where(ai_messages)
-        .group_by(func.date_trunc("week", Message.created_at))
-        .order_by(func.date_trunc("week", Message.created_at))
-    ):
+    for week, qty in db.execute(_weekly_conversations_query(ai_messages)):
         LOG.info("ai_audit conversas_por_semana semana=%s conversas=%s", str(week)[:10], qty)
 
     bodies = Counter()
