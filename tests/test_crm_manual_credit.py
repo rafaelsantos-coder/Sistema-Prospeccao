@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
@@ -11,6 +12,7 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import AuditLog, Conversation, User
 from app.services import crm_manual_credit as credit
+from app.routers import conversations as conversation_routes
 from app.services import crm_manual_registration as manual
 
 
@@ -46,7 +48,14 @@ def test_cpf_validation_and_decisions():
 
 
 def test_manual_credit_uses_existing_crm_lead_and_never_saves_cpf(monkeypatch):
-    monkeypatch.setattr(credit.settings, "sulnet_crm_manual_credit_enabled", True)
+    monkeypatch.setattr(
+        credit, "settings",
+        replace(credit.settings, sulnet_crm_manual_credit_enabled=True),
+    )
+    monkeypatch.setattr(
+        conversation_routes, "settings",
+        replace(conversation_routes.settings, sulnet_crm_manual_credit_enabled=True),
+    )
     calls = []
 
     class FakeCRM:
@@ -55,7 +64,10 @@ def test_manual_credit_uses_existing_crm_lead_and_never_saves_cpf(monkeypatch):
             return {
                 "opportunityId": 17456,
                 "assignedUserId": 24,
-                "status": "Aprovado com taxa",
+                "sellerUsername": "maria.peno",
+                "funnelId": 16,
+                "result": "Aprovado com taxa",
+                "status": "Liberado com taxa",
                 "approved": True,
                 "analysisId": 991,
                 "protocol": "CRED-TEST-991",
