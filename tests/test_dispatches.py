@@ -750,3 +750,189 @@ def test_dispatch_live_monitor_shows_last_next_and_realistic_daily_capacity():
         assert data["last_sent"] is not None
         assert data["next_send"] is not None
         assert data["status"] == "ATIVO"
+
+
+def test_dispatch_claim_survives_crash_after_provider_ack(monkeypatch):
+    """Se a resposta externa chegou e a transação final caiu, não reenviar."""
+    calls = []
+
+    def accepted(self, *, phone, message):
+        calls.append((phone, message))
+        return {"messageId": "ACK-OUTSIDE-DB"}
+
+    monkeypatch.setattr(ZApiService, "send_text", accepted)
+
+    with TestClient(app):
+        from datetime import timedelta
+
+        from app.services.dispatch_queue import ensure_dispatch_lead
+        from app.timeutils import utcnow
+
+        db = SessionLocal()
+        try:
+            campaign, queue = _campaign_and_queue(db, "FENCE-ACK")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id, status="ATIVO",
+                interval_seconds=5, daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            lead = ensure_dispatch_lead(
+                db, name="Cliente teste", phone="5555999998861",
+                queue=queue, created_by_id=None,
+            )
+            recipient = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id, lead_id=lead.id,
+                name="Cliente teste", phone=lead.phone,
+                message_body="Mensagem interna de teste", status="PENDENTE",
+            )
+            db.add(recipient)
+            db.commit()
+            dispatch_id, recipient_id = dispatch.id, recipient.id
+
+            reserved = claim_next_dispatch_recipient(db, dispatch_id=dispatch_id)
+            assert reserved and reserved.id == recipient_id
+            db.commit()  # mesmo limite transacional do worker
+            assert process_dispatch_recipient(db, reserved) == "sent"
+            db.rollback()  # SIGKILL / falha no commit após a confirmação externa
+        finally:
+            db.close()
+
+        with SessionLocal() as db:
+            persisted = db.get(CampaignDispatchRecipient, recipient_id)
+            assert persisted.status == "ENVIANDO"
+            assert persisted.attempts == 1
+            assert persisted.provider_message_id is None
+            dispatch = db.get(CampaignDispatch, dispatch_id)
+            dispatch.next_send_at = utcnow() - timedelta(seconds=1)
+            db.commit()
+            assert claim_next_dispatch_recipient(db, dispatch_id=dispatch_id) is None
+            assert len(calls) == 1  # não houve segundo envio
+
+
+def test_unknown_provider_result_never_requeues_dispatch(monkeypatch):
+    """Timeout pode acontecer após aceitação; usuário precisa reconciliar."""
+    from datetime import timedelta
+
+    from app.services.dispatch_queue import ensure_dispatch_lead
+    from app.services.zapi import ZApiError
+    from app.timeutils import utcnow
+
+    def timed_out(self, *, phone, message):
+        raise ZApiError("Timeout após envio; status externo desconhecido")
+
+    monkeypatch.setattr(ZApiService, "send_text", timed_out)
+    with TestClient(app):
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "FENCE-TIMEOUT")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id,
+                status="ATIVO", interval_seconds=5, daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            lead = ensure_dispatch_lead(
+                db, name="Cliente teste", phone="5555999998862",
+                queue=queue, created_by_id=None,
+            )
+            row = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id, lead_id=lead.id, name="Cliente teste",
+                phone=lead.phone, message_body="Oferta teste", status="PENDENTE",
+            )
+            db.add(row)
+            db.commit()
+            dispatch_id, recipient_id = dispatch.id, row.id
+
+            claimed = claim_next_dispatch_recipient(db, dispatch_id=dispatch_id)
+            assert claimed and claimed.id == recipient_id
+            db.commit()
+            assert process_dispatch_recipient(db, claimed) == "unknown"
+            db.commit()
+            assert db.get(CampaignDispatchRecipient, recipient_id).status == "INDETERMINADO"
+            counts = dispatch_counts(db, dispatch_id)
+            assert counts["unknown"] == 1
+            assert counts["pending"] == 0
+            assert db.get(CampaignDispatch, dispatch_id).status == "ATIVO"
+            db.get(CampaignDispatch, dispatch_id).next_send_at = (
+                utcnow() - timedelta(seconds=1)
+            )
+            db.commit()
+            assert claim_next_dispatch_recipient(db, dispatch_id=dispatch_id) is None
+
+
+def test_legacy_campaign_claim_survives_worker_crash():
+    """Fluxo legado também deve persistir ENVIANDO antes de chamar Z-API."""
+    from app.models import CampaignRecipient
+    from app.services.campaign_queue import claim_next_recipient
+    from app.services.dispatch_queue import ensure_dispatch_lead
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "FENCE-LEGACY")
+            campaign.status = "ATIVA"
+            lead = ensure_dispatch_lead(
+                db, name="Cliente legado", phone="5555999998863",
+                queue=queue, created_by_id=None,
+            )
+            row = CampaignRecipient(
+                campaign_id=campaign.id, lead_id=lead.id,
+                message_body="Mensagem teste", status="PENDENTE",
+            )
+            db.add(row)
+            db.commit()
+            row_id = row.id
+            reserved = claim_next_recipient(db)
+            assert reserved and reserved.id == row_id
+            db.commit()
+            db.rollback()  # simula um reinício inesperado
+        with SessionLocal() as db:
+            assert db.get(CampaignRecipient, row_id).status == "ENVIANDO"
+            assert db.get(CampaignRecipient, row_id).attempts == 1
+            assert claim_next_recipient(db) is None
+
+
+def test_cancel_reopen_never_replays_in_flight_or_unknown_rows():
+    """Cancelar/reabrir deve restaurar só os contatos realmente não enviados."""
+    with TestClient(app) as client:
+        csrf = _login_admin(client)
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "FENCE-CANCEL")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id,
+                status="ATIVO", interval_seconds=15, daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            rows = [
+                CampaignDispatchRecipient(
+                    dispatch_id=dispatch.id, name=f"Teste {i}",
+                    phone=f"55559999988{i:02d}", message_body="Teste",
+                    status=status,
+                )
+                for i, status in enumerate(
+                    ("PENDENTE", "ENVIANDO", "INDETERMINADO"), start=71
+                )
+            ]
+            db.add_all(rows)
+            db.commit()
+            dispatch_id = dispatch.id
+            ids = [r.id for r in rows]
+
+        result = client.post(
+            f"/dispatches/{dispatch_id}/cancel",
+            data={"csrf_token": csrf}, follow_redirects=False,
+        )
+        assert result.status_code == 303
+
+        with SessionLocal() as db:
+            states = [db.get(CampaignDispatchRecipient, i).status for i in ids]
+            assert states == ["IGNORADO", "ENVIANDO", "INDETERMINADO"]
+
+        result = client.post(
+            f"/dispatches/{dispatch_id}/reopen",
+            data={"csrf_token": csrf}, follow_redirects=False,
+        )
+        assert result.status_code == 303
+        with SessionLocal() as db:
+            states = [db.get(CampaignDispatchRecipient, i).status for i in ids]
+            assert states == ["PENDENTE", "ENVIANDO", "INDETERMINADO"]
