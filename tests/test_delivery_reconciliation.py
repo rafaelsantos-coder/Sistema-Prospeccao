@@ -11,6 +11,7 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import (
     Campaign,
+    CampaignQueueLink,
     CampaignDispatch,
     CampaignDispatchRecipient,
     CampaignRecipient,
@@ -108,7 +109,9 @@ def test_reconciliation_lists_only_uncertain_and_stale_without_sending(monkeypat
                 status="INDETERMINADO", attempts=1,
             )
             db.add(legacy)
+            db.add(CampaignQueueLink(campaign_id=campaign.id, queue_id=queue.id))
             db.commit()
+            queue_id = queue.id
             record_ids = [item.id for item in records]
             legacy_id = legacy.id
 
@@ -123,6 +126,19 @@ def test_reconciliation_lists_only_uncertain_and_stale_without_sending(monkeypat
         assert f"Contato recente {unique}" not in page
         assert f"Contato pendente {unique}" not in page
         assert "Sem ID confirmado" in page
+        by_queue = client.get(
+            f"/dispatches/reconciliation?status=TODOS&queue_id={queue_id}"
+        )
+        assert by_queue.status_code == 200
+        assert f"Empresa {unique}" in by_queue.text
+        assert f"Lead legado {unique}" in by_queue.text
+        assert f'value="{queue_id}" selected' in by_queue.text
+        assert f"Empresa {unique}" not in client.get(
+            "/dispatches/reconciliation?queue_id=99999999"
+        ).text
+        assert f"Lead legado {unique}" not in client.get(
+            "/dispatches/reconciliation?queue_id=99999999"
+        ).text
         assert "não reenviar automaticamente" in page
 
         only_uncertain = client.get(
@@ -153,6 +169,7 @@ def test_reconciliation_auth_validation_and_no_store():
         assert client.get("/dispatches/reconciliation?status=NOPE").status_code == 400
         assert client.get("/dispatches/reconciliation?page=0").status_code == 400
         assert client.get("/dispatches/reconciliation?page=201").status_code == 400
+        assert client.get("/dispatches/reconciliation?queue_id=-1").status_code == 400
         assert client.get("/dispatches/reconciliation?status=TODOS").status_code == 200
 
 
