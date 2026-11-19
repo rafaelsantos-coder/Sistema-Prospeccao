@@ -412,6 +412,32 @@ def _inbox_query(
     return list(db.scalars(stmt))
 
 
+def _conversation_queue_labels(
+    db: Session, conversation_ids: list[int],
+) -> dict[int, dict[str, str | int]]:
+    """Uma consulta para as filas reais de conversas visíveis; não usa o filtro global.
+
+    A tabela de vínculo tem restrição UNIQUE por conversa. A fila exibida em
+    cada linha é sempre a própria fila do atendimento, nunca a fila filtrada.
+    """
+    if not conversation_ids:
+        return {}
+    rows = db.execute(
+        select(
+            ConversationQueueLink.conversation_id,
+            ServiceQueue.id,
+            ServiceQueue.name,
+            ServiceQueue.code,
+        )
+        .join(ServiceQueue, ServiceQueue.id == ConversationQueueLink.queue_id)
+        .where(ConversationQueueLink.conversation_id.in_(conversation_ids))
+    )
+    return {
+        conversation_id: {"id": queue_id, "name": queue_name, "code": queue_code}
+        for conversation_id, queue_id, queue_name, queue_code in rows
+    }
+
+
 def _needs_attention(
     conversation_status: str, unread_count: int | None, assigned_user_id: int | None
 ) -> bool:
@@ -641,6 +667,7 @@ def _render_inbox(
     visible_ids = [item.id for item in conversations]
     if selected and selected.id not in visible_ids:
         visible_ids.append(selected.id)
+    conversation_queue_labels = _conversation_queue_labels(db, visible_ids)
     commercial_tags = tag_map(db, visible_ids)
     commercial_insights = insight_map(db, visible_ids)
     return render(
@@ -659,6 +686,7 @@ def _render_inbox(
         ai_transfer_queue=ai_queue,
         transfer_queues=transfer_queues,
         selected_queue=selected_queue,
+        conversation_queue_labels=conversation_queue_labels,
         latest_ai_run=latest_ai_run,
         counts=counts,
         query=q,
@@ -1359,6 +1387,7 @@ def conversation_inbox_api(
         tag_code=tag, temperature=temperature,
     )
     ids = [item.id for item in conversations]
+    queue_labels = _conversation_queue_labels(db, ids)
     tags = tag_map(db, ids)
     insights = insight_map(db, ids)
     return {
@@ -1376,7 +1405,9 @@ def conversation_inbox_api(
                 ),
                 "phone": item.contact.phone,
                 "preview": item.last_message_preview or "Conversa iniciada",
-                "owner": item.assigned_user.name if item.assigned_user else "Fila sem responsável",
+                "queue_id": queue_labels.get(item.id, {}).get("id"),
+                "queue_name": queue_labels.get(item.id, {}).get("name"),
+                "owner": item.assigned_user.name if item.assigned_user else "Sem responsável",
                 "status": item.status,
                 "unread_count": int(item.unread_count or 0),
                 "last_message_at": item.last_message_at.isoformat() if item.last_message_at else None,

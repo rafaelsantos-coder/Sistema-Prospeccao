@@ -16,6 +16,7 @@ from app.models import (
 from app.routers.conversations import (
     _inbox_counts,
     _inbox_query,
+    _conversation_queue_labels,
     _needs_attention,
     _validate_queue_filter,
 )
@@ -78,6 +79,15 @@ def test_manager_queue_filter_counts_and_pending_are_isolated():
             )
             assert len(selected) == 2
             assert all(c.status != "ENCERRADO" for c in selected)
+            # Nomes derivam do vínculo individual, não do filtro do gestor.
+            queue_labels = _conversation_queue_labels(
+                db, [c.id for c in selected],
+            )
+            assert len(queue_labels) == 2
+            assert {row["name"] for row in queue_labels.values()} == {"Fila A"}
+            assert {row["code"] for row in queue_labels.values()} == {"A"}
+            assert _conversation_queue_labels(db, [999999]) == {}
+            assert _conversation_queue_labels(db, []) == {}
             other = _inbox_counts(db, manager, queue_id=second.id)
             assert other["active"] == 1
             assert other["pending"] == 1
