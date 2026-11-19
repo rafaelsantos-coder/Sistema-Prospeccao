@@ -2636,3 +2636,28 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .topbar-actions .crm-manual-topbar-state { font-size: 0; width: 34px; padding: 0; }
   .topbar-actions .crm-manual-topbar-state::before { content: '✓ CRM'; font-size: 10px; }
 }
+
+
+/* Consulta de CPF na mesma oportunidade do vendedor, dentro da conversa. */
+.crm-credit-section { background: #fffaf6; }
+.crm-credit-section > p { color: var(--muted); font-size: 11px; margin: 6px 0 12px; }
+.crm-credit-form { display: grid; gap: 9px; }
+.crm-credit-form label { font-size: 11px; font-weight: 800; }
+.crm-credit-form input {
+  display: block; width: 100%; min-width: 0; font: inherit;
+  padding: 11px 12px; border: 1px solid #d8dce3; border-radius: 9px;
+}
+.crm-credit-form input:disabled { background: #f4f4f5; opacity: .7; }
+.crm-credit-form button:disabled { cursor: not-allowed; opacity: .6; }
+.crm-credit-form small { display: block; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.crm-credit-result, .crm-credit-alert {
+  border: 1px solid #e5e7eb; background: #f9fafb; padding: 12px;
+  display: grid; gap: 5px; border-radius: 9px; font-size: 12px;
+}
+.crm-credit-result strong { font-size: 14px; }
+.crm-credit-result small { font-size: 10px; }
+.crm-credit-result-aprovado { background: #effaf1; border-color: #c6edcf; color: #166534; }
+.crm-credit-result-aprovado_com_taxa { background: #fefce8; border-color: #fde68a; color: #854d0e; }
+.crm-credit-result-reprovado { background: #fff1f2; border-color: #fecdd3; color: #9f1239; }
+.crm-credit-result-em_analise { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+.crm-credit-alert { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
