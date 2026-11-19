@@ -17,7 +17,7 @@ from app.models import (
     VoiceRecipient, VoiceSipAccount, VoiceTransferTest,
 )
 from app.services.secret_store import encrypt_secret
-from app.services.voice_pjsua2 import PjSession, VoiceEngineError
+from app.services.voice_pjsua2 import PjSession, VoiceEngineError, dtmf_response_window_expired
 from app.services.voice_runtime import (
     VoiceReadinessError, check_campaign_ready, make_dial_uri, make_transfer_uri,
     next_attempt_allowed, next_call_window_start, outbound_guard,
@@ -116,6 +116,15 @@ def test_blacklist_fail_closed_for_all_voice_channels(monkeypatch):
     monkeypatch.setattr(runtime, "is_globally_blocked", fail)
     with SessionLocal() as db, pytest.raises(VoiceReadinessError, match="suspensa"):
         outbound_guard(db, "5555999980300")
+
+
+def test_dtmf_confirmation_waits_twenty_seconds_after_audio():
+    # Audio com 25s: a tecla 1 e aceita ate completar 45s desde o inicio.
+    started_at = 100.0
+    assert not dtmf_response_window_expired(started_at, 25.0, 125.0)
+    assert not dtmf_response_window_expired(started_at, 25.0, 144.99)
+    assert dtmf_response_window_expired(started_at, 25.0, 145.0)
+    assert not dtmf_response_window_expired(None, 25.0, 145.0)
 
 
 def test_call_schedule_respects_campaign_window_including_weekends():
