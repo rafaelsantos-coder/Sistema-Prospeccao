@@ -28,6 +28,7 @@ from app.services.conversation_engine import (
     ensure_contact,
     ensure_open_conversation,
     payload_from_me,
+    payload_counterparty_phone,
     payload_message_content,
     register_message,
     store_received_payload,
@@ -295,10 +296,17 @@ def _process_zapi_payload(
     if not conversation or not message:
         db.commit()
         LOG.info(
-            "zapi_callback ignored=unsupported_or_unmatched instance_db=%s queue=%s message_type=%s",
+            "zapi_callback ignored=unsupported_or_unmatched instance_db=%s queue=%s message_type=%s reason=%s "
+            "from_me=%s has_participant_phone=%s has_sender_lid=%s",
             zapi_instance_id,
             queue_id,
             detected_type,
+            "invalid_counterparty_phone" if (
+                detected_type != "UNKNOWN" and not payload_counterparty_phone(payload)
+            ) else "unsupported_payload",
+            parsed_from_me,
+            bool(payload.get("participantPhone")),
+            bool(payload.get("senderLid")),
         )
         return {"ok": True, "ignored": "unsupported_or_unmatched"}
 

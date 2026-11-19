@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,7 @@ from app.models import (
     Conversation,
     ConversationQueueLink,
     ConversationZApiInstance,
+    Message,
     ServiceQueue,
     ServiceQueueZApiInstance,
     User,
@@ -495,6 +497,7 @@ def test_configure_webhooks_explicitly_sets_received_callback(monkeypatch):
         "update-every-webhooks",
         "update-webhook-received",
         "update-webhook-received-delivery",
+        "update-notify-sent-by-me",
     ]
     assert calls[0][2] == {
         "value": "https://app.exemplo.com/webhooks/zapi/instance/abc123",
@@ -506,6 +509,88 @@ def test_configure_webhooks_explicitly_sets_received_callback(monkeypatch):
     assert calls[2][2] == {
         "value": "https://app.exemplo.com/webhooks/zapi/instance/abc123"
     }
+    assert calls[3][2] == {"notifySentByMe": True}
     assert result["all"] == {"value": True}
     assert result["received"] == {"value": True}
     assert result["received_delivery"] == {"value": True}
+    assert result["notify_result"] == {"value": True}
+
+
+def test_natine_outbound_from_external_whatsapp_appears_in_chat_and_is_idempotent():
+    """Voz enviada no celular pode ter phone=@lid, com numero no participantPhone."""
+    suffix = uuid4().hex[:10]
+    recipient_phone = "5555999991888"
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            item = _instance(db, f"NAT-{suffix}")
+            queue = ServiceQueue(
+                name=f"Fila Natine {suffix}",
+                code=f"NATINE-WEBHOOK-{suffix}",
+                team="DIGITAL", routing_strategy="MANUAL", active=True,
+            )
+            db.add(queue)
+            db.flush()
+            bind_queue_instance(db, queue.id, item.id)
+            db.commit()
+            key, instance_id, queue_id = item.webhook_key, item.instance_id, queue.id
+        finally:
+            db.close()
+
+        sent_message_id = f"NATINE-AUDIO-SENT-{suffix}"
+        callback = {
+            "type": "ReceivedCallback",
+            "instanceId": instance_id,
+            "connectedPhone": "555591534057",
+            "phone": "123456789012345@lid",
+            "participantPhone": recipient_phone,
+            "senderLid": "123456789012345@lid",
+            "fromMe": True,
+            "messageId": sent_message_id,
+            "chatName": "eu",
+            "audio": {"mimeType": "audio/ogg; codecs=opus"},
+            "status": "SENT",
+        }
+        response = client.post(f"/webhooks/zapi/instance/{key}", json=callback)
+        assert response.status_code == 200
+        assert response.json()["created"] is True
+        conversation_id = response.json()["conversation_id"]
+        message_id = response.json()["message_id"]
+
+        with SessionLocal() as db:
+            msg = db.get(Message, message_id)
+            assert msg is not None
+            assert msg.direction == "OUTBOUND"
+            assert msg.message_type == "AUDIO"
+            assert msg.body == "[Audio]"
+            assert msg.contact.phone == recipient_phone
+            queue_link = db.scalar(
+                select(ConversationQueueLink).where(
+                    ConversationQueueLink.conversation_id == conversation_id
+                )
+            )
+            assert queue_link.queue_id == queue_id
+            assert msg.contact.name.casefold() != "eu"
+
+        # Entrega duplicada ou sem telefone do callback deve reconciliar pelo ID.
+        retry = client.post(
+            f"/webhooks/zapi/instance/{key}",
+            json={"type": "ReceivedCallback", "instanceId": instance_id,
+                  "phone": "123456789012345@lid", "fromMe": True,
+                  "messageId": sent_message_id, "status": "READ",
+                  "audio": {"mimeType": "audio/ogg"}},
+        )
+        assert retry.status_code == 200
+        assert retry.json()["created"] is False
+        assert retry.json()["message_id"] == message_id
+        with SessionLocal() as db:
+            messages = list(db.scalars(
+                select(Message).where(Message.provider_message_id == sent_message_id)
+            ))
+            assert len(messages) == 1
+            assert messages[0].status == "READ"
+
+        _login_admin(client)
+        page = client.get(f"/conversations/{conversation_id}")
+        assert page.status_code == 200
+        assert 'class="message-line outbound"' in page.text

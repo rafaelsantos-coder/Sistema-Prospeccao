@@ -871,6 +871,37 @@ def payload_from_me(payload: dict[str, Any]) -> bool:
     return False
 
 
+def payload_counterparty_phone(payload: dict[str, Any]) -> str | None:
+    """Identifica o contato do chat, sem usar o telefone da propria instancia.
+
+    Algumas respostas enviadas no WhatsApp usam identificadores de chat no
+    campo phone. A Z-API pode incluir o numero real em participantPhone;
+    aceitar apenas DDI/DDD válidos e jamais interpretar IDs @lid como celular.
+    """
+    from_me = payload_from_me(payload)
+    connected = normalize_phone(str(payload.get("connectedPhone") or ""))
+    candidates = (
+        payload.get("phone"),
+        payload.get("participantPhone"),
+        payload.get("recipientPhone"),
+        payload.get("chatId"),
+        payload.get("remoteJid"),
+    )
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        value = str(candidate).strip()
+        if "@" in value:
+            local, suffix = value.rsplit("@", 1)
+            if suffix.lower() not in {"s.whatsapp.net", "c.us"}:
+                continue
+            value = local
+        phone = normalize_phone(value)
+        if phone and not (from_me and connected and phone == connected):
+            return phone
+    return None
+
+
 def store_received_payload(
     db: Session,
     payload: dict[str, Any],
@@ -880,18 +911,20 @@ def store_received_payload(
 ) -> tuple[Conversation | None, Message | None, bool]:
     if payload.get("isGroup") or payload.get("isNewsletter") or payload.get("isStatusReply"):
         return None, None, False
-    phone = payload.get("phone") or payload.get("participantPhone")
-    normalized = normalize_phone(phone)
-    if not normalized:
-        return None, None, False
-
     provider_id = str(payload.get("messageId") or payload.get("id") or "").strip() or None
     if provider_id:
+        # Callback de saída pode trazer apenas um @lid no campo phone.
+        # Se a mensagem foi registrada pelo Prospecta, a confirmação ainda
+        # deve reconciliar o ID antes de tentar interpretar o destinatário.
         existing = db.scalar(select(Message).where(Message.provider_message_id == provider_id))
         if existing:
             if payload.get("status"):
                 existing.status = str(payload["status"]).upper()
             return existing.conversation, existing, False
+
+    normalized = payload_counterparty_phone(payload)
+    if not normalized:
+        return None, None, False
 
     message_type, body, media_url, mime_type = payload_message_content(payload)
     if not body and message_type == "UNKNOWN":
@@ -899,6 +932,9 @@ def store_received_payload(
 
     lead = find_lead_by_phone(db, normalized)
     sender_name = str(payload.get("senderName") or payload.get("chatName") or "").strip()
+    if payload_from_me(payload) and sender_name.casefold() in {"eu", "me", "você", "you"}:
+        # O nome do próprio remetente não pode renomear o cliente.
+        sender_name = ""
     contact = ensure_contact(
         db,
         normalized,

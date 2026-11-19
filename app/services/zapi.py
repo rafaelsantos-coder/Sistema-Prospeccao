@@ -443,6 +443,19 @@ class ZApiService:
                         "Falha ao configurar webhook combinado de recebimento/envio: "
                         f"{self._safe_error(received_delivery_response)}"
                     )
+                # A opcao 'enviadas por mim' e independente do endereco.
+                # Habilita callbacks tambem para mensagens enviadas pelo
+                # aparelho/WhatsApp Web da vendedora, e nao apenas pela API.
+                notify_response = client.put(
+                    self._url("update-notify-sent-by-me"),
+                    headers=self._headers(json_request=True),
+                    json={"notifySentByMe": True},
+                )
+                if notify_response.status_code >= 400:
+                    raise ZApiError(
+                        "Falha ao habilitar recebimento das mensagens enviadas pela vendedora: "
+                        f"{self._safe_error(notify_response)}"
+                    )
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel configurar os webhooks da Z-API.") from exc
 
@@ -459,6 +472,11 @@ class ZApiService:
         except ValueError:
             received_delivery_payload = {"ok": True}
 
+        try:
+            notify_payload = notify_response.json()
+        except ValueError:
+            notify_payload = {"ok": True}
+
         state = self.webhook_state()
         configured_url = state.get("received_callback_url") or ""
         combined_url = state.get("received_and_delivery_callback_url") or ""
@@ -470,12 +488,17 @@ class ZApiService:
             raise ZApiError(
                 "Webhook combinado de recebimento/envio nao confirmou a URL configurada."
             )
+        if not state.get("receive_sent_by_me"):
+            raise ZApiError(
+                "A Z-API nao confirmou notificacoes das mensagens enviadas pelo proprio WhatsApp."
+            )
 
         return {
             "all": all_payload,
             "received": received_payload,
             "received_delivery": received_delivery_payload,
             "notify_sent_by_me": True,
+            "notify_result": notify_payload,
             "webhook_state": state,
         }
 
