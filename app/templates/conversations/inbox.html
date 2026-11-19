@@ -433,7 +433,7 @@
       {% else %}
       <span class="chat-queue-context-name queue-missing">Sem fila definida</span>
       {% endif %}
-      <small>Responsável: {{ conversation.assigned_user.name if conversation.assigned_user else 'Sem responsável' }}</small>
+      <small>{% if selected_queue %}Código {{ selected_queue.code }} · {% endif %}Responsável: {{ conversation.assigned_user.name if conversation.assigned_user else 'Sem responsável' }}</small>
     </div>
 
     {% if crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" and crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
