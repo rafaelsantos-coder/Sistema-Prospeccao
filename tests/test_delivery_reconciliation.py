@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import csv
+import io
 from datetime import timedelta
 from uuid import uuid4
 
@@ -141,6 +143,27 @@ def test_reconciliation_lists_only_uncertain_and_stale_without_sending(monkeypat
         ).text
         assert "não reenviar automaticamente" in page
 
+        export = client.get(
+            f"/dispatches/reconciliation/export.csv?queue_id={queue_id}"
+        )
+        assert export.status_code == 200
+        assert export.headers["cache-control"] == "private, no-store"
+        assert export.headers["x-content-type-options"] == "nosniff"
+        assert "attachment;" in export.headers["content-disposition"]
+        assert export.content.startswith(b"\\xef\\xbb\\xbf")
+        rows = list(csv.DictReader(io.StringIO(export.content.decode("utf-8-sig")), delimiter=";"))
+        assert any(r["Origem"] == "CSV" and f"Empresa {unique}" in r["Contato"] for r in rows)
+        assert any(r["Origem"] == "FUNIL" and f"Lead legado {unique}" in r["Contato"] for r in rows)
+        assert all(f"Contato recente {unique}" not in r["Contato"] for r in rows)
+        assert all(f"Contato pendente {unique}" not in r["Contato"] for r in rows)
+        assert all(r["Fila"] == queue.name for r in rows if unique in r["Campanha"])
+        filtered_export = client.get(
+            f"/dispatches/reconciliation/export.csv?queue_id={queue_id}&status=ENVIANDO"
+        )
+        filtered_rows = list(csv.DictReader(io.StringIO(filtered_export.text.lstrip("\\ufeff")), delimiter=";"))
+        assert any(f"Contato antigo {unique}" in r["Contato"] for r in filtered_rows)
+        assert all(r["Situação"] == "ENVIANDO" for r in filtered_rows)
+
         only_uncertain = client.get(
             "/dispatches/reconciliation?status=INDETERMINADO"
         ).text
@@ -171,6 +194,8 @@ def test_reconciliation_auth_validation_and_no_store():
         assert client.get("/dispatches/reconciliation?page=201").status_code == 400
         assert client.get("/dispatches/reconciliation?queue_id=-1").status_code == 400
         assert client.get("/dispatches/reconciliation?status=TODOS").status_code == 200
+        assert client.get("/dispatches/reconciliation/export.csv?status=NOPE").status_code == 400
+        assert client.get("/dispatches/reconciliation/export.csv?queue_id=-1").status_code == 400
 
 
 def test_reconciliation_is_forbidden_to_consultors():
@@ -190,3 +215,17 @@ def test_reconciliation_is_forbidden_to_consultors():
         denied = client.get("/dispatches/reconciliation", follow_redirects=False)
         assert denied.status_code == 303
         assert denied.headers["location"] == "/dashboard"
+        denied_csv = client.get("/dispatches/reconciliation/export.csv", follow_redirects=False)
+        assert denied_csv.status_code == 303
+        assert denied_csv.headers["location"] == "/dashboard"
+
+
+def test_csv_formula_injection_is_escaped():
+    from app.services.delivery_reconciliation import _safe_csv_cell
+
+    assert _safe_csv_cell("=HYPERLINK(1)") == "'=HYPERLINK(1)"
+    assert _safe_csv_cell(" +SUM(1,2)") == "' +SUM(1,2)"
+    assert _safe_csv_cell("@SUM(1,2)") == "'@SUM(1,2)"
+    assert _safe_csv_cell("-1+2") == "'-1+2"
+    assert _safe_csv_cell("\\t=CMD()") == "'\\t=CMD()"
+    assert _safe_csv_cell("normal") == "normal"
