@@ -747,6 +747,40 @@ class SulnetCRMClient:
             )
         return result
 
+    def consult_seller_credit(
+        self,
+        *,
+        opportunity_id: int,
+        seller_username: str,
+        cpf: str,
+    ) -> dict[str, Any]:
+        """Contrato novo: webhook comercial de consulta, sem Bearer personificado da IA.
+
+        Só habilitar a interface após o CRM publicar /webhook/leads/consult.
+        O CRM deve validar sellerUsername contra o proprietário da oportunidade.
+        """
+        result = self._request(
+            "POST",
+            "/webhook/leads/consult",
+            json_body={
+                "opportunityId": int(opportunity_id),
+                "sellerUsername": seller_username,
+                "clientCpf": cpf,
+            },
+            auth_mode="none" if self.lead_integration_key else "integration",
+            extra_headers=(
+                {"X-Integration-Key": self.lead_integration_key}
+                if self.lead_integration_key else None
+            ),
+            timeout=45.0,
+        )
+        if not isinstance(result, dict):
+            raise CRMIntegrationError(
+                "O CRM retornou resposta inválida na consulta de crédito.",
+                error_code="CRM_INVALID_CREDIT_RESPONSE",
+            )
+        return result
+
     def create_opportunity(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_payload = dict(payload)
         request_payload.setdefault("runConsult", False)
