@@ -153,7 +153,7 @@
           <td>
             <strong>{{ sent }}/{{ total }}</strong>
             <div class="dispatch-mini-progress"><i style="width: {{ '%.1f'|format(pct) }}%"></i></div>
-            <span class="table-subline">{{ dc.get('pending', 0) }} pendentes · {{ dc.get('failed', 0) }} falhas</span>
+            <span class="table-subline">{{ dc.get('pending', 0) }} pendentes · {{ dc.get('failed', 0) }} falhas · {{ dc.get('unknown', 0) }} a conferir</span>
           </td>
           <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
           <td>{{ item.created_by.name if item.created_by else 'Sistema' }}</td>

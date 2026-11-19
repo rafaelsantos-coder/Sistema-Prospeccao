@@ -88,7 +88,8 @@ def _digest(challenge: str, method: str, uri: str, username: str, password: str)
 class SipProbe:
     def __init__(self, host: str, username: str, password: str, phone: str | None,
                  notify: Callable[[str, int | None, int | None, str], None],
-                 port: int = 5060, proxy_host: str = "", proxy_port: int = 5060):
+                 port: int = 5060, proxy_host: str = "", proxy_port: int = 5060,
+                 should_abort: Callable[[], bool] | None = None):
         if not re.fullmatch(r"[A-Za-z0-9.-]{3,190}", host):
             raise SipProbeError("Servidor SIP invalido.")
         if not re.fullmatch(r"[0-9*#]{1,20}", username):
@@ -107,12 +108,17 @@ class SipProbe:
         self.password = password
         self.phone = phone
         self.notify = notify
+        self.should_abort = should_abort
         self.sock: socket.socket | None = None
         self.media: socket.socket | None = None
         self.from_tag = secrets.token_hex(7)
         self.callid_prefix = secrets.token_hex(12)
         self.local_ip = "127.0.0.1"
         self.local_port = 0
+
+    def _check_abort(self) -> None:
+        if self.should_abort is not None and self.should_abort():
+            raise SipProbeError("Teste SIP interrompido: exclusividade da conta indisponivel.")
 
     def _request(self, method: str, target: str, callid: str, seq: int, branch: str,
                  to_header: str, *, expires: int | None = None, auth: str = "",
@@ -146,6 +152,7 @@ class SipProbe:
     def _next(self, callid: str, method: str, limit: float) -> tuple[int, dict[str, str]]:
         assert self.sock is not None
         while time.monotonic() < limit:
+            self._check_abort()
             remaining = max(0.05, min(2.0, limit - time.monotonic()))
             self.sock.settimeout(remaining)
             try:
@@ -166,6 +173,9 @@ class SipProbe:
     def _exchange(self, method: str, target: str, callid: str,
                   to_header: str, expires: int | None = None, body: str = "",
                   timeout: float = 10.0) -> tuple[int, dict[str, str], int, str, str, str]:
+        # Revalidar antes de REGISTER/INVITE, mas permitir CANCEL/BYE de limpeza.
+        if method == "INVITE" or (method == "REGISTER" and expires != 0):
+            self._check_abort()
         seq = 1
         branch = "z9hG4bK" + secrets.token_hex(9)
         auth = ""
