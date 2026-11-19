@@ -148,6 +148,7 @@ def campaign_queue_counts(db: Session, campaign_id: int) -> dict[str, int]:
     return {
         "pending": result.get("PENDENTE", 0),
         "sending": result.get("ENVIANDO", 0),
+        "unknown": result.get("INDETERMINADO", 0),
         "sent": result.get("ENVIADO", 0),
         "failed": result.get("FALHOU", 0),
         "skipped": result.get("IGNORADO", 0),
