@@ -119,7 +119,7 @@ def process_one_pending() -> str:
     """Processa uma entrada vencida; erro ambiguo nunca gera reenvio invisivel."""
     with SessionLocal() as db:
         with db.begin():
-            item = db.scalar(
+            candidates = list(db.scalars(
                 select(PacedOutboundMessage)
                 .where(
                     PacedOutboundMessage.status == "PENDING",
@@ -127,8 +127,43 @@ def process_one_pending() -> str:
                 )
                 .order_by(PacedOutboundMessage.scheduled_at, PacedOutboundMessage.id)
                 .with_for_update(skip_locked=True)
-                .limit(1)
-            )
+                .limit(100)
+            ))
+            item = None
+            for candidate in candidates:
+                # A linha da instancia sincroniza todos os workers, inclusive replicas.
+                db.scalar(
+                    select(ZApiInstance).where(
+                        ZApiInstance.instance_id == candidate.instance_key,
+                    ).with_for_update()
+                )
+                if db.bind.dialect.name == "postgresql" and not db.scalar(
+                    select(ZApiInstance.id).where(
+                        ZApiInstance.instance_id == candidate.instance_key,
+                    )
+                ):
+                    db.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                        {"key": "paced:" + candidate.instance_key},
+                    )
+                inflight = db.scalar(
+                    select(PacedOutboundMessage.id).where(
+                        PacedOutboundMessage.instance_key == candidate.instance_key,
+                        PacedOutboundMessage.status == "PROCESSING",
+                    ).limit(1)
+                )
+                if inflight:
+                    continue
+                last_sent = db.scalar(
+                    select(func.max(PacedOutboundMessage.sent_at)).where(
+                        PacedOutboundMessage.instance_key == candidate.instance_key,
+                        PacedOutboundMessage.status == "SENT",
+                    )
+                )
+                if last_sent and utc_naive(last_sent) + timedelta(seconds=PACING_SECONDS) > utcnow():
+                    continue
+                item = candidate
+                break
             if item is None:
                 return "idle"
             # Marca antes da chamada externa: queda da aplicacao nao replica envio.
