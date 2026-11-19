@@ -376,9 +376,6 @@
           <div class="compose-left">
             <div class="compose-tools">
               <button class="compose-tool-button" type="button" data-attach-button title="Anexar foto, vídeo, áudio ou documento">📎<span>Anexar</span></button>
-              <microphone class="inbox-microphone-control" data-native-microphone lang="pt-BR" hidden>
-                <button class="compose-tool-button" type="button" data-record-button title="Gravar áudio">🎙<span>Áudio</span></button>
-              </microphone>
               <button class="compose-tool-button" type="button" data-record-standard title="Gravar áudio">🎙<span>Áudio</span></button>
               <button class="compose-tool-button recording" type="button" data-record-stop-button hidden>■ <span>Parar</span></button>
               <span class="recording-status" data-recording-status role="status" aria-live="polite" hidden></span>
@@ -771,11 +768,26 @@
   </form>
 </dialog>
 {% endif %}
+{% if 'conversations.reply' in current_user.permissions and conversation and conversation.status not in closed_statuses and not globally_blacklisted %}
+<dialog class="inbox-microphone-dialog" data-mic-dialog aria-labelledby="inbox-microphone-title">
+  <div class="inbox-microphone-dialog-content">
+    <h3 id="inbox-microphone-title" data-mic-title>Permitir microfone</h3>
+    <p data-mic-dialog-message role="status" aria-live="polite">Para gravar áudio, autorize o microfone no botão do Chrome abaixo.</p>
+    <microphone data-native-microphone class="inbox-microphone-control" lang="pt-BR"></microphone>
+    <button class="button button-primary" type="button" data-mic-dialog-stop hidden>■ Parar gravação</button>
+    <button class="button button-secondary" type="button" data-mic-dialog-close>Cancelar</button>
+  </div>
+</dialog>
+{% endif %}
 <style>
-.inbox-microphone-control{display:block;min-width:128px;min-height:40px;padding:9px 14px;font-size:15px;line-height:21px;font-weight:700;color:#1d232b;background-color:#ffffff;border:1px solid #cbd5e1;border-radius:9px;opacity:1}
-.inbox-microphone-control:hover{color:#1d232b;background-color:#fff4ec;border-color:#ea995a}
-.inbox-microphone-control.native-unsupported{display:contents}
-.inbox-microphone-control[hidden],.compose-tool-button[data-record-standard][hidden],.compose-tool-button[data-record-stop-button][hidden]{display:none!important}
+.inbox-microphone-dialog{width:min(440px,calc(100vw - 32px));max-width:440px;max-height:calc(100dvh - 32px);margin:auto;padding:22px;border:1px solid #e2e8f0;border-radius:14px;background:white;color:#1f2937;box-shadow:0 24px 60px #0f172a30;overflow:visible}
+.inbox-microphone-dialog::backdrop{background:#0f172a96}
+.inbox-microphone-dialog-content{display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center}
+.inbox-microphone-dialog-content h3{font-size:18px;font-weight:800;margin:0}
+.inbox-microphone-dialog-content p{font-size:13px;line-height:1.5;margin:0}
+.inbox-microphone-control{display:inline-block;width:auto;min-width:194px;height:auto;min-height:48px;padding:12px 18px;font-size:16px;font-weight:700;color:#1d232b;background:#ffffff;border:2px solid #475569;border-radius:10px;opacity:1}
+.inbox-microphone-dialog button{min-width:165px;min-height:40px}
+.inbox-microphone-dialog button[hidden],.compose-tool-button[data-record-standard][hidden],.compose-tool-button[data-record-stop-button][hidden]{display:none!important}
 .compose-tool-button[data-record-stop-button]{color:#b93636}
 .recording-status[hidden]{display:none!important}
 .recording-status{font-size:12px;line-height:1.4;color:#475569}
@@ -1420,8 +1432,12 @@
   window.setInterval(pollMessages, 2500);
 
   const attachButton = document.querySelector('[data-attach-button]');
-  const recordButton = document.querySelector('[data-record-button]');
   let nativeMicrophone = document.querySelector('[data-native-microphone]');
+  const microphoneDialog = document.querySelector('[data-mic-dialog]');
+  const microphoneDialogTitle = document.querySelector('[data-mic-title]');
+  const microphoneDialogMessage = document.querySelector('[data-mic-dialog-message]');
+  const microphoneDialogStop = document.querySelector('[data-mic-dialog-stop]');
+  const microphoneDialogClose = document.querySelector('[data-mic-dialog-close]');
   const standardRecordButton = document.querySelector('[data-record-standard]');
   const recordStopButton = document.querySelector('[data-record-stop-button]');
   const recordingStatus = document.querySelector('[data-recording-status]');
