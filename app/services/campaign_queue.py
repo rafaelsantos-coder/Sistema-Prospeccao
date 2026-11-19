@@ -184,6 +184,7 @@ def claim_next_recipient(db: Session) -> CampaignRecipient | None:
     )
     if recipient:
         recipient.status = "ENVIANDO"
+        recipient.attempts = int(recipient.attempts or 0) + 1
         db.flush()
     return recipient
 
@@ -213,7 +214,6 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         recipient.error = "Campanha sem fila de atendimento configurada."
         return "failed"
 
-    recipient.attempts = int(recipient.attempts or 0) + 1
     quick_replies = campaign_quick_replies(campaign)
     zapi_instance = queue_instance(db, service_queue.id)
     zapi = service_for_queue(db, service_queue.id)
@@ -231,13 +231,14 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         recipient.error = str(exc)[:500]
         return "skipped"
     except ZApiError as exc:
-        recipient.error = str(exc)[:500]
-        if recipient.attempts >= 3:
-            recipient.status = "FALHOU"
-        else:
-            recipient.status = "PENDENTE"
-            recipient.scheduled_at = utcnow() + timedelta(minutes=5 * recipient.attempts)
-        return "failed"
+        # Timeout/resposta perdida pode ocorrer DEPOIS da aceitação no provedor.
+        # Nunca transformar esse cenário em reenvio automático.
+        recipient.status = "INDETERMINADO"
+        recipient.error = (
+            "Resultado externo incerto; verificar Z-API antes de qualquer tentativa. "
+            + str(exc)
+        )[:500]
+        return "unknown"
 
     contact = ensure_contact(db, lead.phone, lead=lead)
     conversation = ensure_open_conversation(
