@@ -33,6 +33,7 @@ class CRMSeller:
     funnel_id: int
     funnel_name: str
     stage_id: int
+    additional_funnel_ids: tuple[int, ...] = ()
 
 
 # Mapeamento aprovado a partir dos IDs reais do CRM, não da região ou da fila.
@@ -41,6 +42,8 @@ _SELLERS: dict[str, CRMSeller] = {
     "claudia linde": CRMSeller("claudia.linde", 37, 16, "Celeiro", 55),
     "natine dauana dalla lana hirt": CRMSeller("natine.hirt", 25, 17, "Santa Rosa", 63),
     "fabiano braga": CRMSeller("fabiano.braga", 36, 17, "Santa Rosa", 63),
+    "gabriele naiane barbosa": CRMSeller("gabriele.barbosa", 42, 17, "Santa Rosa", 63, (23,)),
+    "michele zandona": CRMSeller("michele.zandona", 43, 17, "Santa Rosa", 63, (23,)),
 }
 
 
@@ -54,6 +57,20 @@ def seller_for_user(user: User | None) -> CRMSeller | None:
     if user is None or not user.active:
         return None
     return _SELLERS.get(_fold(user.name))
+
+
+def seller_accepts_funnel(seller: CRMSeller, funnel_id: int | None) -> bool:
+    """O funil primário é Santa Rosa; Upgrade é permitido às vendedoras habilitadas."""
+    return funnel_id is not None and funnel_id in (seller.funnel_id, *seller.additional_funnel_ids)
+
+
+def _verified_stage(seller: CRMSeller, funnel_id: int | None, stage_id: int | None) -> bool:
+    """Nunca usar a etapa 63 de Santa Rosa como se fosse a etapa do Upgrade."""
+    return (
+        seller_accepts_funnel(seller, funnel_id)
+        and stage_id is not None and stage_id > 0
+        and (funnel_id != seller.funnel_id or stage_id == seller.stage_id)
+    )
 
 
 def _digits(value: str | None) -> str:
@@ -261,13 +278,22 @@ def register_conversation(
                 "Já existe um resultado no CRM que precisa de conferência manual. Registro bloqueado."
             )
         if owner_id == seller.user_id:
+            existing_funnel = _as_int(item.get("funnelId")) or seller.funnel_id
+            existing_stage = _as_int(item.get("stageId"))
+            if existing_stage is None and existing_funnel == seller.funnel_id:
+                existing_stage = seller.stage_id
+            if not _verified_stage(seller, existing_funnel, existing_stage):
+                raise CRMManualError(
+                    "O CRM encontrou oportunidade do vendedor, mas o funil ou a etapa "
+                    "não foram confirmados. Confira antes de prosseguir."
+                )
             result = {
                 "opportunityId": opportunity_id,
                 "protocol": str(item.get("protocol") or ""),
                 "sellerUsername": seller.username,
                 "assignedUserId": seller.user_id,
-                "funnelId": seller.funnel_id,
-                "stageId": seller.stage_id,
+                "funnelId": existing_funnel,
+                "stageId": existing_stage,
                 "outcome": "existing",
             }
             _log_result(db, conversation, actor, ACTION_REGISTERED, result)
@@ -307,8 +333,7 @@ def register_conversation(
     if (
         opportunity_id is None
         or assigned_id != seller.user_id
-        or funnel_id != seller.funnel_id
-        or stage_id != seller.stage_id
+        or not _verified_stage(seller, funnel_id, stage_id)
     ):
         _log_result(
             db, conversation, actor, ACTION_REVIEW,
