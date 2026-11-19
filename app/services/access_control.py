@@ -288,8 +288,6 @@ def permission_for_request(path: str, method: str) -> str | None:
         return "conversations.view"
     if path.startswith("/api/whatsapp-presence/"):
         return "conversations.reply"
-    if path == "/api/integrations/zapi/status":
-        return "settings.connections.view"
     if path == "/conversations-intelligence":
         return "reports.view"
     if path.startswith("/api/conversations/"):
