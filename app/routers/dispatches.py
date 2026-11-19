@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta, timezone
+from datetime import timedelta
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
@@ -36,7 +36,7 @@ from app.services.dispatch_monitor import dispatch_live_snapshot
 from app.services.queue_routing import available_queues_for_user, get_queue
 from app.services.scoring import normalize_phone
 from app.services.telegram import configured as telegram_configured, ensure_telegram_queue
-from app.timeutils import utcnow
+from app.timeutils import utc_naive, utcnow
 from app.web import flash, render
 
 
@@ -323,9 +323,7 @@ def delivery_reconciliation(request: Request, db: Session = Depends(get_db)):
             return True
         if timestamp is None:
             return True
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        return timestamp <= stale_cutoff
+        return utc_naive(timestamp) <= stale_cutoff
 
     items: list[dict] = []
     if selected_source in {"ALL", "DISPATCH"}:
@@ -397,7 +395,7 @@ def delivery_reconciliation(request: Request, db: Session = Depends(get_db)):
         stamp = item["changed_at"]
         if stamp is None:
             return utcnow() - timedelta(days=36500)
-        return stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp
+        return utc_naive(stamp)
 
     items.sort(key=sort_timestamp, reverse=True)
     items = items[:100]
