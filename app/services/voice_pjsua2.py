@@ -20,6 +20,16 @@ from app.services.voice_runtime import make_dial_uri, make_transfer_uri, validat
 
 LOG = logging.getLogger(__name__)
 
+# Tempo disponivel para confirmar DTMF apos a reproducao completa do audio.
+DTMF_AFTER_AUDIO_WAIT_SECONDS = 20
+
+
+def dtmf_response_window_expired(audio_started_at: float | None, audio_duration: float,
+                                 current_time: float) -> bool:
+    """Considera o tempo de reproducao mais 20s para a tecla de confirmacao."""
+    return (audio_started_at is not None and
+            current_time - audio_started_at >= audio_duration + DTMF_AFTER_AUDIO_WAIT_SECONDS)
+
 
 class VoiceEngineError(RuntimeError):
     pass
@@ -388,8 +398,9 @@ class PjSession:
                                                "Timeout da confirmacao da transferencia SIP REFER.",
                                                True, call.media_active)
                     if call_mode == "AUDIO" and not call.digit_confirmed:
-                        if (call.audio_started_at is not None
-                                and time.monotonic() - call.audio_started_at >= audio_seconds + 10):
+                        if dtmf_response_window_expired(
+                            call.audio_started_at, audio_seconds, time.monotonic()
+                        ):
                             return VoiceCallResult("SEM_INTERESSE", call.sip_code, False,
                                                    "Nao houve confirmacao DTMF apos o audio.",
                                                    True, call.media_active)
