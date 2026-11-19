@@ -809,7 +809,7 @@ def test_admin_can_review_and_prepare_only_rejected_undelivered_contacts():
                     dispatch_id=dispatch.id, name="Recusado pela API",
                     phone="5555999997021", message_body="Oferta",
                     status="FALHOU", attempts=3,
-                    error="Falha no envio pela Z-API: HTTP 403",
+                    error="RECUSA_CONFIRMADA_ZAPI: HTTP 422. API recusou a mensagem.",
                 ),
                 CampaignDispatchRecipient(
                     dispatch_id=dispatch.id, name="Enviado",
