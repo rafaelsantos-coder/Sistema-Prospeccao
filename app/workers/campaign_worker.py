@@ -34,6 +34,8 @@ def run() -> None:
         except Exception:
             LOG.exception("Falha do worker de mensagens manuais")
             pacing_result = "error"
+        if shutdown.requested:
+            break  # nao realizar novo claim durante SIGTERM
         if campaigns_paused:
             shutdown.wait(1 if pacing_result == "sent" else 3)
             continue
