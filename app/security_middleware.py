@@ -47,9 +47,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Referrer-Policy",
             "strict-origin-when-cross-origin",
         )
+        # microphone=(self): o chat das Conversas usa getUserMedia no próprio domínio.
+        # microphone=() bloqueava a captura e o Chrome caía em InvalidStateError
+        # no fluxo nativo ("Usar o microfone").
         response.headers.setdefault(
             "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=(), payment=()",
+            "camera=(), microphone=(self), geolocation=(), payment=()",
         )
         response.headers.setdefault(
             "Content-Security-Policy",

@@ -1785,7 +1785,9 @@
       const stream = await navigator.mediaDevices.getUserMedia(audioOnlyConstraints);
       startRecorder(stream, false);
     } catch (error) {
-      if ((error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') &&
+      // SecurityError também ocorre quando a Permissions-Policy bloqueia o mic.
+      if ((error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError' ||
+           error?.name === 'SecurityError') &&
           enableNativeRecovery()) {
         showRecordingNotice('Autorize o microfone na janela aberta para começar a gravar.');
         return;
