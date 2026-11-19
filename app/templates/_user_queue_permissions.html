@@ -1,0 +1,25 @@
+{% if 'settings.queues.manage' in current_user.permissions %}
+<section class="user-queue-permissions field-span-2">
+  <input type="hidden" name="queue_memberships_configured" value="1">
+  <div class="user-queue-permissions-title">
+    <div>
+      <span class="eyebrow">FILAS WHATSAPP</span>
+      <h4>Em quais filas este usuário participará?</h4>
+      <p>Selecione as filas para distribuição e atendimento. A visualização de Conversas depende também da permissão do módulo e das regras de atribuição.</p>
+    </div>
+  </div>
+  <div class="user-queue-checks">
+    {% for queue in available_user_queues %}
+    <label class="user-queue-choice">
+      <input type="checkbox" name="queue_ids" value="{{ queue.id }}"
+             {% if queue.id in selected_queue_ids %}checked{% endif %}
+             {% if target_user is defined and target_user and target_user.id == current_user.id %}disabled{% endif %}>
+      <span><strong>{{ queue.name }}</strong><small>{{ queue.code }}{% if queue.branch %} · {{ queue.branch.city }}{% endif %}</small></span>
+    </label>
+    {% else %}
+    <p class="user-queue-empty">Nenhuma fila ativa cadastrada.</p>
+    {% endfor %}
+  </div>
+  <p class="user-queue-footnote">Marcando uma fila, o usuário passa a integrar seus atendentes; isso não o atribui automaticamente a conversas já existentes.</p>
+</section>
+{% endif %}
