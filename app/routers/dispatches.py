@@ -28,7 +28,7 @@ from app.services.dispatch_queue import (
     parse_window,
 )
 from app.services.dispatch_monitor import dispatch_live_snapshot
-from app.services.delivery_reconciliation import reconciliation_snapshot
+from app.services.delivery_reconciliation import reconciliation_csv, reconciliation_snapshot
 from app.services.queue_routing import available_queues_for_user, get_queue
 from app.services.scoring import normalize_phone
 from app.services.telegram import configured as telegram_configured, ensure_telegram_queue
@@ -285,6 +285,32 @@ async def create_dispatch(
         f"Disparo #{dispatch.id} preparado com {created} contato(s). Revise e clique em Iniciar.",
     )
     return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+
+@router.get("/reconciliation/export.csv")
+def dispatch_reconciliation_export(
+    request: Request,
+    status: str = "TODOS",
+    queue_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Relatório gerencial sem reenvio, com filtros e proteção contra cache."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    try:
+        content = reconciliation_csv(db, status=status, queue_id=queue_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Filtro de conferência inválido.") from exc
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="conferencia-envios.csv"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/reconciliation")
