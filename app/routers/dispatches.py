@@ -315,7 +315,7 @@ def dispatch_detail(
         CampaignDispatchRecipient.status == "FALHOU",
         CampaignDispatchRecipient.sent_at.is_(None),
         CampaignDispatchRecipient.provider_message_id.is_(None),
-        CampaignDispatchRecipient.error.ilike("Falha no envio pela Z-API:%"),
+        CampaignDispatchRecipient.error.like("RECUSA_CONFIRMADA_ZAPI:%"),
     )) or 0
     failure_reasons = list(db.execute(
         select(CampaignDispatchRecipient.error, func.count(CampaignDispatchRecipient.id))
@@ -694,7 +694,7 @@ def retry_provider_failures(
         CampaignDispatchRecipient.status == "FALHOU",
         CampaignDispatchRecipient.sent_at.is_(None),
         CampaignDispatchRecipient.provider_message_id.is_(None),
-        CampaignDispatchRecipient.error.ilike("Falha no envio pela Z-API:%"),
+        CampaignDispatchRecipient.error.like("RECUSA_CONFIRMADA_ZAPI:%"),
     ).with_for_update()))
     restored = 0
     blocked = 0
@@ -801,7 +801,7 @@ def cancel_dispatch(
     for recipient in db.scalars(
         select(CampaignDispatchRecipient).where(
             CampaignDispatchRecipient.dispatch_id == dispatch.id,
-            CampaignDispatchRecipient.status.in_({"PENDENTE", "ENVIANDO"}),
+            CampaignDispatchRecipient.status == "PENDENTE",
         )
     ):
         recipient.status = "IGNORADO"
