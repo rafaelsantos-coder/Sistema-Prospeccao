@@ -368,6 +368,34 @@ class Message(Base):
     sender_user: Mapped[User | None] = relationship()
 
 
+
+
+class PacedOutboundMessage(Base):
+    """Outbox duravel para contatos proativos por numero de Z-API."""
+
+    __tablename__ = "paced_outbound_messages"
+    __table_args__ = (
+        Index("ix_paced_outbound_due", "status", "scheduled_at"),
+        Index("ix_paced_outbound_instance_slot", "instance_key", "scheduled_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    instance_key: Mapped[str] = mapped_column(String(180), nullable=False)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", nullable=False)
+    caption: Mapped[str] = mapped_column(Text, default="")
+    filename: Mapped[str] = mapped_column(String(240), default="")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    message: Mapped[Message] = relationship()
+
+
 class MessageEvent(Base):
     __tablename__ = "message_events"
 
