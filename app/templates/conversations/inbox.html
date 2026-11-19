@@ -353,7 +353,10 @@
             {% endif %}
             <div class="message-foot">
               <time>{{ item.created_at|datetime_br }}</time>
-              {% if item.direction == 'OUTBOUND' %}<span class="message-status-ticks" title="{{ item.status }}">{{ '✓✓' if item.status in ['RECEIVED','READ','PLAYED'] else '✓' }}</span>{% endif %}
+              {% if item.direction == 'OUTBOUND' %}
+              {% set delivery_title = 'Entrega não confirmada: confira a Z-API antes de tentar novamente.' if item.status == 'UNKNOWN' else item.status %}
+              <span class="message-status-ticks" title="{{ delivery_title }}" aria-label="{{ delivery_title }}">{{ '?' if item.status == 'UNKNOWN' else ('…' if item.status == 'PENDING' else ('!' if item.status == 'FAILED' else ('✓✓' if item.status in ['RECEIVED','READ','PLAYED'] else '✓'))) }}</span>
+              {% endif %}
             </div>
           </div>
         </div>
@@ -1387,8 +1390,10 @@
     if (item.direction === 'OUTBOUND') {
       const ticks = document.createElement('span');
       ticks.className = 'message-status-ticks';
-      ticks.textContent = ['RECEIVED','READ','PLAYED'].includes(item.status) ? '✓✓' : '✓';
-      ticks.title = item.status;
+      const ambiguous = item.status === 'UNKNOWN';
+      ticks.textContent = ambiguous ? '?' : item.status === 'PENDING' ? '…' : item.status === 'FAILED' ? '!' : ['RECEIVED','READ','PLAYED'].includes(item.status) ? '✓✓' : '✓';
+      ticks.title = ambiguous ? 'Entrega não confirmada: confira a Z-API antes de tentar novamente.' : item.status;
+      ticks.setAttribute('aria-label', ticks.title);
       foot.append(ticks);
     }
     bubble.append(foot);

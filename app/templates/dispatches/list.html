@@ -7,7 +7,12 @@
     <h2>Disparos WhatsApp</h2>
     <p>Escolha a campanha, a fila de retorno, o intervalo e importe um CSV com nome e telefone.</p>
   </div>
-  <a class="button button-secondary" href="/dispatches/sample.csv">Baixar modelo CSV</a>
+  <div class="page-actions">
+    {% if 'dispatches.reconcile' in current_user.permissions %}
+    <a class="button button-secondary" href="/dispatches/reconciliation">Envios a conferir</a>
+    {% endif %}
+    <a class="button button-secondary" href="/dispatches/sample.csv">Baixar modelo CSV</a>
+  </div>
 </div>
 
 <div class="dispatch-layout">
@@ -153,7 +158,7 @@
           <td>
             <strong>{{ sent }}/{{ total }}</strong>
             <div class="dispatch-mini-progress"><i style="width: {{ '%.1f'|format(pct) }}%"></i></div>
-            <span class="table-subline">{{ dc.get('pending', 0) }} pendentes · {{ dc.get('failed', 0) }} falhas</span>
+            <span class="table-subline">{{ dc.get('pending', 0) }} pendentes · {{ dc.get('failed', 0) }} falhas · {{ dc.get('unknown', 0) }} a conferir</span>
           </td>
           <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
           <td>{{ item.created_by.name if item.created_by else 'Sistema' }}</td>
