@@ -23,7 +23,7 @@ from app.services.voice_test import aware, validate_test_phone
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 ENGINE_HEARTBEAT_MAX = timedelta(seconds=65)
 SIP_VERIFICATION_MAX = timedelta(hours=1)
-MAX_CALLS_PER_DAY = 30
+MAX_CALLS_PER_DAY = 100
 MIN_SECONDS_BETWEEN_CALLS = 60
 MAX_ACTIVE_CALLS_PER_INSTANCE = 1
 
