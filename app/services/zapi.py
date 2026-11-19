@@ -11,6 +11,10 @@ from app.config import settings
 class ZApiError(RuntimeError):
     """Erro seguro da integracao Z-API, sem expor credenciais em logs."""
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class ZApiNotConfigured(ZApiError):
     pass
@@ -162,7 +166,8 @@ class ZApiService:
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel enviar a mensagem pela Z-API.") from exc
         if response.status_code >= 400:
-            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}")
+            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}",
+                            status_code=response.status_code)
         payload = response.json()
         if not isinstance(payload, dict):
             raise ZApiError("A Z-API retornou uma resposta inesperada.")
@@ -209,7 +214,8 @@ class ZApiService:
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel enviar os botoes pela Z-API.") from exc
         if response.status_code >= 400:
-            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}")
+            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}",
+                            status_code=response.status_code)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -248,7 +254,8 @@ class ZApiService:
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel enviar o botao de link pela Z-API.") from exc
         if response.status_code >= 400:
-            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}")
+            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}",
+                            status_code=response.status_code)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -287,7 +294,8 @@ class ZApiService:
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel enviar a midia pela Z-API.") from exc
         if response.status_code >= 400:
-            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}")
+            raise ZApiError(f"Falha no envio pela Z-API: {self._safe_error(response)}",
+                            status_code=response.status_code)
         try:
             result = response.json()
         except ValueError as exc:

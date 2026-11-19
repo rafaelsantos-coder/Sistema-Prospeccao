@@ -580,6 +580,28 @@ def process_dispatch_recipient(
         return "skipped"
     except ZApiError as exc:
         recipient.error = str(exc)[:500]
+        http_status = getattr(exc, "status_code", None)
+        if not telegram and http_status in {401, 403}:
+            # Autorizacao rejeitada pela Z-API: nao gastar tres tentativas
+            # do contato enquanto as credenciais/permissoes estao incorretas.
+            # Pausar SOMENTE o disparo afetado; outras filas seguem operando.
+            recipient.status = "PENDENTE"
+            recipient.attempts = max(0, int(recipient.attempts or 0) - 1)
+            recipient.error = (
+                f"Z-API recusou envio (HTTP {http_status}). "
+                "Revise conexao, token de seguranca e permissoes da instancia. "
+                "Disparo pausado para preservar os contatos."
+            )
+            dispatch.status = "PAUSADO"
+            dispatch.paused_at = utcnow()
+            dispatch.next_send_at = None
+            write_audit(
+                db, user=None, action="DISPATCH_ZAPI_ACCESS_PAUSED",
+                entity_type="campaign_dispatch", entity_id=dispatch.id,
+                payload={"http_status": http_status, "recipient_id": recipient.id,
+                         "queue_id": dispatch.queue_id, "attempt_preserved": True},
+            )
+            return "provider_access_paused"
         if telegram_link and getattr(exc, "blocked", False):
             # Cliente bloqueou o bot: encerra o canal para ele e não tenta de novo.
             telegram_link.status = "PARADO"

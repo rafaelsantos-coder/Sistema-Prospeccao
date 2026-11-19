@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
@@ -13,6 +13,7 @@ from app.models import (
     Campaign,
     CampaignDispatch,
     CampaignDispatchRecipient,
+    Lead,
     ServiceQueue,
     User,
 )
@@ -20,6 +21,7 @@ from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.campaign_queue import campaign_message_template, personalize_message
 from app.services.chat_reports import format_duration
+from app.services.global_blacklist import is_globally_blocked
 from app.services.dispatch_queue import (
     dispatch_counts,
     ensure_dispatch_lead,
@@ -290,6 +292,7 @@ async def create_dispatch(
 def dispatch_detail(
     dispatch_id: int,
     request: Request,
+    status_filter: str = "",
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -297,14 +300,37 @@ def dispatch_detail(
         return redirect
 
     dispatch = _dispatch_or_404(db, dispatch_id)
-    recipients = list(
-        db.scalars(
-            select(CampaignDispatchRecipient)
-            .where(CampaignDispatchRecipient.dispatch_id == dispatch.id)
-            .order_by(CampaignDispatchRecipient.id.asc())
-            .limit(500)
-        )
+    failures_only = status_filter.upper() == "FALHOU"
+    recipients_query = select(CampaignDispatchRecipient).where(
+        CampaignDispatchRecipient.dispatch_id == dispatch.id
     )
+    if failures_only:
+        recipients_query = recipients_query.where(CampaignDispatchRecipient.status == "FALHOU")
+    recipients = list(db.scalars(
+        recipients_query.order_by(CampaignDispatchRecipient.id.asc()).limit(500)
+    ))
+    recoverable_count = db.scalar(select(func.count(CampaignDispatchRecipient.id)).where(
+        CampaignDispatchRecipient.dispatch_id == dispatch.id,
+        CampaignDispatchRecipient.status == "FALHOU",
+        CampaignDispatchRecipient.sent_at.is_(None),
+        CampaignDispatchRecipient.provider_message_id.is_(None),
+        CampaignDispatchRecipient.error.ilike("Falha no envio pela Z-API:%"),
+    )) or 0
+    failure_reasons = list(db.execute(
+        select(CampaignDispatchRecipient.error, func.count(CampaignDispatchRecipient.id))
+        .where(
+            CampaignDispatchRecipient.dispatch_id == dispatch.id,
+            CampaignDispatchRecipient.status == "FALHOU",
+        )
+        .group_by(CampaignDispatchRecipient.error)
+        .order_by(func.count(CampaignDispatchRecipient.id).desc())
+        .limit(10)
+    ).all())
+    auth_alert = db.scalar(select(CampaignDispatchRecipient.error).where(
+        CampaignDispatchRecipient.dispatch_id == dispatch.id,
+        CampaignDispatchRecipient.status == "PENDENTE",
+        CampaignDispatchRecipient.error.like("Z-API recusou envio (HTTP %"),
+    ).limit(1))
     counts = dispatch_counts(db, dispatch.id)
     try:
         import_summary = json.loads(dispatch.import_summary_json or "{}")
@@ -321,6 +347,10 @@ def dispatch_detail(
         page_title=f"Disparo #{dispatch.id}",
         dispatch=dispatch,
         recipients=recipients,
+        failures_only=failures_only,
+        failure_reasons=failure_reasons,
+        recoverable_count=recoverable_count,
+        auth_alert=auth_alert,
         counts=counts,
         import_summary=import_summary,
         live_status=live_status,
@@ -638,6 +668,60 @@ def pause_dispatch(
     db.commit()
     flash(request, "Disparo pausado.")
     return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+
+@router.post("/{dispatch_id}/retry-provider-failures")
+def retry_provider_failures(
+    dispatch_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    confirmation: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Prepara apenas recusas confirmadas pela Z-API; NAO dispara mensagens."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    dispatch = _dispatch_or_404(db, dispatch_id)
+    if dispatch.status != "PAUSADO" or confirmation != "reprocessar":
+        flash(request, "Pause o disparo e confirme a revisao antes de recuperar falhas.", "warning")
+        return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+    candidates = list(db.scalars(select(CampaignDispatchRecipient).where(
+        CampaignDispatchRecipient.dispatch_id == dispatch.id,
+        CampaignDispatchRecipient.status == "FALHOU",
+        CampaignDispatchRecipient.sent_at.is_(None),
+        CampaignDispatchRecipient.provider_message_id.is_(None),
+        CampaignDispatchRecipient.error.ilike("Falha no envio pela Z-API:%"),
+    ).with_for_update()))
+    restored = 0
+    blocked = 0
+    for recipient in candidates:
+        lead = db.get(Lead, recipient.lead_id) if recipient.lead_id else None
+        if is_globally_blocked(db, recipient.phone) or (
+            lead is not None and (
+                lead.do_not_contact or lead.stage in {"NAO_CONTATAR", "PERDIDO", "GANHO"}
+            )
+        ):
+            blocked += 1
+            continue
+        recipient.status = "PENDENTE"
+        recipient.attempts = 0
+        recipient.error = None
+        restored += 1
+
+    write_audit(
+        db, user=actor, action="CAMPAIGN_DISPATCH_PROVIDER_FAILURES_REQUEUED",
+        entity_type="campaign_dispatch", entity_id=dispatch.id,
+        payload={"restored": restored, "blocked": blocked,
+                 "left_paused": True, "scope": "provider_refusals_without_message_id"},
+    )
+    db.commit()
+    flash(request,
+          f"{restored} contato(s) preparado(s) novamente; {blocked} bloqueado(s) mantido(s) fora. "
+          "Disparo permanece PAUSADO. Confira a Z-API antes de retomar.")
+    return RedirectResponse(f"/dispatches/{dispatch.id}?status_filter=FALHOU", status_code=303)
 
 
 CANCEL_REASON = "Disparo cancelado pelo gestor."

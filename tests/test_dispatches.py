@@ -24,7 +24,7 @@ from app.services.dispatch_queue import (
     process_dispatch_recipient,
 )
 from app.services.media_storage import MediaStorage
-from app.services.zapi import ZApiService
+from app.services.zapi import ZApiService, ZApiError
 from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
 
 
@@ -750,3 +750,119 @@ def test_dispatch_live_monitor_shows_last_next_and_realistic_daily_capacity():
         assert data["last_sent"] is not None
         assert data["next_send"] is not None
         assert data["status"] == "ATIVO"
+
+
+def test_zapi_forbidden_pauses_only_affected_dispatch_preserving_recipient(monkeypatch):
+    """A recusas 403 nao queimam tres tentativas nem mudam outras campanhas."""
+    def forbidden(self, *, phone, message):
+        raise ZApiError("Falha no envio pela Z-API: acesso recusado", status_code=403)
+
+    monkeypatch.setattr(ZApiService, "send_text", forbidden)
+    with TestClient(app):
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "HTTP403")
+            affected = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id, status="ATIVO",
+                interval_seconds=600, daily_limit=100,
+            )
+            other = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id, status="ATIVO",
+                interval_seconds=600, daily_limit=100,
+            )
+            db.add_all([affected, other])
+            db.flush()
+            recipient = CampaignDispatchRecipient(
+                dispatch_id=affected.id, name="Contato preservado",
+                phone="5555999997011", message_body="Oferta de teste",
+                status="ENVIANDO", attempts=0,
+            )
+            db.add(recipient)
+            db.flush()
+            outcome = process_dispatch_recipient(db, recipient)
+            assert outcome == "provider_access_paused"
+            assert affected.status == "PAUSADO"
+            assert affected.next_send_at is None
+            assert recipient.status == "PENDENTE"
+            assert recipient.attempts == 0
+            assert "HTTP 403" in recipient.error
+            assert other.status == "ATIVO"
+            db.commit()
+
+
+def test_admin_can_review_and_prepare_only_rejected_undelivered_contacts():
+    """Recuperacao requer pausa + CSRF + confirmacao; nao envia nenhum WhatsApp."""
+    from app.timeutils import utcnow
+
+    with TestClient(app) as client:
+        csrf = _login_admin(client)
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "RETRY403")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id, status="PAUSADO",
+                interval_seconds=600, daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            dispatch_id = dispatch.id
+            db.add_all([
+                CampaignDispatchRecipient(
+                    dispatch_id=dispatch.id, name="Recusado pela API",
+                    phone="5555999997021", message_body="Oferta",
+                    status="FALHOU", attempts=3,
+                    error="Falha no envio pela Z-API: HTTP 403",
+                ),
+                CampaignDispatchRecipient(
+                    dispatch_id=dispatch.id, name="Enviado",
+                    phone="5555999997022", message_body="Oferta",
+                    status="ENVIADO", attempts=1,
+                    sent_at=utcnow(), provider_message_id="MSG-JA-ENVIADA",
+                ),
+                CampaignDispatchRecipient(
+                    dispatch_id=dispatch.id, name="Falha sem comprovacao de recusa",
+                    phone="5555999997023", message_body="Oferta",
+                    status="FALHOU", attempts=3,
+                    error="Falha interna indeterminada",
+                ),
+            ])
+            db.commit()
+
+        page = client.get(f"/dispatches/{dispatch_id}")
+        assert page.status_code == 200
+        assert "2 contatos com falha" in page.text
+        assert "Preparar 1 falha(s)" in page.text
+        failures = client.get(f"/dispatches/{dispatch_id}?status_filter=FALHOU")
+        assert failures.status_code == 200
+        assert "Recusado pela API" in failures.text
+        assert "Enviado</strong>" not in failures.text
+
+        # Sem confirmacao explicita, nao altera a fila.
+        refused = client.post(f"/dispatches/{dispatch_id}/retry-provider-failures",
+                              data={"csrf_token": csrf}, follow_redirects=False)
+        assert refused.status_code == 303
+        with SessionLocal() as db:
+            assert dispatch_counts(db, dispatch_id)["failed"] == 2
+
+        accepted = client.post(f"/dispatches/{dispatch_id}/retry-provider-failures",
+                               data={"csrf_token": csrf, "confirmation": "reprocessar"},
+                               follow_redirects=False)
+        assert accepted.status_code == 303
+        with SessionLocal() as db:
+            dispatch = db.get(CampaignDispatch, dispatch_id)
+            counts = dispatch_counts(db, dispatch_id)
+            assert dispatch.status == "PAUSADO"
+            assert counts["pending"] == 1
+            assert counts["failed"] == 1
+            assert counts["sent"] == 1
+            recovered = db.scalar(select(CampaignDispatchRecipient).where(
+                CampaignDispatchRecipient.dispatch_id == dispatch_id,
+                CampaignDispatchRecipient.phone == "5555999997021",
+            ))
+            assert recovered.status == "PENDENTE"
+            assert recovered.attempts == 0
+            assert recovered.error is None
+            sent = db.scalar(select(CampaignDispatchRecipient).where(
+                CampaignDispatchRecipient.dispatch_id == dispatch_id,
+                CampaignDispatchRecipient.phone == "5555999997022",
+            ))
+            assert sent.status == "ENVIADO"
+            assert sent.provider_message_id == "MSG-JA-ENVIADA"
