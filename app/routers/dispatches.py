@@ -300,8 +300,8 @@ def dispatch_reconciliation(
         return redirect
     try:
         snapshot = reconciliation_snapshot(db, status=status, page=page)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Filtro de conferência inválido.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Filtro de conferência inválido.") from exc
 
     response = render(
         request,
