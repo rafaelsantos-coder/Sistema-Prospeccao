@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import (
     CampaignDispatch,
     CampaignDispatchRecipient,
+    CampaignQueueLink,
     CampaignRecipient,
 )
 from app.timeutils import utcnow
@@ -85,7 +86,18 @@ def reconciliation_snapshot(db: Session, *, status: str = "TODOS", page: int = 1
             .limit(REVIEW_PAGE_SIZE)
         )
     )
+    campaign_ids = {item.campaign_id for item in legacy}
+    queue_names = {}
+    if campaign_ids:
+        links = db.scalars(
+            select(CampaignQueueLink)
+            .options(selectinload(CampaignQueueLink.queue))
+            .where(CampaignQueueLink.campaign_id.in_(campaign_ids))
+        )
+        queue_names = {link.campaign_id: link.queue.name for link in links}
+
     return {
+        "legacy_queue_names": queue_names,
         "status": status,
         "page": page,
         "page_size": REVIEW_PAGE_SIZE,
