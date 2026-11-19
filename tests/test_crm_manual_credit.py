@@ -217,3 +217,18 @@ def test_webhook_credit_uses_integration_key_not_sdr_bearer(monkeypatch):
     }
     assert captured["headers"]["X-Integration-Key"] == "commercial-only-key"
     assert "Authorization" not in captured["headers"]
+
+    # Em produção, a mesma credencial atual do POST /webhook/leads
+    # pode estar configurada como SULNET_AI_INTEGRATION_KEY.
+    old_key_client = crm_module.SulnetCRMClient(
+        base_url="https://crm.example",
+        bearer_token="must-not-be-used",
+        integration_key="existing-leads-webhook-key",
+    )
+    old_key_client.consult_seller_credit(
+        opportunity_id=17456,
+        seller_username="maria.peno",
+        cpf="11144477735",
+    )
+    assert captured["headers"]["X-Integration-Key"] == "existing-leads-webhook-key"
+    assert "Authorization" not in captured["headers"]
