@@ -10,14 +10,18 @@
    externas já iniciadas; SIGTERM cooperativo do worker.
 2. **Pacing manual existente:** mantido o agendamento por instância de
    30 segundos para primeiro contato, sem reativar campanhas pausadas.
-3. **VoIP seguro:** liderança global exclusiva e bloqueio por conta SIP
+3. **Outbox manual confiável:** timeout/resultado ambíguo marcado UNKNOWN,
+   ícone de aviso em vez de confirmação falsa, e reservas PROCESSING com
+   mais de 15 minutos recuperadas como UNKNOWN. O contato antigo nunca
+   volta automaticamente para PENDING; a instância pode atender novos contatos.
+4. **VoIP seguro:** liderança global exclusiva e bloqueio por conta SIP
    compartilhado entre discador e agente diagnóstico. Falha de sessão
    invalida lock/conexão. SIGTERM drena chamada em andamento.
-4. **Conciliação gerencial:** tela SOMENTE DE LEITURA em
+5. **Conciliação gerencial:** tela SOMENTE DE LEITURA em
    `/dispatches/reconciliation`, acessível com
    `dispatches.reconcile` (ADMIN/GESTOR), com filtros de status/origem,
    contagem de envios incertos e marcação de processamento longo.
-5. **Testes automatizados** incluem ACK externo + rollback, interrupções
+6. **Testes automatizados** incluem ACK externo + rollback, interrupções
    forçadas simuladas, cancelamento/reabertura, permissão granular,
    disputa de locks no PostgreSQL e PBX SIP local falso.
 
