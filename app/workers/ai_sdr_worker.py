@@ -1132,6 +1132,112 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
     return answered
 
 
+
+def _review_today_fila_ia() -> dict[str, int]:
+    """Audita as mensagens de hoje da FILA-IA, recuperando apenas pendências elegíveis.
+
+    Nunca transfere filas, reabre conversa encerrada nem reenvia quando existe
+    resposta posterior, job de IA prévio ou responsável humano.
+    """
+    from zoneinfo import ZoneInfo
+
+    from app.models import ServiceQueue
+    from app.services.ai_sdr import human_is_attending, human_stepped_in
+    from app.services.queue_routing import queue_for_conversation
+
+    counts: Counter[str] = Counter()
+    with SessionLocal() as db:
+        queue = db.scalar(select(ServiceQueue).where(
+            ServiceQueue.code == "FILA-IA",
+            ServiceQueue.active.is_(True),
+        ))
+        if not queue or not ai_queue_enabled(db, queue.id):
+            LOG.error("ai_today_review_not_authorized: FILA-IA missing or disabled")
+            return {"not_authorized": 1}
+
+        local_now = datetime.now(ZoneInfo(settings.default_timezone))
+        since_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        since_utc = since_local.astimezone(timezone.utc).replace(tzinfo=None)
+        # Paginar sem limite global para cobrir todas as mensagens de hoje.
+        last_id = 0
+        seen: set[int] = set()
+        while True:
+            batch = list(db.scalars(
+                select(Message)
+                .join(ConversationQueueLink, ConversationQueueLink.conversation_id == Message.conversation_id)
+                .where(
+                    ConversationQueueLink.queue_id == queue.id,
+                    Message.direction == "INBOUND",
+                    Message.created_at >= since_utc,
+                    Message.id > last_id,
+                )
+                .order_by(Message.id.asc())
+                .limit(500)
+            ))
+            if not batch:
+                break
+            last_id = batch[-1].id
+            for message in batch:
+                counts["received_today"] += 1
+                if message.conversation_id in seen:
+                    continue
+                seen.add(message.conversation_id)
+                counts["conversations"] += 1
+                conversation = db.get(Conversation, message.conversation_id)
+                if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+                    counts["closed"] += 1
+                    continue
+                current_queue = queue_for_conversation(db, conversation.id)
+                if not current_queue or current_queue.id != queue.id:
+                    counts["moved_queue"] += 1
+                    continue
+                if conversation.lead and (
+                    conversation.lead.do_not_contact
+                    or conversation.lead.stage in {"GANHO", "NAO_CONTATAR"}
+                ):
+                    counts["do_not_contact"] += 1
+                    continue
+                if human_is_attending(db, conversation) or human_stepped_in(db, conversation):
+                    counts["human_owned"] += 1
+                    continue
+                state = db.scalar(select(AIConversationState).where(
+                    AIConversationState.conversation_id == conversation.id,
+                ))
+                if state and state.state in {"OPT_OUT", "COMPLETED", "SHADOW_REVIEW"}:
+                    counts["terminal_ai_state"] += 1
+                    continue
+
+                latest = db.scalar(select(Message).where(
+                    Message.conversation_id == conversation.id,
+                    Message.direction.in_(["INBOUND", "OUTBOUND"]),
+                ).order_by(Message.id.desc()).limit(1))
+                if not latest or latest.direction != "INBOUND":
+                    counts["answered"] += 1
+                    continue
+                if latest.message_type != "TEXT":
+                    counts["non_text"] += 1
+                    continue
+                prior_job = db.scalar(select(AIJob).where(
+                    AIJob.message_id == latest.id,
+                ).limit(1))
+                if prior_job:
+                    counts["already_job_" + str(prior_job.status).lower()] += 1
+                    continue
+                try:
+                    job = enqueue_ai_job(db, conversation=conversation, message=latest)
+                    if job:
+                        counts["queued_for_reply"] += 1
+                    else:
+                        counts["not_eligible"] += 1
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    counts["errors"] += 1
+                    LOG.exception("ai_today_review_enqueue_failed conversation=%s", conversation.id)
+        LOG.warning("ai_today_fila_ia_review %s", dict(counts))
+    return dict(counts)
+
+
 def run() -> None:
     if not settings.is_production:
         Base.metadata.create_all(bind=engine)
@@ -1232,6 +1338,7 @@ def run() -> None:
     recovered_recent = _recover_recent_unqueued_inbounds()
     if recovered_recent:
         LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
+    _review_today_fila_ia()
     if settings.ai_sdr_enabled and settings.ai_autonomous_enabled:
         try:
             claimed = _takeover_unanswered_human_conversations()
