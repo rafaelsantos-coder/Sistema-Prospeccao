@@ -1,7 +1,8 @@
 """Diagnóstico interno somente leitura.
 
-Rota protegida por segredo no caminho (DIAGNOSTICS_SECRET, mínimo 24 caracteres).
-Sem a variável configurada a rota responde 404. Nunca devolve telefones, nomes,
+Preferir o cabeçalho X-Diagnostics-Secret em /internal/diag (DIAGNOSTICS_SECRET, mínimo 24 caracteres).
+O caminho legado /internal/diag/{secret} permanece durante a migração.
+Sem a variável configurada ambas as rotas respondem 404. Nunca devolve telefones, nomes,
 mensagens, tokens ou chaves: apenas contagens, estados e identificadores técnicos.
 """
 
