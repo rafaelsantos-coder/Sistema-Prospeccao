@@ -89,15 +89,19 @@ def _audit(
 
 
 def _decision(result: dict[str, Any]) -> tuple[str, str]:
-    status = str(result.get("status") or result.get("creditStatus") or "").strip()
+    # A API contratada retorna "result" canônico, diferente do status Serasa bruto.
+    status = str(result.get("result") or result.get("status") or "").strip()
     normalized = _fold(status)
-    if "aprovado com taxa" in normalized or "aprovado c/ taxa" in normalized:
+    if normalized == "aprovado com taxa":
         return "APROVADO_COM_TAXA", "Aprovado com taxa"
-    if result.get("rejected") is True or "reprovado" in normalized:
+    if normalized == "reprovado":
         return "REPROVADO", "Reprovado"
-    if result.get("approved") is True or normalized in {"aprovado", "liberado"}:
+    if normalized == "aprovado":
         return "APROVADO", "Aprovado"
-    return "EM_ANALISE", status or "Em análise"
+    if normalized == "em analise":
+        return "EM_ANALISE", "Em análise"
+    # Caso novo/desconhecido nunca vira "Aprovado" por inferência local.
+    return "EM_ANALISE", "Em análise"
 
 
 def consult_registered_cpf(
@@ -180,7 +184,10 @@ def consult_registered_cpf(
     # A resposta deve identificar a MESMA oportunidade e o MESMO vendedor.
     ret_opp = _as_int(result.get("opportunityId") or result.get("id"))
     ret_seller = _as_int(result.get("assignedUserId"))
-    if ret_opp != opp_id or ret_seller != seller.user_id:
+    ret_funnel = _as_int(result.get("funnelId"))
+    ret_username = str(result.get("sellerUsername") or "")
+    if (ret_opp != opp_id or ret_seller != seller.user_id
+            or ret_funnel != seller.funnel_id or ret_username != seller.username):
         _audit(
             db,
             actor=actor,
@@ -200,6 +207,8 @@ def consult_registered_cpf(
         "statusLabel": label,
         "analysisId": _as_int(result.get("analysisId")),
         "protocol": str(result.get("protocol") or registered.get("protocol") or ""),
+        "analysisProtocol": str(result.get("analysisProtocol") or ""),
+        "outcome": str(result.get("outcome") or ""),
     }
     _audit(db, actor=actor, conversation=conversation, action=ACTION_CREDIT, result=saved)
     LOG.info("crm_manual_credit_registered opportunity=%s decision=%s", opp_id, code)
