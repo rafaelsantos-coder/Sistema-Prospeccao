@@ -8,6 +8,7 @@ from app.database import SessionLocal
 from app.services.paced_outbound import process_one_pending
 from app.services.campaign_queue import claim_next_recipient, process_recipient
 from app.services.dispatch_queue import claim_next_dispatch_recipient, process_dispatch_recipient
+from app.workers.graceful_shutdown import GracefulShutdown
 
 
 logging.basicConfig(level=logging.INFO)
@@ -17,6 +18,8 @@ IDLE_INTERVAL = max(2, int(os.getenv("CAMPAIGN_IDLE_INTERVAL_SECONDS", "5")))
 
 
 def run() -> None:
+    shutdown = GracefulShutdown(LOG)
+    shutdown.install()
     # Bloqueio global de emergencia solicitado pelo gestor em 17/11/2026.
     # O atendimento receptivo de WhatsApp e os agentes IA usam outro worker.
     # A retomada exige remover a pausa explicitamente na configuracao.
@@ -24,7 +27,7 @@ def run() -> None:
     if campaigns_paused:
         LOG.warning("Campanhas pausadas; somente mensagens manuais agendadas serao processadas.")
     LOG.info("Worker iniciado. Campanhas pausadas=%s; intervalo=%ss", campaigns_paused, SEND_INTERVAL)
-    while True:
+    while not shutdown.requested:
         # Outbox manual independente das campanhas e da IA, inclusive durante pausa.
         try:
             pacing_result = process_one_pending()
@@ -32,7 +35,7 @@ def run() -> None:
             LOG.exception("Falha do worker de mensagens manuais")
             pacing_result = "error"
         if campaigns_paused:
-            time.sleep(1 if pacing_result == "sent" else 3)
+            shutdown.wait(1 if pacing_result == "sent" else 3)
             continue
         db = SessionLocal()
         outcome = "idle"
@@ -41,6 +44,9 @@ def run() -> None:
             dispatch_recipient = claim_next_dispatch_recipient(db)
             if dispatch_recipient:
                 used_dispatch = True
+                # Reserva e tentativa devem estar confirmadas ANTES de acessar a Z-API.
+                # SIGKILL após ACK nunca devolve um envio ambíguo a PENDENTE.
+                db.commit()
                 outcome = process_dispatch_recipient(db, dispatch_recipient)
                 db.commit()
                 LOG.info(
@@ -55,6 +61,7 @@ def run() -> None:
                 if not recipient:
                     db.commit()
                 else:
+                    db.commit()  # confirma ENVIANDO antes da requisição externa
                     outcome = process_recipient(db, recipient)
                     db.commit()
                     LOG.info(
@@ -71,13 +78,15 @@ def run() -> None:
             db.close()
 
         if used_dispatch:
-            time.sleep(IDLE_INTERVAL)
+            shutdown.wait(IDLE_INTERVAL)
         elif outcome == "sent":
-            time.sleep(SEND_INTERVAL)
+            shutdown.wait(SEND_INTERVAL)
         elif outcome == "limit":
-            time.sleep(60)
+            shutdown.wait(60)
         else:
-            time.sleep(IDLE_INTERVAL)
+            shutdown.wait(IDLE_INTERVAL)
+
+    LOG.info("Worker encerrado apos a operacao em curso.")
 
 
 if __name__ == "__main__":
