@@ -165,6 +165,19 @@ def test_manual_credit_uses_existing_crm_lead_and_never_saves_cpf(monkeypatch):
             assert "11144477735" not in audits[0].payload_json
             assert "Aprovado com taxa" in audits[0].payload_json
 
+            # Cada teste utiliza a mesma base SQLite de CI: restaurar o estado
+            # para que o teste de registro independente possa criar a lead.
+            db.execute(delete(AuditLog).where(
+                AuditLog.entity_type == "contact",
+                AuditLog.entity_id == str(contact_id),
+                AuditLog.action.in_((
+                    manual.ACTION_REGISTERED, manual.ACTION_UNCERTAIN,
+                    manual.ACTION_REVIEW, credit.ACTION_CREDIT,
+                    credit.ACTION_UNCERTAIN, credit.ACTION_REVIEW,
+                )),
+            ))
+            db.commit()
+
 
 def test_webhook_credit_uses_integration_key_not_sdr_bearer(monkeypatch):
     import app.services.crm_sulnet as crm_module
