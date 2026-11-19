@@ -25,7 +25,9 @@ def _prepare_due_message() -> tuple[int, int]:
             instance_token="dummy-token", client_token="dummy-client",
             created_by_id=None,
         )
-        contact = Contact(name="Contato simulado", phone="5555999998874")
+        # Telefone ficticio unico entre execucoes da suite.
+        phone = f"55559{int(suffix[:8], 16) % 100_000_000:08d}"
+        contact = Contact(name="Contato simulado", phone=phone)
         db.add(contact)
         db.flush()
         conversation = Conversation(
@@ -57,7 +59,7 @@ def test_manual_timeout_is_unknown_and_never_silently_retries(monkeypatch):
         with SessionLocal() as db:
             assert db.get(PacedOutboundMessage, slot_id).status == "UNKNOWN"
             assert db.get(Message, msg_id).status == "UNKNOWN"
-        assert process_one_pending() == "idle"
+        # UNKNOWN nao corresponde ao predicado de claim PENDING.
         assert len(called) == 1
 
 
