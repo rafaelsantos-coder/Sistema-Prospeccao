@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 from app.workers import campaign_worker, voice_engine_worker, voice_test_worker
@@ -107,13 +108,16 @@ def test_voice_engine_finishes_claimed_call_without_new_claims(monkeypatch):
     calls = []
     monkeypatch.setenv("VOICE_ENGINE_WORKER_ENABLED", "true")
     monkeypatch.setattr(voice_engine_worker, "GracefulShutdown", lambda logger: stop)
+    leader = SimpleNamespace(assert_held=lambda **_kwargs: None, healthy=lambda: True)
+    monkeypatch.setattr(voice_engine_worker, "voice_engine_leadership", lambda: nullcontext(leader))
     monkeypatch.setattr(voice_engine_worker, "_expire_crashed_calls", lambda: None)
     monkeypatch.setattr(voice_engine_worker, "heartbeat", lambda: None)
     monkeypatch.setattr(voice_engine_worker, "_claim_native_test", lambda: None)
     monkeypatch.setattr(voice_engine_worker, "_claim_transfer_test", lambda: None)
     monkeypatch.setattr(voice_engine_worker, "_claim_recipient", lambda: 9)
 
-    def finish(_recipient_id):
+    def finish(_recipient_id, _leader):
+        assert _leader is leader
         calls.append("completed")
         stop.requested = True
 
