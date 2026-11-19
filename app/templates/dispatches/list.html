@@ -7,7 +7,12 @@
     <h2>Disparos WhatsApp</h2>
     <p>Escolha a campanha, a fila de retorno, o intervalo e importe um CSV com nome e telefone.</p>
   </div>
-  <a class="button button-secondary" href="/dispatches/sample.csv">Baixar modelo CSV</a>
+  <div class="page-actions">
+    {% if 'dispatches.reconcile' in current_user.permissions %}
+    <a class="button button-secondary" href="/dispatches/reconciliation">Envios a conferir</a>
+    {% endif %}
+    <a class="button button-secondary" href="/dispatches/sample.csv">Baixar modelo CSV</a>
+  </div>
 </div>
 
 <div class="dispatch-layout">
