@@ -164,6 +164,9 @@ class Settings:
     sulnet_crm_bearer_token: str = os.getenv("SULNET_CRM_BEARER_TOKEN", "")
     sulnet_ai_integration_key: str = os.getenv("SULNET_AI_INTEGRATION_KEY", "")
     sulnet_crm_lead_integration_key: str = os.getenv("SULNET_CRM_LEAD_INTEGRATION_KEY", "")
+    sulnet_crm_manual_credit_enabled: bool = os.getenv(
+        "SULNET_CRM_MANUAL_CREDIT_ENABLED", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     media_s3_endpoint: str = os.getenv("MEDIA_S3_ENDPOINT", "")
     media_s3_bucket: str = os.getenv("MEDIA_S3_BUCKET", "")
     media_s3_region: str = os.getenv("MEDIA_S3_REGION", "auto")

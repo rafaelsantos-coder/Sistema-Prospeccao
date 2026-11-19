@@ -412,6 +412,37 @@
       <div class="context-phone">{{ conversation.contact.phone|phone_br }}</div>
     </div>
 
+    {% if crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" and crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
+    <div class="context-section crm-credit-section">
+      <div class="context-title">Consulta de CPF · CRM Comercial</div>
+      <p>Oportunidade #{{ crm_manual_status.opportunityId }} · {{ crm_manual_seller.funnel_name }}</p>
+      {% if crm_credit_status and crm_credit_status.opportunityId == crm_manual_status.opportunityId %}
+        {% if crm_credit_status.state == "CRM_MANUAL_CREDIT" %}
+        <div class="crm-credit-result crm-credit-result-{{ crm_credit_status.status|lower }}" role="status">
+          <strong>{{ crm_credit_status.statusLabel }}</strong>
+          <small>Resultado retornado pelo CRM{% if crm_credit_status.analysisId %} · Análise #{{ crm_credit_status.analysisId }}{% endif %}</small>
+        </div>
+        {% else %}
+        <div class="crm-credit-alert" role="status">Consulta anterior sem confirmação. Confira a oportunidade no CRM antes de repetir.</div>
+        {% endif %}
+      {% else %}
+        <form class="crm-credit-form" method="post" action="/conversations/{{ conversation.id }}/consult-cpf">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label for="crm-credit-cpf">CPF informado pelo cliente</label>
+          <input id="crm-credit-cpf" type="text" name="cpf" required maxlength="14" inputmode="numeric" autocomplete="off"
+                 placeholder="000.000.000-00" {% if not crm_credit_enabled %}disabled{% endif %}>
+          <button type="submit" class="button button-primary full-width" data-crm-credit-submit
+                  {% if not crm_credit_enabled %}disabled{% endif %}>Consultar crédito</button>
+          {% if not crm_credit_enabled %}
+          <small>Consulta indisponível até a ativação do endpoint seguro no CRM. O registro de nome e telefone continua funcionando.</small>
+          {% else %}
+          <small>O CPF é enviado diretamente ao CRM e não fica salvo no Prospecta. Consulte somente com autorização do cliente.</small>
+          {% endif %}
+        </form>
+      {% endif %}
+    </div>
+    {% endif %}
+
     {% if conversation.lead %}
     <div class="context-section">
       <div class="context-title">Oportunidade</div>
@@ -750,6 +781,13 @@
 {% block scripts %}
 <script nonce="{{ csp_nonce }}">
 (() => {
+  const creditSubmit = document.querySelector('[data-crm-credit-submit]');
+  creditSubmit?.closest('form')?.addEventListener('submit', () => {
+    if (creditSubmit) {
+      creditSubmit.disabled = true;
+      creditSubmit.textContent = 'Consultando...';
+    }
+  });
   const crmDialog = document.getElementById('crm-manual-dialog');
   const crmOpen = document.querySelector('[data-crm-manual-open]');
   const crmClose = document.querySelector('[data-crm-manual-close]');
