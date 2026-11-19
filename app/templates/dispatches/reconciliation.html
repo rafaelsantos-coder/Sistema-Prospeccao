@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">SEGURANÇA DOS DISPAROS</span>
+    <h2>Envios a conferir</h2>
+    <p>Destinatários cujo envio está em andamento ou teve confirmação inconclusiva. Consulte a instância correta antes de qualquer nova tentativa.</p>
+  </div>
+  <div class="page-actions">
+    <a class="button button-secondary" href="/dispatches">Voltar aos disparos</a>
+  </div>
+</div>
+
+<div class="metric-grid dispatch-metric-grid">
+  <article class="metric-card">
+    <span>Resultado incerto</span>
+    <strong>{{ unknown_count }}</strong>
+    <small>Sem confirmação confiável do provedor</small>
+  </article>
+  <article class="metric-card">
+    <span>Envio em processamento</span>
+    <strong>{{ sending_count }}</strong>
+    <small>Reserva confirmada no banco</small>
+  </article>
+  <article class="metric-card">
+    <span>Processamento acima de 10 min</span>
+    <strong>{{ stale_count }}</strong>
+    <small>Conferir se houve queda do trabalhador</small>
+  </article>
+</div>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div>
+      <span class="eyebrow">CONCILIAÇÃO SEGURA</span>
+      <h3>Como interpretar estes registros</h3>
+    </div>
+  </div>
+  <p><strong>Resultado incerto</strong> pode significar mensagem entregue, resposta perdida ou falha. <strong>Em processamento</strong> pode ser uma operação legítima ou uma interrupção antes da conclusão.</p>
+  <p class="panel-note">Este painel é somente de leitura: não envia mensagens, não modifica status e não reabre contatos. Confira o histórico no WhatsApp/Z-API da fila e os eventos antes de decidir qualquer ação.</p>
+</section>
+
+<section class="panel top-space">
+  <div class="panel-header">
+    <div>
+      <span class="eyebrow">FILTROS</span>
+      <h3>Destinatários com resultado pendente de conferência</h3>
+    </div>
+    <span class="panel-note">Exibindo até 100 registros mais recentes, sem alterar a fila.</span>
+  </div>
+  <form action="/dispatches/reconciliation" method="get" class="form-grid">
+    <label class="field">
+      <span>Estado</span>
+      <select name="status">
+        <option value="ALL" {% if selected_status == 'ALL' %}selected{% endif %}>Todos os estados</option>
+        <option value="INDETERMINADO" {% if selected_status == 'INDETERMINADO' %}selected{% endif %}>Resultado incerto</option>
+        <option value="ENVIANDO" {% if selected_status == 'ENVIANDO' %}selected{% endif %}>Em processamento</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Origem</span>
+      <select name="source">
+        <option value="ALL" {% if selected_source == 'ALL' %}selected{% endif %}>Todas as origens</option>
+        <option value="DISPATCH" {% if selected_source == 'DISPATCH' %}selected{% endif %}>Disparos por lista</option>
+        <option value="CAMPAIGN" {% if selected_source == 'CAMPAIGN' %}selected{% endif %}>Campanhas tradicionais</option>
+      </select>
+    </label>
+    <div class="field">
+      <span>&nbsp;</span>
+      <button type="submit" class="button button-primary">Aplicar filtros</button>
+    </div>
+  </form>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Contato</th><th>Campanha e fila</th><th>Origem</th>
+          <th>Condição</th><th>Última atualização</th><th>Referência</th><th>Detalhes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td>
+            <strong>{{ item.name or 'Contato' }}</strong>
+            <span class="table-subline">{{ item.phone|phone_br }}</span>
+          </td>
+          <td>
+            <strong>{{ item.campaign }}</strong>
+            <span class="table-subline">{{ item.queue }}</span>
+          </td>
+          <td>{{ item.source }}</td>
+          <td>
+            {% if item.status == 'INDETERMINADO' %}
+            <strong>Resultado incerto</strong>
+            <span class="table-subline">Conferir antes de nova tentativa</span>
+            {% elif item.needs_review %}
+            <strong>Processamento acima de 10 min</strong>
+            <span class="table-subline">Verificar possível interrupção</span>
+            {% else %}
+            <strong>Em processamento</strong>
+            <span class="table-subline">Não interferir no envio ativo</span>
+            {% endif %}
+          </td>
+          <td>{{ item.changed_at|datetime_br }}</td>
+          <td>
+            <span class="table-subline">Registro #{{ item.recipient_id }}</span>
+            <span class="table-subline">{{ item.attempts }} tentativa(s)</span>
+            {% if item.provider_id %}
+            <span class="table-subline">ID externo: {{ item.provider_id }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if item.error %}
+            <span class="table-subline">{{ item.error|truncate(180) }}</span>
+            {% endif %}
+            {% if item.dispatch_id %}
+            <a class="button button-ghost" href="/dispatches/{{ item.dispatch_id }}">Ver disparo</a>
+            {% else %}
+            <a class="button button-ghost" href="/campaigns">Ver campanhas</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7">
+            <div class="empty-state">
+              <strong>Nenhum envio com este filtro.</strong>
+              <span>Os envios confirmados não aparecem neste painel.</span>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
