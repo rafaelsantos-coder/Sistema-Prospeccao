@@ -13,7 +13,7 @@ import pytest
 
 
 TEMPLATE = Path(__file__).parents[1] / "app/templates/conversations/inbox.html"
-START = "  // Prioridade: API de gravacao estavel, somente audio."
+START = "  // Prioridade: API de gravacao estavel, somente audio. O <microphone> nativo"
 END = "\n  if (form && input) {"
 
 HARNESS = r"""
