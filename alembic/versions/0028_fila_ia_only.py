@@ -30,17 +30,20 @@ def upgrade():
         INSERT INTO ai_queue_bindings
             (queue_id, agent_id, handling_mode, active, manual_authorized,
              fallback_to_human, created_at, updated_at)
-        SELECT q.id, a.id, 'AI_ONLY', true, true, false,
+        SELECT q.id,
+               (SELECT a.id FROM ai_agent_profiles a
+                 WHERE a.role_type = 'SDR' AND a.active = true
+                   AND a.execution_mode = 'AUTO'
+                 ORDER BY CASE WHEN a.slug = 'sulia-sdr-digital' THEN 0 ELSE 1 END,
+                          a.id
+                 LIMIT 1),
+               'AI_ONLY', true, true, false,
                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
           FROM service_queues q
-          CROSS JOIN LATERAL (
-            SELECT id FROM ai_agent_profiles
-             WHERE role_type = 'SDR' AND active = true
-               AND execution_mode = 'AUTO'
-             ORDER BY CASE WHEN slug = 'sulia-sdr-digital' THEN 0 ELSE 1 END, id
-             LIMIT 1
-          ) a
          WHERE q.code = 'FILA-IA' AND q.active = true
+           AND EXISTS (SELECT 1 FROM ai_agent_profiles a
+                       WHERE a.role_type = 'SDR'
+                         AND a.active = true AND a.execution_mode = 'AUTO')
         ON CONFLICT (queue_id) DO UPDATE
             SET agent_id = EXCLUDED.agent_id,
                 handling_mode = 'AI_ONLY',
