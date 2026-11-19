@@ -264,6 +264,7 @@ def permission_catalog(actor: Any, target_role: str) -> list[dict[str, Any]]:
                     "label": label,
                     "allowed_roles": list(roles),
                     "grantable": can_grant_permission(actor, target_role, code),
+                    "actor_allowed": actor.role == "ADMIN" or has_permission(actor, code),
                     "parent": REQUIRES.get(code, ""),
                 }
                 for code, label, roles in group["items"]
