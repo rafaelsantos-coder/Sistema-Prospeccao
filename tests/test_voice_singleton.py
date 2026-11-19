@@ -107,3 +107,39 @@ def test_sigkill_releases_exclusive_sip_leadership(monkeypatch):
             child.kill()
             child.communicate(timeout=10)
         pg_engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv("GITHUB_ACTIONS") != "true",
+    reason="Requer PostgreSQL 18 efemero do CI",
+)
+def test_failed_sip_leader_validation_cannot_leave_lock_in_connection_pool(monkeypatch):
+    """Falha de verificacao invalida DBAPI; nao devolve lock de sessao ao pool."""
+    from sqlalchemy import text
+
+    pg_engine = create_engine(PG_TEST_URL, pool_size=3, max_overflow=0)
+    monkeypatch.setattr(voice_singleton, "engine", pg_engine)
+    try:
+        # Outra sessao observa o lock enquanto o worker tem a lideranca.
+        with pg_engine.connect() as observer:
+            with voice_singleton.voice_engine_leadership() as leader:
+                assert leader is not None
+                assert observer.execute(
+                    text("SELECT pg_try_advisory_lock(:key)"),
+                    {"key": voice_singleton.VOICE_SINGLETON_LOCK_KEY},
+                ).scalar_one() is False
+                observer.commit()
+                # Simula uma verificacao que falhou sem invalidar automaticamente
+                # o driver do banco. Antigamente close() devolvia lock ao pool.
+                leader._closed = True
+            assert observer.execute(
+                text("SELECT pg_try_advisory_lock(:key)"),
+                {"key": voice_singleton.VOICE_SINGLETON_LOCK_KEY},
+            ).scalar_one() is True
+            observer.execute(
+                text("SELECT pg_advisory_unlock(:key)"),
+                {"key": voice_singleton.VOICE_SINGLETON_LOCK_KEY},
+            )
+            observer.commit()
+    finally:
+        pg_engine.dispose()
