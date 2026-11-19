@@ -1705,6 +1705,9 @@
       const currentPermission = await navigator.permissions?.query({name: 'microphone'}).catch(() => null);
       if (currentPermission?.state === 'denied') {
         openMicrophonePermissionHelp('NotAllowedError');
+        if (microphoneCopyStatus) {
+          microphoneCopyStatus.textContent = 'Verificação concluída: o Chrome continua bloqueando o microfone. Use Copiar atalho das configurações do Chrome para liberar.';
+        }
         return;
       }
       // A solicitacao parte exclusivamente de um clique do usuario; o Chrome controla a escolha.
