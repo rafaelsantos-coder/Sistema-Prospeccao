@@ -402,15 +402,20 @@ def _sent_today(db: Session, dispatch_id: int) -> int:
 
 def claim_next_dispatch_recipient(
     db: Session,
+    *,
+    dispatch_id: int | None = None,
 ) -> CampaignDispatchRecipient | None:
+    """Claim global por padrão; filtro opcional isola ensaios de uma campanha."""
     for _ in range(10):
-        recipient = _claim_once(db)
+        recipient = _claim_once(db, dispatch_id=dispatch_id)
         if recipient != "OUT_OF_WINDOW":
             return recipient
     return None
 
 
-def _claim_once(db: Session) -> CampaignDispatchRecipient | None | str:
+def _claim_once(
+    db: Session, *, dispatch_id: int | None = None,
+) -> CampaignDispatchRecipient | None | str:
     now = utcnow()
     recipient = db.scalar(
         select(CampaignDispatchRecipient)
@@ -421,6 +426,7 @@ def _claim_once(db: Session) -> CampaignDispatchRecipient | None | str:
         .where(
             CampaignDispatchRecipient.status == "PENDENTE",
             CampaignDispatch.status == "ATIVO",
+            *([CampaignDispatch.id == dispatch_id] if dispatch_id is not None else []),
             (
                 CampaignDispatch.next_send_at.is_(None)
                 | (CampaignDispatch.next_send_at <= now)
