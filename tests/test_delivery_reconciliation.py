@@ -114,6 +114,7 @@ def test_reconciliation_lists_only_uncertain_and_stale_without_sending(monkeypat
             db.add(CampaignQueueLink(campaign_id=campaign.id, queue_id=queue.id))
             db.commit()
             queue_id = queue.id
+            queue_name = queue.name
             record_ids = [item.id for item in records]
             legacy_id = legacy.id
 
@@ -156,7 +157,7 @@ def test_reconciliation_lists_only_uncertain_and_stale_without_sending(monkeypat
         assert any(r["Origem"] == "FUNIL" and f"Lead legado {unique}" in r["Contato"] for r in rows)
         assert all(f"Contato recente {unique}" not in r["Contato"] for r in rows)
         assert all(f"Contato pendente {unique}" not in r["Contato"] for r in rows)
-        assert all(r["Fila"] == queue.name for r in rows if unique in r["Campanha"])
+        assert all(r["Fila"] == queue_name for r in rows if unique in r["Campanha"])
         filtered_export = client.get(
             f"/dispatches/reconciliation/export.csv?queue_id={queue_id}&status=ENVIANDO"
         )
