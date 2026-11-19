@@ -98,7 +98,9 @@
     <form method="post" action="/voice/campaigns/{{ campaign.id }}/contacts" enctype="multipart/form-data" class="stack-form voice-subpanel">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <h4>1. Importar contatos</h4>
-      <label class="field"><span>Arquivo CSV com nome e telefone</span><input name="csv_file" type="file" accept=".csv,text/csv" required></label>
+      <a class="button button-secondary" href="/voice/campaigns/contacts/modelo.csv" download="modelo_contatos_voz.csv">↓ Baixar modelo CSV</a>
+      <p class="voice-help">Preencha o modelo com uma pessoa por linha, nas colunas <strong>nome</strong> e <strong>telefone</strong> (DDD + número, somente dígitos). Não altere o cabeçalho. Depois, selecione o arquivo preenchido abaixo.</p>
+      <label class="field"><span>Arquivo CSV preenchido com nome e telefone</span><input name="csv_file" type="file" accept=".csv,text/csv" required></label>
       <button class="button button-secondary" type="submit">Importar contatos</button>
     </form>
     {% if campaign.mode == 'AUDIO' %}

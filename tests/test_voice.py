@@ -53,6 +53,22 @@ def test_sip_validation_and_audio_modes():
         validate_wav(b"not-a-wave")
 
 
+def test_voice_contacts_csv_template_is_downloadable_and_admin_only():
+    url = "/voice/campaigns/contacts/modelo.csv"
+    with TestClient(app) as client:
+        denied = client.get(url, follow_redirects=False)
+        assert denied.status_code == 303
+        _login(client)
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert "attachment;" in response.headers["content-disposition"]
+        assert 'filename="modelo_contatos_voz.csv"' in response.headers["content-disposition"]
+        assert response.content.decode("utf-8-sig") == "nome;telefone\r\n"
+        campaigns = client.get("/voice/campaigns")
+        assert campaigns.status_code == 200
+
+
 def test_voice_campaign_status_fits_production_column():
     """Guard against PostgreSQL varchar truncation in campaign review."""
     assert len(VOICE_STATUS_HOMOLOGACAO) <= VoiceCampaign.__table__.columns.status.type.length

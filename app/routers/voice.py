@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from starlette.responses import JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app.database import get_db
 from app.models import AuditLog, Lead, VoiceCampaign, VoiceDialerEngine, VoiceGroup, VoiceRecipient, VoiceSipAccount, VoiceTestCall, VoiceTransferTest
@@ -520,6 +520,23 @@ def voice_campaigns(request: Request, archived: bool = False, db: Session = Depe
         archived_count=archived_count,
         engine_online=bool(engine and engine.heartbeat_at and
             datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX),
+    )
+
+
+@router.get("/campaigns/contacts/modelo.csv")
+def voice_contacts_csv_template(request: Request, db: Session = Depends(get_db)):
+    """Modelo vazio pronto para preenchimento, compatível com parse_dispatch_csv."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    return Response(
+        content="\ufeffnome;telefone\r\n",
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="modelo_contatos_voz.csv"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
