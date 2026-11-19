@@ -873,8 +873,11 @@ def quick_start_whatsapp_conversation(
         )
         return RedirectResponse("/conversations", status_code=303)
     existing_queue = queue_for_conversation(db, existing.id) if existing else None
-    if existing and existing.assigned_user_id is None and existing_queue and existing_queue.id != queue.id:
+    if existing and existing_queue and existing_queue.id != queue.id:
         db.rollback()
+        if existing.assigned_user_id == user.id:
+            flash(request, "Conversa existente localizada na fila original.", "warning")
+            return RedirectResponse(f"/conversations/{existing.id}?quick=1", status_code=303)
         flash(
             request,
             "Este número já possui conversa ativa em outra fila. "
