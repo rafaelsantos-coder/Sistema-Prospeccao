@@ -293,6 +293,8 @@ def permission_for_request(path: str, method: str) -> str | None:
     if path.startswith("/api/conversations/"):
         return "conversations.view"
     if path == "/conversations" or path.startswith("/conversations/"):
+        if path.endswith("/credit-contestation") and not write:
+            return "crm.contest"
         if write:
             if path.endswith("/register-crm"):
                 return "crm.register"
