@@ -15,6 +15,13 @@ from app.constants import ROLES, TEAMS
 from app.models import AuditLog, Branch, ServiceQueue, ServiceQueueMember, Target, User
 from app.security import get_current_user, hash_password, require_roles, validate_csrf
 from app.services.audit import write_audit
+from app.services.access_control import (
+    effective_permissions,
+    has_permission,
+    permission_catalog,
+    role_default_permissions,
+    validate_selection,
+)
 from app.services.legacy_adapter import legacy_modules_available, rate_status
 from app.services.queue_routing import queue_summary
 from app.services.zapi import ZApiError
@@ -73,6 +80,12 @@ def _render_user_edit(
         page_title=f"Editar usuário · {target.name}",
         target_user=target,
         branches=list(db.scalars(select(Branch).order_by(Branch.city))),
+        access_groups=permission_catalog(actor, target.role),
+        access_selected=sorted(effective_permissions(target)),
+        access_presets={
+            role: sorted(role_default_permissions(role))
+            for role in ("CONSULTOR", "SUPERVISOR", "GESTOR", "ADMIN")
+        },
         temporary_password=temporary_password,
         status_code=status_code,
     )
@@ -176,6 +189,12 @@ def settings_users_page(request: Request, db: Session = Depends(get_db)):
         page_title="Usuários e acessos",
         branches=branches,
         users=users,
+        access_groups=permission_catalog(user, "CONSULTOR"),
+        access_selected=sorted(role_default_permissions("CONSULTOR")),
+        access_presets={
+            role: sorted(role_default_permissions(role))
+            for role in ("CONSULTOR", "SUPERVISOR", "GESTOR", "ADMIN")
+        },
     )
 
 
@@ -420,6 +439,8 @@ def create_user(
     role: str = Form(...),
     team: str = Form(...),
     branch_id: str = Form(""),
+    permissions_configured: str = Form(""),
+    permissions: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
     user = get_current_user(request, db)
@@ -442,6 +463,10 @@ def create_user(
         flash(request, str(exc), "error")
         return RedirectResponse("/settings/users", status_code=303)
     branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
+    selected_permissions = (
+        validate_selection(user, role, permissions)
+        if permissions_configured == "1" else None
+    )
     created = User(
         name=name.strip(),
         email=clean_email,
@@ -451,6 +476,7 @@ def create_user(
         branch_id=branch_value,
         active=True,
         must_change_password=True,
+        access_permissions=selected_permissions,
     )
     db.add(created)
     db.flush()
@@ -460,7 +486,12 @@ def create_user(
         action="USER_CREATED",
         entity_type="user",
         entity_id=created.id,
-        payload={"role": created.role, "team": created.team, "branch_id": created.branch_id},
+        payload={
+            "role": created.role, "team": created.team,
+            "branch_id": created.branch_id,
+            "permissions": sorted(effective_permissions(created)),
+            "permissions_custom": selected_permissions is not None,
+        },
     )
     db.commit()
     flash(request, f"Usuario {created.name} criado. A troca de senha sera exigida no primeiro acesso.")
@@ -492,6 +523,8 @@ def update_user(
     team: str = Form(...),
     branch_id: str = Form(""),
     active: bool = Form(False),
+    permissions_configured: str = Form(""),
+    permissions: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
     actor = get_current_user(request, db)
@@ -541,6 +574,7 @@ def update_user(
         "team": target.team,
         "branch_id": target.branch_id,
         "active": target.active,
+        "permissions": sorted(effective_permissions(target)),
     }
     target.name = clean_name
     target.email = clean_email
@@ -552,6 +586,25 @@ def update_user(
     else:
         target.role = before["role"]
         target.active = True
+
+    if permissions_configured == "1" and target.id != actor.id:
+        if target.role == "ADMIN":
+            target.access_permissions = None
+        else:
+            selected_permissions = validate_selection(actor, target.role, permissions)
+            if actor.role == "GESTOR":
+                # Direitos adicionais concedidos por admin não podem ser
+                # apagados por editores que não estão autorizados a concedê-los.
+                existing_protected = {
+                    code for code in before["permissions"]
+                    if not has_permission(actor, code)
+                }
+                configured = set(json.loads(selected_permissions or "[]"))
+                target.access_permissions = json.dumps(
+                    sorted(configured | existing_protected), ensure_ascii=False,
+                )
+            else:
+                target.access_permissions = selected_permissions
 
     write_audit(
         db,
@@ -568,6 +621,7 @@ def update_user(
                 "team": target.team,
                 "branch_id": target.branch_id,
                 "active": target.active,
+                "permissions": sorted(effective_permissions(target)),
             },
         },
     )
