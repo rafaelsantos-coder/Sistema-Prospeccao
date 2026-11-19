@@ -39,6 +39,15 @@
           <option value="ENVIANDO" {% if snapshot.status == 'ENVIANDO' %}selected{% endif %}>Em envio há mais de {{ snapshot.stale_minutes }} minutos</option>
         </select>
       </label>
+      <label class="field">
+        <span>Fila de origem</span>
+        <select name="queue_id">
+          <option value="">Todas as filas</option>
+          {% for queue in snapshot.queues %}
+          <option value="{{ queue.id }}" {% if snapshot.queue_id == queue.id %}selected{% endif %}>{{ queue.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
     </div>
     <button class="button button-secondary" type="submit">Aplicar filtro</button>
   </form>
@@ -99,10 +108,10 @@
 
 <div class="page-actions top-space">
   {% if snapshot.has_previous %}
-  <a class="button button-secondary" href="/dispatches/reconciliation?status={{ snapshot.status }}&amp;page={{ snapshot.page - 1 }}">Página anterior</a>
+  <a class="button button-secondary" href="/dispatches/reconciliation?status={{ snapshot.status }}&amp;page={{ snapshot.page - 1 }}{% if snapshot.queue_id %}&amp;queue_id={{ snapshot.queue_id }}{% endif %}">Página anterior</a>
   {% endif %}
   {% if snapshot.has_next %}
-  <a class="button button-secondary" href="/dispatches/reconciliation?status={{ snapshot.status }}&amp;page={{ snapshot.page + 1 }}">Próxima página</a>
+  <a class="button button-secondary" href="/dispatches/reconciliation?status={{ snapshot.status }}&amp;page={{ snapshot.page + 1 }}{% if snapshot.queue_id %}&amp;queue_id={{ snapshot.queue_id }}{% endif %}">Próxima página</a>
   {% endif %}
 </div>
 
