@@ -130,10 +130,41 @@
   </article>
 </div>
 
+{% if auth_alert and dispatch.status == 'PAUSADO' %}
+<section class="panel top-space">
+  <div class="panel-header"><div><span class="eyebrow">AÇÃO NECESSÁRIA</span><h3>Z-API recusou o envio</h3></div></div>
+  <p class="text-danger" role="alert">{{ auth_alert }}</p>
+  <p>Este disparo foi pausado automaticamente para não perder contatos. As demais campanhas continuam funcionando. Confira o token de segurança (Client-Token), o token da instância e a conexão antes de clicar em Retomar disparo.</p>
+</section>
+{% endif %}
+{% if counts.failed %}
+<section class="panel top-space">
+  <div class="panel-header"><div><span class="eyebrow">DIAGNÓSTICO DE FALHAS</span><h3>{{ counts.failed }} contatos com falha</h3></div>
+    <a class="button button-secondary" href="/dispatches/{{ dispatch.id }}?status_filter=FALHOU">Ver contatos com falha</a>
+  </div>
+  <p>Motivos registrados no servidor, incluindo erros que não aparecem entre os primeiros 500 contatos:</p>
+  <ul>
+    {% for reason, count in failure_reasons %}
+      <li><strong>{{ count }}</strong> · {{ reason or 'Motivo não informado' }}</li>
+    {% endfor %}
+  </ul>
+  {% if dispatch.status == 'PAUSADO' and recoverable_count %}
+  <form method="post" action="/dispatches/{{ dispatch.id }}/retry-provider-failures" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><input type="checkbox" name="confirmation" value="reprocessar" required>
+      Confirmo que revisei as falhas e a conexão Z-API. Preparar apenas mensagens recusadas pela API que não possuem ID de envio; não reenviar contatos já enviados ou bloqueados.</label>
+    <button class="button button-secondary" type="submit">Preparar {{ recoverable_count }} falha(s) de envio para nova tentativa</button>
+    <small>Esta ação não envia mensagens. O disparo continuará pausado até você clicar em Retomar.</small>
+  </form>
+  {% elif dispatch.status == 'ATIVO' and recoverable_count %}
+    <p class="panel-note">Pause a campanha para revisar e preparar {{ recoverable_count }} falha(s) de envio para recuperação.</p>
+  {% endif %}
+</section>
+{% endif %}
 <section class="panel top-space">
   <div class="panel-header">
-    <div><span class="eyebrow">DESTINATÁRIOS</span><h3>Sequência do disparo</h3></div>
-    <span class="panel-note">Exibindo até 500 registros.</span>
+    <div><span class="eyebrow">DESTINATÁRIOS</span><h3>{{ 'Contatos com falha' if failures_only else 'Sequência do disparo' }}</h3></div>
+    <span class="panel-note">Exibindo até 500 registros. {% if failures_only %}<a href="/dispatches/{{ dispatch.id }}">Ver sequência completa</a>{% endif %}</span>
   </div>
   <div class="data-table-wrap">
     <table class="data-table dispatch-recipient-table">
