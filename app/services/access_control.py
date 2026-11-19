@@ -280,8 +280,16 @@ def permission_for_request(path: str, method: str) -> str | None:
     method = method.upper()
     write = method not in {"GET", "HEAD", "OPTIONS"}
 
-    if path == "/dashboard":
+    if path in {"/api/dashboard", "/dashboard"}:
         return "dashboard.view"
+    if path == "/api/leads":
+        return "leads.view"
+    if path == "/api/whatsapp-presence":
+        return "conversations.view"
+    if path.startswith("/api/whatsapp-presence/"):
+        return "conversations.reply"
+    if path == "/api/integrations/zapi/status":
+        return "settings.connections.view"
     if path == "/conversations-intelligence":
         return "reports.view"
     if path.startswith("/api/conversations/"):
@@ -301,6 +309,8 @@ def permission_for_request(path: str, method: str) -> str | None:
             return "conversations.reply"
         return "conversations.view"
     if path == "/leads" or path.startswith("/leads/"):
+        if path.endswith("/whatsapp") and write:
+            return "conversations.reply"
         if path.endswith("/export.csv"):
             return "leads.export"
         if path == "/leads/new":
