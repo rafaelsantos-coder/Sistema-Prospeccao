@@ -1407,7 +1407,7 @@ def conversation_inbox_api(
                 "preview": item.last_message_preview or "Conversa iniciada",
                 "queue_id": queue_labels.get(item.id, {}).get("id"),
                 "queue_name": queue_labels.get(item.id, {}).get("name"),
-                "owner": item.assigned_user.name if item.assigned_user else "Fila sem responsável",
+                "owner": item.assigned_user.name if item.assigned_user else "Sem responsável",
                 "status": item.status,
                 "unread_count": int(item.unread_count or 0),
                 "last_message_at": item.last_message_at.isoformat() if item.last_message_at else None,
