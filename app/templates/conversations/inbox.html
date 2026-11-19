@@ -376,10 +376,10 @@
           <div class="compose-left">
             <div class="compose-tools">
               <button class="compose-tool-button" type="button" data-attach-button title="Anexar foto, vídeo, áudio ou documento">📎<span>Anexar</span></button>
-              <microphone class="inbox-microphone-control" data-native-microphone lang="pt-BR">
+              <microphone class="inbox-microphone-control" data-native-microphone lang="pt-BR" hidden>
                 <button class="compose-tool-button" type="button" data-record-button title="Gravar áudio">🎙<span>Áudio</span></button>
               </microphone>
-              <button class="compose-tool-button" type="button" data-record-standard hidden title="Gravar áudio">🎙<span>Áudio</span></button>
+              <button class="compose-tool-button" type="button" data-record-standard title="Gravar áudio">🎙<span>Áudio</span></button>
               <button class="compose-tool-button recording" type="button" data-record-stop-button hidden>■ <span>Parar</span></button>
               <span class="recording-status" data-recording-status role="status" aria-live="polite" hidden></span>
             </div>
@@ -1476,7 +1476,14 @@
       } else if (file.type && file.type.startsWith('video/')) {
         mediaVisual.textContent = '▶';
       } else if (file.type && file.type.startsWith('audio/')) {
-        mediaVisual.textContent = '◉';
+        mediaObjectUrl = URL.createObjectURL(file);
+        const player = document.createElement('audio');
+        player.controls = true;
+        player.preload = 'metadata';
+        player.src = mediaObjectUrl;
+        player.setAttribute('aria-label', 'Ouvir áudio gravado');
+        player.style.maxWidth = '100%';
+        mediaVisual.append(player);
       } else {
         mediaVisual.textContent = '▤';
       }
