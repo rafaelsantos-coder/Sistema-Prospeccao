@@ -61,25 +61,33 @@ class SIPAccountLease:
             return False
 
     def release(self) -> None:
+        """Nunca devolver ao pool uma sessao que possa reter lock advisory."""
         if self._connection.closed:
             self._closed = True
             return
         try:
-            if not self._closed and not self._connection.invalidated:
-                current_pid = int(
-                    self._connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
-                )
-                if current_pid == self._backend_pid:
-                    self._connection.execute(
-                        text("SELECT pg_advisory_unlock(:namespace, :account_id)"),
-                        {
-                            "namespace": SIP_ACCOUNT_LOCK_NAMESPACE,
-                            "account_id": self._account_id,
-                        },
-                    )
-                    self._connection.commit()
+            if self._closed or self._connection.invalidated:
+                # Falha anterior: nao sabemos se o lock segue vivo no servidor.
+                self._connection.invalidate()
+                return
+            current_pid = int(
+                self._connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            )
+            if current_pid != self._backend_pid:
+                raise RuntimeError("Sessao PostgreSQL mudou antes do unlock.")
+            unlocked = self._connection.execute(
+                text("SELECT pg_advisory_unlock(:namespace, :account_id)"),
+                {"namespace": SIP_ACCOUNT_LOCK_NAMESPACE, "account_id": self._account_id},
+            ).scalar_one()
+            self._connection.commit()
+            if unlocked is not True:
+                raise RuntimeError("PostgreSQL nao confirmou liberacao do lock.")
         except Exception:
-            LOG.warning("Falha ao liberar exclusividade SIP; encerrando a sessao.")
+            LOG.warning("Falha ao liberar lock da conta SIP; descartando conexao do pool.", exc_info=True)
+            try:
+                self._connection.invalidate()
+            except Exception:
+                LOG.exception("Falha ao invalidar conexao SIP.")
         finally:
             self._closed = True
             self._connection.close()
@@ -94,6 +102,7 @@ def sip_account_lock(account_id: int) -> Iterator[SIPAccountLease | None]:
         raise SIPAccountLockLost("ID de conta SIP invalido para o lock.")
     connection = engine.connect()
     lease: SIPAccountLease | None = None
+    safe_to_pool = False
     try:
         row = connection.execute(
             text(
@@ -102,13 +111,20 @@ def sip_account_lock(account_id: int) -> Iterator[SIPAccountLease | None]:
             ),
             {"namespace": SIP_ACCOUNT_LOCK_NAMESPACE, "account_id": account_id},
         ).one()
-        connection.commit()
+        # Instanciar o lease ANTES de commit pelo mesmo motivo de segurança.
         if row.acquired:
             lease = SIPAccountLease(connection, int(row.backend_pid), account_id)
+        connection.commit()
+        if lease is not None:
             lease.assert_held(force=True)
+        safe_to_pool = True
         yield lease
     finally:
-        if lease is None:
-            connection.close()
-        else:
+        if lease is not None:
             lease.release()
+        else:
+            try:
+                if not safe_to_pool and not connection.closed:
+                    connection.invalidate()
+            finally:
+                connection.close()
