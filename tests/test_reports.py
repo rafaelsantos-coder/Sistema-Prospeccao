@@ -53,6 +53,8 @@ def _login(client: TestClient) -> None:
 
 
 def _create_conversation_with_message(client: TestClient, monkeypatch, suffix: str) -> str:
+    # Reports tests exercise direct sends on established conversations.
+    monkeypatch.setattr("app.routers.conversations.needs_pacing", lambda *_: False)
     monkeypatch.setattr(
         ZApiService,
         "send_text",

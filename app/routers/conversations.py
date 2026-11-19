@@ -85,6 +85,7 @@ from app.services.queue_routing import (
     usable_ai_binding,
 )
 from app.services.whatsapp_presence import is_user_whatsapp_online, online_user_ids
+from app.services.paced_outbound import needs_pacing, queue_manual_message
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import service_for_conversation
 from app.timeutils import utcnow
@@ -833,6 +834,17 @@ def send_message(
     if not clean_message:
         flash(request, "Digite uma mensagem antes de enviar.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+    if conversation.source != "TELEGRAM" and needs_pacing(db, conversation):
+        try:
+            queue_manual_message(
+                db, conversation, message_type="TEXT", body=clean_message,
+                sender_user_id=user.id,
+            )
+            db.commit()
+        except (ZApiError, ValueError) as exc:
+            db.rollback()
+            flash(request, str(exc), "error")
+        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     try:
         result = service_for_conversation(db, conversation.id).send_text(
             phone=conversation.contact.phone,
@@ -967,6 +979,24 @@ async def send_media(
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     clean_caption = caption.strip()
+    if conversation.source != "TELEGRAM" and needs_pacing(db, conversation):
+        body = (
+            clean_caption or "[Imagem]" if kind == "IMAGE" else
+            clean_caption or "[Video]" if kind == "VIDEO" else
+            "[Audio]" if kind == "AUDIO" else safe_name
+        )
+        try:
+            queued, _slot = queue_manual_message(
+                db, conversation, message_type=kind, body=body,
+                sender_user_id=user.id,
+                media_url=storage_uri, mime_type=mime_type,
+                caption=clean_caption, filename=safe_name,
+            )
+            db.commit()
+        except (ZApiError, ValueError) as exc:
+            db.rollback()
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "message_id": queued.id, "type": kind, "status": "PENDING"})
     service = service_for_conversation(db, conversation.id)
     try:
         if kind == "IMAGE":

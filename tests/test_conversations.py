@@ -56,6 +56,8 @@ def test_open_conversation_from_lead():
 
 
 def test_send_message_from_inbox(monkeypatch):
+    # Este teste legado cobre o fluxo de envio imediato em conversa ativa.
+    monkeypatch.setattr("app.routers.conversations.needs_pacing", lambda *_: False)
     monkeypatch.setattr(
         ZApiService,
         "send_text",
@@ -142,6 +144,8 @@ def test_realtime_inbox_api_lists_new_conversation():
 
 
 def test_send_image_from_inbox(monkeypatch):
+    # Este teste legado cobre o fluxo de envio imediato em conversa ativa.
+    monkeypatch.setattr("app.routers.conversations.needs_pacing", lambda *_: False)
     monkeypatch.setattr(
         MediaStorage,
         "upload_bytes",
@@ -185,6 +189,8 @@ def test_send_image_from_inbox(monkeypatch):
 
 
 def test_send_audio_from_inbox(monkeypatch):
+    # Este teste legado cobre o fluxo de envio imediato em conversa ativa.
+    monkeypatch.setattr("app.routers.conversations.needs_pacing", lambda *_: False)
     monkeypatch.setattr(
         MediaStorage,
         "upload_bytes",

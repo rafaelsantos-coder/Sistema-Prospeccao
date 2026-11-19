@@ -45,6 +45,7 @@ from app.services.queue_routing import (
 from app.services.scoring import normalize_phone
 from app.services.secret_store import encrypt_secret
 from app.services.whatsapp_presence import is_user_whatsapp_online
+from app.services.paced_outbound import needs_pacing, queue_manual_message
 from app.services.zapi import ZApiError, ZApiService
 from app.services.zapi_instances import (
     create_zapi_instance,
@@ -1045,7 +1046,40 @@ def send_lead_whatsapp(
         flash(request, "Selecione uma fila de atendimento válida para este envio.", "warning")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
     clean_message = message.strip()
+    if not clean_message:
+        flash(request, "Digite uma mensagem antes de enviar.", "warning")
+        return RedirectResponse(f"/leads/{lead.id}", status_code=303)
     instance = queue_instance(db, service_queue.id)
+    try:
+        contact = ensure_contact(db, lead.phone, lead=lead)
+    except ValueError:
+        flash(request, "Telefone invalido para o WhatsApp.", "error")
+        return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+    conversation = ensure_open_conversation(
+        db, contact, lead=lead, source=lead.source,
+        queue_id=service_queue.id, queue_origin="MANUAL_SEND",
+        assign_if_unowned=False,
+        zapi_instance_id=instance.id if instance else None,
+    )
+    if needs_pacing(db, conversation):
+        try:
+            queue_manual_message(
+                db, conversation, message_type="TEXT",
+                body=clean_message, sender_user_id=user.id,
+            )
+            set_lead_queue_preference(
+                db, lead.id, service_queue.id, source="MANUAL_SEND"
+            )
+            if user.role == "CONSULTOR" and conversation.assigned_user_id is None and is_queue_member(db, service_queue.id, user.id):
+                conversation.assigned_user_id = user.id
+                lead.assigned_user_id = user.id
+            db.commit()
+        except (ZApiError, ValueError) as exc:
+            db.rollback()
+            flash(request, str(exc), "error")
+            return RedirectResponse(f"/leads/{lead.id}", status_code=303)
+        flash(request, "Mensagem registrada para envio automatico.")
+        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     try:
         result = service_for_queue(db, service_queue.id).send_text(
             phone=lead.phone,
