@@ -71,6 +71,12 @@ def test_same_instance_serializes_first_contacts_and_sends_later(monkeypatch):
             db.commit()
 
         assert process_one_pending() == "sent"
+        # Reentrada imediata fica aguardando, mesmo com agendamento vencido.
+        assert process_one_pending() == "idle"
+        with SessionLocal() as db:
+            first = db.get(PacedOutboundMessage, created[0][1])
+            first.sent_at = utcnow() - timedelta(seconds=31)
+            db.commit()
         assert process_one_pending() == "sent"
         assert len(sent) == 2
         assert [x[2] for x in sent] == ["Primeira mensagem 0", "Primeira mensagem 1"]
