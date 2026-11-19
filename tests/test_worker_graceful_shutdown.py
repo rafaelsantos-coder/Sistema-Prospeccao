@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
+import subprocess
+import sys
+import textwrap
 from types import SimpleNamespace
 
 from app.workers import campaign_worker, voice_engine_worker, voice_test_worker
@@ -132,3 +136,39 @@ def test_voice_test_worker_finishes_claimed_test(monkeypatch):
     monkeypatch.setattr(voice_test_worker, "run_one", finish)
     voice_test_worker.main()
     assert calls == ["completed"]
+
+
+def test_real_sigterm_is_handled_in_subprocess():
+    """Prova que o processo coopera com SIGTERM, sem serviços externos."""
+    if os.name != "posix":
+        return
+    script = textwrap.dedent(
+        """
+        import logging
+        from app.workers.graceful_shutdown import GracefulShutdown
+
+        stop = GracefulShutdown(logging.getLogger("subprocess-test"))
+        stop.install()
+        print("READY", flush=True)
+        while not stop.wait(0.05):
+            pass
+        print("STOPPED_GRACEFULLY", flush=True)
+        """
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-u", "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "READY"
+        child.send_signal(signal.SIGTERM)
+        stdout, stderr = child.communicate(timeout=8)
+        assert child.returncode == 0, stderr
+        assert "STOPPED_GRACEFULLY" in stdout
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=3)
