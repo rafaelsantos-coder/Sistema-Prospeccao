@@ -936,3 +936,96 @@ def test_cancel_reopen_never_replays_in_flight_or_unknown_rows():
         with SessionLocal() as db:
             states = [db.get(CampaignDispatchRecipient, i).status for i in ids]
             assert states == ["PENDENTE", "ENVIANDO", "INDETERMINADO"]
+
+
+
+def test_sigkill_after_fake_provider_ack_never_automatically_resends():
+    """Encerra processo real com SIGKILL após ACK simulado, sem acessar Z-API."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    import textwrap
+    from datetime import timedelta
+
+    import pytest
+
+    from app.services.dispatch_queue import ensure_dispatch_lead
+    from app.timeutils import utcnow
+
+    if os.name != "posix":
+        pytest.skip("SIGKILL exige ambiente POSIX")
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "SIGKILL-FENCE")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id,
+                status="ATIVO", interval_seconds=1, daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            lead = ensure_dispatch_lead(
+                db, name="Teste de falha abrupta",
+                phone="5555999998874", queue=queue, created_by_id=None,
+            )
+            recipient = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id, lead_id=lead.id,
+                name="Teste de falha abrupta", phone=lead.phone,
+                message_body="Somente teste interno sem envio real",
+                status="PENDENTE",
+            )
+            db.add(recipient)
+            db.commit()
+            dispatch_id, recipient_id = dispatch.id, recipient.id
+
+        child_code = textwrap.dedent(
+            """
+            import sys
+            import time
+            from app.database import SessionLocal
+            from app.services.dispatch_queue import (
+                claim_next_dispatch_recipient, process_dispatch_recipient,
+            )
+            from app.services.zapi import ZApiService
+
+            def fake_send(self, *, phone, message):
+                print("FAKE_PROVIDER_ACK", flush=True)
+                time.sleep(60)
+                return {"messageId": "ONLY-A-FAKE-ACK"}
+
+            ZApiService.send_text = fake_send
+            with SessionLocal() as db:
+                row = claim_next_dispatch_recipient(db, dispatch_id=int(sys.argv[1]))
+                assert row is not None, "No recipient was reserved"
+                db.commit()
+                print("CLAIM_DURABLE", flush=True)
+                process_dispatch_recipient(db, row)
+                db.commit()
+            """
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-u", "-c", child_code, str(dispatch_id)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            assert child.stdout is not None
+            assert child.stdout.readline().strip() == "CLAIM_DURABLE"
+            assert child.stdout.readline().strip() == "FAKE_PROVIDER_ACK"
+            child.send_signal(signal.SIGKILL)
+            child.communicate(timeout=10)
+            assert child.returncode == -signal.SIGKILL
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=10)
+
+        with SessionLocal() as db:
+            persisted = db.get(CampaignDispatchRecipient, recipient_id)
+            assert persisted.status == "ENVIANDO"
+            assert persisted.attempts == 1
+            assert persisted.provider_message_id is None
+            dispatch = db.get(CampaignDispatch, dispatch_id)
+            dispatch.next_send_at = utcnow() - timedelta(seconds=1)
+            db.commit()
+            assert claim_next_dispatch_recipient(db, dispatch_id=dispatch_id) is None
