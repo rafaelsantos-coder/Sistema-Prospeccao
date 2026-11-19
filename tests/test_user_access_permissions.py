@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import User
+from app.models import ServiceQueue, ServiceQueueMember, User
 from app.services.access_control import (
     ALL_PERMISSION_CODES,
     effective_permissions,
@@ -174,6 +174,69 @@ def test_manager_cannot_grant_rights_it_does_not_have():
             "conversations.view", "voice.view",
         ])
     assert error.value.status_code == 403
+
+
+def test_queue_memberships_are_saved_and_can_be_revoked_by_admin():
+    """Selecionar a fila no formulário usa a associação real de atendentes."""
+    email = "permissions.queue.check@sulnet.local"
+    with TestClient(app) as client:
+        _login(client, "admin@sulnet.local", "Sulnet@2026!")
+        with SessionLocal() as db:
+            queue = db.scalar(select(ServiceQueue).where(
+                ServiceQueue.code == "TEST-RBAC-Q"
+            ))
+            if queue is None:
+                queue = ServiceQueue(
+                    name="Fila Teste Permissão", code="TEST-RBAC-Q",
+                    team="LOJA", active=True,
+                )
+                db.add(queue)
+                db.commit()
+                db.refresh(queue)
+            qid = queue.id
+        page = client.get("/settings/users")
+        assert "Fila Teste Permissão" in page.text
+        assert 'name="queue_ids"' in page.text
+        response = client.post("/settings/users", data={
+            "csrf_token": _csrf(page.text),
+            "name": "Atendente da Fila",
+            "email": email,
+            "password": "SenhaAcesso@2026",
+            "role": "CONSULTOR",
+            "team": "LOJA",
+            "queue_memberships_configured": "1",
+            "queue_ids": [str(qid)],
+        }, follow_redirects=False)
+        assert response.status_code == 303
+        with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.email == email))
+            assert user
+            uid = user.id
+            link = db.scalar(select(ServiceQueueMember).where(
+                ServiceQueueMember.user_id == uid,
+                ServiceQueueMember.queue_id == qid,
+            ))
+            assert link is not None and link.active
+        detail = client.get(f"/settings/users/{uid}/edit")
+        assert detail.status_code == 200
+        assert 'value="' + str(qid) + '"' in detail.text
+        update = client.post(f"/settings/users/{uid}/edit", data={
+            "csrf_token": _csrf(detail.text),
+            "name": "Atendente da Fila",
+            "email": email,
+            "role": "CONSULTOR",
+            "team": "LOJA",
+            "active": "true",
+            "queue_memberships_configured": "1",
+            # Nenhuma fila marcada: desativa o vínculo selecionável.
+        }, follow_redirects=False)
+        assert update.status_code == 303
+        with SessionLocal() as db:
+            link = db.scalar(select(ServiceQueueMember).where(
+                ServiceQueueMember.user_id == uid,
+                ServiceQueueMember.queue_id == qid,
+            ))
+            assert link is not None and link.active is False
 
 
 def test_roles_only_are_kept_for_old_create_user_post():
