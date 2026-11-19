@@ -150,7 +150,7 @@ def test_reconciliation_lists_only_uncertain_and_stale_without_sending(monkeypat
         assert export.headers["cache-control"] == "private, no-store"
         assert export.headers["x-content-type-options"] == "nosniff"
         assert "attachment;" in export.headers["content-disposition"]
-        assert export.content.startswith(b"\\xef\\xbb\\xbf")
+        assert export.content.startswith(b"\xef\xbb\xbf")
         rows = list(csv.DictReader(io.StringIO(export.content.decode("utf-8-sig")), delimiter=";"))
         assert any(r["Origem"] == "CSV" and f"Empresa {unique}" in r["Contato"] for r in rows)
         assert any(r["Origem"] == "FUNIL" and f"Lead legado {unique}" in r["Contato"] for r in rows)
@@ -160,7 +160,7 @@ def test_reconciliation_lists_only_uncertain_and_stale_without_sending(monkeypat
         filtered_export = client.get(
             f"/dispatches/reconciliation/export.csv?queue_id={queue_id}&status=ENVIANDO"
         )
-        filtered_rows = list(csv.DictReader(io.StringIO(filtered_export.text.lstrip("\\ufeff")), delimiter=";"))
+        filtered_rows = list(csv.DictReader(io.StringIO(filtered_export.text.lstrip("\ufeff")), delimiter=";"))
         assert any(f"Contato antigo {unique}" in r["Contato"] for r in filtered_rows)
         assert all(r["Situação"] == "ENVIANDO" for r in filtered_rows)
 
@@ -227,5 +227,5 @@ def test_csv_formula_injection_is_escaped():
     assert _safe_csv_cell(" +SUM(1,2)") == "' +SUM(1,2)"
     assert _safe_csv_cell("@SUM(1,2)") == "'@SUM(1,2)"
     assert _safe_csv_cell("-1+2") == "'-1+2"
-    assert _safe_csv_cell("\\t=CMD()") == "'\\t=CMD()"
+    assert _safe_csv_cell("\t=CMD()") == "'\t=CMD()"
     assert _safe_csv_cell("normal") == "normal"
