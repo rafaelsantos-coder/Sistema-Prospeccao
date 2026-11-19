@@ -1577,6 +1577,8 @@ def submit_credit_contestation(
     if conversation is None:
         return _conversation_unavailable(request)
     try:
+        if len(files) > 3:
+            raise CRMManualError("É permitido anexar no máximo três documentos.")
         documents: list[tuple[str, str, bytes]] = []
         for uploaded in files:
             if not uploaded.filename:
