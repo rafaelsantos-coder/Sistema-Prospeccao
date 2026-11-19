@@ -469,6 +469,7 @@
             <input id="crm-contest-attachments" type="file" name="files"
                    accept=".pdf,.png,.jpg,.jpeg" multiple>
             <small data-contest-document-hint>PDF, JPG ou PNG. Até 10 MB por arquivo.</small>
+            <small data-contest-bill-month hidden></small>
           </div>
           <label class="crm-contest-confirm" data-contest-confirm-wrap hidden>
             <input type="checkbox" name="doc_confirmed" value="true" data-contest-confirm>
@@ -830,10 +831,12 @@
     const attachmentsWrap = contestShell.querySelector('[data-contest-attachments-wrap]');
     const attachments = contestShell.querySelector('#crm-contest-attachments');
     const documentHint = contestShell.querySelector('[data-contest-document-hint]');
+    const billMonthLabel = contestShell.querySelector('[data-contest-bill-month]');
     const confirmWrap = contestShell.querySelector('[data-contest-confirm-wrap]');
     const confirmation = contestShell.querySelector('[data-contest-confirm]');
     const submitButton = contestShell.querySelector('[data-contest-send]');
     let reasons = [];
+    let expectedBillMonth = '';
     let checking = false;
     let refreshPending = false;
 
@@ -848,6 +851,8 @@
       documentHint.textContent = max > 0
         ? 'Anexe de ' + selected.minAttachments + ' a ' + max + ' arquivo(s), PDF/JPG/PNG, até 10 MB cada.'
         : '';
+      billMonthLabel.hidden = !(selected?.attachmentDocType === 'contestacao_fatura' && expectedBillMonth);
+      billMonthLabel.textContent = billMonthLabel.hidden ? '' : 'Competência esperada da fatura: ' + expectedBillMonth;
       confirmWrap.hidden = !selected?.requiresDocConfirmation;
       confirmation.required = Boolean(selected?.requiresDocConfirmation);
       if (max === 0) attachments.value = '';
@@ -894,6 +899,7 @@
         contestStatus.textContent = message;
         refreshPending = ['Contestação enviada', 'Em análise gerencial'].includes(data.status);
         reasons = Array.isArray(data.reasons) ? data.reasons : [];
+        expectedBillMonth = typeof data.billMonthExpected === 'string' ? data.billMonthExpected : '';
         contestDetails.hidden = !data.canContest || reasons.length === 0;
         if (contestDetails.hidden) contestDetails.open = false;
         reasonSelect.replaceChildren(new Option('Selecione um motivo', ''));
