@@ -1,6 +1,6 @@
 # Contrato CRM Comercial / Sulnet Prospecta — Contestação de Crédito
 
-ESTADO: O servidor 204 oferece o fluxo interno de contestação via JWT, mas NÃO oferece estes quatro webhooks comerciais. Este documento especifica os contratos que precisam ser implementados e validados antes de habilitar a funcionalidade no Prospecta. Feature flag: SULNET_CRM_CONTESTATION_ENABLED=false por padrão.
+ESTADO 19/11/2026: a outra equipe confirmou os quatro webhooks COMERCIAIS publicados no servidor 204. Smoke de contest-reasons retornou 4 motivos e a autenticação rejeitou chave ausente/inválida com HTTP 401. Os outros endpoints ainda não tiveram teste ponta a ponta com o Prospecta neste PR; não executar contestação real nem Serasa para homologar. Feature flag: SULNET_CRM_CONTESTATION_ENABLED=false por padrão, a ser habilitada no Railway após CI e deploy validado.
 
 ## Segurança comum
 
@@ -87,3 +87,7 @@ Após aceitar: status Contestação enviada, limpa management_*, sincroniza oppo
 4. Validar mocks e dry-run sem contestação real nem Serasa adicional.
 5. Entregar payloads e respostas reais de homologação, inclusive canContest=true/false, fatura, até 3 anexos e recontestação.
 6. Confirmar que a feature flag só será habilitada no Railway depois de testes do contrato.
+
+## Atualização de contrato
+
+O webhook /webhook/leads/consult passou a devolver canContest, contestation, managementDecision e billMonthExpected*. A interface utiliza exclusivamente a consulta read-only /webhook/leads/credit-status para confirmar a elegibilidade, evitando reconsulta ao Serasa. O endpoint /webhook/leads/contest-reasons fornece a competência esperada da fatura; o Prospecta apenas a exibe se presente no retorno (billMonthExpected ou billMonthExpectedLabel), sem inferir um mês novo. As operações seguem a mesma X-Integration-Key comercial de /webhook/leads.
