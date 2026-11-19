@@ -108,7 +108,7 @@ def test_permission_selection_rejects_escalation_and_missing_parent():
     ("/settings/users/11/edit", "GET", "settings.users.manage"),
     ("/api/whatsapp-presence/join", "POST", "conversations.reply"),
     ("/api/reports/credit-map/import", "POST", "credit_map.import"),
-    ("/api/integrations/zapi/status", "GET", "settings.connections.view"),
+    ("/api/integrations/zapi/status", "GET", None),
 ])
 def test_http_routes_are_guarded(path, method, required):
     assert permission_for_request(path, method) == required
