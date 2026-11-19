@@ -13,7 +13,7 @@ import pytest
 
 
 TEMPLATE = Path(__file__).parents[1] / "app/templates/conversations/inbox.html"
-START = "  // Chrome 153+: <microphone>"
+START = "  // Chrome 153+: <microphone> (somente audio, sem camera)."
 END = "\n  if (form && input) {"
 
 HARNESS = r"""
