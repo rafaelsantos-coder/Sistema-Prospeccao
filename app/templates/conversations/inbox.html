@@ -1564,10 +1564,9 @@
     recordingStatus.classList.toggle('recording-error', error);
   };
   const showStartButton = () => {
-    if (standardRecordButton && (supportsNativeMicrophone || !nativeMicrophone?.hidden)) {
-      standardRecordButton.hidden = false;
-      if (nativeMicrophone) nativeMicrophone.hidden = true;
-    }
+    // Depois da primeira autorizacao, usar sempre o botao comum de audio.
+    if (standardRecordButton) standardRecordButton.hidden = false;
+    if (nativeMicrophone) nativeMicrophone.hidden = true;
     if (recordStopButton) recordStopButton.hidden = true;
     if (standardRecordButton) standardRecordButton.disabled = false;
   };
