@@ -376,7 +376,7 @@ def delivery_reconciliation(request: Request, db: Session = Depends(get_db)):
                 "queue": "Fila da campanha",
                 "dispatch_id": None,
                 "recipient_id": row.id,
-                "name": row.lead.name,
+                "name": row.lead.contact_name or row.lead.business_name,
                 "phone": row.lead.phone,
                 "status": row.status,
                 "attempts": row.attempts,
