@@ -716,7 +716,9 @@ def cancel_dispatch(
     for recipient in db.scalars(
         select(CampaignDispatchRecipient).where(
             CampaignDispatchRecipient.dispatch_id == dispatch.id,
-            CampaignDispatchRecipient.status.in_({"PENDENTE", "ENVIANDO"}),
+            # ENVIANDO may already be accepted by Z-API; never move it to an
+            # auto-replayable cancellation state.
+            CampaignDispatchRecipient.status == "PENDENTE",
         )
     ):
         recipient.status = "IGNORADO"
