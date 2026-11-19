@@ -260,7 +260,7 @@ def test_s2s_webhooks_use_commercial_key_and_no_bearer(monkeypatch):
         "/webhook/leads/contest-attachment",
         "/webhook/leads/contest",
     ]
-    for method, path, kwargs in seen:
+    for method, _path, kwargs in seen:
         assert method == "POST"
         assert kwargs["auth_mode"] == "integration"
         assert kwargs.get("extra_headers") is None
