@@ -5,6 +5,7 @@ import os
 import time
 
 from app.database import SessionLocal
+from app.workers.graceful_shutdown import GracefulShutdown
 from app.services.campaign_queue import claim_next_recipient, process_recipient
 from app.services.dispatch_queue import claim_next_dispatch_recipient, process_dispatch_recipient
 
@@ -16,22 +17,33 @@ IDLE_INTERVAL = max(2, int(os.getenv("CAMPAIGN_IDLE_INTERVAL_SECONDS", "5")))
 
 
 def run() -> None:
-    # Bloqueio global de emergencia solicitado pelo gestor em 17/11/2026.
-    # O atendimento receptivo de WhatsApp e os agentes IA usam outro worker.
-    # A retomada exige remover a pausa explicitamente na configuracao.
+    shutdown = GracefulShutdown(LOG)
+    shutdown.install()
+
+    # O bloqueio global não deve manter um worker pendurado durante deploy.
     if os.getenv("CAMPAIGN_DISPATCH_PAUSED", "true").strip().lower() not in {"0", "false", "off", "no"}:
         LOG.warning("SULNET_DISPAROS_PAUSADOS_POR_SOLICITACAO: nenhum envio de campanha sera processado")
-        while True:
-            time.sleep(60)
+        while not shutdown.wait(60):
+            pass
+        LOG.info("Campaign worker encerrado sem processar novos contatos.")
+        return
+
     LOG.info("Campaign worker iniciado. Intervalo entre envios: %ss", SEND_INTERVAL)
-    while True:
+    while not shutdown.requested:
         db = SessionLocal()
         outcome = "idle"
         used_dispatch = False
         try:
             dispatch_recipient = claim_next_dispatch_recipient(db)
+            if shutdown.requested:
+                # Um claim não enviado deve voltar a PENDENTE sem consumir o contato.
+                db.rollback()
+                break
             if dispatch_recipient:
                 used_dispatch = True
+                # Durable reservation before any external Z-API/Telegram side effect.
+                # An abrupt SIGKILL after send must never restore this row to PENDENTE.
+                db.commit()
                 outcome = process_dispatch_recipient(db, dispatch_recipient)
                 db.commit()
                 LOG.info(
@@ -43,10 +55,16 @@ def run() -> None:
                 )
             else:
                 recipient = claim_next_recipient(db)
+                if shutdown.requested:
+                    db.rollback()
+                    break
                 if not recipient:
                     db.commit()
                 else:
+                    # Commit the claim first: a provider ACK may precede our final commit.
+                    db.commit()
                     outcome = process_recipient(db, recipient)
+                    # Se SIGTERM chegou durante o envio, gravar o resultado antes de sair.
                     db.commit()
                     LOG.info(
                         "campaign_recipient=%s outcome=%s attempts=%s",
@@ -62,13 +80,17 @@ def run() -> None:
             db.close()
 
         if used_dispatch:
-            time.sleep(IDLE_INTERVAL)
+            delay = IDLE_INTERVAL
         elif outcome == "sent":
-            time.sleep(SEND_INTERVAL)
+            delay = SEND_INTERVAL
         elif outcome == "limit":
-            time.sleep(60)
+            delay = 60
         else:
-            time.sleep(IDLE_INTERVAL)
+            delay = IDLE_INTERVAL
+        if shutdown.wait(delay):
+            break
+
+    LOG.info("Campaign worker encerrado graciosamente.")
 
 
 if __name__ == "__main__":

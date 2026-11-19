@@ -6,7 +6,10 @@
     <h2>Campanhas com controle e aprovação</h2>
     <p>Crie sequências por segmento sem perder limites, histórico e governança.</p>
   </div>
-  <button class="button button-primary" type="button" data-modal-open="campaign-modal">＋ Nova campanha</button>
+  <div class="page-actions">
+    {% if current_user.role in ["ADMIN","GESTOR"] %}<a class="button button-secondary" href="/dispatches/reconciliation">Conferir envios incertos</a>{% endif %}
+    <button class="button button-primary" type="button" data-modal-open="campaign-modal">＋ Nova campanha</button>
+  </div>
 </div>
 
 <div class="campaign-overview">
@@ -39,7 +42,7 @@
           {% set service_queue = campaign_queues.get(campaign.id) %}
           <td>{% if service_queue %}<strong>{{ service_queue.name }}</strong><span class="table-subline">{{ routing_strategies.get(service_queue.routing_strategy, service_queue.routing_strategy) if routing_strategies is defined else service_queue.routing_strategy }}</span>{% else %}<span class="text-danger">Não definida</span>{% endif %}</td>
           {% set cq = queue_counts.get(campaign.id, {}) %}
-          <td><strong>{{ cq.get('sent', 0) }}/{{ cq.get('total', 0) }}</strong><span class="table-subline">{{ campaign.daily_limit }}/dia · {{ cq.get('pending', 0) }} pendentes</span></td>
+          <td><strong>{{ cq.get('sent', 0) }}/{{ cq.get('total', 0) }}</strong><span class="table-subline">{{ campaign.daily_limit }}/dia · {{ cq.get('pending', 0) }} pendentes · {{ cq.get('unknown', 0) }} a conferir</span></td>
           <td>{{ campaign.branch.city if campaign.branch else 'Todas' }}</td>
           <td><span class="campaign-status status-{{ campaign.status|lower }}">{{ campaign.status|replace('_',' ')|title }}</span></td>
           <td>

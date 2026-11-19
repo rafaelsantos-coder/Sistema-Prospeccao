@@ -20,6 +20,8 @@ from app.services.secret_store import SecretStoreError, decrypt_secret
 from app.services.voice_sip_probe import SipDiagnostic, SipProbe, SipProbeError
 from app.services.voice_test import aware, now_utc, REQUEST_MAX_AGE
 from app.services.voice_runtime import outbound_guard, update_sip_check
+from app.workers.graceful_shutdown import GracefulShutdown
+from app.workers.sip_account_guard import sip_account_lock
 
 logger = logging.getLogger(__name__)
 WORKER_ID = (socket.gethostname() + "-" + uuid4().hex[:8])[:120]
@@ -106,14 +108,29 @@ def run_one(test_id: int, account_id: int, phone: str) -> None:
             _record(test_id, "FALHOU", None, None, "Credencial SIP ausente.", True)
             return
         is_register_only = phone == "SIP_ONLY"
-        probe = SipProbe(
-            host=host, username=username, password=password,
-            phone=None if is_register_only else phone,
-            port=sip_port, proxy_host=proxy_host, proxy_port=proxy_port,
-            notify=lambda status, register, invite, message:
-                _record(test_id, status, register, invite, message),
-        )
-        result: SipDiagnostic = probe.run_registration_only() if is_register_only else probe.run()
+        # Impede que o agente diagnostico use o mesmo ramal que uma campanha ativa.
+        # Em caso de colisao nao ha INVITE; o gestor pode reagendar explicitamente.
+        with sip_account_lock(account_id) as account_lease:
+            if account_lease is None:
+                _record(
+                    test_id, "FALHOU", None, None,
+                    "Conta SIP ocupada por outra chamada; nenhuma ligacao foi feita.",
+                    True,
+                )
+                return
+            account_lease.assert_held(force=True)
+            probe = SipProbe(
+                host=host, username=username, password=password,
+                phone=None if is_register_only else phone,
+                port=sip_port, proxy_host=proxy_host, proxy_port=proxy_port,
+                notify=lambda status, register, invite, message:
+                    _record(test_id, status, register, invite, message),
+                should_abort=lambda: not account_lease.healthy(),
+            )
+            result: SipDiagnostic = (
+                probe.run_registration_only() if is_register_only else probe.run()
+            )
+            account_lease.assert_held(force=True)
         if result.register_code is not None:
             with SessionLocal() as db:
                 record = db.get(VoiceSipAccount, account_id)
@@ -159,10 +176,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     if os.getenv("VOICE_TEST_WORKER_ENABLED", "").lower() not in {"1", "true", "yes", "on"}:
         raise SystemExit("VOICE_TEST_WORKER_ENABLED nao configurado; agente SIP inativo.")
+    shutdown = GracefulShutdown(logger)
+    shutdown.install()
     logger.info("Prospecta VOZ: agente SIP de testes iniciado, sem campanhas automaticas.")
     last_heartbeat = 0.0
     last_recovery = 0.0
-    while True:
+    while not shutdown.requested:
         try:
             moment = time.monotonic()
             if moment - last_heartbeat > 5:
@@ -171,13 +190,18 @@ def main() -> None:
             if moment - last_recovery > 30:
                 expire_stale()
                 last_recovery = moment
+            if shutdown.requested:
+                break
             item = claim_next()
             if item:
+                # O claim já foi registrado. Concluir teste atual antes de sair.
                 run_one(*item)
                 last_heartbeat = 0
         except Exception:
             logger.exception("Erro no loop isolado de testes SIP")
-        time.sleep(2)
+        if shutdown.wait(2):
+            break
+    logger.info("Agente SIP de testes encerrado graciosamente.")
 
 
 if __name__ == "__main__":

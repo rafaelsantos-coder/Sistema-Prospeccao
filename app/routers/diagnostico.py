@@ -1,7 +1,8 @@
 """Diagnóstico interno somente leitura.
 
-Rota protegida por segredo no caminho (DIAGNOSTICS_SECRET, mínimo 24 caracteres).
-Sem a variável configurada a rota responde 404. Nunca devolve telefones, nomes,
+Preferir o cabeçalho X-Diagnostics-Secret em /internal/diag (DIAGNOSTICS_SECRET, mínimo 24 caracteres).
+O caminho legado /internal/diag/{secret} permanece durante a migração.
+Sem a variável configurada ambas as rotas respondem 404. Nunca devolve telefones, nomes,
 mensagens, tokens ou chaves: apenas contagens, estados e identificadores técnicos.
 """
 
@@ -10,7 +11,7 @@ from __future__ import annotations
 import hmac
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -40,7 +41,16 @@ def _iso(value) -> str | None:
     return value.isoformat() if value else None
 
 
-@router.get("/{secret}")
+@router.get("")
+def diagnostico_via_header(
+    x_diagnostics_secret: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Endpoint preferencial: segredo no header, nunca na URL nem no log de acesso."""
+    return diagnostico(x_diagnostics_secret or "", db)
+
+
+@router.get("/{secret}", deprecated=True)
 def diagnostico(secret: str, db: Session = Depends(get_db)):
     expected = (settings.diagnostics_secret or "").strip()
     if len(expected) < 24 or not hmac.compare_digest(secret, expected):
