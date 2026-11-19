@@ -169,7 +169,9 @@ def _sent_today(db: Session, campaign: Campaign) -> int:
     )
 
 
-def claim_next_recipient(db: Session) -> CampaignRecipient | None:
+def claim_next_recipient(
+    db: Session, *, campaign_id: int | None = None,
+) -> CampaignRecipient | None:
     now = utcnow()
     recipient = db.scalar(
         select(CampaignRecipient)
@@ -177,6 +179,7 @@ def claim_next_recipient(db: Session) -> CampaignRecipient | None:
         .where(
             CampaignRecipient.status == "PENDENTE",
             Campaign.status == "ATIVA",
+            *([Campaign.id == campaign_id] if campaign_id is not None else []),
             (CampaignRecipient.scheduled_at.is_(None) | (CampaignRecipient.scheduled_at <= now)),
         )
         .order_by(CampaignRecipient.created_at.asc())
