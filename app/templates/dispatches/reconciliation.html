@@ -83,7 +83,7 @@
         {% for item in snapshot.legacy %}
         <tr>
           <td><strong>{{ item.lead.business_name or item.lead.contact_name }}</strong><span class="table-subline">{{ item.lead.phone|phone_br }}</span></td>
-          <td>{{ item.campaign.name }}<span class="table-subline">Campanha #{{ item.campaign_id }}</span></td>
+          <td>{{ item.campaign.name }}<span class="table-subline">{{ snapshot.legacy_queue_names.get(item.campaign_id, "Fila não definida") }} · Campanha #{{ item.campaign_id }}</span></td>
           <td><span class="dispatch-status status-{{ item.status|lower }}">{{ 'Em envio sem atualização' if item.status == 'ENVIANDO' else 'Indeterminado' }}</span></td>
           <td>{{ item.attempts }}</td>
           <td>{{ item.updated_at|datetime_br }}</td>
