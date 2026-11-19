@@ -211,6 +211,7 @@ def dispatch_counts(db: Session, dispatch_id: int) -> dict[str, int]:
     return {
         "pending": values.get("PENDENTE", 0),
         "sending": values.get("ENVIANDO", 0),
+        "unknown": values.get("INDETERMINADO", 0),
         "sent": values.get("ENVIADO", 0),
         "failed": values.get("FALHOU", 0),
         "skipped": values.get("IGNORADO", 0),
@@ -401,15 +402,20 @@ def _sent_today(db: Session, dispatch_id: int) -> int:
 
 def claim_next_dispatch_recipient(
     db: Session,
+    *,
+    dispatch_id: int | None = None,
 ) -> CampaignDispatchRecipient | None:
+    """Claim global por padrão; filtro opcional isola ensaios de uma campanha."""
     for _ in range(10):
-        recipient = _claim_once(db)
+        recipient = _claim_once(db, dispatch_id=dispatch_id)
         if recipient != "OUT_OF_WINDOW":
             return recipient
     return None
 
 
-def _claim_once(db: Session) -> CampaignDispatchRecipient | None | str:
+def _claim_once(
+    db: Session, *, dispatch_id: int | None = None,
+) -> CampaignDispatchRecipient | None | str:
     now = utcnow()
     recipient = db.scalar(
         select(CampaignDispatchRecipient)
@@ -420,6 +426,7 @@ def _claim_once(db: Session) -> CampaignDispatchRecipient | None | str:
         .where(
             CampaignDispatchRecipient.status == "PENDENTE",
             CampaignDispatch.status == "ATIVO",
+            *([CampaignDispatch.id == dispatch_id] if dispatch_id is not None else []),
             (
                 CampaignDispatch.next_send_at.is_(None)
                 | (CampaignDispatch.next_send_at <= now)
@@ -448,6 +455,8 @@ def _claim_once(db: Session) -> CampaignDispatchRecipient | None | str:
         return "OUT_OF_WINDOW"
 
     recipient.status = "ENVIANDO"
+    # Persist the attempt when the worker commits this reservation before I/O.
+    recipient.attempts = int(recipient.attempts or 0) + 1
     dispatch.next_send_at = now + timedelta(
         seconds=max(1, int(dispatch.interval_seconds or 1))
     )
@@ -460,7 +469,7 @@ def _finish_if_done(db: Session, dispatch: CampaignDispatch) -> None:
         db.scalar(
             select(func.count(CampaignDispatchRecipient.id)).where(
                 CampaignDispatchRecipient.dispatch_id == dispatch.id,
-                CampaignDispatchRecipient.status.in_({"PENDENTE", "ENVIANDO"}),
+                CampaignDispatchRecipient.status.in_({"PENDENTE", "ENVIANDO", "INDETERMINADO"}),
             )
         )
         or 0
@@ -557,7 +566,6 @@ def process_dispatch_recipient(
         body = body.replace("{{link_telegram}}", invite)
         recipient.message_body = body
 
-    recipient.attempts = int(recipient.attempts or 0) + 1
     quick_replies = campaign_quick_replies(campaign)
     zapi_instance = None if telegram else queue_instance(db, queue.id)
     zapi = TelegramService(telegram_link.chat_id) if telegram_link else service_for_queue(db, queue.id)
@@ -587,18 +595,14 @@ def process_dispatch_recipient(
             recipient.status = "IGNORADO"
             _finish_if_done(db, dispatch)
             return "failed"
-        if recipient.attempts >= 3:
-            recipient.status = "FALHOU"
-            _finish_if_done(db, dispatch)
-        else:
-            recipient.status = "PENDENTE"
-            dispatch.next_send_at = utcnow() + timedelta(
-                seconds=max(
-                    int(dispatch.interval_seconds or 1),
-                    60 * recipient.attempts,
-                )
-            )
-        return "failed"
+        # A lost response may still represent an accepted external message.
+        # Require provider reconciliation; NEVER auto-requeue ambiguous outcomes.
+        recipient.status = "INDETERMINADO"
+        recipient.error = (
+            "Resultado de envio incerto; conferir no provedor antes de reenviar. "
+            + str(exc)
+        )[:500]
+        return "unknown"
 
     contact = ensure_contact(db, lead.phone, lead=lead)
     conversation = ensure_open_conversation(

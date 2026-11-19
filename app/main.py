@@ -27,14 +27,18 @@ LOG = logging.getLogger("uvicorn.error")
 
 
 class _RedactWebhookSecretFilter(logging.Filter):
-    """Mascara o segredo que vai na URL dos webhooks (/webhooks/<tipo>/<segredo>) no log de acesso."""
+    """Evita que segredos de webhooks e diagnóstico apareçam nos logs de acesso."""
 
     _PATTERN = re.compile(r"(/webhooks/[^/\s?]+/(?:instance/)?)[^/\s?]+")
+    _DIAG_PATTERN = re.compile(r"(/internal/diag/)[^/\s?]+")
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
-        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str) and "/webhooks/" in args[2]:
-            record.args = (*args[:2], self._PATTERN.sub(r"\1***", args[2]), *args[3:])
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            sanitized = self._PATTERN.sub(r"\1***", args[2])
+            sanitized = self._DIAG_PATTERN.sub(r"\1***", sanitized)
+            if sanitized != args[2]:
+                record.args = (*args[:2], sanitized, *args[3:])
         return True
 
 
