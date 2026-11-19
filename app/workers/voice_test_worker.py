@@ -20,6 +20,7 @@ from app.services.secret_store import SecretStoreError, decrypt_secret
 from app.services.voice_sip_probe import SipDiagnostic, SipProbe, SipProbeError
 from app.services.voice_test import aware, now_utc, REQUEST_MAX_AGE
 from app.services.voice_runtime import outbound_guard, update_sip_check
+from app.workers.graceful_shutdown import GracefulShutdown
 
 logger = logging.getLogger(__name__)
 WORKER_ID = (socket.gethostname() + "-" + uuid4().hex[:8])[:120]
@@ -159,10 +160,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     if os.getenv("VOICE_TEST_WORKER_ENABLED", "").lower() not in {"1", "true", "yes", "on"}:
         raise SystemExit("VOICE_TEST_WORKER_ENABLED nao configurado; agente SIP inativo.")
+    shutdown = GracefulShutdown(logger)
+    shutdown.install()
     logger.info("Prospecta VOZ: agente SIP de testes iniciado, sem campanhas automaticas.")
     last_heartbeat = 0.0
     last_recovery = 0.0
-    while True:
+    while not shutdown.requested:
         try:
             moment = time.monotonic()
             if moment - last_heartbeat > 5:
@@ -171,13 +174,18 @@ def main() -> None:
             if moment - last_recovery > 30:
                 expire_stale()
                 last_recovery = moment
+            if shutdown.requested:
+                break
             item = claim_next()
             if item:
+                # O claim já foi registrado. Concluir teste atual antes de sair.
                 run_one(*item)
                 last_heartbeat = 0
         except Exception:
             logger.exception("Erro no loop isolado de testes SIP")
-        time.sleep(2)
+        if shutdown.wait(2):
+            break
+    logger.info("Agente SIP de testes encerrado graciosamente.")
 
 
 if __name__ == "__main__":

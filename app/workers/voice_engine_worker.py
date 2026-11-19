@@ -32,6 +32,7 @@ from app.services.voice_runtime import (
     next_attempt_allowed, update_sip_check,
 )
 from app.services.voice_test import aware
+from app.workers.graceful_shutdown import GracefulShutdown
 
 LOG = logging.getLogger(__name__)
 WORKER_ID = f"{socket.gethostname()}-{uuid4().hex[:9]}"[:120]
@@ -449,35 +450,44 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     if os.getenv("VOICE_ENGINE_WORKER_ENABLED", "").lower() != "true":
         raise SystemExit("VOICE_ENGINE_WORKER_ENABLED=false: motor de campanhas permanece desativado.")
+    shutdown = GracefulShutdown(LOG)
+    shutdown.install()
     LOG.info("Prospecta VOZ PJSUA2 iniciado. Campanhas=%s, testes de transferencia=%s.",
              CAMPAIGNS_ENABLED, TRANSFER_TESTS_ENABLED)
     _expire_crashed_calls()
     last_beat = 0.0
-    while True:
+    while not shutdown.requested:
         try:
             t = time.monotonic()
             if t - last_beat >= 8:
                 heartbeat()
                 last_beat = t
+            if shutdown.requested:
+                break
+
             native_id = _claim_native_test()
             if native_id is not None:
+                # Claim já reservado: concluir essa operação antes de encerrar.
                 _run_native_test(native_id)
                 last_beat = 0
-            elif (test_id := _claim_transfer_test()) is not None:
+            elif not shutdown.requested and (test_id := _claim_transfer_test()) is not None:
                 _run_transfer_test(test_id)
                 last_beat = 0
-            elif (recipient_id := _claim_recipient()) is not None:
+            elif not shutdown.requested and (recipient_id := _claim_recipient()) is not None:
+                # Não interromper voluntariamente uma chamada SIP em andamento.
                 _run_campaign_call(recipient_id)
                 last_beat = 0
             else:
-                time.sleep(2)
+                shutdown.wait(2)
         except Exception as exc:
             LOG.exception("Falha no loop do motor de voz")
             try:
                 heartbeat(type(exc).__name__)
             except Exception:
                 pass
-            time.sleep(4)
+            shutdown.wait(4)
+
+    LOG.info("Motor de voz encerrado apos processamento em andamento.")
 
 
 if __name__ == "__main__":
