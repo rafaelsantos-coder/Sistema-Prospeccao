@@ -11,7 +11,7 @@ import os
 import time
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -26,7 +26,7 @@ from app.services.conversation_engine import register_message
 from app.services.global_blacklist import is_globally_blocked
 from app.services.zapi import ZApiBlacklistedRecipient, ZApiError
 from app.services.zapi_instances import service_for_conversation
-from app.timeutils import utcnow
+from app.timeutils import utcnow, utc_naive
 
 LOG = logging.getLogger("sulnet_paced_outbound")
 PACING_SECONDS = max(30, int(os.getenv("ZAPI_FIRST_CONTACT_INTERVAL_SECONDS", "30")))
@@ -80,7 +80,7 @@ def queue_manual_message(
     if db.bind.dialect.name == "postgresql" and instance is None:
         # Caso a instancia use as variaveis legadas e nao tenha registro.
         db.execute(
-            __import__("sqlalchemy").text(
+            text(
                 "SELECT pg_advisory_xact_lock(hashtext(:key))"
             ), {"key": "paced:" + service.instance_id},
         )
@@ -91,7 +91,7 @@ def queue_manual_message(
             PacedOutboundMessage.instance_key == service.instance_id,
         )
     )
-    base = max(now, last_slot) if last_slot else now
+    base = max(now, utc_naive(last_slot)) if last_slot else now
     scheduled = base + timedelta(seconds=PACING_SECONDS)
     message = register_message(
         db, conversation, direction="OUTBOUND",
