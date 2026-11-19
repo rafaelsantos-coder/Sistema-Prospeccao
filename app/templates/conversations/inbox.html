@@ -376,9 +376,10 @@
           <div class="compose-left">
             <div class="compose-tools">
               <button class="compose-tool-button" type="button" data-attach-button title="Anexar foto, vídeo, áudio ou documento">📎<span>Anexar</span></button>
-              <usermedia class="inbox-native-microphone" data-native-microphone lang="pt-BR" aria-label="Gravar áudio">
+              <microphone class="inbox-microphone-control" data-native-microphone lang="pt-BR">
                 <button class="compose-tool-button" type="button" data-record-button title="Gravar áudio">🎙<span>Áudio</span></button>
-              </usermedia>
+              </microphone>
+              <button class="compose-tool-button" type="button" data-record-standard hidden title="Gravar áudio">🎙<span>Áudio</span></button>
               <button class="compose-tool-button recording" type="button" data-record-stop-button hidden>■ <span>Parar</span></button>
               <span class="recording-status" data-recording-status role="status" aria-live="polite" hidden></span>
             </div>
@@ -769,59 +770,15 @@
   </form>
 </dialog>
 {% endif %}
-{% if 'conversations.reply' in current_user.permissions and conversation and conversation.status not in closed_statuses and not globally_blacklisted %}
-<dialog class="inbox-mic-permission-dialog" data-mic-permission-dialog aria-labelledby="inbox-mic-permission-title">
-  <div class="inbox-mic-permission-panel">
-    <div class="inbox-mic-permission-heading">
-      <span class="inbox-mic-permission-symbol" aria-hidden="true">🎙️</span>
-      <div>
-        <span class="eyebrow">ÁUDIO NO WHATSAPP</span>
-        <h3 id="inbox-mic-permission-title">Permitir acesso ao microfone</h3>
-      </div>
-      <button type="button" class="inbox-mic-permission-close" data-mic-close aria-label="Fechar">×</button>
-    </div>
-    <p class="inbox-mic-permission-message" data-mic-permission-message role="status">
-      Autorize o microfone quando o navegador solicitar. No Chrome atualizado, o botão Áudio já usa a liberação nativa na própria conversa.
-    </p>
-    <div class="inbox-mic-permission-steps">
-      <strong>Em navegadores que não oferecem liberação na própria tela:</strong>
-      <ol>
-        <li>Clique no ícone de <strong>controles do site</strong> à esquerda do endereço, na barra do Chrome.</li>
-        <li>Em <strong>Microfone</strong>, selecione <strong>Permitir</strong>. Se necessário, abra “Configurações do site”.</li>
-        <li>Volte ao Sulnet Prospecta e clique em <strong>Solicitar permissão</strong> novamente. Atualize a página se o Chrome pedir.</li>
-      </ol>
-    </div>
-    <div class="inbox-mic-permission-actions">
-      <button type="button" class="button button-primary" data-mic-retry>Solicitar permissão</button>
-      <button type="button" class="button button-secondary" data-mic-close>Agora não</button>
-    </div>
-    <small>O acesso ao microfone depende de autorização explícita do navegador.</small>
-  </div>
-</dialog>
-{% endif %}
 <style>
-.inbox-native-microphone{display:inline-flex;align-items:center;justify-content:center;min-width:78px;min-height:32px;font-size:12px;font-weight:750;color:#5f6972;background:#f8f9fa;border:1px solid #e1e5e8;border-radius:9px;opacity:1}
-.inbox-native-microphone:hover{border-color:#f3c6a9;background:#fff4ec;color:#bf5c1d}
-.inbox-native-microphone.native-unsupported{display:contents}
-.compose-tool-button[data-record-stop-button][hidden]{display:none!important}
+.inbox-microphone-control{display:block;min-width:128px;min-height:40px;padding:9px 14px;font-size:15px;line-height:21px;font-weight:700;color:#1d232b;background-color:#ffffff;border:1px solid #cbd5e1;border-radius:9px;opacity:1}
+.inbox-microphone-control:hover{color:#1d232b;background-color:#fff4ec;border-color:#ea995a}
+.inbox-microphone-control.native-unsupported{display:contents}
+.inbox-microphone-control[hidden],.compose-tool-button[data-record-standard][hidden],.compose-tool-button[data-record-stop-button][hidden]{display:none!important}
 .compose-tool-button[data-record-stop-button]{color:#b93636}
-
-.inbox-mic-permission-dialog{border:0;border-radius:17px;padding:0;width:min(480px,calc(100vw - 28px));max-height:90vh;overflow:auto;background:#fff;color:#233043;box-shadow:0 24px 72px rgba(20,30,45,.28)}
-.inbox-mic-permission-dialog::backdrop{background:rgba(15,23,42,.58)}
-.inbox-mic-permission-panel{display:grid;gap:17px;padding:24px}
-.inbox-mic-permission-heading{display:flex;gap:12px;align-items:center}
-.inbox-mic-permission-heading .eyebrow{font-size:10px;color:#b45309;letter-spacing:.08em}
-.inbox-mic-permission-heading h3{font-size:19px;line-height:1.25;margin:5px 0 0}
-.inbox-mic-permission-symbol{display:grid;place-items:center;width:44px;height:44px;flex:none;border-radius:12px;background:#fff1e7;font-size:22px}
-.inbox-mic-permission-close{margin-left:auto;align-self:flex-start;border:1px solid #e2e8f0;background:#fff;border-radius:8px;cursor:pointer;color:#64748b;font-size:23px;width:34px;height:34px;flex:none}
-.inbox-mic-permission-message{margin:0;font-size:13px;line-height:1.6;color:#475569}
-.inbox-mic-permission-steps{padding:14px;border-radius:11px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155}
-.inbox-mic-permission-steps strong{font-size:12px}
-.inbox-mic-permission-steps ol{padding-left:19px;margin:10px 0 0;display:grid;gap:10px;font-size:12px;line-height:1.55}
-.inbox-mic-permission-actions{display:flex;gap:10px;flex-wrap:wrap}
-.inbox-mic-permission-actions .button{flex:1;min-width:155px}
-.inbox-mic-permission-panel>small{font-size:11px;color:#64748b;line-height:1.5}
-@media(max-width:520px){.inbox-mic-permission-panel{padding:18px}.inbox-mic-permission-actions{flex-direction:column}}
+.recording-status[hidden]{display:none!important}
+.recording-status{font-size:12px;line-height:1.4;color:#475569}
+.recording-status.recording-error{color:#9b3412;font-weight:700}
 
 .inbox-commercial-filter{flex:none;display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:11px;flex-wrap:wrap}
 .inbox-commercial-filter label{color:#64748b;font-weight:600}
@@ -1463,12 +1420,10 @@
 
   const attachButton = document.querySelector('[data-attach-button]');
   const recordButton = document.querySelector('[data-record-button]');
-  const nativeMicrophone = document.querySelector('[data-native-microphone]');
+  let nativeMicrophone = document.querySelector('[data-native-microphone]');
+  const standardRecordButton = document.querySelector('[data-record-standard]');
   const recordStopButton = document.querySelector('[data-record-stop-button]');
   const recordingStatus = document.querySelector('[data-recording-status]');
-  const microphoneDialog = document.querySelector('[data-mic-permission-dialog]');
-  const microphoneMessage = document.querySelector('[data-mic-permission-message]');
-  const microphoneRetry = document.querySelector('[data-mic-retry]');
   const mediaForm = document.querySelector('[data-media-form]');
   const mediaInput = document.querySelector('[data-media-input]');
   const mediaName = document.querySelector('[data-media-name]');
@@ -1581,29 +1536,39 @@
     if (selectedMediaFile) uploadMedia(selectedMediaFile);
   });
 
-  // Chrome 151+: o navegador controla a permissão com <usermedia> e
-  // permite recuperá-la mesmo após bloqueio anterior, sem abrir configurações.
-  let nativeMicrophoneAvailable = Boolean(
-    nativeMicrophone && 'HTMLUserMediaElement' in window &&
+  // Chrome 153+: <microphone> (somente audio, sem camera).
+  // O controle nativo consegue recuperar acesso negado em cliques anteriores.
+  // Outros navegadores continuam usando o botao e getUserMedia({audio:true,video:false}).
+  let supportsNativeMicrophone = Boolean(
+    nativeMicrophone && 'HTMLMicrophoneElement' in window &&
     typeof nativeMicrophone.setConstraints === 'function'
   );
-  if (nativeMicrophoneAvailable) {
+  const microphoneConstraints = {echoCancellation: true, noiseSuppression: true};
+  const configureNativeMicrophone = element => {
+    element.setConstraints(microphoneConstraints);
+  };
+  if (supportsNativeMicrophone) {
     try {
-      // NUNCA solicitar câmera: a gravação do Prospecta é exclusivamente áudio.
-      nativeMicrophone.setConstraints({
-        audio: {echoCancellation: true, noiseSuppression: true},
-        video: false
-      });
+      configureNativeMicrophone(nativeMicrophone);
     } catch (_) {
-      nativeMicrophoneAvailable = false;
+      supportsNativeMicrophone = false;
     }
   }
-  nativeMicrophone?.classList.toggle('native-unsupported', !nativeMicrophoneAvailable);
+  nativeMicrophone?.classList.toggle('native-unsupported', !supportsNativeMicrophone);
 
-  const showRecordingNotice = message => {
+  let permissionRequestPending = false;
+  const showRecordingNotice = (message, error = false) => {
     if (!recordingStatus) return;
-    recordingStatus.hidden = false;
     recordingStatus.textContent = message;
+    recordingStatus.hidden = !message;
+    recordingStatus.classList.toggle('recording-error', error);
+  };
+  const showStartButton = () => {
+    // Depois da primeira autorizacao, usar sempre o botao comum de audio.
+    if (standardRecordButton) standardRecordButton.hidden = false;
+    if (nativeMicrophone) nativeMicrophone.hidden = true;
+    if (recordStopButton) recordStopButton.hidden = true;
+    if (standardRecordButton) standardRecordButton.disabled = false;
   };
   const stopRecorderTracks = () => {
     recorderStream?.getTracks().forEach(track => track.stop());
@@ -1614,50 +1579,50 @@
     recorderTimer = null;
   };
   const updateRecordingClock = () => {
-    if (!recordingStatus || !recorderStartedAt) return;
+    if (!recorderStartedAt) return;
     const seconds = Math.floor((Date.now() - recorderStartedAt) / 1000);
     const min = String(Math.floor(seconds / 60)).padStart(2, '0');
     const sec = String(seconds % 60).padStart(2, '0');
     showRecordingNotice('Gravando ' + min + ':' + sec + ' · clique em Parar');
     if (seconds >= 300 && recorder?.state === 'recording') recorder.stop();
   };
-
-  const openLegacyMicrophoneHelp = error => {
+  const explainMicrophoneFailure = error => {
     const reason = error?.name || String(error || '');
-    if (microphoneMessage) {
-      if (reason === 'NotAllowedError' || reason === 'PermissionDeniedError' || reason === 'SecurityError') {
-        microphoneMessage.textContent = 'Este navegador bloqueou o microfone. Permita o acesso nos controles ao lado do endereço da página e tente novamente.';
-      } else if (reason === 'NotFoundError' || reason === 'DevicesNotFoundError') {
-        microphoneMessage.textContent = 'Não foi encontrado um microfone. Verifique se ele está conectado e selecionado no Windows.';
-      } else if (reason === 'NotReadableError' || reason === 'TrackStartError') {
-        microphoneMessage.textContent = 'O microfone está ocupado por outro aplicativo. Feche o aplicativo e tente novamente.';
-      } else {
-        microphoneMessage.textContent = 'Não foi possível iniciar o microfone. Verifique o dispositivo e a autorização do navegador.';
-      }
+    if (reason === 'NotAllowedError' || reason === 'PermissionDeniedError' || reason === 'SecurityError') {
+      showRecordingNotice(
+        supportsNativeMicrophone
+          ? 'Microfone bloqueado. Clique em “Usar o microfone” para autorizar no Chrome.'
+          : 'O navegador bloqueou o microfone. Permita o acesso nos controles ao lado do endereço e tente de novo.',
+        true
+      );
+    } else if (reason === 'NotFoundError' || reason === 'DevicesNotFoundError') {
+      showRecordingNotice('Não foi encontrado um microfone conectado neste computador.', true);
+    } else if (reason === 'NotReadableError' || reason === 'TrackStartError') {
+      showRecordingNotice('O microfone está em uso por outro aplicativo. Feche-o e tente novamente.', true);
+    } else if (reason === 'unsupported') {
+      showRecordingNotice('Este navegador não permite gravar áudio. Abra o Sulnet Prospecta no Chrome atualizado.', true);
+    } else {
+      showRecordingNotice('Falha ao iniciar o microfone. Clique novamente em Áudio para tentar.', true);
     }
-    if (microphoneDialog && !microphoneDialog.open) microphoneDialog.showModal();
   };
-  microphoneDialog?.querySelectorAll('[data-mic-close]').forEach(button => {
-    button.addEventListener('click', () => microphoneDialog.close());
-  });
-  microphoneDialog?.addEventListener('click', event => {
-    if (event.target === microphoneDialog) microphoneDialog.close();
-  });
 
-  // O mesmo gravador atende o fluxo nativo do Chrome e o fallback de navegadores antigos.
+  // O controle nativo armazena um track. Apos a primeira autorizacao, usamos
+  // o botao Audio comum nas gravacoes seguintes e liberamos o dispositivo ao parar.
   const beginRecordingFromStream = stream => {
-    if (!stream?.getAudioTracks?.().length) {
-      stream?.getTracks?.().forEach(track => track.stop());
-      showRecordingNotice('Não foi encontrado um microfone ativo.');
+    if (recorder?.state === 'recording') {
+      if (stream !== recorderStream) stream?.getTracks?.().forEach(track => track.stop());
       return;
     }
-    if (recorder?.state === 'recording') {
-      if (stream !== recorderStream) stream.getTracks().forEach(track => track.stop());
+    if (!stream?.getAudioTracks?.().length || stream.getVideoTracks?.().length) {
+      stream?.getTracks?.().forEach(track => track.stop());
+      showRecordingNotice('Não foi possível acessar somente o microfone.', true);
+      showStartButton();
       return;
     }
     if (!window.MediaRecorder) {
       stream.getTracks().forEach(track => track.stop());
-      showRecordingNotice('A gravação de áudio não está disponível neste navegador.');
+      explainMicrophoneFailure('unsupported');
+      showStartButton();
       return;
     }
     recorderStream = stream;
@@ -1666,95 +1631,105 @@
       const mimeType = candidates.find(value => MediaRecorder.isTypeSupported(value)) || '';
       recorderChunks = [];
       recorder = mimeType
-        ? new MediaRecorder(recorderStream, {mimeType})
-        : new MediaRecorder(recorderStream);
-      const recording = recorder;
+        ? new MediaRecorder(stream, {mimeType})
+        : new MediaRecorder(stream);
+      const currentRecorder = recorder;
       recorder.ondataavailable = event => {
-        if (event.data && event.data.size) recorderChunks.push(event.data);
+        if (event.data?.size) recorderChunks.push(event.data);
       };
-      recorder.onerror = () => showRecordingNotice('Houve um erro na gravação. Clique em Parar para tentar novamente.');
+      recorder.onerror = () => showRecordingNotice('Erro na gravação. Clique em Parar para reiniciar.', true);
       recorder.onstop = () => {
         stopRecordingTimer();
         stopRecorderTracks();
         recorderStartedAt = 0;
-        if (recordStopButton) recordStopButton.hidden = true;
-        recordButton?.classList.remove('recording');
-        const label = recordButton?.querySelector('span');
-        if (label) label.textContent = 'Áudio';
-        if (recordingStatus) recordingStatus.hidden = true;
-        const type = recording.mimeType || mimeType || 'audio/webm';
+        showStartButton();
+        const type = currentRecorder.mimeType || mimeType || 'audio/webm';
         const extension = type.includes('ogg') ? 'ogg' : type.includes('mp4') ? 'm4a' : 'webm';
         const blob = new Blob(recorderChunks, {type});
+        recorderChunks = [];
         if (!blob.size) {
-          showRecordingNotice('Nenhum áudio foi capturado. Clique em Áudio e tente novamente.');
+          showRecordingNotice('O microfone não captou áudio. Clique em Áudio e tente novamente.', true);
           return;
         }
         const file = new File([blob], 'audio-' + Date.now() + '.' + extension, {type});
         showMediaPreview(file);
-        if (mediaCaption) mediaCaption.placeholder = 'Áudio pronto para enviar';
+        showRecordingNotice('Áudio pronto. Confira o anexo e clique em Enviar anexo.');
       };
       recorder.start(250);
       recorderStartedAt = Date.now();
-      if (nativeMicrophoneAvailable) {
-        if (recordStopButton) recordStopButton.hidden = false;
-      } else {
-        recordButton?.classList.add('recording');
-        const label = recordButton?.querySelector('span');
-        if (label) label.textContent = 'Parar';
-      }
+      // Durante a gravacao, apenas Parar permanece visivel.
+      if (standardRecordButton) standardRecordButton.hidden = true;
+      if (nativeMicrophone) nativeMicrophone.hidden = true;
+      if (recordStopButton) recordStopButton.hidden = false;
       updateRecordingClock();
       recorderTimer = window.setInterval(updateRecordingClock, 1000);
-      if (microphoneDialog?.open) microphoneDialog.close();
     } catch (error) {
       stopRecorderTracks();
-      showRecordingNotice('Não foi possível iniciar a gravação. Verifique o microfone e tente novamente.');
+      showStartButton();
+      explainMicrophoneFailure(error);
     }
   };
 
-  if (nativeMicrophoneAvailable) {
-    nativeMicrophone.addEventListener('stream', () => {
-      // O Chrome solicita permissão, recupera bloqueios e fornece o MediaStream.
-      beginRecordingFromStream(nativeMicrophone.stream);
-    });
-    nativeMicrophone.addEventListener('error', () => {
-      const reason = nativeMicrophone.error?.name || '';
-      if (reason === 'NotFoundError') {
-        showRecordingNotice('Nenhum microfone foi encontrado neste computador.');
-      } else if (reason === 'NotReadableError') {
-        showRecordingNotice('O microfone está em uso por outro aplicativo.');
-      } else {
-        showRecordingNotice('Não foi possível habilitar o microfone. Clique em Áudio e siga o aviso do Chrome.');
+  const requestMicrophone = async () => {
+    if (permissionRequestPending || recorder?.state === 'recording') return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      explainMicrophoneFailure('unsupported');
+      return;
+    }
+    permissionRequestPending = true;
+    if (standardRecordButton) standardRecordButton.disabled = true;
+    showRecordingNotice('Aguardando autorização do microfone no navegador...');
+    try {
+      // Solicitar DIRETAMENTE no clique, sem consultar permissões antes.
+      const stream = await navigator.mediaDevices.getUserMedia({audio: microphoneConstraints, video: false});
+      beginRecordingFromStream(stream);
+    } catch (error) {
+      if (supportsNativeMicrophone && ['NotAllowedError', 'PermissionDeniedError'].includes(error?.name)) {
+        // Uma nova instancia nativa pode recuperar permissoes revogadas no Chrome.
+        if (nativeMicrophone) {
+          const replacement = nativeMicrophone.cloneNode(true);
+          nativeMicrophone.replaceWith(replacement);
+          nativeMicrophone = replacement;
+          try { configureNativeMicrophone(nativeMicrophone); } catch (_) {}
+          bindNativeMicrophoneEvents(nativeMicrophone);
+          nativeMicrophone.hidden = false;
+        }
+        if (standardRecordButton) standardRecordButton.hidden = true;
       }
-    });
-    nativeMicrophone.addEventListener('cancel', () => {
-      showRecordingNotice('Autorização cancelada. Clique em Áudio para tentar novamente.');
-    });
-  } else {
-    let permissionRequestPending = false;
-    const beginLegacyRecording = async () => {
-      if (permissionRequestPending) return;
-      if (!navigator.mediaDevices?.getUserMedia) {
-        openLegacyMicrophoneHelp('unsupported');
+      explainMicrophoneFailure(error);
+    } finally {
+      permissionRequestPending = false;
+      if (standardRecordButton) standardRecordButton.disabled = false;
+    }
+  };
+
+  function bindNativeMicrophoneEvents(element) {
+    if (!supportsNativeMicrophone) return;
+    element.addEventListener('track', () => {
+      const track = element.track;
+      if (!track || track.kind !== 'audio') {
+        showRecordingNotice('Não foi possível acessar a entrada de áudio. Tente novamente.', true);
         return;
       }
-      permissionRequestPending = true;
-      if (microphoneRetry) microphoneRetry.disabled = true;
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({audio: true});
-        beginRecordingFromStream(stream);
-      } catch (error) {
-        openLegacyMicrophoneHelp(error);
-      } finally {
-        permissionRequestPending = false;
-        if (microphoneRetry) microphoneRetry.disabled = false;
-      }
-    };
-    recordButton?.addEventListener('click', () => {
-      if (recorder?.state === 'recording') recorder.stop();
-      else void beginLegacyRecording();
+      // <microphone> libera exclusivamente uma faixa de audio (nunca video).
+      beginRecordingFromStream(new MediaStream([track]));
     });
-    microphoneRetry?.addEventListener('click', () => { void beginLegacyRecording(); });
+    element.addEventListener('error', () => explainMicrophoneFailure(element.error));
+    element.addEventListener('cancel', () => {
+      showRecordingNotice('Autorização não concluída. Clique em Usar microfone para tentar novamente.');
+    });
+    element.addEventListener('click', () => {
+      if (recorder?.state !== 'recording') {
+        showRecordingNotice('Autorize o uso do microfone no aviso do Chrome.');
+      }
+    });
   }
+  if (supportsNativeMicrophone) {
+    bindNativeMicrophoneEvents(nativeMicrophone);
+  } else {
+    recordButton?.addEventListener('click', () => { void requestMicrophone(); });
+  }
+  standardRecordButton?.addEventListener('click', () => { void requestMicrophone(); });
   recordStopButton?.addEventListener('click', () => {
     if (recorder?.state === 'recording') recorder.stop();
   });
