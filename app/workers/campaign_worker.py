@@ -46,6 +46,9 @@ def run() -> None:
             dispatch_recipient = claim_next_dispatch_recipient(db)
             if dispatch_recipient:
                 used_dispatch = True
+                if shutdown.requested:
+                    db.rollback()  # claim ainda nao foi publicado: liberar a linha
+                    break
                 # Reserva e tentativa devem estar confirmadas ANTES de acessar a Z-API.
                 # SIGKILL após ACK nunca devolve um envio ambíguo a PENDENTE.
                 db.commit()
@@ -63,6 +66,9 @@ def run() -> None:
                 if not recipient:
                     db.commit()
                 else:
+                    if shutdown.requested:
+                        db.rollback()
+                        break
                     db.commit()  # confirma ENVIANDO antes da requisição externa
                     outcome = process_recipient(db, recipient)
                     db.commit()
