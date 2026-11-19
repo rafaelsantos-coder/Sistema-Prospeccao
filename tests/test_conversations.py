@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+from pathlib import Path
+from html.parser import HTMLParser
 
 from fastapi.testclient import TestClient
 
@@ -60,10 +64,51 @@ def test_open_conversation_from_lead():
     assert 'class="chat-queue-chip' in inbox.text
     assert 'class="conversation-queue-row"' in inbox.text
     assert "Fila do atendimento" in inbox.text
-    assert 'data-mic-copy-settings' in inbox.text
-    assert 'data-mic-blocked-help' in inbox.text
-    assert 'chrome://settings/content/siteDetails?site=' in inbox.text
-    assert 'Verificação concluída: o Chrome continua bloqueando' in inbox.text
+    assert '<usermedia class="inbox-native-microphone"' in inbox.text
+    assert 'data-record-stop-button' in inbox.text
+    assert 'nativeMicrophone.setConstraints({' in inbox.text
+    assert 'video: false' in inbox.text  # nao pode solicitar camera junto do audio
+    assert "nativeMicrophone.addEventListener('stream'" in inbox.text
+    assert "beginRecordingFromStream(nativeMicrophone.stream)" in inbox.text
+    assert "HTMLUserMediaElement" in inbox.text
+    assert "chrome://settings/content/siteDetails?site=" not in inbox.text
+
+
+def test_inbox_native_microphone_javascript_syntax():
+    """Garante que o código inline do gravador continue executável no Chrome."""
+    import pytest
+
+    if not shutil.which("node"):
+        pytest.skip("Node.js indisponível no ambiente de teste")
+    class InlineScriptCollector(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.scripts = []
+            self.in_script = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self.in_script = True
+                self.scripts.append("")
+
+        def handle_data(self, data):
+            if self.in_script:
+                self.scripts[-1] += data
+
+        def handle_endtag(self, tag):
+            if tag == "script":
+                self.in_script = False
+
+    template = Path(__file__).parents[1] / "app/templates/conversations/inbox.html"
+    collector = InlineScriptCollector()
+    collector.feed(template.read_text(encoding="utf-8"))
+    assert collector.scripts, "O inbox precisa inicializar os controles de gravação"
+    for script in collector.scripts:
+        result = subprocess.run(
+            ["node", "--check"], input=script, text=True,
+            capture_output=True, check=False, timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_send_message_from_inbox(monkeypatch):
