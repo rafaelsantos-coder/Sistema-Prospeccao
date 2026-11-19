@@ -16,6 +16,7 @@ from app.models import (
     CampaignDispatchRecipient,
     CampaignQueueLink,
     CampaignRecipient,
+    ServiceQueue,
 )
 from app.timeutils import utcnow
 
@@ -36,35 +37,52 @@ def _review_filter(model, status: str, cutoff):
     return or_(uncertain, stalled)
 
 
-def reconciliation_snapshot(db: Session, *, status: str = "TODOS", page: int = 1):
+def reconciliation_snapshot(
+    db: Session, *, status: str = "TODOS", page: int = 1,
+    queue_id: int | None = None,
+):
     """Resultados limitados por página, inclusive total por categoria."""
     if status not in REVIEW_STATUSES:
         raise ValueError("Filtro de status inválido.")
     if not 1 <= page <= REVIEW_MAX_PAGE:
         raise ValueError("Número da página inválido.")
+    if queue_id is not None and queue_id <= 0:
+        raise ValueError("Fila inválida.")
 
     cutoff = utcnow() - timedelta(minutes=REVIEW_STALE_MINUTES)
     offset = (page - 1) * REVIEW_PAGE_SIZE
     dispatched_filter = _review_filter(CampaignDispatchRecipient, status, cutoff)
     legacy_filter = _review_filter(CampaignRecipient, status, cutoff)
 
-    dispatched_total = int(
-        db.scalar(
-            select(func.count(CampaignDispatchRecipient.id)).where(dispatched_filter)
-        ) or 0
-    )
-    legacy_total = int(
-        db.scalar(select(func.count(CampaignRecipient.id)).where(legacy_filter)) or 0
-    )
+    dispatched_base = select(CampaignDispatchRecipient).where(dispatched_filter)
+    legacy_base = select(CampaignRecipient).where(legacy_filter)
+    dispatched_count = select(func.count(CampaignDispatchRecipient.id)).where(dispatched_filter)
+    legacy_count = select(func.count(CampaignRecipient.id)).where(legacy_filter)
+    if queue_id is not None:
+        # O vínculo histórico é definido pela campanha no funil legado.
+        dispatched_base = dispatched_base.join(
+            CampaignDispatch, CampaignDispatchRecipient.dispatch_id == CampaignDispatch.id
+        ).where(CampaignDispatch.queue_id == queue_id)
+        dispatched_count = dispatched_count.join(
+            CampaignDispatch, CampaignDispatchRecipient.dispatch_id == CampaignDispatch.id
+        ).where(CampaignDispatch.queue_id == queue_id)
+        legacy_base = legacy_base.join(
+            CampaignQueueLink, CampaignRecipient.campaign_id == CampaignQueueLink.campaign_id
+        ).where(CampaignQueueLink.queue_id == queue_id)
+        legacy_count = legacy_count.join(
+            CampaignQueueLink, CampaignRecipient.campaign_id == CampaignQueueLink.campaign_id
+        ).where(CampaignQueueLink.queue_id == queue_id)
+
+    dispatched_total = int(db.scalar(dispatched_count) or 0)
+    legacy_total = int(db.scalar(legacy_count) or 0)
 
     dispatched = list(
         db.scalars(
-            select(CampaignDispatchRecipient)
+            dispatched_base
             .options(
                 selectinload(CampaignDispatchRecipient.dispatch).selectinload(CampaignDispatch.queue),
                 selectinload(CampaignDispatchRecipient.dispatch).selectinload(CampaignDispatch.campaign),
             )
-            .where(dispatched_filter)
             .order_by(
                 CampaignDispatchRecipient.updated_at.desc(),
                 CampaignDispatchRecipient.id.desc(),
@@ -75,12 +93,11 @@ def reconciliation_snapshot(db: Session, *, status: str = "TODOS", page: int = 1
     )
     legacy = list(
         db.scalars(
-            select(CampaignRecipient)
+            legacy_base
             .options(
                 selectinload(CampaignRecipient.campaign),
                 selectinload(CampaignRecipient.lead),
             )
-            .where(legacy_filter)
             .order_by(CampaignRecipient.updated_at.desc(), CampaignRecipient.id.desc())
             .offset(offset)
             .limit(REVIEW_PAGE_SIZE)
@@ -96,7 +113,11 @@ def reconciliation_snapshot(db: Session, *, status: str = "TODOS", page: int = 1
         )
         queue_names = {link.campaign_id: link.queue.name for link in links}
 
+    queues = list(db.execute(select(ServiceQueue.id, ServiceQueue.name).order_by(ServiceQueue.name.asc(), ServiceQueue.id.asc())))
+
     return {
+        "queue_id": queue_id,
+        "queues": queues,
         "legacy_queue_names": queue_names,
         "status": status,
         "page": page,
