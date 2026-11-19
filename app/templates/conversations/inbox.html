@@ -181,6 +181,14 @@
             <time>{{ item.last_message_at|datetime_br }}</time>
           </div>
           <div class="conversation-preview">{{ item.last_message_preview or 'Conversa iniciada' }}</div>
+          {% set item_queue = conversation_queue_labels.get(item.id) %}
+          <div class="conversation-queue-row">
+            {% if item_queue %}
+            <span class="conversation-queue-chip queue-tone-{{ (item_queue.id % 5) + 1 }}" title="Fila atual: {{ item_queue.name }}">Fila: {{ item_queue.name }}</span>
+            {% else %}
+            <span class="conversation-queue-chip queue-missing" title="Atendimento sem fila vinculada">Sem fila definida</span>
+            {% endif %}
+          </div>
           <div class="conversation-row-meta">
             <span>{{ item.assigned_user.name if item.assigned_user else 'Fila sem responsável' }}</span>
             <span class="conversation-status status-{{ item.status|lower }}">{{ item.status.replace('_',' ') }}</span>
@@ -213,7 +221,14 @@
         <div class="conversation-avatar large">{{ (conversation.contact.business_name or conversation.contact.name or 'C')[:2]|upper }}</div>
         <div>
           <h3>{{ conversation.contact.business_name or conversation.contact.name or conversation.contact.phone|phone_br }}</h3>
-          <span>{{ conversation.contact.phone|phone_br }}{% if conversation.lead %} · {{ conversation.lead.city }} · {{ conversation.lead.segment }}{% endif %}</span>
+          <div class="chat-contact-subline">
+            <span class="chat-contact-phone">{{ conversation.contact.phone|phone_br }}{% if conversation.lead %} · {{ conversation.lead.city }} · {{ conversation.lead.segment }}{% endif %}</span>
+            {% if selected_queue %}
+            <span class="chat-queue-chip queue-tone-{{ (selected_queue.id % 5) + 1 }}" title="Fila atual deste atendimento">Fila: {{ selected_queue.name }}</span>
+            {% else %}
+            <span class="chat-queue-chip queue-missing" title="Este atendimento não está vinculado a uma fila">Sem fila definida</span>
+            {% endif %}
+          </div>
         </div>
       </div>
       <div class="chat-header-actions">
@@ -411,6 +426,15 @@
       <h3>{{ conversation.contact.business_name or conversation.contact.name or 'Contato WhatsApp' }}</h3>
       <div class="context-phone">{{ conversation.contact.phone|phone_br }}</div>
     </div>
+    <div class="context-section chat-queue-context">
+      <div class="context-title">Fila do atendimento</div>
+      {% if selected_queue %}
+      <span class="chat-queue-context-name queue-tone-{{ (selected_queue.id % 5) + 1 }}">{{ selected_queue.name }}</span>
+      {% else %}
+      <span class="chat-queue-context-name queue-missing">Sem fila definida</span>
+      {% endif %}
+      <small>Responsável: {{ conversation.assigned_user.name if conversation.assigned_user else 'Sem responsável' }}</small>
+    </div>
 
     {% if crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" and crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
     <div class="context-section crm-credit-section">
@@ -589,8 +613,7 @@
       <div class="context-title">Atendimento</div>
       <dl class="context-list">
         <div><dt>Responsável</dt><dd>{{ conversation.assigned_user.name if conversation.assigned_user else 'Sem responsável' }}</dd></div>
-        <div><dt>Fila</dt><dd>{% if selected_queue %}<strong>{{ selected_queue.name }}</strong><span class="table-subline">{{ selected_queue.code }}</span>{% else %}Sem fila definida{% endif %}</dd></div>
-        <div><dt>Equipe</dt><dd>{{ constants.teams.get(conversation.team, conversation.team) }}</dd></div>
+         <div><dt>Equipe</dt><dd>{{ constants.teams.get(conversation.team, conversation.team) }}</dd></div>
         <div><dt>Unidade</dt><dd>{{ conversation.branch.city if conversation.branch else 'Não definida' }}</dd></div>
         <div><dt>Iniciada</dt><dd>{{ conversation.opened_at|datetime_br }}</dd></div>
       </dl>
@@ -1048,6 +1071,19 @@
       preview.className = 'conversation-preview';
       preview.textContent = item.preview || 'Conversa iniciada';
 
+      const queueRow = document.createElement('div');
+      queueRow.className = 'conversation-queue-row';
+      const queueChip = document.createElement('span');
+      const queueId = Number(item.queue_id || 0);
+      queueChip.className = 'conversation-queue-chip ' + (
+        queueId && item.queue_name
+          ? 'queue-tone-' + (queueId % 5 + 1)
+          : 'queue-missing'
+      );
+      queueChip.textContent = item.queue_name ? 'Fila: ' + item.queue_name : 'Sem fila definida';
+      queueChip.title = item.queue_name ? 'Fila atual: ' + item.queue_name : 'Atendimento sem fila vinculada';
+      queueRow.append(queueChip);
+
       const meta = document.createElement('div');
       meta.className = 'conversation-row-meta';
       const owner = document.createElement('span');
@@ -1057,7 +1093,7 @@
       status.textContent = statusLabel(item.status);
       meta.append(owner, status);
 
-      copy.append(top, preview, meta);
+      copy.append(top, preview, queueRow, meta);
       if (item.commercial_temperature && item.commercial_temperature !== 'INDEFINIDO' || (item.commercial_tags || []).length) {
         const badges = document.createElement('div');
         badges.className = 'commercial-list-badges';
