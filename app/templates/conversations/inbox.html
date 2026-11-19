@@ -190,7 +190,7 @@
             {% endif %}
           </div>
           <div class="conversation-row-meta">
-            <span>{{ item.assigned_user.name if item.assigned_user else 'Fila sem responsável' }}</span>
+            <span>{{ item.assigned_user.name if item.assigned_user else 'Sem responsável' }}</span>
             <span class="conversation-status status-{{ item.status|lower }}">{{ item.status.replace('_',' ') }}</span>
           </div>
           {% set commercial = commercial_insights.get(item.id) %}
@@ -1087,7 +1087,7 @@
       const meta = document.createElement('div');
       meta.className = 'conversation-row-meta';
       const owner = document.createElement('span');
-      owner.textContent = item.owner || 'Fila sem responsável';
+      owner.textContent = item.owner || 'Sem responsável';
       const status = document.createElement('span');
       status.className = 'conversation-status ' + statusClass(item.status);
       status.textContent = statusLabel(item.status);
