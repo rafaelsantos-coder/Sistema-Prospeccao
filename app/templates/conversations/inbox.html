@@ -397,6 +397,7 @@
           <div class="media-preview-copy">
             <strong data-media-name>Arquivo</strong>
             <span data-media-meta></span>
+            <audio data-media-audio-preview controls preload="metadata" hidden style="display:block;width:min(100%,360px);margin:6px 0" aria-label="Ouvir áudio gravado"></audio>
             <input name="caption" maxlength="1024" placeholder="Adicionar legenda (opcional)" data-media-caption>
           </div>
           <button class="media-remove-button" type="button" data-media-cancel title="Remover anexo">×</button>
@@ -1429,6 +1430,7 @@
   const mediaName = document.querySelector('[data-media-name]');
   const mediaMeta = document.querySelector('[data-media-meta]');
   const mediaVisual = document.querySelector('[data-media-visual]');
+  const mediaAudioPreview = document.querySelector('[data-media-audio-preview]');
   const mediaCaption = document.querySelector('[data-media-caption]');
   const mediaCancel = document.querySelector('[data-media-cancel]');
   const mediaSend = document.querySelector('[data-media-send]');
@@ -1450,6 +1452,11 @@
     selectedMediaFile = null;
     if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
     mediaObjectUrl = null;
+    if (mediaAudioPreview) {
+      mediaAudioPreview.pause();
+      mediaAudioPreview.removeAttribute('src');
+      mediaAudioPreview.hidden = true;
+    }
     if (mediaInput) mediaInput.value = '';
     if (mediaCaption) mediaCaption.value = '';
     if (mediaForm) mediaForm.hidden = true;
@@ -1461,6 +1468,13 @@
 
   const showMediaPreview = file => {
     if (!file || !mediaForm) return;
+    if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
+    mediaObjectUrl = null;
+    if (mediaAudioPreview) {
+      mediaAudioPreview.pause();
+      mediaAudioPreview.removeAttribute('src');
+      mediaAudioPreview.hidden = true;
+    }
     selectedMediaFile = file;
     mediaForm.hidden = false;
     if (mediaName) mediaName.textContent = file.name || 'Arquivo';
@@ -1476,14 +1490,12 @@
       } else if (file.type && file.type.startsWith('video/')) {
         mediaVisual.textContent = '▶';
       } else if (file.type && file.type.startsWith('audio/')) {
-        mediaObjectUrl = URL.createObjectURL(file);
-        const player = document.createElement('audio');
-        player.controls = true;
-        player.preload = 'metadata';
-        player.src = mediaObjectUrl;
-        player.setAttribute('aria-label', 'Ouvir áudio gravado');
-        player.style.maxWidth = '100%';
-        mediaVisual.append(player);
+        mediaVisual.textContent = '🎙';
+        if (mediaAudioPreview) {
+          mediaObjectUrl = URL.createObjectURL(file);
+          mediaAudioPreview.src = mediaObjectUrl;
+          mediaAudioPreview.hidden = false;
+        }
       } else {
         mediaVisual.textContent = '▤';
       }
