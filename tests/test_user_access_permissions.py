@@ -94,6 +94,7 @@ def test_permission_selection_rejects_escalation_and_missing_parent():
     ("/conversations/18/register-crm", "POST", "crm.register"),
     ("/conversations/18/consult-cpf", "POST", "crm.credit"),
     ("/conversations/18/credit-contestation", "POST", "crm.contest"),
+    ("/conversations/18/credit-contestation", "GET", "crm.contest"),
     ("/conversations/18/send", "POST", "conversations.reply"),
     ("/leads/23/whatsapp", "POST", "conversations.reply"),
     ("/leads/new", "GET", "leads.create"),
