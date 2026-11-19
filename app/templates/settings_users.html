@@ -12,7 +12,7 @@
 </div>
 
 <div class="settings-grid">
-  {% if current_user.role in ['ADMIN','GESTOR'] %}
+  {% if current_user.role in ['ADMIN','GESTOR'] and 'settings.users.manage' in current_user.permissions %}
   <article class="panel panel-span-12">
     <div class="panel-header">
       <div><span class="eyebrow">NOVO USUÁRIO</span><h3>Liberar acesso</h3></div>
@@ -40,7 +40,7 @@
     <div class="panel-header"><div><span class="eyebrow">USUÁRIOS</span><h3>Acessos do ambiente</h3></div><span class="count-badge">{{ users|length }}</span></div>
     <div class="data-table-wrap">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Unidade</th><th>Status</th>{% if current_user.role in ['ADMIN','GESTOR'] %}<th>Ação</th>{% endif %}</tr></thead>
+        <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe</th><th>Unidade</th><th>Status</th>{% if current_user.role in ['ADMIN','GESTOR'] and 'settings.users.manage' in current_user.permissions %}<th>Ação</th>{% endif %}</tr></thead>
         <tbody>
         {% for item in users %}
           <tr>
@@ -50,7 +50,7 @@
             <td>{{ constants.teams.get(item.team, item.team) }}</td>
             <td>{{ item.branch.city if item.branch else 'Todas' }}</td>
             <td><span class="connection-status {% if item.active %}on{% endif %}">{{ 'Ativo' if item.active else 'Inativo' }}</span></td>
-            {% if current_user.role in ['ADMIN','GESTOR'] %}
+            {% if current_user.role in ['ADMIN','GESTOR'] and 'settings.users.manage' in current_user.permissions %}
             <td>
               {% if item.role == 'AI_SDR' %}
                 <span class="panel-note">Gerenciado em IA & Agentes</span>
