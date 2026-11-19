@@ -13,7 +13,7 @@ from app.config import settings
 from app.database import get_db
 from app.constants import ROLES, TEAMS
 from app.models import AuditLog, Branch, ServiceQueue, ServiceQueueMember, Target, User
-from app.security import get_current_user, hash_password, require_roles, validate_csrf
+from app.security import get_current_user, hash_password, require_permission, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.access_control import (
     effective_permissions,
@@ -86,6 +86,13 @@ def _render_user_edit(
             role: sorted(role_default_permissions(role))
             for role in ("CONSULTOR", "SUPERVISOR", "GESTOR", "ADMIN")
         },
+        available_user_queues=[q for q in _visible_queues(db, actor) if q.active],
+        selected_queue_ids=set(db.scalars(
+            select(ServiceQueueMember.queue_id).where(
+                ServiceQueueMember.user_id == target.id,
+                ServiceQueueMember.active.is_(True),
+            )
+        )),
         temporary_password=temporary_password,
         status_code=status_code,
     )
@@ -119,6 +126,40 @@ def _visible_queues(db: Session, user: User) -> list[ServiceQueue]:
             ]
         return [item for item in queues if item.team == user.team]
     return queues
+
+
+def _validated_user_queue_ids(db: Session, actor: User, selected: list[int]) -> set[int]:
+    """Não permitir adicionar colaborador a fila fora do escopo do gestor."""
+    require_permission(actor, "settings.queues.manage")
+    if len(selected) > 300:
+        raise HTTPException(status_code=400, detail="Muitas filas selecionadas.")
+    available = {q.id for q in _visible_queues(db, actor) if q.active}
+    requested = set(selected)
+    if not requested <= available:
+        raise HTTPException(status_code=403, detail="Fila não permitida para este gestor.")
+    return requested
+
+
+def _sync_user_queue_memberships(
+    db: Session, target: User, actor: User, selected: set[int],
+) -> None:
+    available = {q.id for q in _visible_queues(db, actor) if q.active}
+    current = {
+        link.queue_id: link
+        for link in db.scalars(
+            select(ServiceQueueMember).where(ServiceQueueMember.user_id == target.id)
+        )
+    }
+    for queue_id in available:
+        link = current.get(queue_id)
+        selected_now = queue_id in selected
+        if link:
+            link.active = selected_now
+        elif selected_now:
+            db.add(ServiceQueueMember(
+                queue_id=queue_id, user_id=target.id,
+                active=True, priority=100,
+            ))
 
 
 def _routing_strategies() -> dict[str, str]:
@@ -195,6 +236,8 @@ def settings_users_page(request: Request, db: Session = Depends(get_db)):
             role: sorted(role_default_permissions(role))
             for role in ("CONSULTOR", "SUPERVISOR", "GESTOR", "ADMIN")
         },
+        available_user_queues=[q for q in _visible_queues(db, user) if q.active],
+        selected_queue_ids=set(),
     )
 
 
@@ -441,6 +484,8 @@ def create_user(
     branch_id: str = Form(""),
     permissions_configured: str = Form(""),
     permissions: list[str] = Form(default=[]),
+    queue_memberships_configured: str = Form(""),
+    queue_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
     user = get_current_user(request, db)
@@ -467,6 +512,10 @@ def create_user(
         validate_selection(user, role, permissions)
         if permissions_configured == "1" else None
     )
+    selected_queues = (
+        _validated_user_queue_ids(db, user, queue_ids)
+        if queue_memberships_configured == "1" else set()
+    )
     created = User(
         name=name.strip(),
         email=clean_email,
@@ -480,6 +529,11 @@ def create_user(
     )
     db.add(created)
     db.flush()
+    for selected_queue_id in sorted(selected_queues):
+        db.add(ServiceQueueMember(
+            queue_id=selected_queue_id, user_id=created.id,
+            active=True, priority=100,
+        ))
     write_audit(
         db,
         user=user,
@@ -491,6 +545,7 @@ def create_user(
             "branch_id": created.branch_id,
             "permissions": sorted(effective_permissions(created)),
             "permissions_custom": selected_permissions is not None,
+            "queue_ids": sorted(selected_queues),
         },
     )
     db.commit()
@@ -525,6 +580,8 @@ def update_user(
     active: bool = Form(False),
     permissions_configured: str = Form(""),
     permissions: list[str] = Form(default=[]),
+    queue_memberships_configured: str = Form(""),
+    queue_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
     actor = get_current_user(request, db)
@@ -562,6 +619,10 @@ def update_user(
     if clean_team not in TEAMS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
+    selected_queues = (
+        _validated_user_queue_ids(db, actor, queue_ids)
+        if queue_memberships_configured == "1" else None
+    )
     branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
     if branch_value and not db.get(Branch, branch_value):
         flash(request, "A unidade selecionada não existe.", "warning")
@@ -575,6 +636,12 @@ def update_user(
         "branch_id": target.branch_id,
         "active": target.active,
         "permissions": sorted(effective_permissions(target)),
+        "queue_ids": sorted(db.scalars(
+            select(ServiceQueueMember.queue_id).where(
+                ServiceQueueMember.user_id == target.id,
+                ServiceQueueMember.active.is_(True),
+            )
+        )),
     }
     target.name = clean_name
     target.email = clean_email
@@ -606,6 +673,9 @@ def update_user(
             else:
                 target.access_permissions = selected_permissions
 
+    if selected_queues is not None and target.id != actor.id:
+        _sync_user_queue_memberships(db, target, actor, selected_queues)
+
     write_audit(
         db,
         user=actor,
@@ -622,6 +692,9 @@ def update_user(
                 "branch_id": target.branch_id,
                 "active": target.active,
                 "permissions": sorted(effective_permissions(target)),
+                "queue_ids": sorted(
+                    selected_queues if selected_queues is not None else before["queue_ids"]
+                ),
             },
         },
     )
