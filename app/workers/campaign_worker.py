@@ -5,6 +5,7 @@ import os
 import time
 
 from app.database import SessionLocal
+from app.services.paced_outbound import process_one_pending
 from app.services.campaign_queue import claim_next_recipient, process_recipient
 from app.services.dispatch_queue import claim_next_dispatch_recipient, process_dispatch_recipient
 
@@ -19,12 +20,20 @@ def run() -> None:
     # Bloqueio global de emergencia solicitado pelo gestor em 17/11/2026.
     # O atendimento receptivo de WhatsApp e os agentes IA usam outro worker.
     # A retomada exige remover a pausa explicitamente na configuracao.
-    if os.getenv("CAMPAIGN_DISPATCH_PAUSED", "true").strip().lower() not in {"0", "false", "off", "no"}:
-        LOG.warning("SULNET_DISPAROS_PAUSADOS_POR_SOLICITACAO: nenhum envio de campanha sera processado")
-        while True:
-            time.sleep(60)
-    LOG.info("Campaign worker iniciado. Intervalo entre envios: %ss", SEND_INTERVAL)
+    campaigns_paused = os.getenv("CAMPAIGN_DISPATCH_PAUSED", "true").strip().lower() not in {"0", "false", "off", "no"}
+    if campaigns_paused:
+        LOG.warning("Campanhas pausadas; somente mensagens manuais agendadas serao processadas.")
+    LOG.info("Worker iniciado. Campanhas pausadas=%s; intervalo=%ss", campaigns_paused, SEND_INTERVAL)
     while True:
+        # Outbox manual independente das campanhas e da IA, inclusive durante pausa.
+        try:
+            pacing_result = process_one_pending()
+        except Exception:
+            LOG.exception("Falha do worker de mensagens manuais")
+            pacing_result = "error"
+        if campaigns_paused:
+            time.sleep(1 if pacing_result == "sent" else 3)
+            continue
         db = SessionLocal()
         outcome = "idle"
         used_dispatch = False
