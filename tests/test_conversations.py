@@ -64,19 +64,16 @@ def test_open_conversation_from_lead():
     assert 'class="chat-queue-chip' in inbox.text
     assert 'class="conversation-queue-row"' in inbox.text
     assert "Fila do atendimento" in inbox.text
-    # Chrome 153+ precisa utilizar o controle nativo SOMENTE de microfone.
+    # Um botao Audio comum; autorizacao nativa so quando Chrome bloqueia.
     assert '<microphone class="inbox-microphone-control"' in inbox.text
     assert '<usermedia' not in inbox.text
-    assert 'HTMLUserMediaElement' not in inbox.text
     assert 'HTMLMicrophoneElement' in inbox.text
-    assert "element.addEventListener('track'" in inbox.text
-    assert 'new MediaStream([track])' in inbox.text
-    assert 'element.setConstraints(microphoneConstraints)' in inbox.text
-    assert 'font-size:15px' in inbox.text  # estilo valido para capability element
+    assert 'data-record-standard title="Gravar áudio"' in inbox.text
+    assert "nativeMicrophone.addEventListener('track'" in inbox.text
+    assert 'getUserMedia(audioOnlyConstraints)' in inbox.text
+    assert 'video: false' in inbox.text
     assert 'data-record-stop-button' in inbox.text
-    assert 'data-record-standard' in inbox.text
-    assert 'video: false' in inbox.text  # fallback nunca solicita camera
-    assert 'getUserMedia({audio: microphoneConstraints, video: false})' in inbox.text
+    assert 'data-media-audio-preview' in inbox.text
     assert 'data-mic-copy-settings' not in inbox.text
     assert 'chrome://settings/content/siteDetails?site=' not in inbox.text
 
