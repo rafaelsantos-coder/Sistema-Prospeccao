@@ -20,46 +20,60 @@
     </div>
 
     <nav class="main-nav" aria-label="Navegação principal">
+      {% if 'dashboard.view' in current_user.permissions %}
       <a href="/dashboard" class="nav-item {% if active_nav == 'dashboard' %}active{% endif %}">
         <span class="nav-icon">⌂</span><span>Visão geral</span>
       </a>
+      {% endif %}
+      {% if 'leads.view' in current_user.permissions %}
       <a href="/leads" class="nav-item {% if active_nav == 'leads' %}active{% endif %}">
         <span class="nav-icon">◎</span><span>Leads e CRM</span>
       </a>
+      {% endif %}
+      {% if 'conversations.view' in current_user.permissions %}
       <a href="/conversations" class="nav-item {% if active_nav == 'conversations' %}active{% endif %}">
         <span class="nav-icon">◌</span><span>Conversas</span>
       </a>
-      {% if current_user.role in ['ADMIN','GESTOR'] %}
+      {% endif %}
+      {% if 'blacklist.view' in current_user.permissions %}
       <a href="/blacklist" class="nav-item {% if active_nav == 'blacklist' %}active{% endif %}">
         <span class="nav-icon">⊘</span><span>Blacklist global</span>
       </a>
       {% endif %}
+      {% if 'prospecting.view' in current_user.permissions %}
       <a href="/prospecting" class="nav-item {% if active_nav == 'prospecting' %}active{% endif %}">
         <span class="nav-icon">⌁</span><span>Prospecção</span>
       </a>
-      {% if current_user.role == 'ADMIN' %}
+      {% endif %}
+      {% if 'voice.view' in current_user.permissions %}
       <a href="/voice" class="nav-item {% if active_nav == 'voice' %}active{% endif %}">
         <span class="nav-icon">☎</span><span>Prospecta VOZ</span>
       </a>
       {% if active_nav == 'voice' %}
       <div class="nav-submenu" aria-label="Navegação do Prospecta VOZ">
         <a href="/voice" class="{% if voice_section == 'dashboard' %}active{% endif %}">Dashboard VOZ</a>
+        {% if 'voice.accounts.manage' in current_user.permissions %}
         <a href="/voice/accounts" class="{% if voice_section == 'accounts' %}active{% endif %}">Contas do discador</a>
         <a href="/voice/groups" class="{% if voice_section == 'groups' %}active{% endif %}">Ramais e grupos</a>
+        {% endif %}
+        {% if 'voice.campaigns.manage' in current_user.permissions %}
         <a href="/voice/campaigns/new" class="{% if voice_section == 'new_campaign' %}active{% endif %}">Nova campanha</a>
+        {% endif %}
         <a href="/voice/campaigns" class="{% if voice_section == 'campaigns' %}active{% endif %}">Campanhas e preparação</a>
       </div>
       {% endif %}
       {% endif %}
+      {% if 'campaigns.view' in current_user.permissions %}
       <a href="/campaigns" class="nav-item {% if active_nav == 'campaigns' %}active{% endif %}">
         <span class="nav-icon">◈</span><span>Campanhas</span>
       </a>
-      {% if current_user.role in ['ADMIN', 'GESTOR'] %}
+      {% endif %}
+      {% if 'dispatches.view' in current_user.permissions %}
       <a href="/dispatches" class="nav-item {% if active_nav == 'dispatches' %}active{% endif %}">
         <span class="nav-icon">➤</span><span>Disparos</span>
       </a>
       {% endif %}
-      {% if current_user.role in ['ADMIN', 'GESTOR'] %}
+      {% if 'ai.view' in current_user.permissions %}
       <a href="/ai" class="nav-item {% if active_nav == 'ai' %}active{% endif %}">
         <span class="nav-icon">✦</span><span>IA</span>
       </a>
@@ -74,28 +88,40 @@
       </div>
       {% endif %}
       {% endif %}
+      {% if 'reports.view' in current_user.permissions %}
       <a href="/reports/whatsapp" class="nav-item {% if active_nav == 'reports' %}active{% endif %}">
         <span class="nav-icon">▥</span><span>Relatórios</span>
       </a>
-      {% if current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+      {% endif %}
+      {% if 'credit_map.view' in current_user.permissions %}
       <a href="/reports/credit-map" class="nav-item {% if active_nav == 'credit-map' %}active{% endif %}">
         <span class="nav-icon">◉</span><span>Mapa de crédito</span>
       </a>
       {% endif %}
-      {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
+      {% if 'settings.view' in current_user.permissions %}
       <a href="/settings" class="nav-item {% if active_nav == 'settings' %}active{% endif %}">
         <span class="nav-icon">⚙</span><span>Configurações</span>
       </a>
       {% if active_nav == 'settings' %}
       <div class="nav-submenu">
-        {% if current_user.role in ['ADMIN','GESTOR'] %}
+        {% if 'settings.connections.view' in current_user.permissions %}
         <a href="/settings/whatsapp" class="{% if settings_section == 'whatsapp' %}active{% endif %}">Números e Z-API</a>
         {% endif %}
+        {% if 'settings.queues.view' in current_user.permissions %}
         <a href="/settings/queues" class="{% if settings_section == 'queues' %}active{% endif %}">Filas de atendimento</a>
+        {% endif %}
+        {% if 'settings.users.view' in current_user.permissions %}
         <a href="/settings/users" class="{% if settings_section == 'users' %}active{% endif %}">Usuários e acessos</a>
+        {% endif %}
+        {% if 'settings.operations.view' in current_user.permissions %}
         <a href="/settings/operations" class="{% if settings_section == 'operations' %}active{% endif %}">Metas e unidades</a>
+        {% endif %}
+        {% if 'settings.integrations.view' in current_user.permissions %}
         <a href="/settings/integrations" class="{% if settings_section == 'integrations' %}active{% endif %}">Integrações</a>
+        {% endif %}
+        {% if 'settings.audit.view' in current_user.permissions %}
         <a href="/settings/audit" class="{% if settings_section == 'audit' %}active{% endif %}">Auditoria</a>
+        {% endif %}
       </div>
       {% endif %}
       {% endif %}
@@ -129,7 +155,7 @@
         <h1>{{ page_title }}</h1>
       </div>
       <div class="topbar-actions">
-        {% if page_title == "Conversas" and conversation is defined and conversation %}
+        {% if 'crm.register' in current_user.permissions and page_title == "Conversas" and conversation is defined and conversation %}
           {% if crm_manual_status is defined and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" and crm_manual_seller is defined and crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
           <span class="button button-secondary crm-manual-topbar-state" title="Oportunidade já vinculada ao CRM">✓ Registrado no CRM</span>
           {% elif crm_manual_seller is defined and crm_manual_seller %}
@@ -139,6 +165,7 @@
           <button type="button" class="button button-secondary crm-manual-topbar-button" disabled title="Atribua a conversa a um vendedor cadastrado no CRM">Registrar CRM</button>
           {% endif %}
         {% endif %}
+        {% if 'conversations.view' in current_user.permissions %}
         <div class="whatsapp-presence-control" data-whatsapp-presence data-csrf="{{ csrf_token }}" data-role="{{ current_user.role }}">
           <span class="whatsapp-presence-dot" data-whatsapp-dot></span>
           <div class="whatsapp-presence-copy">
@@ -147,7 +174,10 @@
           </div>
           <button class="whatsapp-presence-button" type="button" data-whatsapp-toggle title="Ao fechar o navegador ou perder a sessão, a presença expira automaticamente.">Entrar no WhatsApp</button>
         </div>
+        {% endif %}
+        {% if 'leads.create' in current_user.permissions %}
         <a href="/leads/new" class="button button-primary"><span>＋</span> Novo lead</a>
+        {% endif %}
       </div>
     </header>
 
