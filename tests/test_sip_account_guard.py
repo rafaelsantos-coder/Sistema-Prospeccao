@@ -101,3 +101,40 @@ def test_sip_probe_aborts_before_invite_if_account_lost():
             "INVITE", "sip:5555999998874@sip.example.com",
             "fake-call", "<sip:5555999998874@sip.example.com>",
         )
+
+
+@pytest.mark.skipif(
+    os.getenv("GITHUB_ACTIONS") != "true",
+    reason="Requer PostgreSQL 18 efemero do CI",
+)
+def test_failed_account_lease_cannot_leave_lock_in_connection_pool(monkeypatch):
+    """Uma conta SIP deve ser liberada inclusive em verificacao incerta."""
+    from sqlalchemy import text
+
+    db_engine = create_engine(PG_TEST_URL, pool_size=3, max_overflow=0)
+    monkeypatch.setattr(sip_account_guard, "engine", db_engine)
+    key = {
+        "namespace": sip_account_guard.SIP_ACCOUNT_LOCK_NAMESPACE,
+        "account_id": 170019,
+    }
+    try:
+        with db_engine.connect() as observer:
+            with sip_account_guard.sip_account_lock(key["account_id"]) as lease:
+                assert lease is not None
+                assert observer.execute(
+                    text("SELECT pg_try_advisory_lock(:namespace, :account_id)"),
+                    key,
+                ).scalar_one() is False
+                observer.commit()
+                lease._closed = True  # verificacao do lock falhou, sem db invalidated
+            assert observer.execute(
+                text("SELECT pg_try_advisory_lock(:namespace, :account_id)"),
+                key,
+            ).scalar_one() is True
+            observer.execute(
+                text("SELECT pg_advisory_unlock(:namespace, :account_id)"),
+                key,
+            )
+            observer.commit()
+    finally:
+        db_engine.dispose()
