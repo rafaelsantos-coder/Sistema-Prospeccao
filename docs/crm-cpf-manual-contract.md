@@ -1,13 +1,12 @@
 # Contrato proposto — CPF manual na oportunidade CRM
 
-> **Estado:** proposta para implementação no CRM Comercial no servidor 204. **Ainda não é uma rota confirmada ou publicada.**
-> A interface do Prospecta permanece desabilitada por padrão até o teste real do contrato.
+> **Estado:** endpoint informado como publicado no CRM Comercial, com validação dry-run sem consulta nova à Serasa (relatório recebido em 18/11/2026). Os testes automatizados do Prospecta não executam consulta real. A ativação no Railway depende de deploy e configuração do serviço.
 
 ## Objetivo
 
 Após `POST /webhook/leads` cadastrar **nome + telefone**, permitir a consulta do CPF na **mesma oportunidade** e no **mesmo vendedor**. O usuário não sai da tela de Conversas.
 
-## Endpoint necessário no CRM
+## Endpoint disponível no CRM (conforme relatório da integração)
 
 ```http
 POST /webhook/leads/consult
@@ -37,12 +36,17 @@ Requisitos do endpoint:
 {
   "opportunityId": 17000,
   "assignedUserId": 24,
+  "sellerUsername": "maria.peno",
+  "funnelId": 16,
   "analysisId": 98765,
   "protocol": "CRM-2026-17000",
+  "analysisProtocol": "SAC-2026-98765",
+  "result": "Aprovado",
   "status": "Aprovado",
+  "outcome": "reused",
+  "score": 350,
   "approved": true,
-  "rejected": false,
-  "manualReview": false
+  "rejected": false
 }
 ```
 
@@ -56,5 +60,5 @@ Para `Aprovado com taxa`, devolver `status` com essa descrição exata. Para `Re
 - Validação de CPF com dígitos verificadores.
 - A consulta segue a oportunidade vinculada ao contato; não cria uma nova.
 - Em caso de timeout, retorno incompleto ou proprietário divergente, o Prospecta bloqueia reenvio automático e pede conferência.
-- Endpoint e formulário ficam **desabilitados** até definir `SULNET_CRM_MANUAL_CREDIT_ENABLED=true` no serviço web do Railway, depois de validar o CRM em ambiente de testes.
-- A consulta exige **obrigatoriamente** `SULNET_CRM_LEAD_INTEGRATION_KEY` configurada no serviço web. Não usa nem faz fallback para `SULNET_AI_INTEGRATION_KEY` ou `SULNET_CRM_BEARER_TOKEN`.
+- O formulário fica **desabilitado** até definir `SULNET_CRM_MANUAL_CREDIT_ENABLED=true` no serviço web do Railway, após o merge e testes. Não são realizadas consultas de CPF automaticamente.
+- O CPF usa **exatamente a mesma chave de `POST /webhook/leads`**, enviada exclusivamente em `X-Integration-Key`. O Prospecta utiliza `SULNET_CRM_LEAD_INTEGRATION_KEY` quando configurada ou a chave de integração atual `SULNET_AI_INTEGRATION_KEY` que já autentica o webhook comercial; **nunca utiliza o Bearer personificado da IA**.
