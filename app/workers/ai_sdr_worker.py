@@ -1221,6 +1221,28 @@ def _review_today_fila_ia() -> dict[str, int]:
                     AIJob.message_id == latest.id,
                 ).limit(1))
                 if prior_job:
+                    # Jobs concluídos em SHADOW não responderam ao cliente.
+                    # Retomar uma única vez, somente quando a última mensagem
+                    # continuar sendo INBOUND e a fila permanecer FILA-IA.
+                    shadow_run = db.scalar(
+                        select(AIRun)
+                        .where(
+                            AIRun.job_id == prior_job.id,
+                            AIRun.execution_mode == "SHADOW",
+                            AIRun.status == "CONCLUIDO",
+                        )
+                        .order_by(AIRun.id.desc())
+                        .limit(1)
+                    )
+                    if prior_job.status == "CONCLUIDO" and shadow_run:
+                        prior_job.status = "PENDENTE"
+                        prior_job.available_at = utcnow()
+                        prior_job.locked_at = None
+                        prior_job.attempts = 0
+                        prior_job.error = None
+                        db.commit()
+                        counts["requeued_shadow"] += 1
+                        continue
                     counts["already_job_" + str(prior_job.status).lower()] += 1
                     continue
                 try:
