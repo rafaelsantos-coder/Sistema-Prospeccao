@@ -790,7 +790,7 @@ def test_dispatch_claim_survives_crash_after_provider_ack(monkeypatch):
             db.commit()
             dispatch_id, recipient_id = dispatch.id, recipient.id
 
-            reserved = claim_next_dispatch_recipient(db)
+            reserved = claim_next_dispatch_recipient(db, dispatch_id=dispatch_id)
             assert reserved and reserved.id == recipient_id
             db.commit()  # mesmo limite transacional do worker
             assert process_dispatch_recipient(db, reserved) == "sent"
@@ -806,7 +806,7 @@ def test_dispatch_claim_survives_crash_after_provider_ack(monkeypatch):
             dispatch = db.get(CampaignDispatch, dispatch_id)
             dispatch.next_send_at = utcnow() - timedelta(seconds=1)
             db.commit()
-            assert claim_next_dispatch_recipient(db) is None
+            assert claim_next_dispatch_recipient(db, dispatch_id=dispatch_id) is None
             assert len(calls) == 1  # não houve segundo envio
 
 
@@ -843,7 +843,7 @@ def test_unknown_provider_result_never_requeues_dispatch(monkeypatch):
             db.commit()
             dispatch_id, recipient_id = dispatch.id, row.id
 
-            claimed = claim_next_dispatch_recipient(db)
+            claimed = claim_next_dispatch_recipient(db, dispatch_id=dispatch_id)
             assert claimed and claimed.id == recipient_id
             db.commit()
             assert process_dispatch_recipient(db, claimed) == "unknown"
@@ -857,7 +857,7 @@ def test_unknown_provider_result_never_requeues_dispatch(monkeypatch):
                 utcnow() - timedelta(seconds=1)
             )
             db.commit()
-            assert claim_next_dispatch_recipient(db) is None
+            assert claim_next_dispatch_recipient(db, dispatch_id=dispatch_id) is None
 
 
 def test_legacy_campaign_claim_survives_worker_crash():
