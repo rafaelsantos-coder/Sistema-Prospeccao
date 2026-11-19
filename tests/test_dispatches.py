@@ -1029,3 +1029,84 @@ def test_sigkill_after_fake_provider_ack_never_automatically_resends():
             dispatch.next_send_at = utcnow() - timedelta(seconds=1)
             db.commit()
             assert claim_next_dispatch_recipient(db, dispatch_id=dispatch_id) is None
+
+
+
+def test_reconciliation_is_read_only_and_covers_both_campaign_flows():
+    """Gestor visualiza envios incertos sem novos contatos nem mudanças no banco."""
+    from datetime import timedelta
+
+    from app.models import CampaignRecipient
+    from app.services.dispatch_queue import ensure_dispatch_lead
+    from app.timeutils import utcnow
+
+    with TestClient(app) as client:
+        _login_admin(client)
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "REVIEW-SAFE")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id, status="ATIVO",
+                interval_seconds=30, daily_limit=100,
+            )
+            db.add(dispatch)
+            db.flush()
+            lead = ensure_dispatch_lead(
+                db, name="Contato de conciliação",
+                phone="5555999998811", queue=queue, created_by_id=None,
+            )
+            unknown = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id, lead_id=lead.id,
+                name="A conferir CSV", phone=lead.phone,
+                message_body="Mensagem fictícia", status="INDETERMINADO",
+                error="Timeout fictício do teste", attempts=1,
+            )
+            pending = CampaignDispatchRecipient(
+                dispatch_id=dispatch.id, name="Em processamento CSV",
+                phone="5555999998812", message_body="Mensagem fictícia",
+                status="ENVIANDO", attempts=1,
+                updated_at=utcnow() - timedelta(minutes=20),
+            )
+            legacy = CampaignRecipient(
+                campaign_id=campaign.id, lead_id=lead.id,
+                message_body="Mensagem fictícia", status="INDETERMINADO",
+                attempts=1, error="Resposta fictícia não confirmada",
+            )
+            db.add_all([unknown, pending, legacy])
+            db.commit()
+            ids = unknown.id, pending.id, legacy.id
+
+        page = client.get("/dispatches/reconciliation")
+        assert page.status_code == 200
+        assert page.headers["cache-control"] == "no-store"
+        assert "Envios a conferir" in page.text
+        assert "A conferir CSV" in page.text
+        assert "Em processamento CSV" in page.text
+        assert "Contato de conciliação" in page.text
+        assert "Processamento acima de 10 min" in page.text
+
+        csv_only = client.get("/dispatches/reconciliation?source=DISPATCH")
+        assert csv_only.status_code == 200
+        assert "A conferir CSV" in csv_only.text
+        assert "Em processamento CSV" in csv_only.text
+        assert "Contato de conciliação" not in csv_only.text
+
+        old_campaigns = client.get(
+            "/dispatches/reconciliation?source=CAMPAIGN&status=INDETERMINADO"
+        )
+        assert old_campaigns.status_code == 200
+        assert "Contato de conciliação" in old_campaigns.text
+        assert "A conferir CSV" not in old_campaigns.text
+        assert "Em processamento CSV" not in old_campaigns.text
+
+        with SessionLocal() as db:
+            assert db.get(CampaignDispatchRecipient, ids[0]).status == "INDETERMINADO"
+            assert db.get(CampaignDispatchRecipient, ids[1]).status == "ENVIANDO"
+            assert db.get(CampaignRecipient, ids[2]).status == "INDETERMINADO"
+            assert db.get(CampaignDispatchRecipient, ids[0]).attempts == 1
+
+
+def test_reconciliation_requires_authentication():
+    with TestClient(app) as client:
+        result = client.get("/dispatches/reconciliation", follow_redirects=False)
+        assert result.status_code == 303
+        assert result.headers["location"] == "/login"
