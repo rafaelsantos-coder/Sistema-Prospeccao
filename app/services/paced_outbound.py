@@ -143,6 +143,9 @@ def expire_uncertain_processing(db: Session) -> int:
         if message is not None and message.status in {"PENDING", "PROCESSING"}:
             message.status = "UNKNOWN"
     if old:
+        # O SessionLocal usa autoflush=False: o SELECT de inflight abaixo
+        # precisa enxergar imediatamente os PROCESSING liberados.
+        db.flush()
         LOG.warning("paced_outbound_stale_reconciled count=%s", len(old))
     return len(old)
 
