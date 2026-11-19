@@ -7,6 +7,8 @@ após o prazo mínimo de 15 minutos sem atualização.
 from __future__ import annotations
 
 from datetime import timedelta
+import csv
+import io
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -132,3 +134,90 @@ def reconciliation_snapshot(
         "has_previous": page > 1,
         "has_next": page * REVIEW_PAGE_SIZE < max(dispatched_total, legacy_total),
     }
+
+
+REVIEW_EXPORT_LIMIT = 500
+
+
+def _safe_csv_cell(value: object) -> str:
+    """Evita injeção de fórmulas quando o CSV é aberto no Excel/Sheets."""
+    cell = "" if value is None else str(value)
+    if cell.lstrip().startswith(("=", "+", "-", "@")) or cell.startswith(("\t", "\r", "\n")):
+        return "'" + cell
+    return cell
+
+
+def reconciliation_csv(
+    db: Session, *, status: str = "TODOS", queue_id: int | None = None,
+) -> str:
+    """Exportação limitada, gerencial e somente leitura, das duas origens."""
+    if status not in REVIEW_STATUSES:
+        raise ValueError("Filtro de status inválido.")
+    if queue_id is not None and queue_id <= 0:
+        raise ValueError("Fila inválida.")
+
+    cutoff = utcnow() - timedelta(minutes=REVIEW_STALE_MINUTES)
+    csv_output = io.StringIO(newline="")
+    writer = csv.writer(csv_output, delimiter=";")
+    writer.writerow([
+        "Origem", "Campanha", "Fila", "Contato", "Telefone", "Situação",
+        "Tentativas", "Última atualização (UTC)", "ID do provedor", "Erro",
+    ])
+
+    dispatched_stmt = (
+        select(CampaignDispatchRecipient)
+        .options(
+            selectinload(CampaignDispatchRecipient.dispatch).selectinload(CampaignDispatch.queue),
+            selectinload(CampaignDispatchRecipient.dispatch).selectinload(CampaignDispatch.campaign),
+        )
+        .where(_review_filter(CampaignDispatchRecipient, status, cutoff))
+        .order_by(CampaignDispatchRecipient.updated_at.desc(), CampaignDispatchRecipient.id.desc())
+        .limit(REVIEW_EXPORT_LIMIT)
+    )
+    legacy_stmt = (
+        select(CampaignRecipient)
+        .options(
+            selectinload(CampaignRecipient.campaign),
+            selectinload(CampaignRecipient.lead),
+        )
+        .where(_review_filter(CampaignRecipient, status, cutoff))
+        .order_by(CampaignRecipient.updated_at.desc(), CampaignRecipient.id.desc())
+        .limit(REVIEW_EXPORT_LIMIT)
+    )
+    if queue_id is not None:
+        dispatched_stmt = dispatched_stmt.join(
+            CampaignDispatch, CampaignDispatchRecipient.dispatch_id == CampaignDispatch.id
+        ).where(CampaignDispatch.queue_id == queue_id)
+        legacy_stmt = legacy_stmt.join(
+            CampaignQueueLink, CampaignRecipient.campaign_id == CampaignQueueLink.campaign_id
+        ).where(CampaignQueueLink.queue_id == queue_id)
+
+    dispatched = list(db.scalars(dispatched_stmt))
+    legacy = list(db.scalars(legacy_stmt))
+    legacy_queue_names = {}
+    if legacy:
+        links = db.scalars(
+            select(CampaignQueueLink)
+            .options(selectinload(CampaignQueueLink.queue))
+            .where(CampaignQueueLink.campaign_id.in_({row.campaign_id for row in legacy}))
+        )
+        legacy_queue_names = {link.campaign_id: link.queue.name for link in links}
+
+    for row in dispatched:
+        writer.writerow([_safe_csv_cell(item) for item in (
+            "CSV", row.dispatch.campaign.name, row.dispatch.queue.name, row.name,
+            row.phone, row.status, row.attempts,
+            row.updated_at.isoformat() if row.updated_at else "",
+            row.provider_message_id, row.error,
+        )])
+    for row in legacy:
+        writer.writerow([_safe_csv_cell(item) for item in (
+            "FUNIL", row.campaign.name,
+            legacy_queue_names.get(row.campaign_id, "Fila não definida"),
+            row.lead.business_name or row.lead.contact_name, row.lead.phone,
+            row.status, row.attempts,
+            row.updated_at.isoformat() if row.updated_at else "",
+            row.provider_message_id, row.error,
+        )])
+    # UTF-8 BOM para importação no Excel brasileiro, com campos separados por ponto-e-vírgula.
+    return "\ufeff" + csv_output.getvalue()
