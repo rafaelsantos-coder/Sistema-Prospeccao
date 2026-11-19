@@ -472,6 +472,11 @@ class ZApiService:
         except ValueError:
             received_delivery_payload = {"ok": True}
 
+        try:
+            notify_payload = notify_response.json()
+        except ValueError:
+            notify_payload = {"ok": True}
+
         state = self.webhook_state()
         configured_url = state.get("received_callback_url") or ""
         combined_url = state.get("received_and_delivery_callback_url") or ""
@@ -493,7 +498,7 @@ class ZApiService:
             "received": received_payload,
             "received_delivery": received_delivery_payload,
             "notify_sent_by_me": True,
-            "notify_result": notify_response.json() if notify_response.content else {},
+            "notify_result": notify_payload,
             "webhook_state": state,
         }
 
