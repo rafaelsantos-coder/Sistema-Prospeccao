@@ -9,6 +9,9 @@
   </div>
   <div class="page-actions">
     <a class="button button-secondary" href="/dispatches">Voltar</a>
+    {% if 'dispatches.reconcile' in current_user.permissions %}
+    <a class="button button-secondary" href="/dispatches/reconciliation">Envios a conferir</a>
+    {% endif %}
     {% if dispatch.status in ['RASCUNHO','PAUSADO'] and counts.pending %}
     <form action="/dispatches/{{ dispatch.id }}/start" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
