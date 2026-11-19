@@ -292,6 +292,7 @@ def dispatch_reconciliation(
     request: Request,
     status: str = "TODOS",
     page: int = 1,
+    queue_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     """Revisão gerencial somente leitura; jamais libera um reenvio."""
@@ -299,7 +300,7 @@ def dispatch_reconciliation(
     if redirect:
         return redirect
     try:
-        snapshot = reconciliation_snapshot(db, status=status, page=page)
+        snapshot = reconciliation_snapshot(db, status=status, page=page, queue_id=queue_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Filtro de conferência inválido.") from exc
 
