@@ -9,6 +9,7 @@
   </div>
   <div class="page-actions">
     <a class="button button-secondary" href="/dispatches">Voltar aos disparos</a>
+    <a class="button button-secondary" href="/dispatches/reconciliation/export.csv?status={{ snapshot.status }}{% if snapshot.queue_id %}&amp;queue_id={{ snapshot.queue_id }}{% endif %}">Exportar CSV para conferência</a>
   </div>
 </div>
 
