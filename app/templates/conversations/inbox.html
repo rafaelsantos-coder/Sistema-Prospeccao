@@ -1612,7 +1612,12 @@
     const reason = error?.name || String(error || '');
     console.warn('[Prospecta][audio] Falha local:', reason);
     if (reason === 'NotAllowedError' || reason === 'PermissionDeniedError' || reason === 'SecurityError') {
-      showRecordingNotice('O Chrome negou acesso ao microfone. Autorize pelo botão ao lado para continuar.', true);
+      showRecordingNotice(
+        supportsNativeMicrophone
+          ? 'O Chrome bloqueou o microfone. Clique em Usar o microfone para permitir.'
+          : 'O navegador bloqueou o microfone. Libere o microfone nos controles ao lado do endereço e tente de novo.',
+        true
+      );
     } else if (reason === 'NotFoundError' || reason === 'DevicesNotFoundError') {
       showRecordingNotice('Nenhum microfone foi encontrado neste computador.', true);
     } else if (reason === 'NotReadableError' || reason === 'TrackStartError') {
