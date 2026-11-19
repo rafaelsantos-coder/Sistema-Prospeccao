@@ -7,6 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import JSONResponse, RedirectResponse
 
+from app.config import settings
 from app.database import get_db
 from app.models import (
     Activity,
@@ -50,6 +51,10 @@ from app.services.conversation_engine import (
     ensure_open_conversation,
     mark_conversation_read,
     register_message,
+)
+from app.services.crm_manual_credit import (
+    consult_registered_cpf,
+    credit_status as manual_credit_status,
 )
 from app.services.crm_manual_registration import (
     CRMManualError,
@@ -671,6 +676,8 @@ def _render_inbox(
         globally_blacklisted=is_globally_blocked(db, selected.contact.phone) if selected else False,
         crm_manual_seller=seller_for_user(selected.assigned_user) if selected else None,
         crm_manual_status=registration_status(db, selected.contact_id) if selected else None,
+        crm_credit_enabled=settings.sulnet_crm_manual_credit_enabled,
+        crm_credit_status=manual_credit_status(db, selected.contact_id) if selected else None,
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,
     )
@@ -1473,6 +1480,42 @@ def register_crm_manually(
         if result.get("protocol"):
             message += f" Protocolo: {result['protocol']}."
         flash(request, message, "success")
+    return RedirectResponse(f"/conversations/{conversation_id}", status_code=303)
+
+
+@router.post("/conversations/{conversation_id}/consult-cpf")
+def consult_cpf_manually(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    cpf: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Consulta comercial vinculada a lead já registrado; não inicia IA."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if conversation is None:
+        return _conversation_unavailable(request)
+    try:
+        result = consult_registered_cpf(
+            db, conversation=conversation, actor=user, cpf=cpf,
+        )
+    except CRMManualError as exc:
+        db.rollback()
+        flash(request, str(exc), "warning")
+    else:
+        flash(
+            request,
+            (
+                "Consulta já registrada no CRM: "
+                if result.get("already") else "Consulta de crédito concluída no CRM: "
+            ) + str(result.get("statusLabel") or "Em análise"),
+            "success",
+        )
     return RedirectResponse(f"/conversations/{conversation_id}", status_code=303)
 
 
