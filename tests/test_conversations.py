@@ -60,10 +60,14 @@ def test_open_conversation_from_lead():
     assert 'class="chat-queue-chip' in inbox.text
     assert 'class="conversation-queue-row"' in inbox.text
     assert "Fila do atendimento" in inbox.text
-    assert 'data-mic-copy-settings' in inbox.text
-    assert 'data-mic-blocked-help' in inbox.text
-    assert 'chrome://settings/content/siteDetails?site=' in inbox.text
-    assert 'Verificação concluída: o Chrome continua bloqueando' in inbox.text
+    assert '<usermedia class="inbox-native-microphone"' in inbox.text
+    assert 'data-record-stop-button' in inbox.text
+    assert 'nativeMicrophone.setConstraints({' in inbox.text
+    assert 'video: false' in inbox.text  # nao pode solicitar camera junto do audio
+    assert "nativeMicrophone.addEventListener('stream'" in inbox.text
+    assert "beginRecordingFromStream(nativeMicrophone.stream)" in inbox.text
+    assert "HTMLUserMediaElement" in inbox.text
+    assert "chrome://settings/content/siteDetails?site=" not in inbox.text
 
 
 def test_send_message_from_inbox(monkeypatch):
