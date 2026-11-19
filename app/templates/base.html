@@ -58,6 +58,12 @@
       <a href="/dispatches" class="nav-item {% if active_nav == 'dispatches' %}active{% endif %}">
         <span class="nav-icon">➤</span><span>Disparos</span>
       </a>
+      {% if active_nav == 'dispatches' %}
+      <div class="nav-submenu" aria-label="Navegação dos disparos">
+        <a href="/dispatches" class="{% if dispatches_section != 'reconciliation' %}active{% endif %}">Campanhas e disparos</a>
+        <a href="/dispatches/reconciliation" class="{% if dispatches_section == 'reconciliation' %}active{% endif %}">Envios a conferir</a>
+      </div>
+      {% endif %}
       {% endif %}
       {% if current_user.role in ['ADMIN', 'GESTOR'] %}
       <a href="/ai" class="nav-item {% if active_nav == 'ai' %}active{% endif %}">
