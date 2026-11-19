@@ -48,7 +48,7 @@
 
         <label class="field">
           <span>Perfil</span>
-          <select name="role" required {% if target_user.id == current_user.id %}disabled{% endif %}>
+          <select name="role" required data-access-role {% if target_user.id == current_user.id %}disabled{% endif %}>
             <option value="CONSULTOR" {% if target_user.role == 'CONSULTOR' %}selected{% endif %}>Consultor</option>
             <option value="SUPERVISOR" {% if target_user.role == 'SUPERVISOR' %}selected{% endif %}>Supervisor</option>
             {% if current_user.role == 'ADMIN' %}
@@ -94,7 +94,8 @@
           {% endif %}
         </label>
       </div>
-      <button class="button button-primary" type="submit">Salvar alterações</button>
+      {% include "_user_access_matrix.html" %}
+      <button class="button button-primary" type="submit">Salvar dados e permissões</button>
     </form>
   </article>
 
@@ -118,6 +119,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', path='/js/user_access.js') }}" defer></script>
 {% if temporary_password %}
 <script nonce="{{ csp_nonce }}">
 document.addEventListener("click", function (event) {
