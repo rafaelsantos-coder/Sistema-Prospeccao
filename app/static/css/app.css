@@ -2871,3 +2871,43 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .user-access-matrix { padding: 12px; }
   .user-access-matrix-actions { display: grid; }
 }
+
+
+/* Vínculo de filas WhatsApp: marcações gravadas em ServiceQueueMember. */
+.user-queue-permissions {
+  margin-top: 10px; min-width: 0; padding: 18px;
+  border: 1px solid #dce8ed; border-radius: 14px;
+  background: #f8fbfd;
+}
+.user-queue-permissions-title h4 {
+  margin: 5px 0 6px; font-size: 15px; color: #2a3b4d;
+}
+.user-queue-permissions-title p {
+  font-size: 11px; color: #768493; line-height: 1.5; max-width: 750px;
+  margin: 0 0 13px;
+}
+.user-queue-checks {
+  display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px;
+}
+.user-queue-choice {
+  display: flex; gap: 10px; align-items: center; padding: 11px;
+  border: 1px solid #e2e9ef; border-radius: 10px;
+  background: #fff; cursor: pointer;
+}
+.user-queue-choice:has(input:checked) {
+  border-color: #aadbc5; background: #f2fbf6;
+}
+.user-queue-choice input { flex-shrink: 0; accent-color: #228c68; }
+.user-queue-choice strong {
+  display: block; color: #344454; font-size: 11px;
+}
+.user-queue-choice small {
+  display: block; font-size: 9px; margin-top: 3px; color: #7b8a96;
+}
+.user-queue-choice:has(input:disabled) { opacity: .65; cursor: not-allowed; }
+.user-queue-footnote, .user-queue-empty {
+  margin: 12px 0 0; line-height: 1.5; font-size: 10px; color: #697a87;
+}
+@media (max-width: 900px) {
+  .user-queue-checks { grid-template-columns: 1fr; }
+}
