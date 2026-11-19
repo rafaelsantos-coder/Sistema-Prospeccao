@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from html.parser import HTMLParser
 
 from fastapi.testclient import TestClient
 
@@ -79,10 +80,30 @@ def test_inbox_native_microphone_javascript_syntax():
 
     if not shutil.which("node"):
         pytest.skip("Node.js indisponível no ambiente de teste")
+    class InlineScriptCollector(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.scripts = []
+            self.in_script = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self.in_script = True
+                self.scripts.append("")
+
+        def handle_data(self, data):
+            if self.in_script:
+                self.scripts[-1] += data
+
+        def handle_endtag(self, tag):
+            if tag == "script":
+                self.in_script = False
+
     template = Path(__file__).parents[1] / "app/templates/conversations/inbox.html"
-    scripts = re.findall(r"<script[^>]*>([\s\S]*?)</script>", template.read_text(encoding="utf-8"))
-    assert scripts, "O inbox precisa inicializar os controles de gravação"
-    for script in scripts:
+    collector = InlineScriptCollector()
+    collector.feed(template.read_text(encoding="utf-8"))
+    assert collector.scripts, "O inbox precisa inicializar os controles de gravação"
+    for script in collector.scripts:
         result = subprocess.run(
             ["node", "--check"], input=script, text=True,
             capture_output=True, check=False, timeout=20,
