@@ -759,6 +759,11 @@ class SulnetCRMClient:
         Só habilitar a interface após o CRM publicar /webhook/leads/consult.
         O CRM deve validar sellerUsername contra o proprietário da oportunidade.
         """
+        if not self.lead_integration_key:
+            raise CRMIntegrationError(
+                "Chave da integração comercial de CPF não configurada.",
+                error_code="CRM_CREDIT_INTEGRATION_KEY_NOT_CONFIGURED",
+            )
         result = self._request(
             "POST",
             "/webhook/leads/consult",
@@ -767,11 +772,8 @@ class SulnetCRMClient:
                 "sellerUsername": seller_username,
                 "clientCpf": cpf,
             },
-            auth_mode="none" if self.lead_integration_key else "integration",
-            extra_headers=(
-                {"X-Integration-Key": self.lead_integration_key}
-                if self.lead_integration_key else None
-            ),
+            auth_mode="none",
+            extra_headers={"X-Integration-Key": self.lead_integration_key},
             timeout=45.0,
         )
         if not isinstance(result, dict):
