@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
@@ -290,6 +290,7 @@ async def create_dispatch(
 def dispatch_detail(
     dispatch_id: int,
     request: Request,
+    status_filter: str = "",
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -297,14 +298,30 @@ def dispatch_detail(
         return redirect
 
     dispatch = _dispatch_or_404(db, dispatch_id)
-    recipients = list(
-        db.scalars(
-            select(CampaignDispatchRecipient)
-            .where(CampaignDispatchRecipient.dispatch_id == dispatch.id)
-            .order_by(CampaignDispatchRecipient.id.asc())
-            .limit(500)
-        )
+    failures_only = status_filter.upper() == "FALHOU"
+    recipients_query = select(CampaignDispatchRecipient).where(
+        CampaignDispatchRecipient.dispatch_id == dispatch.id
     )
+    if failures_only:
+        recipients_query = recipients_query.where(CampaignDispatchRecipient.status == "FALHOU")
+    recipients = list(db.scalars(
+        recipients_query.order_by(CampaignDispatchRecipient.id.asc()).limit(500)
+    ))
+    failure_reasons = list(db.execute(
+        select(CampaignDispatchRecipient.error, func.count(CampaignDispatchRecipient.id))
+        .where(
+            CampaignDispatchRecipient.dispatch_id == dispatch.id,
+            CampaignDispatchRecipient.status == "FALHOU",
+        )
+        .group_by(CampaignDispatchRecipient.error)
+        .order_by(func.count(CampaignDispatchRecipient.id).desc())
+        .limit(10)
+    ).all())
+    auth_alert = db.scalar(select(CampaignDispatchRecipient.error).where(
+        CampaignDispatchRecipient.dispatch_id == dispatch.id,
+        CampaignDispatchRecipient.status == "PENDENTE",
+        CampaignDispatchRecipient.error.like("Z-API recusou envio (HTTP %"),
+    ).limit(1))
     counts = dispatch_counts(db, dispatch.id)
     try:
         import_summary = json.loads(dispatch.import_summary_json or "{}")
@@ -321,6 +338,9 @@ def dispatch_detail(
         page_title=f"Disparo #{dispatch.id}",
         dispatch=dispatch,
         recipients=recipients,
+        failures_only=failures_only,
+        failure_reasons=failure_reasons,
+        auth_alert=auth_alert,
         counts=counts,
         import_summary=import_summary,
         live_status=live_status,
