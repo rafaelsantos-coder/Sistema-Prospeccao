@@ -23,6 +23,7 @@ from app.services.crm_manual_registration import (
     _guard_contact_lock,
     registration_status,
     seller_for_user,
+    seller_accepts_funnel,
 )
 from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
 
@@ -137,6 +138,11 @@ def consult_registered_cpf(
         )
 
     opp_id = int(registered["opportunityId"])
+    registered_funnel = _as_int(registered.get("funnelId")) or seller.funnel_id
+    if not seller_accepts_funnel(seller, registered_funnel):
+        raise CRMManualError(
+            "A oportunidade está em um funil não autorizado para este vendedor."
+        )
     previous = credit_status(db, conversation.contact_id)
     if previous:
         if (
@@ -187,7 +193,7 @@ def consult_registered_cpf(
     ret_funnel = _as_int(result.get("funnelId"))
     ret_username = str(result.get("sellerUsername") or "")
     if (ret_opp != opp_id or ret_seller != seller.user_id
-            or ret_funnel != seller.funnel_id or ret_username != seller.username):
+            or ret_funnel != registered_funnel or ret_username != seller.username):
         _audit(
             db,
             actor=actor,
@@ -203,6 +209,7 @@ def consult_registered_cpf(
     saved = {
         "opportunityId": opp_id,
         "sellerUsername": seller.username,
+        "funnelId": ret_funnel,
         "status": code,
         "statusLabel": label,
         "analysisId": _as_int(result.get("analysisId")),
