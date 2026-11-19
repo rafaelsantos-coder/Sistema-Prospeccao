@@ -14,6 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import User
+from app.services.access_control import (
+    effective_permissions, first_accessible_page, has_permission, permission_for_request,
+)
 
 
 PBKDF2_ITERATIONS = 390_000
@@ -145,6 +148,21 @@ def get_current_user(request: Request, db: Session) -> User | None:
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": "/mfa/setup"},
         )
+    # O check acontece em TODA requisição autenticada; remover um menu
+    # jamais deixa URL direta ou POST liberado.
+    needed = permission_for_request(request.url.path, request.method)
+    if needed and not has_permission(user, needed):
+        if request.url.path == "/dashboard" and request.method == "GET":
+            destination = first_accessible_page(user)
+            if destination != "/dashboard":
+                raise HTTPException(
+                    status_code=status.HTTP_303_SEE_OTHER,
+                    headers={"Location": destination},
+                )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Você não possui acesso a este módulo ou ação.",
+        )
     return user
 
 
@@ -163,6 +181,14 @@ def require_roles(user: User, *roles: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Acesso não autorizado.",
+        )
+
+
+def require_permission(user: User, code: str) -> None:
+    if not has_permission(user, code):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Você não possui permissão para esta ação.",
         )
 
 
@@ -195,6 +221,7 @@ def user_to_session_context(user: User | None) -> dict[str, Any] | None:
         "name": user.name,
         "email": user.email,
         "role": user.role,
+        "permissions": sorted(code for code in effective_permissions(user) if has_permission(user, code)),
         "team": user.team,
         "branch": user.branch.name if user.branch else "Todas as unidades",
     }
