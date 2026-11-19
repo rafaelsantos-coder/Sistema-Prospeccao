@@ -443,6 +443,46 @@
     </div>
     {% endif %}
 
+    {% if crm_contestation_enabled and crm_credit_status and crm_credit_status.state == "CRM_MANUAL_CREDIT" and crm_credit_status.analysisId
+          and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED"
+          and crm_credit_status.opportunityId == crm_manual_status.opportunityId
+          and crm_manual_seller and crm_credit_status.sellerUsername == crm_manual_seller.username %}
+    <div class="context-section crm-contest-section"
+         data-contest-shell
+         data-contest-status-url="/conversations/{{ conversation.id }}/credit-contestation">
+      <div class="context-title">Contestação de crédito</div>
+      <p class="crm-contest-muted" data-contest-status role="status">Conferindo elegibilidade no CRM...</p>
+      <details class="crm-contest-details" data-contest-details hidden>
+        <summary>Contestar análise</summary>
+        <form action="/conversations/{{ conversation.id }}/credit-contestation"
+              method="post" enctype="multipart/form-data" class="crm-contest-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label for="crm-contest-reason">Motivo de contestação</label>
+          <select id="crm-contest-reason" name="reason_type" required data-contest-reasons>
+            <option value="">Selecione um motivo</option>
+          </select>
+          <label for="crm-contest-justification" data-contest-justification-label>Justificativa</label>
+          <textarea name="justification" id="crm-contest-justification" rows="3" maxlength="4000"
+                    placeholder="Descreva a situação para a análise gerencial"></textarea>
+          <div data-contest-attachments-wrap hidden>
+            <label for="crm-contest-attachments">Documentos para a contestação</label>
+            <input id="crm-contest-attachments" type="file" name="files"
+                   accept=".pdf,.png,.jpg,.jpeg" multiple>
+            <small data-contest-document-hint>PDF, JPG ou PNG. Até 10 MB por arquivo.</small>
+            <small data-contest-bill-month hidden></small>
+          </div>
+          <label class="crm-contest-confirm" data-contest-confirm-wrap hidden>
+            <input type="checkbox" name="doc_confirmed" value="true" data-contest-confirm>
+            Confirmo que o documento anexado corresponde ao solicitado
+          </label>
+          <button class="button button-primary full-width" type="submit"
+                  data-contest-send>Enviar contestação</button>
+          <small class="crm-contest-muted">O CRM gerencia a análise e a decisão. Não será realizada nova consulta Serasa pelo Prospecta.</small>
+        </form>
+      </details>
+    </div>
+    {% endif %}
+
     {% if conversation.lead %}
     <div class="context-section">
       <div class="context-title">Oportunidade</div>
@@ -781,6 +821,110 @@
 {% block scripts %}
 <script nonce="{{ csp_nonce }}">
 (() => {
+  const contestShell = document.querySelector('[data-contest-shell]');
+  if (contestShell) {
+    const contestStatus = contestShell.querySelector('[data-contest-status]');
+    const contestDetails = contestShell.querySelector('[data-contest-details]');
+    const reasonSelect = contestShell.querySelector('[data-contest-reasons]');
+    const justification = contestShell.querySelector('#crm-contest-justification');
+    const justificationLabel = contestShell.querySelector('[data-contest-justification-label]');
+    const attachmentsWrap = contestShell.querySelector('[data-contest-attachments-wrap]');
+    const attachments = contestShell.querySelector('#crm-contest-attachments');
+    const documentHint = contestShell.querySelector('[data-contest-document-hint]');
+    const billMonthLabel = contestShell.querySelector('[data-contest-bill-month]');
+    const confirmWrap = contestShell.querySelector('[data-contest-confirm-wrap]');
+    const confirmation = contestShell.querySelector('[data-contest-confirm]');
+    const submitButton = contestShell.querySelector('[data-contest-send]');
+    let reasons = [];
+    let expectedBillMonth = '';
+    let checking = false;
+    let refreshPending = false;
+
+    function syncReason() {
+      const selected = reasons.find(r => r.key === reasonSelect.value);
+      justification.required = Boolean(selected?.requiresJustification);
+      justificationLabel.textContent = justification.required ? 'Justificativa obrigatória' : 'Justificativa (opcional)';
+      const max = selected?.maxAttachments || 0;
+      attachmentsWrap.hidden = max === 0;
+      attachments.required = Boolean(selected && selected.minAttachments > 0);
+      attachments.multiple = max > 1;
+      documentHint.textContent = max > 0
+        ? 'Anexe de ' + selected.minAttachments + ' a ' + max + ' arquivo(s), PDF/JPG/PNG, até 10 MB cada.'
+        : '';
+      billMonthLabel.hidden = !(selected?.attachmentDocType === 'contestacao_fatura' && expectedBillMonth);
+      billMonthLabel.textContent = billMonthLabel.hidden ? '' : 'Competência esperada da fatura: ' + expectedBillMonth;
+      confirmWrap.hidden = !selected?.requiresDocConfirmation;
+      confirmation.required = Boolean(selected?.requiresDocConfirmation);
+      if (max === 0) attachments.value = '';
+      if (!selected?.requiresDocConfirmation) confirmation.checked = false;
+    }
+    reasonSelect.addEventListener('change', syncReason);
+    contestShell.querySelector('form')?.addEventListener('submit', event => {
+      if (!reasonSelect.value) return;
+      const selected = reasons.find(r => r.key === reasonSelect.value);
+      const n = attachments.files?.length || 0;
+      if (!selected || n < selected.minAttachments || n > selected.maxAttachments) {
+        event.preventDefault();
+        contestStatus.textContent = 'Confira a quantidade de documentos exigidos para o motivo.';
+        return;
+      }
+      for (const file of Array.from(attachments.files || [])) {
+        if (file.size > 10 * 1024 * 1024) {
+          event.preventDefault();
+          contestStatus.textContent = 'Cada documento pode ter no máximo 10 MB.';
+          return;
+        }
+      }
+      submitButton.disabled = true;
+      submitButton.textContent = 'Enviando contestação...';
+    });
+
+    async function refreshContestStatus() {
+      if (checking) return;
+      checking = true;
+      try {
+        const response = await fetch(contestShell.dataset.contestStatusUrl, {
+          cache: 'no-store', credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' },
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          throw new Error(data.message || 'Status indisponível no CRM');
+        }
+        let message = data.status ? 'CRM: ' + data.status : 'Status indisponível no CRM';
+        if (data.managementDecision && data.managementDecision !== data.status) {
+          message += ' · Decisão: ' + data.managementDecision;
+        }
+        if (data.reviewRequired) message += ' · Conferência necessária no CRM';
+        contestStatus.textContent = message;
+        refreshPending = ['Contestação enviada', 'Em análise gerencial'].includes(data.status);
+        reasons = Array.isArray(data.reasons) ? data.reasons : [];
+        expectedBillMonth = typeof data.billMonthExpected === 'string' ? data.billMonthExpected : '';
+        contestDetails.hidden = !data.canContest || reasons.length === 0;
+        if (contestDetails.hidden) contestDetails.open = false;
+        reasonSelect.replaceChildren(new Option('Selecione um motivo', ''));
+        for (const reason of reasons) {
+          reasonSelect.add(new Option(reason.label, reason.key));
+        }
+        syncReason();
+      } catch (err) {
+        contestDetails.hidden = true;
+        contestDetails.open = false;
+        contestStatus.textContent = 'Não foi possível confirmar a situação da contestação no CRM.';
+        refreshPending = false;
+      } finally {
+        checking = false;
+      }
+    }
+
+    void refreshContestStatus();
+    // O estado muda no CRM; consultar SOMENTE LEITURA durante contestação pendente.
+    setInterval(() => {
+      if (refreshPending && document.visibilityState === 'visible') {
+        void refreshContestStatus();
+      }
+    }, 120000);
+  }
   const creditSubmit = document.querySelector('[data-crm-credit-submit]');
   creditSubmit?.closest('form')?.addEventListener('submit', () => {
     if (creditSubmit) {

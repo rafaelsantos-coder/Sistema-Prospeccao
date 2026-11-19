@@ -2661,3 +2661,33 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .crm-credit-result-reprovado { background: #fff1f2; border-color: #fecdd3; color: #9f1239; }
 .crm-credit-result-em_analise { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
 .crm-credit-alert { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+
+
+/* Contestação de crédito: formulário integrado ao chat e controlado pelo CRM. */
+.crm-contest-section { background: #fffaf6; }
+.crm-contest-muted { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.crm-contest-details {
+  margin-top: 10px; border: 1px solid #f8d2b6; border-radius: 10px;
+  background: #fff; overflow: hidden;
+}
+.crm-contest-details > summary {
+  padding: 12px; font-weight: 800; color: #c65a16; font-size: 12px;
+  cursor: pointer; list-style-position: inside;
+}
+.crm-contest-form {
+  padding: 12px; border-top: 1px solid #f2e5db;
+  display: grid; gap: 9px;
+}
+.crm-contest-form label { font-size: 11px; font-weight: 800; }
+.crm-contest-form select,
+.crm-contest-form textarea,
+.crm-contest-form input[type="file"] {
+  display: block; width: 100%; min-width: 0; padding: 9px;
+  border-radius: 8px; border: 1px solid #d6dbe3;
+  background: #fff; font: inherit; font-size: 12px;
+}
+.crm-contest-form textarea { resize: vertical; min-height: 76px; }
+.crm-contest-form small { font-size: 10px; line-height: 1.45; }
+.crm-contest-confirm { display: flex; align-items: flex-start; gap: 7px; font-weight: 500 !important; }
+.crm-contest-confirm input { margin: 2px 0 0; flex-shrink: 0; }
+.crm-contest-form .button { margin-top: 4px; }

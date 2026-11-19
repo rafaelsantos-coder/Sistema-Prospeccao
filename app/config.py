@@ -167,6 +167,9 @@ class Settings:
     sulnet_crm_manual_credit_enabled: bool = os.getenv(
         "SULNET_CRM_MANUAL_CREDIT_ENABLED", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
+    sulnet_crm_contestation_enabled: bool = os.getenv(
+        "SULNET_CRM_CONTESTATION_ENABLED", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     media_s3_endpoint: str = os.getenv("MEDIA_S3_ENDPOINT", "")
     media_s3_bucket: str = os.getenv("MEDIA_S3_BUCKET", "")
     media_s3_region: str = os.getenv("MEDIA_S3_REGION", "auto")
