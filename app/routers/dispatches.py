@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
@@ -11,6 +12,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from app.database import get_db
 from app.models import (
     Campaign,
+    CampaignRecipient,
     CampaignDispatch,
     CampaignDispatchRecipient,
     Lead,
@@ -35,7 +37,7 @@ from app.services.dispatch_monitor import dispatch_live_snapshot
 from app.services.queue_routing import available_queues_for_user, get_queue
 from app.services.scoring import normalize_phone
 from app.services.telegram import configured as telegram_configured, ensure_telegram_queue
-from app.timeutils import utcnow
+from app.timeutils import utc_naive, utcnow
 from app.web import flash, render
 
 
@@ -288,6 +290,155 @@ async def create_dispatch(
         f"Disparo #{dispatch.id} preparado com {created} contato(s). Revise e clique em Iniciar.",
     )
     return RedirectResponse(f"/dispatches/{dispatch.id}", status_code=303)
+
+
+@router.get("/reconciliation")
+def delivery_reconciliation(request: Request, db: Session = Depends(get_db)):
+    """Painel gerencial SOMENTE DE LEITURA; nunca disponibiliza reenviar."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    # Permissão própria: ver disparos não permite ler contatos de todas as filas.
+    if not has_permission(actor, "dispatches.reconcile"):
+        flash(request, "Você não possui acesso à conciliação de envios.", "warning")
+        return RedirectResponse("/dashboard", status_code=303)
+
+    requested_status = str(request.query_params.get("status", "ALL")).upper()
+    selected_status = (
+        requested_status if requested_status in {"ALL", "ENVIANDO", "INDETERMINADO"}
+        else "ALL"
+    )
+    requested_source = str(request.query_params.get("source", "ALL")).upper()
+    selected_source = (
+        requested_source if requested_source in {"ALL", "DISPATCH", "CAMPAIGN"}
+        else "ALL"
+    )
+    states = (
+        ["ENVIANDO", "INDETERMINADO"] if selected_status == "ALL"
+        else [selected_status]
+    )
+    stale_cutoff = utcnow() - timedelta(minutes=10)
+
+    def needs_review(status: str, timestamp) -> bool:
+        if status == "INDETERMINADO":
+            return True
+        if timestamp is None:
+            return True
+        return utc_naive(timestamp) <= stale_cutoff
+
+    items: list[dict] = []
+    if selected_source in {"ALL", "DISPATCH"}:
+        dispatch_rows = db.scalars(
+            select(CampaignDispatchRecipient)
+            .options(
+                selectinload(CampaignDispatchRecipient.dispatch).selectinload(
+                    CampaignDispatch.campaign
+                ),
+                selectinload(CampaignDispatchRecipient.dispatch).selectinload(
+                    CampaignDispatch.queue
+                ),
+            )
+            .where(CampaignDispatchRecipient.status.in_(states))
+            .order_by(
+                CampaignDispatchRecipient.updated_at.desc(),
+                CampaignDispatchRecipient.id.desc(),
+            )
+            .limit(100)
+        ).all()
+        for row in dispatch_rows:
+            items.append({
+                "source": "Disparo por lista",
+                "campaign": row.dispatch.campaign.name,
+                "queue": row.dispatch.queue.name,
+                "dispatch_id": row.dispatch_id,
+                "recipient_id": row.id,
+                "name": row.name,
+                "phone": row.phone,
+                "status": row.status,
+                "attempts": row.attempts,
+                "changed_at": row.updated_at,
+                "error": row.error,
+                "provider_id": row.provider_message_id,
+                "needs_review": needs_review(row.status, row.updated_at),
+            })
+    if selected_source in {"ALL", "CAMPAIGN"}:
+        campaign_rows = db.scalars(
+            select(CampaignRecipient)
+            .options(
+                selectinload(CampaignRecipient.campaign),
+                selectinload(CampaignRecipient.lead),
+            )
+            .where(CampaignRecipient.status.in_(states))
+            .order_by(
+                CampaignRecipient.updated_at.desc(),
+                CampaignRecipient.id.desc(),
+            )
+            .limit(100)
+        ).all()
+        for row in campaign_rows:
+            items.append({
+                "source": "Campanha tradicional",
+                "campaign": row.campaign.name,
+                "queue": "Fila da campanha",
+                "dispatch_id": None,
+                "recipient_id": row.id,
+                "name": row.lead.contact_name or row.lead.business_name,
+                "phone": row.lead.phone,
+                "status": row.status,
+                "attempts": row.attempts,
+                "changed_at": row.updated_at,
+                "error": row.error,
+                "provider_id": row.provider_message_id,
+                "needs_review": needs_review(row.status, row.updated_at),
+            })
+
+    def sort_timestamp(item: dict):
+        stamp = item["changed_at"]
+        if stamp is None:
+            return utcnow() - timedelta(days=36500)
+        return utc_naive(stamp)
+
+    items.sort(key=sort_timestamp, reverse=True)
+    items = items[:100]
+    unknown_count = sum(
+        db.scalar(
+            select(func.count()).select_from(model).where(
+                model.status == "INDETERMINADO"
+            )
+        ) or 0
+        for model in (CampaignDispatchRecipient, CampaignRecipient)
+    )
+    sending_count = sum(
+        db.scalar(
+            select(func.count()).select_from(model).where(model.status == "ENVIANDO")
+        ) or 0
+        for model in (CampaignDispatchRecipient, CampaignRecipient)
+    )
+    stale_count = sum(
+        db.scalar(
+            select(func.count()).select_from(model).where(
+                model.status == "ENVIANDO",
+                model.updated_at <= stale_cutoff,
+            )
+        ) or 0
+        for model in (CampaignDispatchRecipient, CampaignRecipient)
+    )
+    response = render(
+        request,
+        "dispatches/reconciliation.html",
+        user=actor,
+        active_nav="dispatches",
+        dispatches_section="reconciliation",
+        page_title="Envios a conferir",
+        items=items,
+        selected_status=selected_status,
+        selected_source=selected_source,
+        unknown_count=unknown_count,
+        sending_count=sending_count,
+        stale_count=stale_count,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/{dispatch_id}")
