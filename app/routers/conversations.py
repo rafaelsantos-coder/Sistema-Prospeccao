@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models import (
     Activity,
     AIAgentProfile,
+    AIRun,
     Contact,
     Conversation,
     ConversationAssignment,
@@ -79,6 +80,7 @@ from app.services.pii import redact_pii_text
 from app.services.scoring import normalize_phone
 from app.services.upload_security import UploadValidationError, validate_upload
 from app.services.queue_routing import (
+    MANUAL_AI_ORIGIN,
     MANUAL_TRANSFER_ORIGIN,
     ai_queue_ids,
     ai_transfer_queue,
@@ -95,6 +97,7 @@ from app.services.paced_outbound import needs_pacing, queue_manual_message
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import (
     bind_conversation_instance,
+    conversation_instance,
     queue_instance,
     service_for_conversation,
 )
@@ -271,7 +274,12 @@ def _move_conversation_to_queue(
     """Troca a fila da conversa e entrega para a IA da fila ou para um vendedor online."""
     previous_queue = queue_for_conversation(db, conversation.id)
     previous_user_id = conversation.assigned_user_id
-    bind_conversation_queue(db, conversation.id, queue.id, origin=MANUAL_TRANSFER_ORIGIN)
+    if reason == "AI" and previous_queue and not conversation_instance(db, conversation.id):
+        instance = queue_instance(db, previous_queue.id)
+        if instance:
+            bind_conversation_instance(db, conversation.id, instance.id)
+    origin = MANUAL_AI_ORIGIN if reason == "AI" else MANUAL_TRANSFER_ORIGIN
+    bind_conversation_queue(db, conversation.id, queue.id, origin=origin)
     conversation.team = queue.team
     conversation.assigned_user_id = None
     if conversation.status not in CLOSED_CONVERSATION_STATUSES:
@@ -291,7 +299,13 @@ def _move_conversation_to_queue(
                 message=message,
                 takeover=True,
             )
-            if job and job.status in _RETRYABLE_AI_JOB_STATUSES:
+            last_mode = None
+            if reason == "AI" and job and job.status == "CONCLUIDO":
+                last_mode = db.scalar(
+                    select(AIRun.execution_mode).where(AIRun.job_id == job.id)
+                    .order_by(AIRun.id.desc()).limit(1)
+                )
+            if job and (job.status in _RETRYABLE_AI_JOB_STATUSES or last_mode == "SHADOW"):
                 # Job dessa mensagem já tinha falhado (ex.: OpenAI sem crédito em
                 # 09/11): a transferência manual dá uma nova chance.
                 job.status = "PENDENTE"
@@ -301,6 +315,11 @@ def _move_conversation_to_queue(
                 job.agent_id = binding.agent_id
                 job.queue_id = queue.id
                 job.error = f"[transferência manual] {job.error or ''}"[:2000]
+            if reason == "AI" and job and job.status == "PENDENTE":
+                if job.queue_id != queue.id:
+                    job.agent_id = binding.agent_id
+                    job.queue_id = queue.id
+                job.available_at = utcnow()
             if job and job.status in {"PENDENTE", "PROCESSANDO"}:
                 result["ai_job"] = job
     else:
@@ -660,7 +679,7 @@ def _render_inbox(
         users = _eligible_users(db, user, selected)
         transfer_online_ids = set(online_user_ids(db))
         users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
-        ai_queue = ai_transfer_queue(db, selected.id)
+        ai_queue = ai_transfer_queue(db)
         transfer_queues = _transfer_queues(db, user, selected_queue)
     else:
         transfer_online_ids = set()
@@ -1467,9 +1486,9 @@ def transfer_conversation_to_ai(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    queue = ai_transfer_queue(db, conversation.id)
+    queue = ai_transfer_queue(db)
     if not queue:
-        flash(request, "Nenhuma fila está com a IA ativa. Ative a IA em uma fila antes de transferir.", "warning")
+        flash(request, "A Fila IA precisa estar ativa e vinculada à SulIA para receber o atendimento.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
     result = _move_conversation_to_queue(

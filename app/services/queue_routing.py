@@ -424,6 +424,13 @@ def human_online_in_queue(db: Session, queue_id: int | None) -> bool:
 
 
 MANUAL_TRANSFER_ORIGIN = "MANUAL_TRANSFER"
+MANUAL_AI_ORIGIN = "MANUAL_AI"
+
+
+def manually_transferred_to_ai(db: Session, conversation_id: int) -> bool:
+    return db.scalar(select(ConversationQueueLink.origin).where(
+        ConversationQueueLink.conversation_id == conversation_id
+    )) == MANUAL_AI_ORIGIN
 
 
 def usable_ai_binding(db: Session, queue_id: int | None):
@@ -456,28 +463,12 @@ def ai_queue_ids(db: Session) -> set[int]:
     return {queue_id for queue_id in queues if usable_ai_binding(db, queue_id)}
 
 
-def ai_transfer_queue(db: Session, conversation_id: int | None) -> ServiceQueue | None:
-    """Fila para onde "Passar para a IA" manda a conversa.
-
-    A própria fila, se a IA já atende nela; senão a fila da IA (IA sempre)
-    e, por último, qualquer fila ativa com IA.
-    """
-    current = queue_for_conversation(db, conversation_id) if conversation_id else None
-    if current and usable_ai_binding(db, current.id):
-        return current
-    candidates = list(
-        db.scalars(
-            select(ServiceQueue)
-            .where(ServiceQueue.active.is_(True))
-            .order_by(ServiceQueue.name, ServiceQueue.id)
-        )
+def ai_transfer_queue(db: Session) -> ServiceQueue | None:
+    """Destino de atendimento autônomo, independentemente da fila de origem."""
+    queue = db.scalar(
+        select(ServiceQueue).where(ServiceQueue.code == "FILA-IA", ServiceQueue.active.is_(True))
     )
-    with_ai = [(queue, usable_ai_binding(db, queue.id)) for queue in candidates]
-    with_ai = [(queue, binding) for queue, binding in with_ai if binding]
-    for queue, binding in with_ai:
-        if binding.handling_mode == AI_WHEN_OFFLINE:
-            return queue
-    return with_ai[0][0] if with_ai else None
+    return queue if queue and usable_ai_binding(db, queue.id) else None
 
 
 def ai_owns_conversation(db: Session, conversation_id: int | None) -> bool:

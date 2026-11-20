@@ -11,6 +11,7 @@ from app.models import (
     AIAgentProfile,
     AIJob,
     AIQueueBinding,
+    AIRun,
     Contact,
     Conversation,
     ConversationQueueLink,
@@ -19,8 +20,11 @@ from app.models import (
     ServiceQueueMember,
     User,
 )
+from app.services.conversation_engine import ensure_open_conversation
+from app.services.zapi_instances import bind_queue_instance, create_zapi_instance, service_for_conversation
 from app.security import hash_password
 from app.services.queue_routing import (
+    MANUAL_AI_ORIGIN,
     MANUAL_TRANSFER_ORIGIN,
     bind_conversation_queue,
     usable_ai_binding,
@@ -147,17 +151,31 @@ def test_pass_to_ai_moves_conversation_to_ai_queue_and_answers_now():
             agent = db.scalar(select(AIAgentProfile).where(AIAgentProfile.slug == "sulia-sdr-digital"))
             assert agent is not None
             human_queue = _queue(db, "QUEUE-TRANSFER-NO-AI", "Fila Sem IA Transferência")
-            ai_queue = _queue(db, "QUEUE-TRANSFER-AI", "0 Fila IA Transferência")
-            db.add(
-                AIQueueBinding(
-                    queue_id=ai_queue.id,
-                    agent_id=agent.id,
-                    handling_mode="AI_WHEN_OFFLINE",
-                    active=True,
-                    fallback_to_human=True,
-                )
-            )
+            ai_queue = db.scalar(select(ServiceQueue).where(ServiceQueue.code == "FILA-IA")) or _queue(db, "FILA-IA", "Fila IA")
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == ai_queue.id))
+            if binding is None:
+                binding = AIQueueBinding(queue_id=ai_queue.id)
+                db.add(binding)
+            binding.agent_id = agent.id
+            binding.handling_mode = "AI_WHEN_OFFLINE"
+            binding.active = True
+            binding.manual_authorized = True
+            binding.fallback_to_human = True
             conversation = _conversation_with_pending_inbound(db, human_queue, "5555988870102")
+            instance = create_zapi_instance(
+                db, name="Origem do teste de transferência", phone_label="Origem",
+                base_url="https://example.invalid", instance_id="manual-ai-test",
+                instance_token="test-token", client_token="test-client", created_by_id=None,
+            )
+            bind_queue_instance(db, human_queue.id, instance.id)
+            source_queue_id, instance_id = human_queue.id, instance.id
+            message = db.scalar(select(Message).where(Message.conversation_id == conversation.id))
+            job = AIJob(agent_id=agent.id, queue_id=human_queue.id, conversation_id=conversation.id,
+                        message_id=message.id, status="CONCLUIDO")
+            db.add(job)
+            db.flush()
+            db.add(AIRun(job_id=job.id, agent_id=agent.id, message_id=message.id,
+                         conversation_id=conversation.id, execution_mode="SHADOW", status="CONCLUIDO"))
             db.commit()
             conversation_id = conversation.id
         finally:
@@ -181,13 +199,22 @@ def test_pass_to_ai_moves_conversation_to_ai_queue_and_answers_now():
                 select(ConversationQueueLink).where(ConversationQueueLink.conversation_id == conversation_id)
             )
             assert link is not None
-            assert link.origin == MANUAL_TRANSFER_ORIGIN
+            assert link.origin == MANUAL_AI_ORIGIN
             assert link.queue_id != human_queue.id
             assert usable_ai_binding(db, link.queue_id) is not None
             job = db.scalar(select(AIJob).where(AIJob.conversation_id == conversation_id))
             assert job is not None
             assert job.status == "PENDENTE"
             assert job.queue_id == link.queue_id
+            assert service_for_conversation(db, conversation_id).instance_id == "manual-ai-test"
+            target = link.queue_id
+            conversation = db.get(Conversation, conversation_id)
+            reopened = ensure_open_conversation(
+                db, conversation.contact, queue_id=source_queue_id, zapi_instance_id=instance_id,
+            )
+            assert reopened.id == conversation_id
+            assert link.queue_id == target
+            assert link.origin == MANUAL_AI_ORIGIN
         finally:
             db.close()
 

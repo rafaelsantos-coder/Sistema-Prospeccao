@@ -26,6 +26,8 @@ from app.models import (
 )
 from app.services.queue_routing import (
     AI_OWNED_STATES,
+    MANUAL_AI_ORIGIN,
+    manually_transferred_to_ai,
     AI_WHEN_HUMAN_IDLE,
     AI_WHEN_OFFLINE,
     ai_owns_conversation,
@@ -321,18 +323,22 @@ def ensure_open_conversation(
         # essa fila é a fonte oficial do roteamento de entrada. Isso corrige
         # conversas antigas que ainda estavam presas a outra fila.
         explicit_inbound_queue = queue_id if zapi_instance_id and queue_id else None
-        queue = resolve_queue(
-            db,
-            conversation_id=conversation.id,
-            explicit_queue_id=(
-                explicit_inbound_queue
-                if explicit_inbound_queue
-                else (queue_id if not existing_queue else None)
-            ),
-            lead_id=lead.id if lead else conversation.lead_id,
-            team=conversation.team or team,
-            branch_id=conversation.branch_id or branch_id,
-        )
+        if existing_queue and manually_transferred_to_ai(db, conversation.id):
+            queue = existing_queue
+            queue_origin = MANUAL_AI_ORIGIN
+        else:
+            queue = resolve_queue(
+                db,
+                conversation_id=conversation.id,
+                explicit_queue_id=(
+                    explicit_inbound_queue
+                    if explicit_inbound_queue
+                    else (queue_id if not existing_queue else None)
+                ),
+                lead_id=lead.id if lead else conversation.lead_id,
+                team=conversation.team or team,
+                branch_id=conversation.branch_id or branch_id,
+            )
         queue_changed = bool(
             queue
             and existing_queue
