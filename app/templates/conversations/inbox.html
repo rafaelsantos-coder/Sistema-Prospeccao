@@ -361,7 +361,10 @@
             {% endif %}
             <div class="message-foot">
               <time>{{ item.created_at|datetime_br }}</time>
-              {% if item.direction == 'OUTBOUND' %}<span class="message-status-ticks" title="{{ item.status }}">{{ '✓✓' if item.status in ['DELIVERED','RECEIVED','READ','PLAYED'] else '…' if item.status in ['PENDING','SENDING'] else '!' if item.status in ['FAILED','ERROR','NOT_SENT','UNDELIVERED','UNKNOWN','CANCELED'] else '✓' }}</span>{% endif %}
+              {% if item.direction == 'OUTBOUND' %}
+              {% set delivery_title = 'Entrega não confirmada: confira a Z-API antes de tentar novamente.' if item.status == 'UNKNOWN' else item.status %}
+              <span class="message-status-ticks" title="{{ delivery_title }}" aria-label="{{ delivery_title }}">{{ '?' if item.status == 'UNKNOWN' else '✓✓' if item.status in ['DELIVERED','RECEIVED','READ','PLAYED'] else '…' if item.status in ['PENDING','SENDING'] else '!' if item.status in ['FAILED','ERROR','NOT_SENT','UNDELIVERED','UNKNOWN','CANCELED'] else '✓' }}</span>
+              {% endif %}
             </div>
           </div>
         </div>
@@ -1148,10 +1151,13 @@
     }
   };
 
+  const replyStatusTitle = status => status === 'UNKNOWN' ? 'Entrega não confirmada: confira a Z-API antes de tentar novamente.' : status;
+
   const replyTicks = status => {
+    if (status === 'UNKNOWN') return '?';
     if (['DELIVERED', 'RECEIVED', 'READ', 'PLAYED'].includes(status)) return '✓✓';
     if (['PENDING', 'SENDING'].includes(status)) return '…';
-    if (['FAILED', 'ERROR', 'NOT_SENT', 'UNDELIVERED', 'UNKNOWN', 'CANCELED'].includes(status)) return '!';
+    if (['FAILED', 'ERROR', 'NOT_SENT', 'UNDELIVERED', 'CANCELED'].includes(status)) return '!';
     return '✓';
   };
 
@@ -1426,7 +1432,8 @@
       const ticks = document.createElement('span');
       ticks.className = 'message-status-ticks';
       ticks.textContent = replyTicks(item.status);
-      ticks.title = item.status;
+      ticks.title = replyStatusTitle(item.status);
+      ticks.setAttribute('aria-label', ticks.title);
       foot.append(ticks);
     }
     bubble.append(foot);
@@ -1455,7 +1462,8 @@
         const ticks = stream.querySelector('[data-message-id="' + Number(status.outbound_id) + '"] .message-status-ticks');
         if (ticks) {
           ticks.textContent = replyTicks(status.outbound_status);
-          ticks.title = status.outbound_status;
+          ticks.title = replyStatusTitle(status.outbound_status);
+          ticks.setAttribute('aria-label', ticks.title);
         }
       }
       if (received) {

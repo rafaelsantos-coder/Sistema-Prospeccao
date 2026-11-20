@@ -12,6 +12,9 @@
     {% if 'reports.export' in current_user.permissions %}
     <a class="button button-secondary" href="/dispatches/{{ dispatch.id }}/report.csv">Baixar CSV</a>
     {% endif %}
+    {% if 'dispatches.reconcile' in current_user.permissions %}
+    <a class="button button-secondary" href="/dispatches/reconciliation">Envios a conferir</a>
+    {% endif %}
     {% if dispatch.status in ['RASCUNHO','PAUSADO'] and counts.pending %}
     <form action="/dispatches/{{ dispatch.id }}/start" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -46,7 +49,7 @@
   <article class="metric-card"><span>{{ 'Total em revisão' if dispatch.status == 'RASCUNHO' else 'Total importado' }}</span><strong>{{ total }}</strong><small>{{ import_summary.get('duplicates', 0) }} duplicados · {{ import_summary.get('invalid', 0) }} inválidos{% if import_summary.get('removed_manual', 0) %} · {{ import_summary.get('removed_manual', 0) }} removidos na revisão{% endif %}</small></article>
   <article class="metric-card"><span>Enviados</span><strong id="dispatch-sent-count">{{ sent }}</strong><small><span id="dispatch-card-progress">{{ '%.1f'|format(progress) }}</span>% concluído</small></article>
   <article class="metric-card"><span>Responderam</span><strong id="dispatch-replied-count">{{ counts.replied }}</strong><small><span id="dispatch-reply-rate">{{ "%.1f"|format(counts.replied / sent * 100 if sent else 0) }}</span>% dos enviados · clientes únicos</small></article>
-  <article class="metric-card"><span>Pendentes</span><strong id="dispatch-pending-count">{{ counts.pending }}</strong><small id="dispatch-failed-count">{{ counts.failed }} falhas · {{ counts.skipped }} ignorados</small></article>
+  <article class="metric-card"><span>Pendentes</span><strong id="dispatch-pending-count">{{ counts.pending }}</strong><small id="dispatch-failed-count">{{ counts.failed }} falhas · {{ counts.skipped }} ignorados · {{ counts.unknown }} a conferir · {{ counts.sending }} em processamento</small></article>
   <article class="metric-card"><span>Intervalo</span><strong>{{ dispatch.interval_seconds }}s</strong><small>entre cada mensagem</small></article>
   <article class="metric-card"><span>Previsão de conclusão</span><strong id="dispatch-eta">~{{ live_status.estimated_days_remaining }} dias</strong><small>considera janela e limite diário, sem novas falhas</small></article>
   <article class="metric-card"><span>Status</span><strong class="dispatch-status-text">{{ dispatch.status|replace('_',' ') }}</strong><small>{% if dispatch.started_at %}iniciado {{ dispatch.started_at|datetime_br }}{% else %}aguardando início{% endif %}</small></article>
@@ -221,7 +224,7 @@
       text("dispatch-reply-rate", sent ? (100 * (totals.replied || 0) / sent).toFixed(1) : "0.0");
       text("dispatch-card-progress", formatted);
       text("dispatch-pending-count", totals.pending || 0);
-      text("dispatch-failed-count", (totals.failed || 0) + " falhas · " + (totals.skipped || 0) + " ignorados");
+      text("dispatch-failed-count", (totals.failed || 0) + " falhas · " + (totals.skipped || 0) + " ignorados · " + (totals.unknown || 0) + " a conferir · " + (totals.sending || 0) + " em processamento");
       text("dispatch-progress-text", sent + " de " + total + " mensagens enviadas");
       text("dispatch-progress-percentage", formatted + "%");
       const bar = document.getElementById("dispatch-progress-bar");

@@ -77,6 +77,12 @@
       <a href="/dispatches" class="nav-item {% if active_nav == 'dispatches' %}active{% endif %}">
         <span class="nav-icon">➤</span><span>Disparos</span>
       </a>
+      {% if active_nav == 'dispatches' and 'dispatches.reconcile' in current_user.permissions %}
+      <div class="nav-submenu" aria-label="Navegação dos disparos">
+        <a href="/dispatches" class="{% if dispatches_section != 'reconciliation' %}active{% endif %}">Campanhas e disparos</a>
+        <a href="/dispatches/reconciliation" class="{% if dispatches_section == 'reconciliation' %}active{% endif %}">Envios a conferir</a>
+      </div>
+      {% endif %}
       {% endif %}
       {% if 'ai.view' in current_user.permissions %}
       <a href="/ai" class="nav-item {% if active_nav == 'ai' %}active{% endif %}">
