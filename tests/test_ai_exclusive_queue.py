@@ -193,3 +193,29 @@ def test_escopo_invalido_falha_fechado(monkeypatch):
     assert exclusive_ai_queue_id() == 0
     assert not ai_allowed_for_queue(1)
     assert not ai_allowed_for_queue(4)
+
+
+def test_fila_ia_accepts_multimodal_inbound_types_without_widening_scope(monkeypatch):
+    from app.services.ai_sdr import AI_INBOUND_MESSAGE_TYPES
+    from app.services.conversation_engine import payload_message_content
+
+    for kind in ("TEXT", "AUDIO", "IMAGE", "VIDEO", "STICKER",
+                 "DOCUMENT", "LOCATION", "CONTACT", "REACTION", "BUTTONS"):
+        assert kind in AI_INBOUND_MESSAGE_TYPES
+
+    cases = (
+        ({"sticker": {"stickerUrl": "https://example.com/sticker.webp"}}, "STICKER"),
+        ({"image": {"imageUrl": "https://example.com/image.jpg"}}, "IMAGE"),
+        ({"video": {"videoUrl": "https://example.com/video.mp4"}}, "VIDEO"),
+        ({"audio": {"audioUrl": "https://example.com/audio.ogg"}}, "AUDIO"),
+        ({"document": {"documentUrl": "https://example.com/doc.pdf"}}, "DOCUMENT"),
+        ({"text": {"message": "Veja https://sulnet.com.br"}}, "TEXT"),
+    )
+    for payload, expected_type in cases:
+        assert payload_message_content(payload)[0] == expected_type
+
+    monkeypatch.setenv("AI_QUEUE_MANUAL_CONTROL", "false")
+    monkeypatch.setenv("AI_EXCLUSIVE_QUEUE_ID", "2")
+    assert ai_allowed_for_queue(2)
+    assert not ai_allowed_for_queue(1)
+    assert not ai_allowed_for_queue(4)
