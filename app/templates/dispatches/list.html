@@ -134,6 +134,7 @@
           <th>Fila</th>
           <th>Intervalo</th>
           <th>Progresso</th>
+          <th>Responderam</th>
           <th>Status</th>
           <th>Criado por</th>
           <th></th>
@@ -155,12 +156,13 @@
             <div class="dispatch-mini-progress"><i style="width: {{ '%.1f'|format(pct) }}%"></i></div>
             <span class="table-subline">{{ dc.get('pending', 0) }} pendentes · {{ dc.get('failed', 0) }} falhas</span>
           </td>
+          <td><strong>{{ dc.get("replied", 0) }}</strong><span class="table-subline">{{ "%.1f"|format(dc.get("replied", 0) / sent * 100 if sent else 0) }}% dos enviados</span></td>
           <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
           <td>{{ item.created_by.name if item.created_by else 'Sistema' }}</td>
           <td><a class="button button-ghost" href="/dispatches/{{ item.id }}">Abrir</a></td>
         </tr>
         {% else %}
-        <tr><td colspan="8"><div class="empty-state"><strong>Nenhum disparo criado</strong><span>Importe seu primeiro CSV acima.</span></div></td></tr>
+        <tr><td colspan="9"><div class="empty-state"><strong>Nenhum disparo criado</strong><span>Importe seu primeiro CSV acima.</span></div></td></tr>
         {% endfor %}
       </tbody>
     </table>

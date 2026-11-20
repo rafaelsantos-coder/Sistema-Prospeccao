@@ -16,6 +16,7 @@ from app.models import (
     CampaignDispatch,
     CampaignDispatchRecipient,
     Lead,
+    Message,
     ServiceQueue,
 )
 from app.services.audit import write_audit
@@ -197,26 +198,75 @@ def ensure_dispatch_lead(
     return lead
 
 
-def dispatch_counts(db: Session, dispatch_id: int) -> dict[str, int]:
+def dispatch_counts_many(db: Session, dispatch_ids: list[int]) -> dict[int, dict[str, int]]:
+    """Contadores por disparo, incluindo clientes únicos que responderam após o envio.
+
+    Respostas são lidas do histórico real da conversa (qualquer tipo de mensagem
+    recebida), sem depender de fila, IA, webhook extra ou nova migração.
+    """
+    ids = list(dict.fromkeys(dispatch_ids))
+    if not ids:
+        return {}
+
     rows = db.execute(
         select(
+            CampaignDispatchRecipient.dispatch_id,
             CampaignDispatchRecipient.status,
             func.count(CampaignDispatchRecipient.id),
         )
-        .where(CampaignDispatchRecipient.dispatch_id == dispatch_id)
-        .group_by(CampaignDispatchRecipient.status)
+        .where(CampaignDispatchRecipient.dispatch_id.in_(ids))
+        .group_by(CampaignDispatchRecipient.dispatch_id, CampaignDispatchRecipient.status)
     ).all()
-    values = {str(status): int(count) for status, count in rows}
-    total = sum(values.values())
-    return {
-        "pending": values.get("PENDENTE", 0),
-        "sending": values.get("ENVIANDO", 0),
-        "sent": values.get("ENVIADO", 0),
-        "failed": values.get("FALHOU", 0),
-        "skipped": values.get("IGNORADO", 0),
-        "total": total,
-    }
+    per_dispatch: dict[int, dict[str, int]] = {dispatch_id: {} for dispatch_id in ids}
+    for dispatch_id, status, count in rows:
+        per_dispatch[int(dispatch_id)][str(status)] = int(count)
 
+    # EXISTS impede contar duas vezes quem respondeu mais de uma vez.
+    # O horário do recebimento deve ser posterior ao envio desta campanha:
+    # conversas pré-existentes e mensagens enviadas pelo vendedor não contam.
+    inbound_after_send = (
+        select(Message.id)
+        .where(
+            Message.conversation_id == CampaignDispatchRecipient.conversation_id,
+            Message.direction == "INBOUND",
+            Message.created_at > CampaignDispatchRecipient.sent_at,
+        )
+        .correlate(CampaignDispatchRecipient)
+        .exists()
+    )
+    response_rows = db.execute(
+        select(
+            CampaignDispatchRecipient.dispatch_id,
+            func.count(CampaignDispatchRecipient.id),
+        )
+        .where(
+            CampaignDispatchRecipient.dispatch_id.in_(ids),
+            CampaignDispatchRecipient.status == "ENVIADO",
+            CampaignDispatchRecipient.sent_at.is_not(None),
+            CampaignDispatchRecipient.conversation_id.is_not(None),
+            inbound_after_send,
+        )
+        .group_by(CampaignDispatchRecipient.dispatch_id)
+    ).all()
+    responses = {int(dispatch_id): int(count) for dispatch_id, count in response_rows}
+
+    results: dict[int, dict[str, int]] = {}
+    for dispatch_id in ids:
+        values = per_dispatch[dispatch_id]
+        results[dispatch_id] = {
+            "pending": values.get("PENDENTE", 0),
+            "sending": values.get("ENVIANDO", 0),
+            "sent": values.get("ENVIADO", 0),
+            "failed": values.get("FALHOU", 0),
+            "skipped": values.get("IGNORADO", 0),
+            "total": sum(values.values()),
+            "replied": responses.get(dispatch_id, 0),
+        }
+    return results
+
+
+def dispatch_counts(db: Session, dispatch_id: int) -> dict[str, int]:
+    return dispatch_counts_many(db, [dispatch_id])[dispatch_id]
 
 _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
