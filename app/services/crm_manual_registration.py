@@ -173,21 +173,41 @@ def _audit_data(row: AuditLog) -> dict[str, Any]:
         return {}
 
 
-def registration_status(db: Session, contact_id: int) -> dict[str, Any] | None:
-    """Estado conhecido do contato, inclusive de outra conversa com o mesmo número."""
-    row = db.scalar(
+def _contact_crm_status(
+    db: Session,
+    contact_id: int,
+    seller_username: str,
+    actions: tuple[str, ...],
+    *,
+    opportunity_id: int | None = None,
+    analysis_id: int | None = None,
+) -> dict[str, Any] | None:
+    rows = db.scalars(
         select(AuditLog)
         .where(
             AuditLog.entity_type == "contact",
             AuditLog.entity_id == str(contact_id),
-            AuditLog.action.in_((ACTION_REGISTERED, ACTION_UNCERTAIN, ACTION_REVIEW)),
+            AuditLog.action.in_(actions),
         )
         .order_by(AuditLog.id.desc())
-        .limit(1)
     )
-    if row is None:
-        return None
-    return {"state": row.action, **_audit_data(row)}
+    for row in rows:
+        data = _audit_data(row)
+        if data.get("sellerUsername") != seller_username:
+            continue
+        if opportunity_id is not None and _as_int(data.get("opportunityId")) != opportunity_id:
+            continue
+        if analysis_id is not None and _as_int(data.get("analysisId")) != analysis_id:
+            continue
+        return {"state": row.action, **data}
+    return None
+
+
+def registration_status(db: Session, contact_id: int, seller_username: str) -> dict[str, Any] | None:
+    """Estado do registro do vendedor, inclusive em outra conversa do mesmo contato."""
+    return _contact_crm_status(
+        db, contact_id, seller_username, (ACTION_REGISTERED, ACTION_UNCERTAIN, ACTION_REVIEW),
+    )
 
 
 def _log_result(
@@ -232,14 +252,9 @@ def register_conversation(
         raise CRMManualError("Telefone inválido para registrar no CRM.")
 
     _guard_contact_lock(db, conversation.contact_id)
-    previous = registration_status(db, conversation.contact_id)
+    previous = registration_status(db, conversation.contact_id, seller.username)
     if previous is not None:
         if previous["state"] == ACTION_REGISTERED:
-            if previous.get("sellerUsername") != seller.username:
-                raise CRMManualError(
-                    "Esta conversa já está vinculada a outro vendedor no CRM. "
-                    "Transfira a oportunidade no CRM antes de continuar."
-                )
             return {"already": True, **previous}
         raise CRMManualError(
             "Registro anterior precisa de conferência no CRM. Não é seguro enviar novamente."
@@ -256,8 +271,7 @@ def register_conversation(
             "Consulta de duplicidades do CRM não configurada. Registro bloqueado por segurança."
         )
 
-    # O CRM não possui unicidade nativa. Não registrar se a busca falhar ou vier
-    # em formato desconhecido: isso poderia duplicar oportunidades existentes.
+    # Reutiliza oportunidades abertas do vendedor quando a busca confirma o vínculo.
     try:
         found = crm.find_opportunities_by_phone(phone)
         records = _records(found)
@@ -277,39 +291,34 @@ def register_conversation(
         ) from exc
 
     for item in matches:
-        opportunity_id = _record_id(item)
         owner_id = _record_owner(item)
+        if owner_id is not None and owner_id != seller.user_id:
+            continue
+        opportunity_id = _record_id(item)
         if opportunity_id is None or owner_id is None:
             raise CRMManualError(
                 "Já existe um resultado no CRM que precisa de conferência manual. Registro bloqueado."
             )
-        if owner_id == seller.user_id:
-            existing_funnel = _as_int(item.get("funnelId")) or seller.funnel_id
-            existing_stage = _as_int(item.get("stageId"))
-            if existing_stage is None and existing_funnel == seller.funnel_id:
-                existing_stage = seller.stage_id
-            if not _verified_stage(seller, existing_funnel, existing_stage, newly_created=False):
-                raise CRMManualError(
-                    "O CRM encontrou oportunidade do vendedor, mas o funil ou a etapa "
-                    "não foram confirmados. Confira antes de prosseguir."
-                )
-            result = {
-                "opportunityId": opportunity_id,
-                "protocol": str(item.get("protocol") or ""),
-                "sellerUsername": seller.username,
-                "assignedUserId": seller.user_id,
-                "funnelId": existing_funnel,
-                "stageId": existing_stage,
-                "outcome": "existing",
-            }
-            _log_result(db, conversation, actor, ACTION_REGISTERED, result)
-            return {"already": True, **result}
-        # O SDR IA também é outro proprietário: jamais criar uma segunda
-        # oportunidade sem conferência ou transferência no CRM.
-        raise CRMManualError(
-            "Já existe oportunidade aberta deste telefone com outro responsável. "
-            "Confira ou transfira essa oportunidade no CRM antes de registrar."
-        )
+        existing_funnel = _as_int(item.get("funnelId")) or seller.funnel_id
+        existing_stage = _as_int(item.get("stageId"))
+        if existing_stage is None and existing_funnel == seller.funnel_id:
+            existing_stage = seller.stage_id
+        if not _verified_stage(seller, existing_funnel, existing_stage, newly_created=False):
+            raise CRMManualError(
+                "O CRM encontrou oportunidade do vendedor, mas o funil ou a etapa "
+                "não foram confirmados. Confira antes de prosseguir."
+            )
+        result = {
+            "opportunityId": opportunity_id,
+            "protocol": str(item.get("protocol") or ""),
+            "sellerUsername": seller.username,
+            "assignedUserId": seller.user_id,
+            "funnelId": existing_funnel,
+            "stageId": existing_stage,
+            "outcome": "existing",
+        }
+        _log_result(db, conversation, actor, ACTION_REGISTERED, result)
+        return {"already": True, **result}
 
     try:
         result = crm.create_seller_lead(

@@ -65,7 +65,9 @@ from app.services.crm_manual_credit import (
     credit_status as manual_credit_status,
 )
 from app.services.crm_manual_registration import (
+    ACTION_REGISTERED,
     CRMManualError,
+    _as_int,
     register_conversation,
     registration_status,
     seller_for_user,
@@ -706,6 +708,19 @@ def _render_inbox(
         ),
         quick_queues[0][0].id if quick_queues else None,
     )
+    crm_seller = seller_for_user(selected.assigned_user) if selected else None
+    crm_registration = (
+        registration_status(db, selected.contact_id, crm_seller.username)
+        if selected and crm_seller else None
+    )
+    crm_opportunity_id = (
+        _as_int(crm_registration.get("opportunityId"))
+        if crm_registration and crm_registration["state"] == ACTION_REGISTERED else None
+    )
+    crm_credit = (
+        manual_credit_status(db, selected.contact_id, crm_seller.username, crm_opportunity_id)
+        if selected and crm_seller and crm_opportunity_id else None
+    )
     return render(
         request,
         "conversations/inbox.html",
@@ -746,10 +761,10 @@ def _render_inbox(
         selected_tags=commercial_tags.get(selected.id, []) if selected else [],
         selected_insight=commercial_insights.get(selected.id) if selected else None,
         globally_blacklisted=is_globally_blocked(db, selected.contact.phone) if selected else False,
-        crm_manual_seller=seller_for_user(selected.assigned_user) if selected else None,
-        crm_manual_status=registration_status(db, selected.contact_id) if selected else None,
+        crm_manual_seller=crm_seller,
+        crm_manual_status=crm_registration,
         crm_credit_enabled=settings.sulnet_crm_manual_credit_enabled,
-        crm_credit_status=manual_credit_status(db, selected.contact_id) if selected else None,
+        crm_credit_status=crm_credit,
         crm_contestation_enabled=settings.sulnet_crm_contestation_enabled,
         open_statuses=OPEN_CONVERSATION_STATUSES,
         closed_statuses=CLOSED_CONVERSATION_STATUSES,

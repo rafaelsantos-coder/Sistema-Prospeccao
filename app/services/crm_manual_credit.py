@@ -10,20 +10,20 @@ import re
 import unicodedata
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import AuditLog, Conversation, User
+from app.models import Conversation, User
 from app.services.audit import write_audit
 from app.services.crm_manual_registration import (
+    ACTION_REGISTERED,
     CRMManualError,
     _as_int,
-    _audit_data,
+    _contact_crm_status,
     _guard_contact_lock,
     registration_status,
-    seller_for_user,
     seller_accepts_funnel,
+    seller_for_user,
 )
 from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
 
@@ -55,18 +55,13 @@ def _fold(value: str) -> str:
     return "".join(ch for ch in normalized if not unicodedata.combining(ch)).casefold().strip()
 
 
-def credit_status(db: Session, contact_id: int) -> dict[str, Any] | None:
-    row = db.scalar(
-        select(AuditLog)
-        .where(
-            AuditLog.entity_type == "contact",
-            AuditLog.entity_id == str(contact_id),
-            AuditLog.action.in_((ACTION_CREDIT, ACTION_UNCERTAIN, ACTION_REVIEW)),
-        )
-        .order_by(AuditLog.id.desc())
-        .limit(1)
+def credit_status(
+    db: Session, contact_id: int, seller_username: str, opportunity_id: int,
+) -> dict[str, Any] | None:
+    return _contact_crm_status(
+        db, contact_id, seller_username, (ACTION_CREDIT, ACTION_UNCERTAIN, ACTION_REVIEW),
+        opportunity_id=opportunity_id,
     )
-    return {"state": row.action, **_audit_data(row)} if row else None
 
 
 def _audit(
@@ -126,30 +121,21 @@ def consult_registered_cpf(
     digits = re.sub(r"\D", "", cpf)
 
     _guard_contact_lock(db, conversation.contact_id)
-    registered = registration_status(db, conversation.contact_id)
-    if (
-        not registered
-        or registered.get("state") != "CRM_MANUAL_REGISTERED"
-        or registered.get("sellerUsername") != seller.username
-        or not _as_int(registered.get("opportunityId"))
-    ):
+    registered = registration_status(db, conversation.contact_id, seller.username)
+    opp_id = _as_int(registered.get("opportunityId")) if registered else None
+    if not registered or registered.get("state") != ACTION_REGISTERED or not opp_id:
         raise CRMManualError(
             "Primeiro registre nome e telefone no CRM com o vendedor responsável."
         )
 
-    opp_id = int(registered["opportunityId"])
     registered_funnel = _as_int(registered.get("funnelId")) or seller.funnel_id
     if not seller_accepts_funnel(seller, registered_funnel):
         raise CRMManualError(
             "A oportunidade está em um funil não autorizado para este vendedor."
         )
-    previous = credit_status(db, conversation.contact_id)
+    previous = credit_status(db, conversation.contact_id, seller.username, opp_id)
     if previous:
-        if (
-            previous["state"] == ACTION_CREDIT
-            and _as_int(previous.get("opportunityId")) == opp_id
-            and previous.get("sellerUsername") == seller.username
-        ):
+        if previous["state"] == ACTION_CREDIT:
             return {"already": True, **previous}
         raise CRMManualError(
             "A consulta anterior precisa ser conferida no CRM antes de novo envio."
