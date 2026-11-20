@@ -464,8 +464,13 @@ def enqueue_ai_job(
             binding.queue_id,
         )
         return None
+    # Na FILA-IA o SDR responde à nova mensagem recebida, mesmo que um
+    # operador tenha enviado uma mensagem anterior. Um atendimento humano
+    # atribuído continua protegido por human_is_attending.
+    queue_for_human_guard = queue_for_conversation(db, conversation.id)
     if (
         not takeover
+        and (not queue_for_human_guard or queue_for_human_guard.code != "FILA-IA")
         and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
         and human_stepped_in(db, conversation)
     ):
@@ -2260,14 +2265,29 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     # Autorização explícita: apenas a FILA-IA ativa pode responder em AUTO.
     # Não habilita o modo autônomo global nem SDR nas outras filas.
     current_queue = queue_for_conversation(db, job.conversation_id)
-    if (
+    is_authorized_ai_queue = (
         agent.role_type == "SDR"
         and current_queue is not None
         and current_queue.code == "FILA-IA"
         and current_queue.id == job.queue_id
         and binding_for_conversation(db, job.conversation_id) is not None
         and ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id)
-    ):
+    )
+    if is_authorized_ai_queue:
+        # _send_autonomous_reply requires an AI_ACTIVE owner. A recovered
+        # SHADOW_REVIEW/NEW state otherwise causes send_failed even though
+        # the job was authorized and the model generated a valid response.
+        # Never take over OPT_OUT, completed, closing, or assigned human work.
+        owner_conversation = db.get(Conversation, job.conversation_id)
+        if (
+            current_state is not None
+            and current_state.state in {"NEW", "SHADOW_REVIEW"}
+            and owner_conversation is not None
+            and not human_is_attending(db, owner_conversation)
+        ):
+            current_state.state = "AI_ACTIVE"
+            current_state.agent_id = agent.id
+            LOG.info("ai_sdr_owner_activated conversation=%s job=%s", job.conversation_id, job.id)
         effective_mode = "AUTO"
     else:
         effective_mode = _effective_execution_mode(agent)
