@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import io
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -7,7 +10,7 @@ from typing import Any
 
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, Response
 
 from app.config import settings
 
@@ -27,6 +30,17 @@ from app.timeutils import is_past, utc_to_local
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
+
+def csv_attachment(rows: Iterable[Sequence[str]], filename: str) -> Response:
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, delimiter=";")
+    writer.writerows(rows)
+    return Response(
+        content=stream.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def brl(value: Any) -> str:

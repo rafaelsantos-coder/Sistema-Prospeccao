@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import csv
-import io
 import re
 from urllib.parse import urlencode
 
@@ -33,7 +31,7 @@ from app.services.report_exports import (
     build_management_report_pdf,
 )
 from app.timeutils import utc_to_local
-from app.web import phone_br, render
+from app.web import csv_attachment, phone_br, render
 
 
 router = APIRouter()
@@ -119,18 +117,6 @@ def _conversation_for_user(db: Session, user: User, conversation_id: int) -> Con
 def _dt(value) -> str:
     local = utc_to_local(value)
     return local.strftime("%d/%m/%Y %H:%M:%S") if local else ""
-
-
-def _csv_response(rows: list[list[str]], filename: str) -> Response:
-    stream = io.StringIO(newline="")
-    writer = csv.writer(stream, delimiter=";", quoting=csv.QUOTE_MINIMAL)
-    writer.writerows(rows)
-    payload = stream.getvalue().encode("utf-8-sig")
-    return Response(
-        content=payload,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
 
 
 def _period_label(filters: ChatReportFilters) -> str:
@@ -228,7 +214,7 @@ def export_conversations_csv(request: Request, db: Session = Depends(get_db)):
         payload={"filters": filters.as_query_dict(), "rows": len(rows) - 1},
     )
     db.commit()
-    return _csv_response(rows, "relatorio-conversas-whatsapp.csv")
+    return csv_attachment(rows, "relatorio-conversas-whatsapp.csv")
 
 
 @router.get("/reports/whatsapp/export/ai-journey.csv")
@@ -361,7 +347,7 @@ def export_ai_journey_csv(request: Request, db: Session = Depends(get_db)):
         },
     )
     db.commit()
-    return _csv_response(rows, "jornada-comercial-ia.csv")
+    return csv_attachment(rows, "jornada-comercial-ia.csv")
 
 
 @router.get("/reports/whatsapp/export/messages.csv")
@@ -432,7 +418,7 @@ def export_messages_csv(request: Request, db: Session = Depends(get_db)):
         payload={"filters": filters.as_query_dict(), "rows": len(rows) - 1},
     )
     db.commit()
-    return _csv_response(rows, "extrato-mensagens-whatsapp.csv")
+    return csv_attachment(rows, "extrato-mensagens-whatsapp.csv")
 
 
 @router.get("/reports/whatsapp/export/audit.csv")
@@ -462,7 +448,7 @@ def export_audit_csv(request: Request, db: Session = Depends(get_db)):
         payload={"filters": filters.as_query_dict(), "rows": len(rows) - 1},
     )
     db.commit()
-    return _csv_response(rows, "auditoria-atendimentos-whatsapp.csv")
+    return csv_attachment(rows, "auditoria-atendimentos-whatsapp.csv")
 
 
 @router.get("/reports/whatsapp/export/report.pdf")
@@ -548,7 +534,7 @@ def export_conversation_csv(
     )
     db.commit()
     safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", contact_name).strip("-")[:50] or "contato"
-    return _csv_response(rows, f"conversa-{conversation.id}-{safe_name}.csv")
+    return csv_attachment(rows, f"conversa-{conversation.id}-{safe_name}.csv")
 
 
 @router.get("/reports/whatsapp/conversations/{conversation_id}.pdf")
