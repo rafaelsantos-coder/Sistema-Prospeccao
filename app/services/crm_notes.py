@@ -41,6 +41,19 @@ def pending_notes(state: AIClosingState, collected: dict[str, Any]) -> list[tupl
         price = _money(accepted.get("monthly_value"))
         text = f"Cliente aceitou a oferta de {accepted['plan']}" + (f" por {price}/mês." if price else ".")
         notes.append((f"accept:{accepted['inbound_id']}", "Oferta aceita", text))
+    check = collected.get("fiberFeasibility") or {}
+    if check:
+        nap = check.get("nap")
+        point = ", ".join(str(v) for v in check["point"])
+        if nap:
+            detail = f"NAP {nap['name']} (ID {nap['id']}), a {nap['meters']} m do imóvel."
+        else:
+            detail = "Encaminhar para análise técnica: " + (
+                "base indisponível." if check["status"] == "no_data" else "sem NAP disponível em até 800 m."
+            )
+        reference = check.get("reference") or "sem data"
+        key = f"fiber:{point}:{nap['id'] if nap else check['status']}:{reference}"
+        notes.append((key, "Viabilidade de fibra", f"{detail} Local: {point}. Base: {reference}."))
     step = state.step
     if step == "CREDIT_REVIEW":
         notes.append(("credit_review", "Consulta de crédito", "Consulta de crédito em andamento."))
@@ -246,3 +259,4 @@ def record_sdr_note(db: Session, conversation_id: int, decision) -> None:
         LOG.warning("crm_note_sdr_failed conversation=%s status=%s", conversation_id, exc.status_code)
     except Exception:  # noqa: BLE001
         LOG.exception("crm_note_sdr_error conversation=%s", conversation_id)
+
