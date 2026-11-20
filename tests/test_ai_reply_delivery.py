@@ -26,10 +26,11 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_reply_delivery import process_next_ai_reply, queue_ai_reply, reply_statuses
-from app.services.ai_sdr import enqueue_ai_job, process_ai_job, run_ai_decision
+from app.services.ai_sdr import _official_catalog_for_context, enqueue_ai_job, process_ai_job, run_ai_decision
 from app.services.ai_sdr_catalog_reply import accepted_black_quote, contextual_catalog_reply
 from app.services.ai_sdr_policies import (
     _confirmed_facts_from_history,
+    _derive_journey_state,
     _fast_purchase_decision,
     _fast_purchase_request,
 )
@@ -281,6 +282,23 @@ def test_company_quote_uses_confirmed_profile_and_asks_only_for_missing_city():
     assert "fibra corporativa de 650 Mega" in decision.reply_text
     assert "R$ 199,90/mês" in decision.reply_text
     assert decision.qualification.customer_type == "EMPRESA"
+
+
+def test_catalog_context_answers_product_details_before_contact_triage():
+    facts = {"city": "Santa Rosa", "customer_type": "RESIDENCIAL", "product_kind": "MOBILE"}
+    context = {"confirmed_facts": facts, "latest_customer_message": "O plano inclui WhatsApp?"}
+    answer = SimpleNamespace(intent="INFORMATION", sales_state="DISCOVERY", offer_plan_code=None)
+    assert _official_catalog_for_context(context)["segment"] == "MOVEL"
+    assert _derive_journey_state(answer, context) == "SELECT_OFFER"
+
+    context = {
+        "confirmed_facts": {**facts, "product_kind": "COMBO"},
+        "latest_customer_message": "Qual a velocidade de upload da fibra?",
+    }
+    catalog = _official_catalog_for_context(context)
+    assert catalog["segment"] == "RESIDENCIAL" and catalog["city"] == "Santa Rosa"
+    assert catalog["mobile"]["segment"] == "MOVEL"
+    assert _derive_journey_state(answer, context) == "SELECT_OFFER"
 
 
 def test_combo_and_fiber_only_show_distinct_terms_and_reuse_selected_products(monkeypatch):

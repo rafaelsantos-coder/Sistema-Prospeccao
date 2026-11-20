@@ -1511,10 +1511,7 @@ def _apply_prospecting_entry_policy(
     )
     status = _existing_customer_from_context(context)
 
-    # Produto já em conversa (plano apresentado ou escolhido): a resposta do modelo não
-    # volta para o roteiro de entrada. Conversa 1679 (16/11): o cliente perguntou se o
-    # Sulmóvel "pega em todo o estado" e recebeu "você já possui algum serviço da Sulnet?";
-    # depois do "Não", recebeu "Internet ou Telefonia Móvel?", com o 5GB já oferecido.
+    # Produto apresentado ou escolhido dá contexto para responder dúvidas diretas.
     product_in_talk = _product_already_in_talk(context)
 
     if not status:
@@ -1529,8 +1526,7 @@ def _apply_prospecting_entry_policy(
 
     decision.qualification.existing_customer = status
 
-    # Produto já em conversa: a entrada da Black não interrompe (conversa 1679 recebeu
-    # "Quer conhecer nossa promoção Black?" no meio da contratação do Sulmóvel).
+    # A oferta inicial da Black é usada apenas antes de definir o produto.
     black_result = None if product_in_talk else _apply_black_entry(
         decision, context, status, just_identified=current_confirmation in {"CLIENTE", "NAO_CLIENTE"}
     )
@@ -2071,7 +2067,7 @@ def _apply_offer_rejection_diagnostic_policy(
 ) -> AIDecision:
     """1ª rejeição de oferta/interesse: gancho curto (não pergunta se já tem internet).
 
-    Pedido comercial (06/11): "não quero" não pode virar diagnóstico de conexão
+    Uma recusa não deve virar diagnóstico de conexão
     nem catálogo móvel — isso parece insistência e queima a reabertura.
     """
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
@@ -2170,7 +2166,6 @@ def _apply_repeated_rejection_policy(
 ) -> AIDecision:
     """Recusa de interesse: 1ª = gancho; 2ª = confirmar parada; confirmação = opt-out.
 
-    Conversa 06/11: "não quero mais" → pergunta de internet → catálogo móvel.
     Agora a 1ª recusa só reabre com Preço/Velocidade/Móvel/Pode parar; a 2ª
     pergunta se deve parar; desconto/meses grátis ficam para objeção de preço.
     """
@@ -2272,7 +2267,7 @@ def _sdr_reply_is_stale_repetition(decision: AIDecision, context: dict) -> bool:
     Se o cliente fez uma pergunta direta, uma resposta que reaproveita termos da
     mensagem anterior (ex.: multa) é resposta, não estagnação: só conta se for
     praticamente igual. Antes, a regra trocava a resposta por "por outro ângulo"
-    e o cliente ficava sem o valor da multa (simulação 03/11).
+    e o cliente ficava sem o valor da multa.
     """
     if not _sdr_reply_repeats_recent_outbound(decision, context):
         return False
@@ -2418,7 +2413,7 @@ def _explicit_purchase_commitment(context: dict) -> bool:
     )
     # Botões de avanço criados pela própria IA ("Avançar assim", "Quero
     # contratar") também são aceite. Antes, só frases fixas contavam e o
-    # cliente que clicava no botão não era transferido (simulação 03/11).
+    # cliente que clicava no botão não era transferido.
     if purchase_question and re.fullmatch(
         r"(?:sim\s*)?(?:(?:pode|quero|vamos|bora|podemos)\s+)?"
         r"(?:avancar|seguir|fechar|contratar|prosseguir|continuar|bora|topo|eu topo)"
@@ -2440,7 +2435,7 @@ def _explicit_purchase_commitment(context: dict) -> bool:
 # (ex.: anúncio "Tenho interesse em assinar 650mb por R$99,90"). Antes, essa
 # intenção passava pelo modelo, pelas regras fixas e pelo Guardião; quando um
 # deles divergia, o cliente ouvia "vou encaminhar" e a transferência não
-# acontecia (conversas 239, 237, 72 e 68).
+# acontecia.
 _FAST_PURCHASE_CITY_MARK = "para confirmar a disponibilidade do plano de"
 
 
@@ -2640,10 +2635,16 @@ def _derive_journey_state(decision: AIDecision, context: dict) -> str:
         return "CLOSING"
 
     existing_customer = _existing_customer_from_context(context)
-    if existing_customer not in {"CLIENTE", "NAO_CLIENTE"}:
+    product_kind = _journey_product_kind(decision, context)
+    customer_type = _customer_type_from_context(context)
+    city = _city_from_sales_context(decision, context)
+    catalog_context_ready = (
+        _customer_asked_direct_question(context)
+        and (product_kind == "MOBILE" or (product_kind == "INTERNET" and customer_type and city))
+    )
+    if existing_customer not in {"CLIENTE", "NAO_CLIENTE"} and not catalog_context_ready:
         return "IDENTIFY_CUSTOMER"
 
-    product_kind = _journey_product_kind(decision, context)
     if not product_kind:
         return "CHOOSE_PRODUCT"
 
@@ -2652,11 +2653,9 @@ def _derive_journey_state(decision: AIDecision, context: dict) -> str:
             return "HANDLE_OBJECTION" if decision.objection != "NONE" else "CONFIRM_PURCHASE"
         return "SELECT_OFFER"
 
-    customer_type = _customer_type_from_context(context)
     if customer_type not in {"EMPRESA", "RESIDENCIAL"}:
         return "CHOOSE_SEGMENT"
 
-    city = _city_from_sales_context(decision, context)
     if customer_type == "RESIDENCIAL" and not city:
         return "CONFIRM_CITY"
 
@@ -2973,7 +2972,7 @@ def _offer_in_history(context: dict) -> bool:
 def _promote_clear_purchase_to_closing(decision: AIDecision, context: dict) -> AIDecision:
     """O modelo marcou intenção alta de compra depois de uma oferta, mas não
     transferiu: leva ao fechamento. Antes, o Guardião bloqueava por "intenção
-    sem handoff" e o cliente ia para um humano (simulação e conversa 239)."""
+    sem handoff" e o cliente ia para um humano."""
     if decision.journey_state in {"CLOSING", "HUMAN_HANDOFF", "OPT_OUT"}:
         return decision
     if decision.intent != "HIGH_INTENT" and decision.sales_state != "PURCHASE_INTENT":

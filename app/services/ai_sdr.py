@@ -1044,13 +1044,20 @@ def _official_catalog_for_context(context: dict) -> dict | None:
     from app.services.ai_sdr_policy import catalog_for
 
     facts = context.get("confirmed_facts") or {}
+    product = str(facts.get("product_kind") or "").upper()
     city = str(facts.get("city") or (context.get("lead") or {}).get("city") or "").strip()
     customer_type = str(facts.get("customer_type") or "").upper()
+    if product == "MOBILE":
+        return catalog_for("", "MOVEL")
     if customer_type == "EMPRESA":
-        return catalog_for("", "EMPRESA")
-    if not city:
+        catalog = catalog_for(city, "EMPRESA")
+    elif city:
+        catalog = catalog_for(city, "RESIDENCIAL")
+    else:
         return None
-    return catalog_for(city, "RESIDENCIAL")
+    if product == "COMBO":
+        catalog["mobile"] = catalog_for("", "MOVEL")
+    return catalog
 
 
 _PENALTY_CUES = ("multa", "cancel", "fidelidade", "quebrar", "rescis", "sair antes")
@@ -1118,7 +1125,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Uma informação confirmada não pode regredir para NAO_INFORMADO nem fazer a jornada voltar para uma etapa anterior. "
         "Se learning_experiment trouxer instrução, ela pode alterar SOMENTE redação/abordagem dentro do escopo informado. "
         "Ela nunca pode alterar fatos, preço, plano, catálogo, fidelidade, contrato, crédito, estado da jornada ou handoff. "
-        "Produza a decisão estruturada do SDR. Antes de qualquer oferta, se lead.confirmed_existing_customer estiver vazio e confirmed_facts.existing_customer também estiver vazio, "
+        "Produza a decisão estruturada do SDR. Quando produto, cidade e perfil forem suficientes para responder uma dúvida pelo catálogo, responda diretamente. "
+        "Para iniciar uma negociação sem uma dúvida específica, se lead.confirmed_existing_customer estiver vazio e confirmed_facts.existing_customer também estiver vazio, "
         "a primeira qualificação é perguntar se a pessoa já é cliente Sulnet; cliente existente segue para Telefonia Móvel ou nova conexão para outro endereço, "
         "e não cliente segue para Internet ou Telefonia Móvel. Não repita essa pergunta se a memória já estiver confirmada. "
         "Além da resposta, classifique objeção, estado comercial, plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
