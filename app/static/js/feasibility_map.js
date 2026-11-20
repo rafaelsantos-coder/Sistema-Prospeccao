@@ -3,7 +3,7 @@
   const isNode = typeof module === 'object' && module.exports;
   const network = isNode ? require('./credit_map_network.js') : root.SulnetCreditNetwork;
   const initialCenter = {lat: -27.87, lng: -54.48};
-  const colors = {free: '#2563eb', unavailable: '#64748b', target: '#e9681b'};
+  const colors = {free: '#2563eb', unavailable: '#64748b'};
   const coordinate = '[+-]?\\d+(?:[.,]\\d+)?';
   const localizedPair = new RegExp('^(' + coordinate + ')(?:\\s*;\\s*|\\s*,\\s+|\\s+)(' + coordinate + ')$');
   const decimalPair = /^([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)$/;
@@ -44,6 +44,7 @@
   const $ = id => document.getElementById(id);
   const page = $('feasibility-map-app');
   if (!page) return;
+  const searchPin = {url: page.dataset.searchPinUrl, size: [24, 32], anchor: [12, 32]};
   const state = {naps: null, map: null, provider: null, search: null, cities: new Map()};
   const city = $('vm-city');
   const addressInput = $('vm-address');
@@ -94,7 +95,14 @@
       icon: network.available(feature.getProperty('nap')) ? availableIcon : unavailableIcon,
       title: feature.getProperty('nap').nome,
     }));
-    pin.setStyle({icon: icon(colors.target, 8), zIndex: 10, clickable: false});
+    pin.setStyle({
+      icon: {
+        url: searchPin.url,
+        scaledSize: new maps.Size(...searchPin.size),
+        anchor: new maps.Point(...searchPin.anchor),
+      },
+      title: 'Local consultado', zIndex: 10, clickable: false,
+    });
     boxes.addListener('click', ({feature}) => openBox(feature.getProperty('nap')));
     let features = [];
     let target = null;
@@ -133,6 +141,7 @@
     }).addTo(map);
     const boxes = L.layerGroup().addTo(map);
     const target = L.layerGroup().addTo(map);
+    const targetIcon = L.icon({iconUrl: searchPin.url, iconSize: searchPin.size, iconAnchor: searchPin.anchor});
     return {
       showBoxes(naps) {
         map.closePopup();
@@ -149,7 +158,11 @@
       focus(point, zoom) { map.setView(point, zoom); },
       target(point) {
         target.clearLayers();
-        if (point) L.circleMarker(point, {radius: 8, color: colors.target, fillOpacity: .6, interactive: false}).addTo(target);
+        if (point) {
+          L.marker(point, {
+            icon: targetIcon, alt: 'Local consultado', interactive: false, keyboard: false,
+          }).addTo(target);
+        }
       },
       popup(point, content) { L.popup().setLatLng(point).setContent(content).openOn(map); },
     };
