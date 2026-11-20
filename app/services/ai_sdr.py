@@ -28,6 +28,11 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
+from app.services.ai_sdr_catalog_reply import (
+    accepted_black_quote,
+    contextual_catalog_reply,
+    expired_black_acceptance,
+)
 from app.services.ai_sdr_models import AIConfigurationError, AIDecision, QualificationData
 from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para testes e runtime
     _JOURNEY_PENDING_ACTIONS,
@@ -201,8 +206,7 @@ def human_stepped_in(
     """Uma pessoa escreveu manualmente nesta conversa há pouco: a IA se cala.
 
     Vale mesmo quando a conversa está atribuída à IA ou numa fila só de IA.
-    Conversa Binello (10/11): o gestor negociava R$ 99,90 e a IA entrou com o
-    plano de R$ 199,90 por cima. Disparos de campanha não contam.
+    Disparos de campanha não contam como intervenção manual.
     """
     from app.models import CampaignDispatchRecipient, CampaignRecipient  # noqa: PLC0415
 
@@ -237,8 +241,6 @@ def human_is_attending(db: Session, conversation: Conversation) -> bool:
     Exige as duas coisas, para não travar a Fila IA: a conversa está atribuída
     a uma pessoa (não a um agente de IA) e essa pessoa escreveu manualmente nas
     últimas 24 horas. Disparos de campanha não contam como atendimento.
-    Em 04/11, ao ligar a IA na fila Comercial, a SulIA respondeu dois clientes
-    que estavam com o Fabiano e a Claudia (conversas 449 e 422).
     """
     from app.models import CampaignDispatchRecipient, CampaignRecipient  # noqa: PLC0415
 
@@ -284,7 +286,7 @@ def reclaim_conversation_for_ai(
     """Conversa que tinha sido passada a um humano volta para a IA.
 
     Não existe mais atendimento humano: estados antigos de handoff (e vendas
-    ESCALATED) deixavam o cliente sem resposta ("Bom dia" de 06/11). Só fica
+    ESCALATED) podiam deixar o cliente sem resposta. Só fica
     de fora quem um vendedor de verdade está atendendo (escreveu nas últimas
     24 horas), para a IA não atropelar a pessoa.
     """
@@ -511,7 +513,6 @@ def enqueue_ai_job(
 
     # Uma resposta por rajada de mensagens: o SDR lê o histórico inteiro, então
     # o job da mensagem mais nova responde também às anteriores ainda na fila
-    # (conversa 63: 4 mensagens da IA em 4 minutos).
     for pending in db.scalars(
         select(AIJob).where(
             AIJob.conversation_id == conversation.id,
@@ -898,6 +899,9 @@ def build_ai_context(
                 ):
                     if not confirmed_facts.get(key) and previous_facts.get(key):
                         confirmed_facts[key] = previous_facts[key]
+                        previous_source = (previous_facts.get("sources") or {}).get(key)
+                        if previous_source:
+                            confirmed_facts["sources"][key] = previous_source
                 confirmed_facts["answered_questions"] = sorted(
                     set(confirmed_facts.get("answered_questions") or [])
                     | set(previous_facts.get("answered_questions") or [])
@@ -989,6 +993,7 @@ def build_ai_context(
         ],
         "history": [
             {
+                "id": item.id,
                 "direction": item.direction,
                 "type": item.message_type,
                 "body": item.body,
@@ -1039,13 +1044,20 @@ def _official_catalog_for_context(context: dict) -> dict | None:
     from app.services.ai_sdr_policy import catalog_for
 
     facts = context.get("confirmed_facts") or {}
+    product = str(facts.get("product_kind") or "").upper()
     city = str(facts.get("city") or (context.get("lead") or {}).get("city") or "").strip()
     customer_type = str(facts.get("customer_type") or "").upper()
+    if product == "MOBILE":
+        return catalog_for("", "MOVEL")
     if customer_type == "EMPRESA":
-        return catalog_for("", "EMPRESA")
-    if not city:
+        catalog = catalog_for(city, "EMPRESA")
+    elif city:
+        catalog = catalog_for(city, "RESIDENCIAL")
+    else:
         return None
-    return catalog_for(city, "RESIDENCIAL")
+    if product == "COMBO":
+        catalog["mobile"] = catalog_for("", "MOVEL")
+    return catalog
 
 
 _PENALTY_CUES = ("multa", "cancel", "fidelidade", "quebrar", "rescis", "sair antes")
@@ -1069,7 +1081,26 @@ def _tools_needed_for_turn(tools: list[Any], context: dict) -> list[Any]:
     return [tool for tool in tools if getattr(tool, "name", "") in needed]
 
 
+def _contextual_service_reply(context: dict) -> AIDecision | None:
+    decision = AIDecision(
+        reply_text="Atendimento da Central Sulnet.",
+        qualification_score=25, temperature="FRIO", recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False, confidence=1.0, summary="", next_action="",
+    )
+    decision = _apply_existing_customer_plan_change_policy(decision, context)
+    return decision if decision.service_redirect else None
+
+
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
+    if not (context.get("guardian_feedback") or context.get("integrity_guard")):
+        direct_answer = _contextual_service_reply(context) or contextual_catalog_reply(context)
+        if direct_answer:
+            _sanitize_unconfirmed_customer_facts(direct_answer, context)
+            direct_answer._timing = {
+                "model_ms": 0,
+                "contextual_reply": "central" if direct_answer.service_redirect else "catalogo",
+            }
+            return direct_answer
     if not settings.openai_api_key:
         raise AIConfigurationError("OPENAI_API_KEY não configurada.")
     official_catalog = _official_catalog_for_context(context)
@@ -1094,7 +1125,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Uma informação confirmada não pode regredir para NAO_INFORMADO nem fazer a jornada voltar para uma etapa anterior. "
         "Se learning_experiment trouxer instrução, ela pode alterar SOMENTE redação/abordagem dentro do escopo informado. "
         "Ela nunca pode alterar fatos, preço, plano, catálogo, fidelidade, contrato, crédito, estado da jornada ou handoff. "
-        "Produza a decisão estruturada do SDR. Antes de qualquer oferta, se lead.confirmed_existing_customer estiver vazio e confirmed_facts.existing_customer também estiver vazio, "
+        "Produza a decisão estruturada do SDR. Quando produto, cidade e perfil forem suficientes para responder uma dúvida pelo catálogo, responda diretamente. "
+        "Para iniciar uma negociação sem uma dúvida específica, se lead.confirmed_existing_customer estiver vazio e confirmed_facts.existing_customer também estiver vazio, "
         "a primeira qualificação é perguntar se a pessoa já é cliente Sulnet; cliente existente segue para Telefonia Móvel ou nova conexão para outro endereço, "
         "e não cliente segue para Internet ou Telefonia Móvel. Não repita essa pergunta se a memória já estiver confirmada. "
         "Além da resposta, classifique objeção, estado comercial, plano/oferta atual, nível de concessão N0-N3, meses grátis e se existe compromisso claro de compra. "
@@ -1214,10 +1246,8 @@ _SENTENCE = re.compile(r"[^?.!\n]*[?.!]+|[^?.!\n]+$")
 def _one_question_per_message(decision: AIDecision) -> AIDecision:
     """Uma pergunta por mensagem.
 
-    Em 04/11 a SulIA perguntou "Em qual cidade...? E seria para sua casa ou
-    para uma empresa?" com botões Casa/Empresa: quem toca no botão deixa a
-    cidade sem resposta. Mantém o texto até a primeira pergunta; os botões
-    são refeitos para a pergunta que ficou.
+    Quando a resposta inclui duas perguntas, o botão pode deixar uma delas
+    sem resposta. Mantém o texto até a primeira pergunta e ajusta os botões.
     """
     if _is_closer_handoff(decision):
         return decision
@@ -1260,7 +1290,7 @@ def _sdr_script_is_authoritative(decision: AIDecision) -> bool:
 
     O Guardião não pode trocar esse texto por um plano único nem cortar o botão.
     """
-    return any(
+    return decision._contextual_reply or any(
         item.get("mode") == "rewrite" and "reply_text" in (item.get("changed") or [])
         for item in getattr(decision, "_policy_observations", []) or []
     )
@@ -1344,7 +1374,8 @@ def _send_autonomous_reply(
         decision.quick_replies,
     )
     if decision.service_redirect:
-        from app.services.ai_sdr_policy import CENTRAL_BUTTON_LABEL, CENTRAL_WHATSAPP_URL
+        from app.services.ai_sdr_policy import CENTRAL_BUTTON_LABEL
+        from app.services.ai_service_handoff import central_handoff_url
 
         return queue_ai_reply(
             db,
@@ -1352,7 +1383,7 @@ def _send_autonomous_reply(
             agent=agent,
             inbound_id=job.message_id,
             text=decision.reply_text,
-            link_url=CENTRAL_WHATSAPP_URL,
+            link_url=central_handoff_url(decision._service_handoff),
             link_label=CENTRAL_BUTTON_LABEL,
         )
     return queue_ai_reply(
@@ -1394,7 +1425,7 @@ def _apply_crm_decision(
         lead.do_not_contact = True
         lead.stage = "NAO_CONTATAR"
         lead.next_action_at = None
-    elif lead.stage not in {"GANHO", "NAO_CONTATAR"}:
+    elif not decision.service_redirect and lead.stage not in {"GANHO", "NAO_CONTATAR"}:
         next_stage = decision.recommended_stage
         if next_stage == "NAO_CONTATAR":
             next_stage = "CONTATO_REALIZADO"
@@ -1513,7 +1544,7 @@ def _perform_handoff(
     if not owner or owner.role == "AI_SDR":
         if not _client_asked_for_human(db, conversation):
             # A IA é o vendedor: a conversa fica com ela e nenhum vendedor vê,
-            # a não ser que o cliente peça um humano (regra de 06/11).
+            # a não ser que o cliente peça um humano.
             conversation.assigned_user_id = agent.user_id or None
             owner = None
         else:
@@ -1673,10 +1704,10 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
 
     candidates: list[tuple[str, list[QuickReply]]] = []
     if _is_postponement(latest):
-        # "Não agora": quebra a objeção em vez de seguir a qualificação (conversa Ernani, 10/11).
+        # "Não agora" é um adiamento. Trate a objeção antes de seguir a qualificação.
         candidates.extend(_objection_break_candidates())
     elif not previous:
-        # Abertura padrão de prospecção (comercial, 06/11): primeiro saber se já é cliente.
+        # A abertura de prospecção confirma se a pessoa já é cliente.
         candidates.append(
             (
                 f"{_time_greeting()}, você já é cliente da Sulnet?",
@@ -1875,7 +1906,10 @@ def _try_fast_purchase_path(
     run: AIRun,
     context: dict,
 ) -> str | None:
-    request = _fast_purchase_request(context)
+    if expired_black_acceptance(context):
+        return None
+    black_quote = accepted_black_quote(context)
+    request = black_quote or _fast_purchase_request(context)
     if not request:
         return None
     plan, city = request["plan"], request["city"]
@@ -1887,6 +1921,8 @@ def _try_fast_purchase_path(
 
     handoff = bool(city or "data_gb" in plan)
     decision = _fast_purchase_decision(plan, city, handoff=handoff)
+    if black_quote and black_quote["mobile_gb"]:
+        decision.summary = f"{decision.summary} O combo inclui Sulmóvel {black_quote['mobile_gb']}GB."
     try:
         with db.begin_nested():
             if handoff:
@@ -2138,6 +2174,16 @@ def ai_reply_limit_reached(db: Session, conversation_id: int) -> bool:
     return int(sent or 0) >= MAX_AI_REPLIES_PER_HOUR
 
 
+def _dispatch_closing_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
+    from app.services.ai_seller import process_seller_job
+    from app.services.ai_service_handoff import handle_closing_support
+
+    if handle_closing_support(db, job, agent):
+        LOG.info("sulia_contextual_reply conversation=%s category=central_fechamento", job.conversation_id)
+        return "completed"
+    return process_seller_job(db, job, agent)
+
+
 def process_ai_job(db: Session, job: AIJob) -> str:
     if not ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id):
         job.status = "CANCELADO"
@@ -2182,9 +2228,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             if current_state.state == "CLOSING" and closer and closer.role_type == "CLOSER":
                 # Venda retomada pelo Vendedor IA: este job passa a ser dele.
                 job.agent_id = closer.id
-                from app.services.ai_seller import process_seller_job
-
-                return process_seller_job(db, job, closer)
+                return _dispatch_closing_job(db, job, closer)
     if (
         agent.role_type != "CLOSER"
         and current_state
@@ -2201,8 +2245,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "skipped"
 
     if agent.role_type == "CLOSER":
-        from app.services.ai_seller import process_seller_job
-        return process_seller_job(db, job, agent)
+        return _dispatch_closing_job(db, job, agent)
 
     # Mensagem que entrou antes de "Pausar IA" na fila não recebe resposta do SDR.
     if binding_for_conversation(db, job.conversation_id) is None:
@@ -2259,7 +2302,8 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     db.add(run)
     db.flush()
 
-    if effective_mode == "AUTO":
+    direct_service = _contextual_service_reply(context) if effective_mode == "AUTO" else None
+    if effective_mode == "AUTO" and direct_service is None:
         recall_outcome = _try_recall_path(
             db,
             agent=agent,
@@ -2280,7 +2324,9 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             return fast_outcome
 
     try:
-        decision = run_ai_decision(agent, context)
+        decision = direct_service or run_ai_decision(agent, context)
+        if direct_service is not None:
+            decision._timing = {"model_ms": 0, "contextual_reply": "central"}
         integrity_issues = _journey_integrity_issues(decision, context)
         if integrity_issues:
             retry_context = dict(context)
@@ -2378,8 +2424,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
             if _is_closer_handoff(decision):
                 # A mensagem do SDR não chega ao cliente quando o Vendedor IA
-                # assume: revisá-la só atrasava e bloqueava o fechamento
-                # (conversa 239 em 04/11 e simulações).
+                # assume. Essa mensagem não precisa passar pela revisão de envio.
                 from app.services.ai_guardian import GuardianResult
 
                 guardian = GuardianResult(
@@ -2577,9 +2622,15 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
             if decision.service_redirect:
                 from app.services.ai_followups import cancel_pending_followups
+                from app.services.ai_service_handoff import record_service_handoff
+
                 cancel_pending_followups(db, job.conversation_id, reason="EXISTING_CUSTOMER_PLAN_CHANGE")
-                conversation.status = "RESOLVIDO"
-                conversation.closed_at = utcnow()
+                source_message = db.get(Message, job.message_id)
+                if source_message is not None:
+                    record_service_handoff(db, conversation, source_message, agent.user_id, decision._service_handoff)
+                if not decision._service_handoff.get("new_connection"):
+                    conversation.status = "RESOLVIDO"
+                    conversation.closed_at = utcnow()
             elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
                 from app.services.ai_followups import cancel_pending_followups
                 cancel_pending_followups(db, job.conversation_id, reason="OPT_OUT")
@@ -2624,6 +2675,13 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     output = decision.model_dump()
     output["policy_observations"] = list(decision._policy_observations)
     output["timing"] = dict(decision._timing)
+    if decision._service_handoff:
+        output["service_handoff"] = decision._service_handoff
+    if effective_mode == "AUTO" and decision._contextual_reply:
+        LOG.info(
+            "sulia_contextual_reply conversation=%s category=%s",
+            job.conversation_id, "central" if decision.service_redirect else "catalogo",
+        )
     run.status = "CONCLUIDO"
     run.intent = decision.intent
     run.qualification_score = decision.qualification_score
@@ -2657,7 +2715,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             state.state = "SHADOW_REVIEW"
         elif decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
             state.state = "OPT_OUT"
-        elif decision.service_redirect:
+        elif decision.service_redirect and not decision._service_handoff.get("new_connection"):
             state.state = "COMPLETED"
         else:
             state.state = "AI_ACTIVE"
