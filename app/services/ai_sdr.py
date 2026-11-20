@@ -1954,6 +1954,7 @@ def _try_fast_purchase_path(
                     source_message_id=job.message_id,
                     step=1,
                     pending_action=decision.journey_pending_action,
+                    pilot_theme=dispatch_offer.pilot_followup_theme(decision.reply_text) if dispatch_id else None,
                 )
     except Exception as exc:
         if dispatch_id:
