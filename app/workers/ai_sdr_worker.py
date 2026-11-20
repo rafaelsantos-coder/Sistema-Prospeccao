@@ -1133,8 +1133,8 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
 
 
 
-def _review_today_fila_ia() -> dict[str, int]:
-    """Audita as mensagens de hoje da FILA-IA, recuperando apenas pendências elegíveis.
+def _review_yesterday_and_today_fila_ia() -> dict[str, int]:
+    """Audita mensagens de ontem e hoje da FILA-IA, recuperando pendências elegíveis.
 
     Nunca transfere filas, reabre conversa encerrada nem reenvia quando existe
     resposta posterior, job de IA prévio ou responsável humano.
@@ -1156,9 +1156,9 @@ def _review_today_fila_ia() -> dict[str, int]:
             return {"not_authorized": 1}
 
         local_now = datetime.now(ZoneInfo(settings.default_timezone))
-        since_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        since_local = (local_now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         since_utc = since_local.astimezone(timezone.utc).replace(tzinfo=None)
-        # Paginar sem limite global para cobrir todas as mensagens de hoje.
+        # Paginar sem limite global para cobrir todas as mensagens de ontem e hoje.
         last_id = 0
         seen: set[int] = set()
         while True:
@@ -1178,7 +1178,7 @@ def _review_today_fila_ia() -> dict[str, int]:
                 break
             last_id = batch[-1].id
             for message in batch:
-                counts["received_today"] += 1
+                counts["received_yesterday_today"] += 1
                 if message.conversation_id in seen:
                     continue
                 seen.add(message.conversation_id)
@@ -1203,7 +1203,7 @@ def _review_today_fila_ia() -> dict[str, int]:
                 state = db.scalar(select(AIConversationState).where(
                     AIConversationState.conversation_id == conversation.id,
                 ))
-                if state and state.state in {"OPT_OUT", "COMPLETED", "SHADOW_REVIEW"}:
+                if state and state.state in {"OPT_OUT", "COMPLETED"}:
                     counts["terminal_ai_state"] += 1
                     continue
 
@@ -1215,8 +1215,13 @@ def _review_today_fila_ia() -> dict[str, int]:
                     counts["answered"] += 1
                     continue
                 if latest.message_type not in AI_INBOUND_MESSAGE_TYPES:
-                    counts["non_text"] += 1
+                    counts["unsupported_type"] += 1
                     continue
+                if state and state.state == "SHADOW_REVIEW":
+                    # A revisão em SHADOW não enviou mensagem. Novo inbound sem
+                    # resposta humana precisa poder voltar ao fluxo SDR real.
+                    state.state = "NEW"
+                    counts["shadow_state_resumed"] += 1
                 prior_job = db.scalar(select(AIJob).where(
                     AIJob.message_id == latest.id,
                 ).limit(1))
@@ -1256,7 +1261,7 @@ def _review_today_fila_ia() -> dict[str, int]:
                     db.rollback()
                     counts["errors"] += 1
                     LOG.exception("ai_today_review_enqueue_failed conversation=%s", conversation.id)
-        LOG.warning("ai_today_fila_ia_review %s", dict(counts))
+        LOG.warning("ai_yesterday_today_fila_ia_review %s", dict(counts))
     return dict(counts)
 
 
@@ -1360,7 +1365,7 @@ def run() -> None:
     recovered_recent = _recover_recent_unqueued_inbounds()
     if recovered_recent:
         LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
-    _review_today_fila_ia()
+    _review_yesterday_and_today_fila_ia()
     if settings.ai_sdr_enabled and settings.ai_autonomous_enabled:
         try:
             claimed = _takeover_unanswered_human_conversations()
