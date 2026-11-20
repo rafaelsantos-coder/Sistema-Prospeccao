@@ -82,5 +82,5 @@
     return matches;
   }
 
-  return {available, cross};
+  return {available, distance, cross};
 });

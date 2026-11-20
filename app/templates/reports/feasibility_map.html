@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', path='/css/feasibility_map.css') }}">
+<div id="feasibility-map-app" data-network-url="/api/feasibility-map"
+     {% if google_maps_key %}data-google-maps-key="{{ google_maps_key|e }}"
+     data-google-map-id="{{ google_map_id|e }}" data-map-nonce="{{ csp_nonce|e }}"{% endif %}>
+  <div class="page-lead split vm-heading">
+    <div>
+      <h2>Mapa de Viabilidade</h2>
+      <p>Consulte as portas livres das caixas NAP próximas ao local da venda.</p>
+    </div>
+    <span id="vm-reference" class="vm-reference" hidden></span>
+  </div>
+
+  <section class="panel vm-search" aria-label="Pesquisar no mapa">
+    <label class="field" for="vm-city">
+      <span>Cidade</span>
+      <select id="vm-city" disabled><option value="">Todas as cidades</option></select>
+    </label>
+    <form id="vm-address-form" class="vm-field">
+      <label id="vm-address-label" for="vm-address">Endereço</label>
+      <div class="vm-input-row">
+        <div id="vm-address-control">
+          <input id="vm-address" type="search" placeholder="Rua, número e cidade" autocomplete="off" maxlength="220" disabled>
+        </div>
+        <button id="vm-address-submit" class="button button-secondary" disabled>Buscar</button>
+      </div>
+      <small id="vm-address-status" role="status">{{ 'Carregando busca do Google…' if google_maps_key else 'Busca por endereço indisponível.' }}</small>
+    </form>
+    <form id="vm-coordinate-form" class="vm-field">
+      <label for="vm-coordinate">Coordenadas</label>
+      <div class="vm-input-row">
+        <input id="vm-coordinate" type="text" placeholder="-28.3005, -54.2633" autocomplete="off" maxlength="80" spellcheck="false" required>
+        <button class="button button-primary">Localizar</button>
+      </div>
+      <small id="vm-coordinate-status" role="status">Latitude e longitude</small>
+    </form>
+  </section>
+
+  <div class="vm-layout">
+    <section class="panel vm-map-panel" aria-label="Mapa das caixas NAP">
+      <div class="vm-map-frame">
+        <div id="vm-map" aria-label="Posição das caixas NAP e do local pesquisado"></div>
+        <p id="vm-map-status" role="status">Carregando mapa…</p>
+      </div>
+      <div class="vm-legend" aria-label="Legenda">
+        <span><i class="vm-dot vm-dot-free"></i> Com portas livres</span>
+        <span><i class="vm-dot"></i> Indisponível</span>
+        <span><i class="vm-dot vm-dot-search"></i> Local consultado</span>
+      </div>
+    </section>
+    <aside class="panel vm-results" aria-labelledby="vm-results-title">
+      <h3 id="vm-results-title">Disponibilidade</h3>
+      <p id="vm-result-target" class="vm-target" hidden></p>
+      <label id="vm-search-radius" class="field vm-radius" for="vm-radius" hidden>
+        <span>Raio da busca</span>
+        <select id="vm-radius">
+          <option value="100">100 m</option>
+          <option value="250" selected>250 m</option>
+          <option value="500">500 m</option>
+        </select>
+      </label>
+      <div id="vm-summary" class="vm-summary" role="status">Carregando caixas importadas…</div>
+      <ol id="vm-results" class="vm-result-list" aria-label="Caixas próximas"></ol>
+      <p id="vm-radius-note" class="vm-note" hidden>Distâncias em linha reta entre o local e cada caixa.</p>
+    </aside>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='/js/map_assets.js') }}" defer></script>
+<script src="{{ url_for('static', path='/js/credit_map_network.js') }}" defer></script>
+<script src="{{ url_for('static', path='/js/feasibility_map.js') }}" defer></script>
+{% endblock %}

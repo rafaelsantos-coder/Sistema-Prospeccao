@@ -10,6 +10,35 @@ const sandbox = {window: {}};
 vm.runInNewContext(script, sandbox);
 const heat = sandbox.window.SulnetCreditHeat;
 const network = require('../../app/static/js/credit_map_network.js');
+const feasibility = require('../../app/static/js/feasibility_map.js');
+
+test('viabilidade aceita coordenadas brasileiras e copiadas do Google Maps', () => {
+  const point = {lat: -28.3005, lng: -54.2633};
+  assert.deepEqual(feasibility.parseCoordinates('-28.3005, -54.2633'), point);
+  assert.deepEqual(feasibility.parseCoordinates('-28,3005; -54,2633'), point);
+  assert.deepEqual(feasibility.parseCoordinates('-28,3005 -54,2633'), point);
+  assert.deepEqual(feasibility.parseCoordinates('-28,3005, -54,2633'), point);
+  assert.equal(feasibility.parseCoordinates('91, -54.2633'), null);
+  assert.equal(feasibility.parseCoordinates('-28.3, -190'), null);
+  assert.equal(feasibility.parseCoordinates('Rua Brasil, 120'), null);
+});
+
+test('viabilidade mede pelas coordenadas originais e prioriza caixas livres dentro do raio', () => {
+  const make = (id, lat, livres, status = 'Online') => ({
+    id, lat: lat + .01, lng: -54.26, original_lat: lat, original_lng: -54.26, livres, status,
+  });
+  const boxes = [
+    make(1, -28.3001, 2, 'Offline'),
+    make(2, -28.3002, 0),
+    make(3, -28.3010, 4),
+    make(4, -28.3008, 8, 'Vazia'),
+    make(5, -28.3040, 4),
+  ];
+  const result = feasibility.nearbyBoxes(boxes, {lat: -28.30, lng: -54.26}, 250);
+  assert.deepEqual(result.map(row => row.nap.id), [4, 3, 1, 2]);
+  assert.deepEqual(result.map(row => network.available(row.nap)), [true, true, false, false]);
+  assert.ok(result[0].meters > 85 && result[0].meters < 93);
+});
 
 const hoods = [
   {name: 'CENTRO', approved: 100, rejected: 25},

@@ -72,15 +72,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 ]
             ),
         )
-        if request.url.path == "/reports/credit-map":
-            # Exceção restrita a esta página (biblioteca Leaflet); as demais continuam sem scripts externos.
+        map_path = request.url.path
+        if map_path in {"/reports/credit-map", "/feasibility-map"}:
+            # Leaflet e Google Maps ficam restritos às páginas que usam essas bibliotecas.
             policy = response.headers["Content-Security-Policy"]
             external = "https://unpkg.com https://cdnjs.cloudflare.com"
             policy = policy.replace(
                 f"script-src 'self' 'nonce-{nonce}'", f"script-src 'self' 'nonce-{nonce}' {external}"
             ).replace("style-src 'self' 'unsafe-inline'", f"style-src 'self' 'unsafe-inline' {external}")
-            if settings.credit_map_provider == "google" and settings.google_maps_browser_key:
-                # Somente o painel de mapa precisa desses dominios; o CSP do restante do CRM permanece fechado.
+            if settings.google_maps_browser_key and (
+                map_path == "/feasibility-map" or settings.credit_map_provider == "google"
+            ):
                 # A API dinamica do Google herda o nonce definido no carregador da pagina.
                 policy = policy.replace(
                     f"script-src 'self' 'nonce-{nonce}' {external}",
@@ -89,6 +91,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                     "https://mapsresources-pa.googleapis.com 'unsafe-eval' blob:",
                 )
                 policy += "; frame-src https://*.google.com; worker-src blob:"
+                if map_path == "/feasibility-map":
+                    policy = policy.replace("font-src 'self'", "font-src 'self' https://fonts.gstatic.com")
+                    policy = policy.replace(f"style-src 'self' 'unsafe-inline' {external}",
+                                            f"style-src 'self' 'unsafe-inline' {external} https://fonts.googleapis.com")
             response.headers["Content-Security-Policy"] = policy
         if settings.is_production:
             response.headers.setdefault(
@@ -97,7 +103,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             )
 
         if request.url.path.startswith(
-            ("/login", "/change-password", "/settings", "/conversations")
+            ("/login", "/change-password", "/settings", "/conversations", "/feasibility-map")
         ):
             response.headers.setdefault("Cache-Control", "no-store")
 
