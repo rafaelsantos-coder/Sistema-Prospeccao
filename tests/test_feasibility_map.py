@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import replace
 from secrets import token_urlsafe
+from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +16,7 @@ from app.models import CreditMapNetwork, User
 from app.routers import feasibility_map
 from app.security import hash_password
 from app.timeutils import utcnow
+from tests.test_credit_map_google_maps import _script_sources
 
 
 def _login_consultant(client: TestClient, permissions: list[str] | None = None) -> None:
@@ -68,8 +70,9 @@ def test_seller_uses_nap_snapshot_without_access_to_credit(monkeypatch):
             assert 'id="vm-coordinate"' in page.text
             assert 'id="vm-city"' in page.text
             assert 'data-google-maps-key="maps-test-fixture"' in page.text
-            assert 'https://maps.googleapis.com' in page.headers['content-security-policy']
-            assert 'https://maps.googleapis.com' not in client.get('/dashboard').headers['content-security-policy']
+            assert any(urlsplit(source).hostname == 'maps.googleapis.com' for source in _script_sources(page))
+            dashboard = client.get('/dashboard')
+            assert all(urlsplit(source).hostname != 'maps.googleapis.com' for source in _script_sources(dashboard))
 
             response = client.get('/api/feasibility-map')
             assert response.status_code == 200
