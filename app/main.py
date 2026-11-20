@@ -33,8 +33,13 @@ class _RedactWebhookSecretFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
-        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str) and "/webhooks/" in args[2]:
-            record.args = (*args[:2], self._PATTERN.sub(r"\1***", args[2]), *args[3:])
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2]
+            if path.startswith("/internal/diag/"):
+                path = "/internal/diag/***"
+            elif "/webhooks/" in path:
+                path = self._PATTERN.sub(r"\1***", path)
+            record.args = (*args[:2], path, *args[3:])
         return True
 
 
