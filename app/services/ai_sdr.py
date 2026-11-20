@@ -27,6 +27,7 @@ from app.models import (
     Message,
     ServiceQueue,
 )
+from app.services import dispatch_offer
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_catalog_reply import (
     accepted_black_quote,
@@ -1093,7 +1094,7 @@ def _contextual_service_reply(context: dict) -> AIDecision | None:
 
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not (context.get("guardian_feedback") or context.get("integrity_guard")):
-        direct_answer = _contextual_service_reply(context) or contextual_catalog_reply(context)
+        direct_answer = _contextual_service_reply(context) or (None if context.get("dispatch_offer_id") else contextual_catalog_reply(context))
         if direct_answer:
             _sanitize_unconfirmed_customer_facts(direct_answer, context)
             direct_answer._timing = {
@@ -1113,6 +1114,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     instructions = ((agent.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT) + UNTRUSTED_INPUT_NOTICE
     effective_mode = _effective_execution_mode(agent)
     prompt = (
+        "Quando houver oferta_do_disparo, use essa promoção para responder à dúvida do cliente. Preserve plano e meses grátis. Só mude a oferta a pedido do cliente. "
         "Analise esta interação comercial do WhatsApp da Sulnet. "
         "Use o histórico e a base de conhecimento abaixo, respeitando rigorosamente a origem de cada dado. "
         "REGRA DE EVIDÊNCIA: mensagens INBOUND são falas do cliente; mensagens OUTBOUND são falas do próprio SulIA. "
@@ -1906,21 +1908,31 @@ def _try_fast_purchase_path(
     run: AIRun,
     context: dict,
 ) -> str | None:
-    if expired_black_acceptance(context):
-        return None
-    black_quote = accepted_black_quote(context)
-    request = black_quote or _fast_purchase_request(context)
-    if not request:
-        return None
-    plan, city = request["plan"], request["city"]
-    if city and "cities" in plan and not _plan_available_in_city(plan, city):
-        # Cidade fora da cobertura deste plano: o fluxo normal apresenta as opções.
-        return None
+    dispatch_id = context.get("dispatch_offer_id")
+    black_quote = None
+    if dispatch_id:
+        decision = dispatch_offer.offer_decision(context, dispatch_id)
+        if not decision:
+            return None
+        handoff = decision.handoff_recommended
+        plan = _ftth_plan_by_speed(650)
+        city = decision.qualification.city or ""
+    else:
+        if expired_black_acceptance(context):
+            return None
+        black_quote = accepted_black_quote(context)
+        request = black_quote or _fast_purchase_request(context)
+        if not request:
+            return None
+        plan, city = request["plan"], request["city"]
+        if city and "cities" in plan and not _plan_available_in_city(plan, city):
+            # Cidade fora da cobertura deste plano: o fluxo normal apresenta as opções.
+            return None
 
+        handoff = bool(city or "data_gb" in plan)
+        decision = _fast_purchase_decision(plan, city, handoff=handoff)
     from app.services.ai_seller import start_closing_from_sdr
 
-    handoff = bool(city or "data_gb" in plan)
-    decision = _fast_purchase_decision(plan, city, handoff=handoff)
     if black_quote and black_quote["mobile_gb"]:
         decision.summary = f"{decision.summary} O combo inclui Sulmóvel {black_quote['mobile_gb']}GB."
     try:
@@ -1944,6 +1956,13 @@ def _try_fast_purchase_path(
                     pending_action=decision.journey_pending_action,
                 )
     except Exception as exc:
+        if dispatch_id:
+            job.status = "PENDENTE" if job.attempts < 3 else "FALHOU"
+            job.available_at = utcnow() + timedelta(minutes=1)
+            run.status = "FALHOU"
+            run.error = job.error = "Falha ao processar a promoção de 650 Mega."
+            run.finished_at = utcnow()
+            return "dispatch_offer_failed"
         # Qualquer falha devolve a mensagem ao fluxo normal, sem estado parcial.
         LOG.warning(
             "ai_sdr_fast_purchase_fallback job=%s conversation=%s error=%s",
@@ -2288,6 +2307,10 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         effective_mode = "AUTO"
     else:
         effective_mode = _effective_execution_mode(agent)
+    dispatch_id = dispatch_offer.source_dispatch(db, message) if message else None
+    if dispatch_id and not _is_company_context(context):
+        context["dispatch_offer_id"] = dispatch_id
+        context["oferta_do_disparo"] = dispatch_offer.OFFER
     run = AIRun(
         job_id=job.id,
         agent_id=agent.id,
@@ -2304,7 +2327,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
 
     direct_service = _contextual_service_reply(context) if effective_mode == "AUTO" else None
     if effective_mode == "AUTO" and direct_service is None:
-        recall_outcome = _try_recall_path(
+        recall_outcome = None if context.get("dispatch_offer_id") else _try_recall_path(
             db,
             agent=agent,
             job=job,
@@ -2355,6 +2378,16 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             )
             decision = run_ai_decision(agent, retry_context)
             integrity_issues = _journey_integrity_issues(decision, context)
+
+        if context.get("dispatch_offer_id") and _is_closer_handoff(decision):
+            # A resposta livre do modelo também passa por confirmação dos termos
+            # antes de encaminhar ao vendedor e selecionar o contrato.
+            confirmation = dispatch_offer.offer_decision(
+                {**context, "latest_customer_message": "tenho interesse", "history": []},
+                context["dispatch_offer_id"],
+            )
+            decision = confirmation
+            integrity_issues = []
 
         if integrity_issues and effective_mode == "AUTO":
             # Já houve uma regeneração: a IA responde agora com a recuperação
