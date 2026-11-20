@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.access_control import has_permission
-from app.services.ai_sdr import enqueue_ai_job, latest_run_for_conversation
+from app.services.ai_sdr import AI_INBOUND_MESSAGE_TYPES, enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
 from app.services.global_blacklist import (
     BlacklistPhoneError,
@@ -239,7 +239,7 @@ def _transfer_queues(
 
 
 def _pending_inbound_message(db: Session, conversation: Conversation) -> Message | None:
-    """Última mensagem de texto do cliente que ainda não teve resposta nossa."""
+    """Última mensagem do cliente sem resposta, inclusive mídias suportadas."""
     latest = db.scalar(
         select(Message)
         .where(
@@ -249,7 +249,7 @@ def _pending_inbound_message(db: Session, conversation: Conversation) -> Message
         .order_by(Message.id.desc())
         .limit(1)
     )
-    if not latest or latest.direction != "INBOUND" or latest.message_type != "TEXT":
+    if not latest or latest.direction != "INBOUND" or latest.message_type not in AI_INBOUND_MESSAGE_TYPES:
         return None
     return latest
 
