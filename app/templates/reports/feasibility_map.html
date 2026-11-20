@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
+{% set search_pin_url = url_for('static', path='/icons/feasibility-location-pin.svg') %}
 <link rel="stylesheet" href="{{ url_for('static', path='/css/feasibility_map.css') }}">
-<div id="feasibility-map-app" data-network-url="/api/feasibility-map"
+<div id="feasibility-map-app" data-network-url="/api/feasibility-map" data-search-pin-url="{{ search_pin_url }}"
      {% if google_maps_key %}data-google-maps-key="{{ google_maps_key|e }}"
      data-google-map-id="{{ google_map_id|e }}" data-map-nonce="{{ csp_nonce|e }}"{% endif %}>
   <div class="page-lead split vm-heading">
@@ -46,7 +47,7 @@
       <div class="vm-legend" aria-label="Legenda">
         <span><i class="vm-dot vm-dot-free"></i> Com portas livres</span>
         <span><i class="vm-dot"></i> Indisponível</span>
-        <span><i class="vm-dot vm-dot-search"></i> Local consultado</span>
+        <span><img src="{{ search_pin_url }}" width="12" height="16" alt=""> Local consultado</span>
       </div>
     </section>
     <aside class="panel vm-results" aria-labelledby="vm-results-title">

@@ -90,6 +90,10 @@ def test_seller_uses_nap_snapshot_without_access_to_credit(monkeypatch):
             assert 'id="vm-address"' in page.text
             assert 'id="vm-coordinate"' in page.text
             assert 'id="vm-city"' in page.text
+            pin_url = re.search(r'data-search-pin-url="([^"]+)"', page.text)
+            assert pin_url and f'<img src="{pin_url[1]}"' in page.text
+            pin = client.get(pin_url[1])
+            assert pin.status_code == 200 and pin.headers['content-type'].startswith('image/svg+xml')
             assert 'data-google-maps-key="maps-test-fixture"' in page.text
             assert any(urlsplit(source).hostname == 'maps.googleapis.com' for source in _script_sources(page))
             dashboard = client.get('/dashboard')

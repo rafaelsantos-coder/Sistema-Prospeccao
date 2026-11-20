@@ -69,7 +69,6 @@
 .vm-legend > span { display: inline-flex; align-items: center; gap: 6px; }
 .vm-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #64748b; }
 .vm-dot-free { background: #2563eb; }
-.vm-dot-search { background: #e9681b; }
 .vm-results { min-width: 0; padding: 16px; }
 .vm-results > h3 { margin: 0 0 10px; }
 .vm-target { overflow-wrap: anywhere; margin: 0 0 12px; color: var(--ink-2); font-size: 13px; }
