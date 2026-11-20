@@ -34,6 +34,7 @@ from app.services.ai_sdr_policy import FTTH_PLANS, PLAN_CHANGE_SERVICE_PHONE, UN
 from app.services.audit import write_audit
 from app.services import ai_campaign_black as black_campaign
 from app.services import ai_campaign_recall as recall_campaign
+from app.services import seller_feasibility as feasibility
 from app.services import crm_notes
 from app.services import crm_prospect_sync as prospect_sync
 from app.services.crm_sulnet import (
@@ -4248,7 +4249,30 @@ def _after_signed_text(state: AIClosingState, collected: dict[str, Any]) -> str:
     return SIGNED_FINAL_MESSAGE
 
 
+def _fiber_sale(state, collected):
+    product = _norm(f"{state.plan_label} {collected.get('categoryName', '')}")
+    return any(word in product for word in ("fibra", "ftth", "banda larga", "combo", "corporativ")) or bool(_resid_fiber_speed(state.plan_label))
+
+
+def _check_fiber_location(db, state, collected, point):
+    if state.step != "FIBER_LOCATION":
+        collected["_after_fiber_location"] = state.step
+    state.step = "FIBER_LOCATION"
+    if point is None:
+        return feasibility.ASK_PIN
+    result = feasibility.check_point(db, point)
+    collected["fiberFeasibility"] = result
+    if result["status"] != "available":
+        return feasibility.REVIEW
+    state.step = collected.pop("_after_fiber_location", "PLAN_CONFIRM")
+    return "Temos disponibilidade de fibra nesse local! " + _prompt_for_step(state, collected)
+
+
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
+    if state.step == "FIBER_LOCATION":
+        if collected.get("fiberFeasibility", {}).get("status") in {"review", "no_data"}:
+            return feasibility.REVIEW
+        return feasibility.ASK_PIN
     if state.step == COMBO_MOBILE_STEP:
         return black_campaign.combo_mobile_prompt(int(collected.get("_combo_page") or 1))
     if state.step == SALE_ADJUST_STEP:
@@ -5111,6 +5135,23 @@ def start_closing_from_sdr(
         state.last_error = str(exc)
         LOG.warning("closer_crm_create_deferred conversation=%s error=%s", conversation.id, exc)
 
+    if created_state and _fiber_sale(state, collected):
+        recent = db.scalars(
+            select(Message).where(
+                Message.conversation_id == conversation.id, Message.direction == "INBOUND",
+                Message.id <= job.message_id, Message.created_at >= utcnow() - timedelta(hours=24),
+            ).order_by(Message.id.desc()).limit(30)
+        )
+        point = None
+        for inbound in recent:
+            body = inbound.body or ""
+            if inbound.message_type == "LOCATION" or feasibility.coordinates(body) or re.search(
+                r"\b(rua|avenida|travessa|estrada)\b", body, re.I
+            ):
+                point = feasibility.locate(db, body, collected.get("city"), inbound)
+                break
+        prompt = _check_fiber_location(db, state, collected, point)
+        _save_collected(state, collected)
     if not prompt:
         prompt = _prompt_for_step(state, collected)
     try:
@@ -5388,7 +5429,21 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             collected,
             text,
         )
-        if audio_unreadable:
+        can_check = _fiber_sale(state, collected) and state.step not in {
+            "WAITING_CONTRACT", "WAITING_SIGNATURE", "COMPLETED",
+        }
+        point = None
+        if state.step == "FIBER_LOCATION" or (can_check and (
+            message.message_type == "LOCATION" or feasibility.coordinates(text)
+            or re.search(r"\b(rua|avenida|travessa|estrada)\b", text, re.I)
+        )):
+            point = feasibility.locate(db, text, collected.get("city"), message)
+        if (state.step == "FIBER_LOCATION" and not point
+                and collected.get("fiberFeasibility", {}).get("status") in {"review", "no_data"}):
+            reply = feasibility.REVIEW
+        elif state.step == "FIBER_LOCATION" or point:
+            reply = _check_fiber_location(db, state, collected, point)
+        elif audio_unreadable:
             reply = f"Não consegui ouvir o seu áudio. Pode me mandar por escrito? {_prompt_for_step(state, collected)}"
 
         elif contract_knowledge_reply:
@@ -5729,6 +5784,15 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     collected,
                     fallback_step="PLAN_CONFIRM",
                 )
+                if _fiber_sale(state, collected):
+                    current = ", ".join(str(collected.get(k) or "") for k in ("street", "number", "city"))
+                    point = feasibility.address_point(db, current, collected.get("city"))
+                    old_address = collected.get("_checked_fiber_address")
+                    if point or old_address and old_address != current or not collected.get("fiberFeasibility"):
+                        if not point:
+                            collected.pop("fiberFeasibility", None)
+                        reply = _check_fiber_location(db, state, collected, point)
+                    collected["_checked_fiber_address"] = current
 
         elif state.step == "PLAN_CONFIRM":
             answer = _yes_no(text)
