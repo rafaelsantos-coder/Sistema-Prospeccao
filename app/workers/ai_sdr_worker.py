@@ -33,7 +33,7 @@ from app.services.ai_learning import run_learning_loop
 from app.services.ai_engineer import run_engineer_loop
 from app.services.ai_weekly_analyst import run_weekly_analyst_loop
 from app.services.ai_sdr_policy import followup_spec, next_business_time
-from app.services.queue_routing import MANUAL_TRANSFER_ORIGIN, bind_conversation_queue, queue_for_conversation
+from app.services.queue_routing import MANUAL_AI_ORIGIN, MANUAL_TRANSFER_ORIGIN, bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utc_naive, utcnow
 
@@ -761,7 +761,7 @@ def _recover_recent_unqueued_inbounds() -> int:
                 and db.scalar(
                     select(ConversationQueueLink.id).where(
                         ConversationQueueLink.conversation_id == conversation.id,
-                        ConversationQueueLink.origin == MANUAL_TRANSFER_ORIGIN,
+                        ConversationQueueLink.origin.in_((MANUAL_TRANSFER_ORIGIN, MANUAL_AI_ORIGIN)),
                     )
                 )
             )

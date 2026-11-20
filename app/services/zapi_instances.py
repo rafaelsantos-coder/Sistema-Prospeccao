@@ -211,7 +211,7 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
     ele é autocorrigido antes do envio.
     """
     from app.models import Conversation
-    from app.services.queue_routing import queue_for_conversation
+    from app.services.queue_routing import manually_transferred_to_ai, queue_for_conversation
 
     conversation = db.get(Conversation, conversation_id)
     if conversation is not None and conversation.source == "TELEGRAM":
@@ -219,6 +219,12 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
         from app.services.telegram import service_for_telegram_conversation
 
         return service_for_telegram_conversation(db, conversation)  # type: ignore[return-value]
+
+    if manually_transferred_to_ai(db, conversation_id):
+        instance = conversation_instance(db, conversation_id)
+        if not instance:
+            raise ZApiNotConfigured("A conversa transferida à IA está sem a conexão WhatsApp de origem.")
+        return service_for_instance(instance)
 
     queue = queue_for_conversation(db, conversation_id)
     if queue:
