@@ -411,6 +411,28 @@ class MessageEvent(Base):
     message: Mapped[Message | None] = relationship()
 
 
+class AIReplyDelivery(Base):
+    """Uma resposta de atendimento por mensagem recebida, com tentativas persistentes."""
+
+    __tablename__ = "ai_reply_deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    inbound_message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), unique=True,
+    )
+    outbound_message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), unique=True,
+    )
+    agent_id: Mapped[int] = mapped_column(ForeignKey("ai_agent_profiles.id"))
+    buttons_json: Mapped[str] = mapped_column(Text, default="[]")
+    link_url: Mapped[str] = mapped_column(Text, default="")
+    link_label: Mapped[str] = mapped_column(String(20), default="")
+    allow_resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ConversationAssignment(Base):
     __tablename__ = "conversation_assignments"
 
@@ -978,6 +1000,8 @@ class AIClosingState(Base):
     handoff_summary: Mapped[str] = mapped_column(Text, default="")
     last_error: Mapped[str] = mapped_column(Text, default="")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    activation_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    activation_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

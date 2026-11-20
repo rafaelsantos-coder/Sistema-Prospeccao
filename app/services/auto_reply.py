@@ -1,10 +1,4 @@
-"""Resposta automática de empresa (WhatsApp Business) não é o cliente falando.
-
-Conversas de 10/11: "Olá! Estamos fechados no momento! Horários de
-funcionamento..." recebeu "Qual seu CPF?", e o assistente automático de uma
-clínica recebeu cinco perguntas seguidas da IA. Quando só o robô da empresa
-respondeu, a IA manda uma única mensagem para o responsável e para.
-"""
+"""Identifica retornos automáticos de contas comerciais do WhatsApp."""
 
 from __future__ import annotations
 
@@ -27,6 +21,16 @@ _STRONG_CUES = re.compile(
     r"|faca (o )?seu pedido|agende (o )?seu pedido|cardapio|nosso site:|acesse nosso"
 )
 _SOFT_CUE = re.compile(r"como (podemos|posso) (te |lhe )?ajudar")
+_MENU_RETURN = re.compile(
+    r"(?:opcao (?:de menu )?invalida|(?:o |seu )?atendimento (?:foi )?(?:finalizado|encerrado))"
+    r"[.! ]*(?:por favor,? )?(?:tente novamente[.! ]*)?$"
+)
+_MENU_INSTRUCTIONS = re.compile(r"(?:digite|informe) o numero correspondente|escolha .{1,70} digitando (?:apenas )?o numero")
+_HUMAN_QUESTION = re.compile(
+    r"^(?:(?:oi|ola|bom dia|boa tarde|boa noite)[,!. ]+)?"
+    r"(?:qual (?:e )?(?:o |seu |vosso )?horario|quais (?:sao )?(?:os )?horarios|"
+    r"recebi (?:uma |a )?mensagem automatica|nao quero receber)"
+)
 
 
 def _fold(value: str | None) -> str:
@@ -35,51 +39,31 @@ def _fold(value: str | None) -> str:
 
 
 def is_business_auto_reply(text: str | None) -> bool:
-    folded = _fold(text)
-    if not folded:
+    folded = _fold(text).replace("*", "").replace("_", "")
+    if not folded or folded.startswith("[audio"):
         return False
+    if _HUMAN_QUESTION.search(folded):
+        return False
+    if _MENU_RETURN.fullmatch(folded) or _MENU_INSTRUCTIONS.search(folded):
+        return True
     if _STRONG_CUES.search(folded):
         return True
     return len(folded) > 90 and bool(_SOFT_CUE.search(folded))
 
 
-def _inbound_bodies(db: Session, conversation_id: int) -> list[tuple[int, str]]:
-    rows = db.execute(
-        select(Message.id, Message.body)
-        .where(
-            Message.conversation_id == conversation_id,
-            Message.direction == "INBOUND",
-            Message.message_type.in_(["TEXT", "BUTTONS"]),
-        )
-        .order_by(Message.id)
-    ).all()
-    return [(row[0], str(row[1] or "")) for row in rows if str(row[1] or "").strip()]
-
-
-def only_auto_replies(db: Session, conversation_id: int) -> bool:
-    """Todo texto recebido nesta conversa é resposta automática de empresa."""
-    bodies = _inbound_bodies(db, conversation_id)
-    return bool(bodies) and all(is_business_auto_reply(body) for _, body in bodies)
-
-
-def ai_already_spoke_after_auto_reply(db: Session, conversation_id: int) -> bool:
-    bodies = _inbound_bodies(db, conversation_id)
-    if not bodies:
-        return False
-    first_id = bodies[0][0]
-    return bool(
-        db.scalar(
-            select(Message.id)
-            .where(
-                Message.conversation_id == conversation_id,
-                Message.direction == "OUTBOUND",
-                Message.id > first_id,
-            )
-            .limit(1)
-        )
-    )
-
-
 def latest_inbound_is_auto_reply(db: Session, conversation_id: int) -> bool:
-    bodies = _inbound_bodies(db, conversation_id)
-    return bool(bodies) and is_business_auto_reply(bodies[-1][1])
+    message = db.scalar(
+        select(Message)
+        .where(Message.conversation_id == conversation_id, Message.direction == "INBOUND")
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    return bool(message and is_automatic_inbound(message))
+
+
+def is_automatic_inbound(message: Message) -> bool:
+    return (
+        message.direction == "INBOUND"
+        and message.message_type in {"TEXT", "BUTTONS"}
+        and is_business_auto_reply(message.body)
+    )

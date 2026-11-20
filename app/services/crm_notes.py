@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import AIClosingState
 from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
+from app.timeutils import utcnow
 
 LOG = logging.getLogger("sulnet_crm_notes")
 NOTES_KEY = "_crm_notes"
@@ -33,6 +36,11 @@ def pending_notes(state: AIClosingState, collected: dict[str, Any]) -> list[tupl
         price = _money(state.offer_price)
         text = f"Cliente escolheu {state.plan_label}" + (f" por {price}/mês." if price else ".")
         notes.append((f"plan:{state.plan_label}", "Plano escolhido", text))
+    accepted = collected.get("_accepted_offer")
+    if isinstance(accepted, dict) and accepted.get("inbound_id") and accepted.get("plan"):
+        price = _money(accepted.get("monthly_value"))
+        text = f"Cliente aceitou a oferta de {accepted['plan']}" + (f" por {price}/mês." if price else ".")
+        notes.append((f"accept:{accepted['inbound_id']}", "Oferta aceita", text))
     step = state.step
     if step == "CREDIT_REVIEW":
         notes.append(("credit_review", "Consulta de crédito", "Consulta de crédito em andamento."))
@@ -52,6 +60,8 @@ def pending_notes(state: AIClosingState, collected: dict[str, Any]) -> list[tupl
         notes.append(("human", "Pedido de atendimento humano", "Cliente pediu atendimento humano."))
     if step == "COMPLETED" and collected.get("_won_after_signature"):
         notes.append(("signed", "Contrato assinado", "Contrato assinado pelo cliente; venda concluída."))
+    if getattr(state, "activation_confirmed_at", None):
+        notes.append(("activated", "Serviço ativado", "Ativação confirmada pelo CRM."))
     return notes
 
 
@@ -88,14 +98,65 @@ def record_milestones(db: Session, state: AIClosingState) -> int:
 
 
 def record_milestones_safe(db: Session, conversation_id: int) -> None:
-    from sqlalchemy import select  # noqa: PLC0415
-
     try:
         state = db.scalar(select(AIClosingState).where(AIClosingState.conversation_id == conversation_id))
         if state:
             record_milestones(db, state)
     except Exception:  # noqa: BLE001 - anotação nunca derruba o atendimento
         LOG.exception("crm_notes_error conversation=%s", conversation_id)
+
+
+def has_confirmed_activation(payload: dict[str, Any]) -> bool:
+    """A assinatura e a venda ganha são marcos distintos da ativação."""
+    opportunity = payload.get("opportunity")
+    opportunity = opportunity if isinstance(opportunity, dict) else {}
+    backoffice = opportunity.get("backofficeCopy")
+    backoffice = backoffice if isinstance(backoffice, dict) else {}
+    confirmed = {"active", "activated", "ativo", "ativa", "ativado", "ativada"}
+    for item in (payload, opportunity, backoffice):
+        if str(item.get("activationStatus") or "").strip().casefold() in confirmed:
+            return True
+        activation = item.get("activation")
+        if isinstance(activation, dict) and str(activation.get("status") or "").strip().casefold() in confirmed:
+            return True
+    return False
+
+
+def check_completed_activation(db: Session) -> bool:
+    """Consulta uma oportunidade concluída por vez sem atrasar a caixa de mensagens."""
+    from app.models import ConversationQueueLink, ServiceQueue
+
+    now = utcnow()
+    state = db.scalar(
+        select(AIClosingState)
+        .join(ConversationQueueLink, ConversationQueueLink.conversation_id == AIClosingState.conversation_id)
+        .join(ServiceQueue, ServiceQueue.id == ConversationQueueLink.queue_id)
+        .where(
+            ServiceQueue.code == "FILA-IA",
+            AIClosingState.step == "COMPLETED",
+            AIClosingState.opportunity_id.is_not(None),
+            AIClosingState.completed_at >= now - timedelta(days=30),
+            AIClosingState.activation_confirmed_at.is_(None),
+            AIClosingState.collected_json.contains('"_won_after_signature": true'),
+            or_(
+                AIClosingState.activation_checked_at.is_(None),
+                AIClosingState.activation_checked_at <= now - timedelta(hours=2),
+            ),
+        )
+        .order_by(AIClosingState.activation_checked_at.asc().nulls_first(), AIClosingState.id)
+        .limit(1)
+    )
+    if not state:
+        return False
+    state.activation_checked_at = now
+    try:
+        payload = SulnetCRMClient.from_settings().get_status(state.opportunity_id)
+        if has_confirmed_activation(payload):
+            state.activation_confirmed_at = now
+            record_milestones_safe(db, state.conversation_id)
+    except CRMIntegrationError as exc:
+        LOG.warning("crm_activation_status_unavailable conversation=%s status=%s", state.conversation_id, exc.status_code)
+    return True
 
 
 _OBJECTIONS = {

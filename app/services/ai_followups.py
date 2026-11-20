@@ -209,7 +209,7 @@ def schedule_followup(
         status="PENDENTE",
         due_at=utcnow(),
     )
-    allowed, reason = _followup_allowed(db, candidate)
+    allowed, reason = _followup_allowed(db, candidate, require_sent_reply=False)
     if not allowed:
         if reason == "CLIENTE_DESISTIU":
             _persist_explicit_no_contact(db, conversation_id)
@@ -654,7 +654,9 @@ def _queue_ai_paused(db: Session, conversation_id: int) -> bool:
     return binding_for_conversation(db, conversation_id) is None
 
 
-def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
+def _followup_allowed(
+    db: Session, job: AIFollowupJob, *, require_sent_reply: bool = True,
+) -> tuple[bool, str]:
     conversation = db.get(Conversation, job.conversation_id)
     if not conversation:
         return False, "CONVERSA_INEXISTENTE"
@@ -705,10 +707,15 @@ def _followup_allowed(db: Session, job: AIFollowupJob) -> tuple[bool, str]:
     )
     if closing and closing.step in {"ESCALATED", "COMPLETED"}:
         return False, closing.step
-    from app.services.auto_reply import only_auto_replies  # noqa: PLC0415
+    from app.services.auto_reply import latest_inbound_is_auto_reply  # noqa: PLC0415
 
-    if only_auto_replies(db, conversation.id):
+    if latest_inbound_is_auto_reply(db, conversation.id):
         return False, "RESPOSTA_AUTOMATICA"
+    if require_sent_reply and job.source_message_id:
+        from app.services.ai_reply_delivery import reply_not_sent
+
+        if reply_not_sent(db, job.source_message_id):
+            return False, "RESPOSTA_AINDA_NAO_ENVIADA"
     sent_stmt = select(AIFollowupJob.id).where(
         AIFollowupJob.conversation_id == conversation.id,
         AIFollowupJob.status == "ENVIADO",
