@@ -30,6 +30,7 @@
   const metricDisplay = (row) => ['approval_rate','signed_rate'].includes(metric()) ? pct(row[metric()]) : fmt(row[metric()]);
   // Cor única por território: verde se aprovados >= reprovados (empate fica verde), senão vermelho.
   const GREEN = '#16a66f', RED = '#e35b53', YELLOW = '#f5c518';
+  const NAP_COLORS = {free: '#3b82f6', online: '#a3e635', other: '#94a3b8', opportunity: '#a78bfa'};
   const layerColor = (row) => Number(row.approved || 0) >= Number(row.rejected || 0) ? GREEN : RED;
   const rankColor = (row) => state.mode === 'rejected' ? RED
     : state.mode === 'approved' ? GREEN
@@ -113,8 +114,9 @@
     };
     const gps = '<span><i class="cm-tri-key cm-tri-green"></i> GPS aprovado</span>';
     const naps = networkEnabled() ?
-      '<span><i class="cm-dot cm-dot-nap-free"></i> NAP com porta</span>' +
-      '<span><i class="cm-dot cm-dot-nap-other"></i> NAP lotada ou offline</span>' +
+      '<span><i class="cm-dot cm-dot-nap-free"></i> Portas livres</span>' +
+      '<span><i class="cm-dot cm-dot-nap-online"></i> Sessões online</span>' +
+      '<span><i class="cm-dot cm-dot-nap-other"></i> Sem portas livres nem sessões online</span>' +
       '<span><i class="cm-dot cm-dot-nap-priority"></i> Oportunidade</span>' : '';
     legend.innerHTML = (legends[state.mode] || '') +
       (state.mode !== 'triangles' && $('cm-addresses').checked ? gps : '') + naps;
@@ -321,15 +323,23 @@
           if (type === 'marker') {
             shape = new gm.Marker({position, map, icon: options.icon, clickable: true});
           } else {
-            const isDot = type === 'circleMarker';
-            shape = new gm.Circle({
-              center: position, map, radius: isDot ? 30 : options.radius,
+            const style = {
               strokeColor: options.color || options.fillColor,
               strokeWeight: options.weight ?? (options.stroke === false ? 0 : 1),
               strokeOpacity: options.opacity ?? 1,
               fillColor: options.fillColor,
-              fillOpacity: options.fillOpacity ?? 0.4,
-            });
+              fillOpacity: options.fill === false ? 0 : options.fillOpacity ?? 0.4,
+            };
+            if (type === 'circleMarker' && options.fixedSize) {
+              shape = new gm.Marker({
+                position, map, clickable: options.interactive !== false,
+                icon: {...style, path: gm.SymbolPath.CIRCLE, scale: options.radius},
+              });
+            } else {
+              shape = new gm.Circle({
+                ...style, center: position, map, radius: type === 'circleMarker' ? 30 : options.radius,
+              });
+            }
           }
           if (popup) shape.addListener('click', () => {
             const win = new gm.InfoWindow({content: popup, position});
@@ -712,7 +722,6 @@
     const bounds = state.map.getBounds();
     if (!bounds) return;
     const area = snapshot.naps.filter(nap => bounds.contains([nap.lat, nap.lng]));
-    const {available} = window.SulnetCreditNetwork;
     const opportunities = nap => state.networkMatches.get(nap.id)?.opportunities || 0;
     const sum = key => area.reduce((total, nap) => total + nap[key], 0);
     $('cm-network-summary').hidden = false;
@@ -727,16 +736,26 @@
     if (lowZoom && area.length) status.textContent += ' · Aproxime para ver as caixas.';
     const filter = $('cm-network-layer').value;
     if (!lowZoom) {
+      const markerOptions = {fixedSize: true, renderer: state.networkRenderer};
       for (const nap of area) {
+        const free = nap.livres > 0;
+        const online = nap.online > 0;
+        const opportunity = opportunities(nap) > 0;
         const matches = {
-          all: true, free: nap.livres > 0, full: nap.livres === 0, online: nap.online > 0,
-          'no-online': nap.online === 0, opportunities: opportunities(nap) > 0,
+          all: true, free, full: !free, online, 'no-online': !online, opportunities: opportunity,
         };
         if (!matches[filter]) continue;
-        const color = opportunities(nap) ? '#7c3aed' : available(nap) ? '#2563eb' : '#64748b';
-        L.circleMarker([nap.lat, nap.lng], {
-          radius: opportunities(nap) ? 6 : 4, color: '#fff', weight: 1.25, fillColor: color,
-          fillOpacity: .93, renderer: state.networkRenderer,
+        const position = [nap.lat, nap.lng];
+        const fillColor = free ? NAP_COLORS.free : online ? NAP_COLORS.online : NAP_COLORS.other;
+        if (opportunity) {
+          L.circleMarker(position, {
+            ...markerOptions, radius: 8, color: NAP_COLORS.opportunity, weight: 1.5,
+            opacity: .88, fill: false, interactive: false,
+          }).addTo(state.networkLayer);
+        }
+        L.circleMarker(position, {
+          ...markerOptions, radius: 5, color: online ? NAP_COLORS.online : fillColor, weight: 1.5,
+          opacity: .88, fillColor, fillOpacity: .24,
         }).bindPopup(networkPopup(nap)).addTo(state.networkLayer);
       }
     }
