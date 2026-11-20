@@ -1197,7 +1197,10 @@ def _review_yesterday_and_today_fila_ia() -> dict[str, int]:
                 ):
                     counts["do_not_contact"] += 1
                     continue
-                if human_is_attending(db, conversation) or human_stepped_in(db, conversation):
+                # Fila IA é de atendimento automatizado. Mensagem manual
+                # anterior não bloqueia resposta ao novo INBOUND, mas um humano
+                # com conversa realmente atribuída e ativa continua protegido.
+                if human_is_attending(db, conversation):
                     counts["human_owned"] += 1
                     continue
                 state = db.scalar(select(AIConversationState).where(
@@ -1247,6 +1250,19 @@ def _review_yesterday_and_today_fila_ia() -> dict[str, int]:
                         prior_job.error = None
                         db.commit()
                         counts["requeued_shadow"] += 1
+                        continue
+                    if (
+                        prior_job.status == "FALHOU"
+                        and "SDR perdeu a propriedade da conversa" in (prior_job.error or "")
+                        and (not state or state.state not in {"OPT_OUT", "COMPLETED", "CLOSING"})
+                    ):
+                        prior_job.status = "PENDENTE"
+                        prior_job.available_at = utcnow()
+                        prior_job.locked_at = None
+                        prior_job.attempts = 0
+                        prior_job.error = None
+                        db.commit()
+                        counts["requeued_owner_failure"] += 1
                         continue
                     counts["already_job_" + str(prior_job.status).lower()] += 1
                     continue
@@ -1378,6 +1394,7 @@ def run() -> None:
 
     missing_key_logged = False
     last_inbound_recovery = time.monotonic()
+    last_fila_ia_review = time.monotonic()
     last_ops_alerts = time.monotonic() - 90
     last_crm_prospect = time.monotonic() - 100
     last_stale_recovery = time.monotonic()
@@ -1423,6 +1440,13 @@ def run() -> None:
             except Exception:
                 LOG.exception("Falha na supervisão de conversas sem resposta.")
             last_inbound_recovery = now_mono
+
+        if now_mono - last_fila_ia_review >= 120:
+            try:
+                _review_yesterday_and_today_fila_ia()
+            except Exception:
+                LOG.exception("Falha na revisão periódica da Fila IA")
+            last_fila_ia_review = now_mono
 
         if now_mono - last_ops_alerts >= 120:
             last_ops_alerts = now_mono
