@@ -18,6 +18,10 @@
     total: {label: 'Consultas', unit:'', short:'consultas'},
   };
   const state = {data: null, map: null, layers: [], positions: new Map(), mapReady: false, mapLoading:false, revision:0, mode:'approved', heatLayer:null, streetHeatRows:[], gpsHeatRows:[], triangleFittedFor:'', heatGpsFittedFor:''};
+  state.network = null;
+  state.networkMatches = new Map();
+  state.networkGpsReady = false;
+  state.networkStreetsReady = false;
   // L is Leaflet normally; on Google Maps we supply only the small surface used by this panel.
   let L = window.L;
   let activeMapProvider = 'osm';
@@ -63,7 +67,7 @@
     $('cm-months').innerHTML = months.length ? months.map(m => {
       const app = (100 * m.approved / max).toFixed(1);
       const rest = (100 * (m.total - m.approved) / max).toFixed(1);
-      return `<div class="cm-month-line"><span>${esc(monthLabel(m.month))}</span><span class="cm-month-bars" title="${fmt(m.total)} consultas, ${fmt(m.approved)} aprovados"><span class="cm-month-approved" style="width:${app}%"></span><span class="cm-month-rejected" style="width:${rest}%"></span></span><span>${fmt(m.total)}</span></div>`;
+      return `<div class="cm-month-line"><span>${esc(monthLabel(m.month))}</span><span class="cm-month-bars" title="${fmt(m.total)} consultas e ${fmt(m.approved)} aprovados"><span class="cm-month-approved" style="width:${app}%"></span><span class="cm-month-rejected" style="width:${rest}%"></span></span><span>${fmt(m.total)} consultas<small>${fmt(m.signed_approved)} assinados</small></span></div>`;
     }).join('') : '<p class="cm-loading">Sem consultas no período.</p>';
   }
   function drawKPIs() {
@@ -108,8 +112,12 @@
       triangles: '<span><i class="cm-tri-key cm-tri-green"></i> Aprovado com contrato</span><span><i class="cm-tri-key cm-tri-yellow"></i> Aprovado sem contrato</span>',
     };
     const gps = '<span><i class="cm-tri-key cm-tri-green"></i> GPS aprovado</span>';
+    const naps = networkEnabled() ?
+      '<span><i class="cm-dot cm-dot-nap-free"></i> NAP com porta</span>' +
+      '<span><i class="cm-dot cm-dot-nap-other"></i> NAP lotada ou offline</span>' +
+      '<span><i class="cm-dot cm-dot-nap-priority"></i> Oportunidade</span>' : '';
     legend.innerHTML = (legends[state.mode] || '') +
-      (state.mode !== 'triangles' && $('cm-addresses').checked ? gps : '');
+      (state.mode !== 'triangles' && $('cm-addresses').checked ? gps : '') + naps;
     document.querySelectorAll('[data-map-mode]').forEach(button =>
       button.setAttribute('aria-pressed', String(button.dataset.mapMode === state.mode)));
   }
@@ -274,6 +282,11 @@
         },
         setView(center, zoom) { map.setCenter(point(center)); map.setZoom(zoom); },
         getZoom() { return map.getZoom() || 12; },
+        getBounds() {
+          const bounds = map.getBounds();
+          return bounds ? {contains: position => bounds.contains(point(position))} : null;
+        },
+        onMoveEnd(callback) { map.addListener('idle', callback); },
         scrollWheelZoom: {
           enable() { map.setOptions({scrollwheel: true}); },
           disable() { map.setOptions({scrollwheel: false}); },
@@ -379,6 +392,14 @@
       }
       $('cm-map-provider-label').textContent = activeMapProvider === 'google' ? 'Google Maps' : 'OpenStreetMap';
       state.layerGroup = L.layerGroup().addTo(state.map);
+      if ($('cm-network-layer')) {
+        state.networkLayer = L.layerGroup().addTo(state.map);
+        if (activeMapProvider === 'google') state.map.onMoveEnd(drawNetwork);
+        else {
+          state.networkRenderer = L.canvas({padding: .25});
+          state.map.on('moveend', drawNetwork);
+        }
+      }
       if (window.SulnetCreditHeat) {
         state.heatLayer = window.SulnetCreditHeat.attach(state.map, activeMapProvider, $('cm-map'));
       }
@@ -402,10 +423,17 @@
     state.heatLayer.set(points, state.mode);
   }
 
+  function mapLocationQuery(query) {
+    if (!networkEnabled()) return query;
+    const cachedQuery = new URLSearchParams(query);
+    cachedQuery.set('cached_only', 'true');
+    return cachedQuery;
+  }
+
   async function fetchGeo(ticket, cityName) {
     // O servidor localiza alguns bairros por chamada (limite de 1 consulta/s do serviço público) e guarda o resultado.
     const city = cityName || $('cm-city').value, from = $('cm-from').value, to = $('cm-to').value;
-    const query = new URLSearchParams({city, date_from: from, date_to: to});
+    const query = mapLocationQuery(new URLSearchParams({city, date_from: from, date_to: to}));
     let last = null;
     let errors = 0;
     for (let round = 0; round < 120; round += 1) {
@@ -438,6 +466,9 @@
     clearLayers();
     state.streetHeatRows = [];
     state.gpsHeatRows = [];
+    state.networkGpsReady = false;
+    state.networkStreetsReady = false;
+    refreshNetwork();
     state.heatGpsFittedFor = '';
     state.positions = new Map();
     const rows = visibleRows();
@@ -460,6 +491,7 @@
         : 'Nenhum bairro com amostra suficiente neste período.';
       if (streetGroup) streetGroup.clearLayers();
       if (addressGroup) addressGroup.clearLayers();
+      if (networkEnabled() && !state.data.all) drawDetailLayers(ticket);
       return;
     }
     // Calor verde pode surgir imediatamente da coluna Q; nao precisa aguardar
@@ -531,15 +563,17 @@
   // Cada passo faz uma chamada e devolve 'done' (acabou), 'more' (ainda há o que localizar),
   // 'busy' (serviço de endereços ocupado) ou 'stale' (o filtro mudou no meio da chamada).
   async function addressStep(query, ticket) {
-    const r = await fetch('/api/reports/credit-map/addresses?' + query, {credentials: 'same-origin', cache: 'no-store'});
+    const r = await fetch('/api/reports/credit-map/addresses?' + mapLocationQuery(query), {credentials: 'same-origin', cache: 'no-store'});
     if (!r.ok) return 'done';
     const data = await r.json();
     const needsHeat = state.mode === 'approved';
-    if (ticket !== state.revision || (!needsHeat && !$('cm-addresses').checked)) return 'stale';
+    if (ticket !== state.revision || (!needsHeat && !$('cm-addresses').checked && !networkEnabled())) return 'stale';
     addressGroup.clearLayers();
     const gpsRows = (data.addresses || []).filter(row =>
       !selectedHood() || folded(row.neighborhood) === folded(selectedHood()));
     state.gpsHeatRows = gpsRows.filter(row => row.source_coordinates);
+    state.networkGpsReady = true;
+    refreshNetwork();
     if (needsHeat) {
       renderHeat();
       const gpsKey = query.toString() + selectedHood();
@@ -577,12 +611,14 @@
     return !data.pending ? 'done' : data.error ? 'busy' : 'more';
   }
   async function streetStep(query, ticket) {
-    const r = await fetch('/api/reports/credit-map/streets?' + query, {credentials: 'same-origin', cache: 'no-store'});
+    const needsHeat = state.mode === 'rejected';
+    const r = await fetch('/api/reports/credit-map/streets?' + mapLocationQuery(query), {credentials: 'same-origin', cache: 'no-store'});
     if (!r.ok) return 'done';
     const data = await r.json();
-    const needsHeat = state.mode === 'rejected';
-    if (ticket !== state.revision || (!needsHeat && !$('cm-streets').checked)) return 'stale';
+    if (ticket !== state.revision || (!needsHeat && !$('cm-streets').checked && !networkEnabled())) return 'stale';
     state.streetHeatRows = data.streets || [];
+    state.networkStreetsReady = state.streetHeatRows.length > 0;
+    refreshNetwork();
     if (needsHeat) renderHeat();
     streetGroup.clearLayers();
     for (const row of data.streets || []) {
@@ -610,7 +646,7 @@
     for (const layer of layers) {
       const enabled = layer.kind === 'addresses' ? ($('cm-addresses').checked || state.mode === 'approved')
         : $('cm-streets').checked || state.mode === 'rejected';
-      if (!enabled) {layer.done = true; $(layer.status).textContent = '';}
+      if (!enabled && !networkEnabled()) {layer.done = true; $(layer.status).textContent = '';}
     }
     let errors = 0;
     for (let round = 0; round < 900 && layers.some(layer => !layer.done); round += 1) {
@@ -634,6 +670,142 @@
     const row = (state.data?.neighborhoods || []).find(x => x.name === name);
     state.map.setView([point.lat, point.lng], Math.max(state.map.getZoom(), 14));
     if (row) L.popup().setLatLng([point.lat, point.lng]).setContent(infoHtml(row)).openOn(state.map);
+  }
+  function networkEnabled() {
+    return Boolean(state.network?.naps.length && $('cm-network-layer')?.value !== 'off' && window.SulnetCreditNetwork);
+  }
+  function networkRadius() { return Number($('cm-network-radius')?.value || 250); }
+  function refreshNetwork() {
+    if (networkEnabled() && state.data && !state.data.all) {
+      const hood = selectedHood();
+      const streets = state.streetHeatRows.filter(row => !hood || folded(row.neighborhood) === folded(hood));
+      state.networkMatches = window.SulnetCreditNetwork.cross(
+        state.network.naps, state.gpsHeatRows, streets, networkRadius());
+    } else state.networkMatches = new Map();
+    drawNetwork();
+  }
+  function networkPopup(nap) {
+    const match = state.networkMatches.get(nap.id);
+    const approvals = state.networkGpsReady ?
+      `<br>Aprovados próximos <b>${fmt(match?.approved)}</b> · ${fmt(match?.signed)} assinados · ${fmt(match?.unsigned)} sem contrato` : '';
+    const rejected = state.networkStreetsReady ?
+      `<br>Reprovações em ruas próximas <b>${fmt(match?.rejected)}</b> <small>(aprox.)</small>` : '';
+    const proximity = approvals || rejected ? `<br><small>Cruzamento geográfico a até ${networkRadius()} m.</small>` : '';
+    return `<div class="cm-map-info"><strong>${esc(nap.nome)}</strong> · ${esc(nap.status)}
+      <br>Portas livres <b>${fmt(nap.livres)}</b> de ${fmt(nap.portas)} · ${fmt(nap.usadas)} usadas
+      <br>Sessões online <b>${fmt(nap.online)}</b> · offline <b>${fmt(nap.offline)}</b>${approvals}${rejected}${proximity}</div>`;
+  }
+  function drawNetwork() {
+    const status = $('cm-network-status');
+    if (!status) return;
+    const snapshot = state.network;
+    state.networkLayer?.clearLayers();
+    $('cm-network-summary').hidden = true;
+    $('cm-network-ranking').hidden = true;
+    if (!snapshot) return;
+    if (!snapshot.naps.length) { status.textContent = 'Base de caixas NAP ainda sem leitura.'; return; }
+    const [day, hour] = (snapshot.sessions_at || '').split('T');
+    const stamp = hour ? ` · Sessões de ${day.split('-').reverse().join('/')} às ${hour.slice(0, 8)}` : '';
+    const base = `${fmt(snapshot.naps.length)} NAPs na base${stamp}`;
+    status.textContent = base;
+    if (!networkEnabled() || !state.mapReady) return;
+    const bounds = state.map.getBounds();
+    if (!bounds) return;
+    const area = snapshot.naps.filter(nap => bounds.contains([nap.lat, nap.lng]));
+    const {available} = window.SulnetCreditNetwork;
+    const opportunities = nap => state.networkMatches.get(nap.id)?.opportunities || 0;
+    const sum = key => area.reduce((total, nap) => total + nap[key], 0);
+    $('cm-network-summary').hidden = false;
+    $('cm-network-naps').textContent = fmt(area.length);
+    $('cm-network-free').textContent = fmt(sum('livres'));
+    $('cm-network-online').textContent = fmt(sum('online'));
+    $('cm-network-opportunities').textContent = state.networkGpsReady
+      ? fmt(area.reduce((total, nap) => total + opportunities(nap), 0)) : '—';
+
+    const lowZoom = state.map.getZoom() < 12;
+    if (state.data?.all) status.textContent += ' · Selecione um município para cruzar o crédito.';
+    if (lowZoom && area.length) status.textContent += ' · Aproxime para ver as caixas.';
+    const filter = $('cm-network-layer').value;
+    if (!lowZoom) {
+      for (const nap of area) {
+        const matches = {
+          all: true, free: nap.livres > 0, full: nap.livres === 0, online: nap.online > 0,
+          'no-online': nap.online === 0, opportunities: opportunities(nap) > 0,
+        };
+        if (!matches[filter]) continue;
+        const color = opportunities(nap) ? '#7c3aed' : available(nap) ? '#2563eb' : '#64748b';
+        L.circleMarker([nap.lat, nap.lng], {
+          radius: opportunities(nap) ? 6 : 4, color: '#fff', weight: 1.25, fillColor: color,
+          fillOpacity: .93, renderer: state.networkRenderer,
+        }).bindPopup(networkPopup(nap)).addTo(state.networkLayer);
+      }
+    }
+    const ranking = area.filter(nap => opportunities(nap) > 0)
+      .sort((a, b) => opportunities(b) - opportunities(a) || b.livres - a.livres || a.id - b.id).slice(0, 5);
+    const list = $('cm-network-ranked-points');
+    $('cm-network-ranking').hidden = ranking.length === 0;
+    list.innerHTML = ranking.map(nap =>
+      `<button type="button" data-nap="${nap.id}"><b>${esc(nap.nome)}</b><span>${fmt(opportunities(nap))} aprovados sem contrato · ${fmt(nap.livres)} portas livres</span></button>`
+    ).join('');
+    list.querySelectorAll('[data-nap]').forEach(button => {
+      button.addEventListener('click', () => {
+        const nap = ranking.find(row => row.id === Number(button.dataset.nap));
+        const point = [nap.lat, nap.lng];
+        state.map.setView(point, Math.max(state.map.getZoom(), 15));
+        L.popup().setLatLng(point).setContent(networkPopup(nap)).openOn(state.map);
+      });
+    });
+  }
+  async function loadNetwork() {
+    if (!$('cm-network-status') || root.dataset.preview === 'true') return;
+    try {
+      const response = await fetch('/api/reports/credit-map/network', {credentials:'same-origin',cache:'no-store'});
+      if (!response.ok) throw new Error('Falha ao consultar a base NAP.');
+      state.network = await response.json();
+      updateLegend();
+      refreshNetwork();
+    } catch {
+      $('cm-network-status').textContent = 'Base NAP indisponível agora.';
+    }
+  }
+  function initNetwork() {
+    $('cm-network-radius')?.addEventListener('change', refreshNetwork);
+    const layer = $('cm-network-layer');
+    let wasHidden = layer?.value === 'off';
+    layer?.addEventListener('change', () => {
+      const hidden = layer.value === 'off';
+      const visibilityChanged = hidden !== wasHidden;
+      wasHidden = hidden;
+      updateLegend();
+      if (state.data && state.network?.naps.length && visibilityChanged) refreshMap();
+      else refreshNetwork();
+    });
+    const dialog = $('cm-network-dialog');
+    if (!dialog) return;
+    const input = $('cm-network-file'), result = $('cm-network-result'), button = $('cm-network-upload');
+    $('cm-network-import').addEventListener('click', () => dialog.showModal());
+    input.addEventListener('change', () => {
+      $('cm-network-file-name').textContent = input.files?.[0]?.name || 'Nenhum arquivo selecionado';
+    });
+    button.addEventListener('click', async () => {
+      const file = input.files?.[0];
+      if (!file) { result.textContent = 'Escolha o arquivo GeoJSON.'; return; }
+      const body = new FormData();
+      body.append('file', file);
+      button.disabled = true;
+      result.textContent = 'Importando caixas…';
+      try {
+        const response = await fetch('/api/reports/credit-map/network', {
+          method:'POST', credentials:'same-origin', headers:{'x-csrf-token':root.dataset.csrf}, body,
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || 'Falha ao importar caixas.');
+        result.textContent = `${fmt(payload.naps)} caixas NAP importadas.`;
+        await loadNetwork();
+        refreshMap();
+      } catch (error) { result.textContent = error.message; }
+      finally { button.disabled = false; }
+    });
   }
   function initFullscreen() {
     const wrap = document.querySelector('.cm-map-wrap');
@@ -731,5 +903,6 @@
   initImport();
   initFullscreen();
   initMyMapsExport();
-  (async () => {await fetchCities(); await fetchData();})();
+  initNetwork();
+  (async () => {await Promise.all([fetchCities(), loadNetwork()]); await fetchData();})();
 })();

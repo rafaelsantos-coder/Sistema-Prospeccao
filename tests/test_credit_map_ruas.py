@@ -52,6 +52,7 @@ def test_street_aggregates_never_keep_house_number_or_cpf():
 
 def test_streets_endpoint_only_returns_streets_with_five_or_more(monkeypatch):
     monkeypatch.setattr(geocoding, "city_center", lambda city: (-27.87, -54.48))
+    monkeypatch.setattr(geocoding, "neighborhood_center", lambda *args, **kwargs: (-27.87, -54.48))
     monkeypatch.setattr(geocoding, "street_point", lambda *args, **kwargs: (-27.871, -54.481))
     with TestClient(app) as client:
         page = client.get("/login")
@@ -73,8 +74,12 @@ def test_streets_endpoint_only_returns_streets_with_five_or_more(monkeypatch):
         assert ok.status_code == 200, ok.text
         query = "city=SANTA ROSA&date_from=2026-08&date_to=2026-11"
         client.get("/api/reports/credit-map/geo?" + query)  # grava o centro da cidade
+        cached_query = "/api/reports/credit-map/streets?" + query + "&cached_only=true"
+        cached = client.get(cached_query).json()
+        assert cached["streets"] == [] and cached["pending"] == 0
         data = client.get("/api/reports/credit-map/streets?" + query).json()
         names = [row["street"] for row in data["streets"]]
         assert names == ["RUA DAS FLORES"]
         assert data["streets"][0]["cep"] == "98900000"
         assert "00000000191" not in str(data)
+        assert client.get(cached_query).json()["streets"] == data["streets"]

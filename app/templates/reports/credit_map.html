@@ -7,7 +7,7 @@
     <div class="cm-hero-copy">
       <div class="cm-overline"><span class="cm-overline-dot"></span> INTELIGÊNCIA TERRITORIAL <span class="cm-overline-sep">/</span> SULNET PROSPECTA</div>
       <h2>Mapa de calor <span>do crédito.</span></h2>
-      <p>Entenda onde acontecem as consultas, como evolui a aprovação e onde oportunidades chegam a contrato.</p>
+      <p>Veja crédito, contratos assinados e capacidade da rede por região.</p>
     </div>
     <div class="cm-hero-actions">
       <span class="cm-sync" id="cm-sync"><span></span> Base aguardando leitura</span>
@@ -44,14 +44,49 @@
         </div>
         <label class="cm-heat-bairro">Destacar bairro<select id="cm-neighborhood" aria-label="Destacar bairro no mapa"><option value="">Todos os bairros</option></select></label>
       </div>
+      <div class="cm-network">
+        <div class="cm-network-toolbar">
+          <label>Caixas NAP
+            <select id="cm-network-layer">
+              <option value="all">Todas as caixas</option>
+              <option value="free">Com portas livres</option>
+              <option value="full">Sem portas livres</option>
+              <option value="online">Com sessões online</option>
+              <option value="no-online">Sem sessões online</option>
+              <option value="opportunities">Com oportunidade de venda</option>
+              <option value="off">Ocultar caixas</option>
+            </select>
+          </label>
+          <label>Raio de cruzamento
+            <select id="cm-network-radius">
+              <option value="100">100 m</option>
+              <option value="250" selected>250 m</option>
+              <option value="500">500 m</option>
+            </select>
+          </label>
+          {% if can_import %}<button id="cm-network-import" type="button" class="cm-icon-button">Importar base NAP</button>{% endif %}
+        </div>
+        <p id="cm-network-status" class="cm-network-note" role="status">Carregando caixas NAP…</p>
+        <dl id="cm-network-summary" class="cm-network-stats" hidden>
+          <div><dt>NAPs na área visível</dt><dd id="cm-network-naps">—</dd></div>
+          <div><dt>Portas livres</dt><dd id="cm-network-free">—</dd></div>
+          <div><dt>Sessões online</dt><dd id="cm-network-online">—</dd></div>
+          <div><dt>Aprovados sem contrato perto de porta livre</dt><dd id="cm-network-opportunities">—</dd></div>
+        </dl>
+      </div>
       <div class="cm-map-wrap">
         <button type="button" id="cm-fullscreen" class="cm-fs-btn" title="Mapa em tela cheia">⛶ Tela cheia</button>
-        <div id="cm-map" class="cm-map" aria-label="Mapa de calor aproximado por bairro e rua, com opção de triângulos de aprovados"></div>
+        <div id="cm-map" class="cm-map" aria-label="Mapa de crédito, contratos assinados e caixas NAP"></div>
         <div class="cm-map-empty" id="cm-map-empty"><div class="cm-map-dots"></div><div class="cm-map-empty-inner"><span class="cm-map-pin">⌖</span><strong>Carregando o mapa…</strong><p>O ranking e os indicadores já estão disponíveis ao lado.</p></div></div>
         <div class="cm-map-legend" id="cm-map-legend"><span><i class="cm-dot cm-dot-green"></i> Mais verde = maior concentração de aprovações</span></div>
       </div>
       <div class="cm-map-footer"><span id="cm-streets-status" class="cm-streets-status"></span><span id="cm-geocode-status">Calor aproximado: bairros com 10 ou mais consultas; comparativo exige 20 decisões.</span><span class="cm-map-footer-note">Verde: GPS de aprovados + saldo por bairro · vermelho: ruas/bairros aproximados · sem limites oficiais</span></div>
       <div class="cm-map-footer cm-address-footer"><span id="cm-address-status"></span><span class="cm-map-footer-note">Triângulos = GPS informado no CSV (coluna Q) · verde: contrato assinado · amarelo: Aprovado sem contrato</span></div>
+      <div id="cm-network-ranking" class="cm-network cm-network-ranking" hidden>
+        <h4>NAPs com oportunidades na área visível</h4>
+        <div id="cm-network-ranked-points"></div>
+        <p class="cm-network-note">A proximidade indica onde consultar a viabilidade técnica.</p>
+      </div>
     </section>
     <section class="cm-ranking-card"><div class="cm-card-heading"><div><span class="cm-section-label">OPORTUNIDADES POR REGIÃO</span><h3>Ranking dos bairros</h3></div><button id="cm-export" type="button" class="cm-icon-button" title="Exportar ranking agregado">↓ CSV</button></div>
       <div class="cm-search"><span>⌕</span><input type="search" id="cm-search" placeholder="Buscar bairro..." autocomplete="off" aria-label="Buscar bairro"></div>
@@ -61,12 +96,21 @@
     </section>
   </div>
 
-  <div class="cm-bottom-grid"><section class="cm-month-card"><div class="cm-card-heading"><div><span class="cm-section-label">EVOLUÇÃO COMERCIAL</span><h3>Consultas e aprovações por mês</h3></div></div><div id="cm-months" class="cm-months"></div></section>
+  <div class="cm-bottom-grid"><section class="cm-month-card"><div class="cm-card-heading"><div><span class="cm-section-label">EVOLUÇÃO COMERCIAL</span><h3>Crédito e contratos assinados por mês da consulta</h3></div></div><div id="cm-months" class="cm-months"></div></section>
     <section class="cm-insight-card"><div class="cm-card-heading"><div><span class="cm-section-label">LEITURA DO FUNIL</span><h3>O que esses dados indicam?</h3></div></div><div class="cm-insight-body"><div class="cm-insight-icon">✦</div><p id="cm-insight">Importe a base de consultas de crédito para gerar os indicadores de Santo Ângelo.</p><span class="cm-disclaimer">Indicadores agregados para análise de operação e cobertura, não para decidir aprovação individual.</span></div></section></div>
 
   {% if can_import %}
+  <dialog id="cm-network-dialog" class="cm-import-dialog" aria-labelledby="cm-network-dialog-title">
+    <form method="dialog"><button aria-label="Fechar" class="cm-dialog-x">×</button></form>
+    <h3 id="cm-network-dialog-title">Importar caixas NAP</h3>
+    <p>Selecione a leitura da intranet em formato GeoJSON. Ela atualiza a capacidade e as sessões das caixas no mapa.</p>
+    <label class="cm-file-label" for="cm-network-file">Escolher arquivo GeoJSON <small id="cm-network-file-name">Nenhum arquivo selecionado</small></label>
+    <input type="file" id="cm-network-file" accept=".geojson,.json,application/geo+json,application/json" hidden>
+    <button id="cm-network-upload" class="cm-button cm-button-dark" type="button">Importar caixas</button>
+    <p id="cm-network-result" class="cm-dialog-result" role="status"></p>
+  </dialog>
   <dialog id="cm-import-dialog" class="cm-import-dialog"><form method="dialog"><button aria-label="Fechar" class="cm-dialog-x">×</button></form><span class="cm-section-label">ATUALIZAÇÃO DA BASE</span><h3>Importar consultas de crédito</h3><p>O CSV será processado no servidor. São guardadas as contagens por município, bairro, rua, mês e resultado e, dos clientes aprovados, o endereço (rua e número) para os triângulos do mapa (colunas opcionais: Rua, CEP, Número). Nenhum CPF, nome ou telefone é salvo no painel.</p><label class="cm-file-label" for="cm-file">Escolher arquivo CSV <small id="cm-file-name">Nenhum arquivo selecionado</small></label><input type="file" id="cm-file" accept=".csv,text/csv" hidden><p class="cm-import-warning">A importação substitui integralmente os dados agregados da versão anterior. Limite: 15 MB.</p><button id="cm-import-send" class="cm-button cm-button-dark" type="button">Validar e substituir base ↗</button><p id="cm-import-result" class="cm-dialog-result" role="status"></p></dialog>
   {% endif %}
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', path='/js/credit_map_heat.js') }}" defer></script><script src="{{ url_for('static', path='/js/credit_map.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/js/credit_map_heat.js') }}" defer></script><script src="{{ url_for('static', path='/js/credit_map_network.js') }}" defer></script><script src="{{ url_for('static', path='/js/credit_map.js') }}" defer></script>{% endblock %}

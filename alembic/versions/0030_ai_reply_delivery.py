@@ -5,8 +5,8 @@ import sqlalchemy as sa
 
 from app.models import AIReplyDelivery
 
-revision = "0029_ai_reply_delivery"
-down_revision = "0028_fila_ia_only"
+revision = "0030_ai_reply_delivery"
+down_revision = "0029_credit_map_network"
 branch_labels = None
 depends_on = None
 

@@ -1,5 +1,6 @@
 """Mapa de calor de crédito: permissões, importação sem dado pessoal e privacidade da API."""
 
+import json
 import re
 
 from fastapi.testclient import TestClient
@@ -88,3 +89,55 @@ def test_importacao_rejeita_arquivo_que_nao_e_csv():
             headers={"x-csrf-token": token},
         )
         assert resp.status_code == 400
+
+
+def test_base_nap_exige_sessao_e_preserva_leitura_anterior_se_importacao_falhar():
+    endpoint = "/api/reports/credit-map/network"
+    point = {
+        "type": "Feature", "id": 42,
+        "geometry": {"type": "Point", "coordinates": [-54.261, -28.301]},
+        "properties": {
+            "nome": "NAP EXEMPLO", "status": "Parcial",
+            "latitude_original": -28.3, "longitude_original": -54.26,
+            "portas": 8, "usadas": 3, "livres": 5, "online": 2, "offline": 1,
+            "ssid": "CAMPO NÃO UTILIZADO NO MAPA",
+        },
+    }
+    dataset = {
+        "type": "FeatureCollection",
+        "metadata": {"sessoes_atualizadas_em": "2026-11-20 10:32:08"},
+        "features": [point],
+    }
+
+    def upload(client, headers=None):
+        return client.post(
+            endpoint, files={"file": ("nap.geojson", json.dumps(dataset), "application/geo+json")},
+            headers=headers,
+        )
+
+    with TestClient(app) as client:
+        assert client.get(endpoint).status_code == 401
+        assert upload(client).status_code == 401
+        _login(client)
+        page = client.get("/reports/credit-map")
+        assert 'id="cm-network-layer"' in page.text
+        token = re.search(r'data-csrf="([^"]+)"', page.text).group(1)
+        assert upload(client).status_code in (400, 403)
+        headers = {"x-csrf-token": token}
+        assert upload(client, headers).json()["naps"] == 1
+        snapshot = client.get(endpoint).json()
+        assert snapshot["sessions_at"] == "2026-11-20T10:32:08"
+        assert snapshot["naps"][0]["original_lat"] == -28.3
+        assert snapshot["naps"][0]["lat"] == -28.301
+        assert snapshot["naps"][0]["livres"] == 5
+        assert "ssid" not in snapshot["naps"][0]
+
+        dataset["features"] = [point, point]
+        assert upload(client, headers).status_code == 400
+        assert client.get(endpoint).json() == snapshot
+
+        dataset["features"] = [point]
+        point["properties"].update({"usadas": 4, "livres": 4})
+        assert upload(client, headers).status_code == 200
+        assert client.get(endpoint).json()["naps"][0]["livres"] == 4
+        assert client.get("/api/reports/credit-map").status_code == 200

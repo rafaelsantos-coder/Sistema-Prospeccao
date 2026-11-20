@@ -7,6 +7,7 @@ do Prospecta.
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import re
 
@@ -18,14 +19,26 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import CreditMapAddress, CreditMapAggregate, CreditMapGeocode, CreditMapStreetAggregate
+from app.models import (
+    CreditMapAddress,
+    CreditMapAggregate,
+    CreditMapGeocode,
+    CreditMapNetwork,
+    CreditMapStreetAggregate,
+)
 from app.security import get_current_user, require_roles, validate_csrf
-from app.services.audit import write_audit
 from app.services import geocoding
+from app.services.audit import write_audit
 from app.services.credit_map import (
-    address_key, aggregate_csv_addresses, city_name, my_maps_csv, summarize, summarize_addresses,
+    address_key,
+    aggregate_csv_addresses,
+    city_name,
+    my_maps_csv,
+    summarize,
+    summarize_addresses,
     summarize_streets,
 )
+from app.services.credit_map_network import MAX_NAP_BYTES, parse_nap_geojson, save_nap_snapshot
 from app.timeutils import utcnow
 from app.web import render
 
@@ -90,7 +103,7 @@ NOT_FOUND_RETRY_DAYS = 30
 @router.get('/api/reports/credit-map/geo')
 def map_geo(request: Request, city: str = 'SANTO ÂNGELO',
             date_from: str = '2026-08', date_to: str = '2026-11',
-            db: Session = Depends(get_db)):
+            db: Session = Depends(get_db), cached_only: bool = False):
     """Posições aproximadas dos bairros exibíveis (mín. 10 consultas), com cache no banco."""
     allowed(request, db)
     if not city or len(city) > 120:
@@ -118,7 +131,11 @@ def map_geo(request: Request, city: str = 'SANTO ÂNGELO',
             return False
         return item.status == 'FOUND' or item.checked_at.timestamp() > retry_before
 
-    todo = ([''] if not usable(cached.get('')) else []) + [n for n in names if not usable(cached.get(n))]
+    todo = []
+    if not cached_only:
+        if not usable(cached.get('')):
+            todo.append('')
+        todo.extend(n for n in names if not usable(cached.get(n)))
     error = ''
     for key in todo[:GEOCODE_BATCH]:
         try:
@@ -149,8 +166,8 @@ def map_geo(request: Request, city: str = 'SANTO ÂNGELO',
     center = cached.get('')
     positions = {n: {'lat': cached[n].lat, 'lng': cached[n].lng}
                  for n in names if n in cached and cached[n].status == 'FOUND' and cached[n].lat is not None}
-    if center is not None and center.lat is None:
-        pending = 0  # cidade não localizada: sem centro não há como validar os bairros
+    if cached_only or (center is not None and center.lat is None):
+        pending = 0
     else:
         pending = len([k for k in ([''] + names) if not usable(cached.get(k))])
     return {
@@ -169,7 +186,7 @@ MAX_STREETS = 300
 @router.get('/api/reports/credit-map/streets')
 def map_streets(request: Request, city: str = 'SANTO ÂNGELO',
                 date_from: str = '2026-08', date_to: str = '2026-11',
-                db: Session = Depends(get_db)):
+                db: Session = Depends(get_db), cached_only: bool = False):
     """Ruas com 5+ consultas, posicionadas (cache no banco). Sem número de casa."""
     allowed(request, db)
     if not city or len(city) > 120:
@@ -196,7 +213,7 @@ def map_streets(request: Request, city: str = 'SANTO ÂNGELO',
         return item is not None and (item.status == 'FOUND' or item.checked_at.timestamp() > retry_before)
 
     error = ''
-    if base is not None and base.lat is not None:
+    if not cached_only and base is not None and base.lat is not None:
         todo = [r for r in rows if not usable(cached.get(r['key']))]
         for row in todo[:STREET_BATCH]:
             try:
@@ -224,7 +241,7 @@ def map_streets(request: Request, city: str = 'SANTO ÂNGELO',
             streets.append({**row, 'lat': item.lat, 'lng': item.lng})
         elif not usable(item):
             pending += 1
-    return {'streets': streets, 'pending': pending if base is not None and base.lat is not None else 0,
+    return {'streets': streets, 'pending': pending if not cached_only and base is not None and base.lat is not None else 0,
             'total': len(rows), 'error': error}
 
 
@@ -235,7 +252,7 @@ MAX_ADDRESSES = 2000
 @router.get('/api/reports/credit-map/addresses')
 def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
                   date_from: str = '2026-08', date_to: str = '2026-11',
-                  db: Session = Depends(get_db)):
+                  db: Session = Depends(get_db), cached_only: bool = False):
     """Endereços (rua e número) dos clientes aprovados: com contrato assinado ou ainda sem contrato.
 
     Não devolve nome, CPF nem telefone. A posição fica em cache no banco.
@@ -263,7 +280,7 @@ def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
         return item is not None and (item.status in ('FOUND', 'STREET') or item.checked_at.timestamp() > retry_before)
 
     error = ''
-    if base is not None and base.lat is not None:
+    if not cached_only and base is not None and base.lat is not None:
         todo: list[dict] = []
         for row in rows:
             if row['lat'] is not None and row['lng'] is not None:
@@ -311,7 +328,7 @@ def map_addresses(request: Request, city: str = 'SANTO ÂNGELO',
                 'lat': item.lat, 'lng': item.lng, 'exact': item.status == 'FOUND'})
         elif not usable(item):
             pending += 1
-    return {'addresses': addresses, 'pending': pending if base is not None and base.lat is not None else 0,
+    return {'addresses': addresses, 'pending': pending if not cached_only and base is not None and base.lat is not None else 0,
             'total': len(rows),
             'signed': sum(r['count'] for r in rows if r['signed']),
             'unsigned': sum(r['count'] for r in rows if not r['signed']),
@@ -357,6 +374,40 @@ def export_my_maps(request: Request, city: str = 'SANTO ÂNGELO',
 def map_cities(request: Request, db: Session = Depends(get_db)):
     allowed(request, db)
     return {'cities': sorted(db.scalars(select(distinct(CreditMapAggregate.city))).all())}
+
+
+@router.get('/api/reports/credit-map/network')
+def map_network(request: Request, db: Session = Depends(get_db)):
+    allowed(request, db)
+    snapshot = db.get(CreditMapNetwork, 1)
+    return Response(
+        content=snapshot.snapshot_json if snapshot else '{"naps":[]}',
+        media_type='application/json',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
+@router.post('/api/reports/credit-map/network')
+async def import_network(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    user = allowed(request, db, write=True)
+    validate_csrf(request, request.headers.get('x-csrf-token'))
+    if not (file.filename or '').lower().endswith(('.geojson', '.json')):
+        raise HTTPException(status_code=400, detail='Envie a base NAP no formato GeoJSON.')
+    try:
+        raw = await file.read(MAX_NAP_BYTES + 1)
+    finally:
+        await file.close()
+    if len(raw) > MAX_NAP_BYTES:
+        raise HTTPException(status_code=413, detail='GeoJSON excede 15 MB.')
+    try:
+        snapshot = parse_nap_geojson(raw)
+    except (json.JSONDecodeError, UnicodeError, RecursionError) as exc:
+        raise HTTPException(status_code=400, detail='GeoJSON inválido.') from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_nap_snapshot(db, snapshot, user=user)
+    db.commit()
+    return {'ok': True, 'naps': len(snapshot['naps']), 'sessions_at': snapshot['sessions_at']}
 
 
 @router.post('/api/reports/credit-map/import')
