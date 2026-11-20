@@ -2069,7 +2069,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
   color: #69737d;
 }
 .dispatch-metric-grid {
-  grid-template-columns: repeat(6,minmax(0,1fr));
+  grid-template-columns: repeat(4,minmax(0,1fr));
 }
 .dispatch-status-text {
   font-size: 17px !important;
