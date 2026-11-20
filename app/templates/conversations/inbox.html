@@ -1,4 +1,10 @@
 {% extends "base.html" %}
+{% block topbar_actions %}
+  {% if 'feasibility_map.view' in current_user.permissions %}
+  <a class="button button-secondary chat-feasibility-link" href="/feasibility-map" target="_blank"
+     rel="noopener" aria-label="Consultar viabilidade (abre em uma nova aba)">Consultar viabilidade <span aria-hidden="true">↗</span></a>
+  {% endif %}
+{% endblock %}
 {% block page_content_class %}conversation-page-content{% endblock %}
 {% block content %}
 <div class="inbox-shell" data-inbox data-view="{{ view }}" data-query="{{ query }}" data-assignee="{{ assignee_id or '' }}" data-queue="{{ queue_id or '' }}" data-tag="{{ tag_code }}" data-temperature="{{ temperature }}" {% if conversation %}data-conversation-id="{{ conversation.id }}"{% endif %}>

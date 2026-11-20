@@ -15,19 +15,22 @@ from app.main import app
 from app.models import CreditMapNetwork, User
 from app.routers import feasibility_map
 from app.security import hash_password
+from app.services.whatsapp_presence import join_whatsapp, leave_whatsapp
 from app.timeutils import utcnow
 from tests.test_credit_map_google_maps import _script_sources
+from tests.test_credit_map_integration import _login as _login_admin
 
 
-def _login_consultant(client: TestClient, permissions: list[str] | None = None) -> None:
+def _login_consultant(client: TestClient, permissions: list[str] | None = None) -> int:
     password = token_urlsafe(24)
     email = f'viabilidade-{token_urlsafe(12).lower()}@example.test'
     with SessionLocal() as db:
-        db.add(User(
+        user = User(
             name='Equipe de vendas', email=email, password_hash=hash_password(password),
             role='CONSULTOR', must_change_password=False,
             access_permissions=json.dumps(permissions) if permissions is not None else None,
-        ))
+        )
+        db.add(user)
         db.commit()
     token = re.search(r'name="csrf_token" value="([^"]+)"', client.get('/login').text)
     assert token
@@ -35,6 +38,17 @@ def _login_consultant(client: TestClient, permissions: list[str] | None = None) 
         'email': email, 'password': password, 'csrf_token': token.group(1),
     }, follow_redirects=False)
     assert response.status_code == 303
+    return user.id
+
+
+def _get_seller_inbox(client: TestClient, user_id: int):
+    with SessionLocal.begin() as db:
+        join_whatsapp(db, db.get(User, user_id))
+    try:
+        return client.get('/conversations', follow_redirects=False)
+    finally:
+        with SessionLocal.begin() as db:
+            leave_whatsapp(db, db.get(User, user_id))
 
 
 def test_seller_uses_nap_snapshot_without_access_to_credit(monkeypatch):
@@ -61,10 +75,17 @@ def test_seller_uses_nap_snapshot_without_access_to_credit(monkeypatch):
             db.commit()
 
         try:
-            _login_consultant(client)
+            seller_id = _login_consultant(client)
+            inbox = _get_seller_inbox(client, seller_id)
+            assert inbox.status_code == 200
+            assert inbox.text.count('href="/feasibility-map"') == 1
+            header = inbox.text.split('<header class="topbar">', 1)[1].split('</header>', 1)[0]
+            link = re.search(r'<a\b[^>]*href="/feasibility-map"[^>]*>.*?</a>', header, re.S)
+            assert link and 'target="_blank"' in link[0] and 'rel="noopener"' in link[0]
+            assert '>Consultar viabilidade' in link[0]
             page = client.get('/feasibility-map')
             assert page.status_code == 200
-            assert 'aria-current="page"' in page.text
+            assert 'href="/feasibility-map"' not in page.text
             assert 'Mapa de Viabilidade' in page.text
             assert 'id="vm-address"' in page.text
             assert 'id="vm-coordinate"' in page.text
@@ -72,6 +93,7 @@ def test_seller_uses_nap_snapshot_without_access_to_credit(monkeypatch):
             assert 'data-google-maps-key="maps-test-fixture"' in page.text
             assert any(urlsplit(source).hostname == 'maps.googleapis.com' for source in _script_sources(page))
             dashboard = client.get('/dashboard')
+            assert 'href="/feasibility-map"' not in dashboard.text
             assert all(urlsplit(source).hostname != 'maps.googleapis.com' for source in _script_sources(dashboard))
 
             response = client.get('/api/feasibility-map')
@@ -101,8 +123,11 @@ def test_feasibility_routes_require_login_and_respect_custom_permissions():
     with TestClient(app) as client:
         assert client.get('/feasibility-map', follow_redirects=False).headers['location'] == '/login'
         assert client.get('/api/feasibility-map').status_code == 401
-        _login_consultant(client, ['dashboard.view'])
+        seller_id = _login_consultant(client, ['dashboard.view', 'conversations.view', 'conversations.reply'])
         assert 'Mapa de Viabilidade' not in client.get('/dashboard').text
+        inbox = _get_seller_inbox(client, seller_id)
+        assert inbox.status_code == 200
+        assert 'href="/feasibility-map"' not in inbox.text
         assert client.get('/feasibility-map').status_code == 403
         assert client.get('/api/feasibility-map').status_code == 403
 
@@ -110,3 +135,11 @@ def test_feasibility_routes_require_login_and_respect_custom_permissions():
         _login_consultant(client, ['feasibility_map.view'])
         assert client.get('/feasibility-map').status_code == 200
         assert client.get('/api/feasibility-map').status_code == 200
+
+
+def test_management_keeps_the_map_in_navigation():
+    with TestClient(app) as client:
+        _login_admin(client)
+        page = client.get('/feasibility-map')
+        assert page.status_code == 200
+        assert re.search(r'<a\b[^>]*href="/feasibility-map"[^>]*aria-current="page"', page.text)
