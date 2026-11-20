@@ -1,6 +1,6 @@
 """Diagnóstico interno somente leitura.
 
-Rota protegida por segredo no caminho (DIAGNOSTICS_SECRET, mínimo 24 caracteres).
+Use Authorization: Bearer para o diagnóstico. A URL antiga aceita o segredo durante a migração.
 Sem a variável configurada a rota responde 404. Nunca devolve telefones, nomes,
 mensagens, tokens ou chaves: apenas contagens, estados e identificadores técnicos.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 import hmac
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -40,12 +40,28 @@ def _iso(value) -> str | None:
     return value.isoformat() if value else None
 
 
-@router.get("/{secret}")
-def diagnostico(secret: str, db: Session = Depends(get_db)):
+def _authorize(secret: str) -> None:
     expected = (settings.diagnostics_secret or "").strip()
-    if len(expected) < 24 or not hmac.compare_digest(secret, expected):
-        raise HTTPException(status_code=404, detail="not found")
+    if len(expected) < 24 or not hmac.compare_digest(secret.encode(), expected.encode()):
+        raise HTTPException(status_code=404, detail="not found", headers={"Cache-Control": "no-store"})
 
+
+@router.get("", include_in_schema=False)
+def diagnostic_with_header(response: Response, authorization: str = Header(default=""), db: Session = Depends(get_db)):
+    scheme, _, credential = authorization.partition(" ")
+    _authorize(credential if scheme.lower() == "bearer" else "")
+    response.headers["Cache-Control"] = "no-store"
+    return _snapshot(db)
+
+
+@router.get("/{secret}")
+def diagnostico(secret: str, response: Response, db: Session = Depends(get_db)):
+    _authorize(secret)
+    response.headers["Cache-Control"] = "no-store"
+    return _snapshot(db)
+
+
+def _snapshot(db: Session):
     now = utcnow()
 
     instances = {
