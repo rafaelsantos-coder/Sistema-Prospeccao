@@ -12,21 +12,21 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import AuditLog, Conversation, User
+from app.models import Conversation, User
 from app.services.audit import write_audit
-from app.services.crm_manual_credit import credit_status
+from app.services.crm_manual_credit import ACTION_CREDIT, credit_status
 from app.services.crm_manual_registration import (
+    ACTION_REGISTERED,
     CRMManualError,
     _as_int,
-    _audit_data,
+    _contact_crm_status,
     _guard_contact_lock,
     registration_status,
-    seller_for_user,
     seller_accepts_funnel,
+    seller_for_user,
 )
 from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
 from app.services.upload_security import UploadValidationError, validate_upload
@@ -50,18 +50,12 @@ class ContestedOpportunity:
     funnel_id: int
 
 
-def _state(db: Session, contact_id: int) -> dict[str, Any] | None:
-    row = db.scalar(
-        select(AuditLog)
-        .where(
-            AuditLog.entity_type == "contact",
-            AuditLog.entity_id == str(contact_id),
-            AuditLog.action.in_((CONTEST_SENT, CONTEST_UNCERTAIN, CONTEST_REVIEW)),
-        )
-        .order_by(AuditLog.id.desc())
-        .limit(1)
+def _state(db: Session, contact_id: int, ctx: ContestedOpportunity) -> dict[str, Any] | None:
+    return _contact_crm_status(
+        db, contact_id, ctx.seller_username, (CONTEST_SENT, CONTEST_UNCERTAIN, CONTEST_REVIEW),
+        opportunity_id=ctx.opportunity_id,
+        analysis_id=ctx.analysis_id,
     )
-    return {"state": row.action, **_audit_data(row)} if row else None
 
 
 def _write_state(
@@ -86,18 +80,18 @@ def _write_state(
 
 def _context(db: Session, conversation: Conversation) -> ContestedOpportunity:
     seller = seller_for_user(conversation.assigned_user)
-    registered = registration_status(db, conversation.contact_id)
-    consulted = credit_status(db, conversation.contact_id)
+    registered = registration_status(db, conversation.contact_id, seller.username) if seller else None
+    opp_id = _as_int(registered.get("opportunityId")) if registered else None
+    consulted = credit_status(db, conversation.contact_id, seller.username, opp_id) if seller and opp_id else None
     if not seller or not registered or not consulted:
         raise CRMManualError(
             "É necessário registrar a oportunidade e consultar o CPF antes da contestação."
         )
-    opp_id = _as_int(registered.get("opportunityId"))
-    registered_funnel = _as_int(registered.get("funnelId")) or (seller.funnel_id if seller else None)
+    registered_funnel = _as_int(registered.get("funnelId")) or seller.funnel_id
     analysis_id = _as_int(consulted.get("analysisId"))
     if (
-        registered.get("state") != "CRM_MANUAL_REGISTERED"
-        or consulted.get("state") != "CRM_MANUAL_CREDIT"
+        registered.get("state") != ACTION_REGISTERED
+        or consulted.get("state") != ACTION_CREDIT
         or not opp_id
         or not analysis_id
         or _as_int(consulted.get("opportunityId")) != opp_id
@@ -221,7 +215,7 @@ def get_contestation_panel(db: Session, *, conversation: Conversation, actor: Us
             "seller_username": ctx.seller_username,
         })
         status = _safe_status(ctx, status_payload)
-        state = _state(db, conversation.contact_id)
+        state = _state(db, conversation.contact_id, ctx)
         if state and state.get("state") in {CONTEST_UNCERTAIN, CONTEST_REVIEW}:
             status["canContest"] = False
             status["reviewRequired"] = True
@@ -285,7 +279,7 @@ def send_contestation(
 
     ctx = _context(db, conversation)
     _guard_contact_lock(db, conversation.contact_id)
-    past = _state(db, conversation.contact_id)
+    past = _state(db, conversation.contact_id, ctx)
     if past and past.get("state") in {CONTEST_UNCERTAIN, CONTEST_REVIEW}:
         raise CRMManualError(
             "Existe uma contestação anterior sem confirmação. Confira no CRM antes de repetir."

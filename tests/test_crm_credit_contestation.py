@@ -102,7 +102,7 @@ def test_panel_reasons_and_readonly_for_admin(monkeypatch):
         contest.SulnetCRMClient, "from_settings",
         classmethod(lambda cls: FakeCRM()),
     )
-    monkeypatch.setattr(contest, "_state", lambda db, contact: None)
+    monkeypatch.setattr(contest, "_state", lambda db, contact, ctx: None)
     panel = contest.get_contestation_panel(None, conversation=conv, actor=actor)
     assert panel["canContest"] is True
     assert panel["billMonthExpected"] == "10/2026"
@@ -132,7 +132,7 @@ def test_send_fatura_uses_same_analysis_without_serasa_or_local_document(monkeyp
         contest.SulnetCRMClient, "from_settings",
         classmethod(lambda cls: FakeCRM()),
     )
-    monkeypatch.setattr(contest, "_state", lambda db, contact: None)
+    monkeypatch.setattr(contest, "_state", lambda db, contact, ctx: None)
     monkeypatch.setattr(
         contest, "get_contestation_panel",
         lambda db, conversation, actor: {
@@ -181,7 +181,7 @@ def test_invalid_contestation_fails_without_external_submission(
     monkeypatch, reason_type, justification, confirmed, documents,
 ):
     conv, actor = _setup(monkeypatch)
-    monkeypatch.setattr(contest, "_state", lambda db, contact: None)
+    monkeypatch.setattr(contest, "_state", lambda db, contact, ctx: None)
     monkeypatch.setattr(
         contest, "get_contestation_panel",
         lambda db, conversation, actor: {
@@ -211,7 +211,7 @@ def test_invalid_contestation_fails_without_external_submission(
 def test_duplicate_submission_blocked_until_manager_decision(monkeypatch):
     conv, actor = _setup(monkeypatch)
     monkeypatch.setattr(
-        contest, "_state", lambda db, contact: {"state": contest.CONTEST_SENT}
+        contest, "_state", lambda db, contact, ctx: {"state": contest.CONTEST_SENT}
     )
     monkeypatch.setattr(
         contest, "get_contestation_panel",

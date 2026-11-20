@@ -302,7 +302,7 @@
         <div class="crm-manual-readonly">{{ crm_manual_seller.funnel_name }} — INÍCIO</div>
         <label>Origem</label>
         <div class="crm-manual-readonly">Sulnet Prospecta</div>
-        <p class="crm-manual-hint">O sistema consultará possíveis registros existentes antes de enviar. O registro será vinculado ao responsável atual desta conversa.</p>
+        <p class="crm-manual-hint">O sistema busca uma oportunidade aberta deste vendedor pelo telefone antes de criar uma nova.</p>
         <div class="crm-manual-dialog-actions">
           <button type="button" class="button button-secondary" data-crm-manual-close>Cancelar</button>
           <button type="submit" class="button button-primary" data-crm-manual-submit>Confirmar registro</button>
@@ -312,13 +312,9 @@
     {% elif crm_manual_status and crm_manual_status.state != "CRM_MANUAL_REGISTERED" %}
     <div class="crm-manual-alert" role="status">O registro no CRM requer conferência manual. Não envie novamente antes de verificar no CRM Comercial.</div>
     {% elif crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
-    {% if crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
     <div class="crm-manual-success" role="status">
       Registrado no CRM{% if crm_manual_status.protocol %} · Protocolo {{ crm_manual_status.protocol }}{% endif %}
     </div>
-    {% else %}
-    <div class="crm-manual-alert" role="status">Este contato está registrado no CRM com outro vendedor. Confira a transferência antes de prosseguir.</div>
-    {% endif %}
     {% endif %}
 
     <div class="chat-stream" id="chat-stream">
@@ -456,11 +452,11 @@
       <small>{% if selected_queue %}Código {{ selected_queue.code }} · {% endif %}Responsável: {{ conversation.assigned_user.name if conversation.assigned_user else 'Sem responsável' }}</small>
     </div>
 
-    {% if 'crm.credit' in current_user.permissions and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" and crm_manual_seller and crm_manual_status.sellerUsername == crm_manual_seller.username %}
+    {% if 'crm.credit' in current_user.permissions and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
     <div class="context-section crm-credit-section">
       <div class="context-title">Consulta de CPF · CRM Comercial</div>
       <p>Oportunidade #{{ crm_manual_status.opportunityId }} · {{ crm_manual_seller.funnel_name }}</p>
-      {% if crm_credit_status and crm_credit_status.opportunityId == crm_manual_status.opportunityId %}
+      {% if crm_credit_status %}
         {% if crm_credit_status.state == "CRM_MANUAL_CREDIT" %}
         <div class="crm-credit-result crm-credit-result-{{ crm_credit_status.status|lower }}" role="status">
           <strong>{{ crm_credit_status.statusLabel }}</strong>
@@ -487,10 +483,7 @@
     </div>
     {% endif %}
 
-    {% if 'crm.contest' in current_user.permissions and crm_contestation_enabled and crm_credit_status and crm_credit_status.state == "CRM_MANUAL_CREDIT" and crm_credit_status.analysisId
-          and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED"
-          and crm_credit_status.opportunityId == crm_manual_status.opportunityId
-          and crm_manual_seller and crm_credit_status.sellerUsername == crm_manual_seller.username %}
+    {% if 'crm.contest' in current_user.permissions and crm_contestation_enabled and crm_credit_status and crm_credit_status.state == "CRM_MANUAL_CREDIT" and crm_credit_status.analysisId %}
     <div class="context-section crm-contest-section"
          data-contest-shell
          data-contest-status-url="/conversations/{{ conversation.id }}/credit-contestation">

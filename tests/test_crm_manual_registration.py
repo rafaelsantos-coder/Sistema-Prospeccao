@@ -5,11 +5,11 @@ import re
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import AuditLog, Conversation, User
+from app.models import AuditLog, Contact, Conversation, User
 from app.services import crm_manual_registration as manual
 
 
@@ -101,7 +101,7 @@ def test_manual_registration_uses_correct_seller_and_does_not_duplicate(monkeypa
 
         def find_opportunities_by_phone(self, phone):
             calls.append(("lookup", phone))
-            return {"items": []}
+            return {"items": [{"id": 1001, "clientPhone": phone, "assignedUserId": 25}]}
 
         def create_seller_lead(self, **kwargs):
             calls.append(("create", kwargs))
@@ -180,60 +180,88 @@ def test_manual_registration_uses_correct_seller_and_does_not_duplicate(monkeypa
             assert registered
 
 
-def test_seller_wrong_owner_is_blocked_without_creating(monkeypatch):
+def test_reassigned_conversation_keeps_each_sellers_registration(monkeypatch):
+    created = []
+
     class ExistingCRM:
         bearer_token = "read-only-credential"
 
         def find_opportunities_by_phone(self, phone):
             return {
-                "items": [{
-                    "id": 1001,
-                    "clientPhone": phone,
-                    "assignedUserId": 25,
-                    "funnelId": 17,
-                    "status": "NOVO",
-                }]
+                "items": [
+                    {"id": 1000, "clientPhone": phone, "assignedUserId": 35},
+                    {
+                        "id": 1001,
+                        "clientPhone": phone,
+                        "assignedUserId": 25,
+                        "funnelId": 17,
+                        "stageId": 65,
+                        "status": "NOVO",
+                        "protocol": "CRM-NATINE-1001",
+                    },
+                ]
             }
 
         def create_seller_lead(self, **kwargs):
-            raise AssertionError("Nunca criar lead com proprietário diferente")
+            created.append(kwargs)
+            return {
+                "id": 1002,
+                "assignedUserId": 36,
+                "funnelId": 17,
+                "stageId": 63,
+                "protocol": "CRM-FABIANO-1002",
+            }
 
     monkeypatch.setattr(
         manual.SulnetCRMClient, "from_settings", classmethod(lambda cls: ExistingCRM())
     )
     with TestClient(app) as client:
         _login(client)
-        page = client.get("/leads/1")
-        opened = client.post(
-            "/leads/1/conversation",
-            data={"csrf_token": _csrf(page.text)}, follow_redirects=False
-        )
-        path = opened.headers["location"]
-        cid = int(path.rstrip("/").split("/")[-1])
         with SessionLocal() as db:
-            seller = db.scalar(select(User).where(User.email == "fabiano.crm.manual.test@sulnet.local"))
-            if seller is None:
-                seller = User(
-                    name="Fabiano Braga",
-                    email="fabiano.crm.manual.test@sulnet.local",
-                    password_hash="test-hash",
-                    role="CONSULTOR",
-                    active=True,
-                )
-                db.add(seller)
-                db.flush()
-            conv = db.get(Conversation, cid)
-            conv.assigned_user_id = seller.id
-            db.execute(delete(AuditLog).where(
-                AuditLog.entity_type == "contact",
-                AuditLog.entity_id == str(conv.contact_id),
-                AuditLog.action.in_((manual.ACTION_REGISTERED, manual.ACTION_UNCERTAIN, manual.ACTION_REVIEW)),
-            ))
+            first_seller = User(
+                name="Natine Dauana Dalla Lana Hirt",
+                email="natine.crm.reassigned@example.org",
+                password_hash="test-hash", role="CONSULTOR", active=True,
+            )
+            second_seller = User(
+                name="Fabiano Braga", email="fabiano.crm.reassigned@example.org",
+                password_hash="test-hash", role="CONSULTOR", active=True,
+            )
+            contact = Contact(phone="5555980001002", name="Joao da Silva")
+            conv = Conversation(contact=contact, assigned_user=first_seller)
+            db.add_all([conv, second_seller])
+            db.commit()
+            cid = conv.id
+            first_seller_id, second_seller_id = first_seller.id, second_seller.id
+
+        path = f"/conversations/{cid}"
+        register_path = path + "/register-crm"
+        first = client.post(register_path, data={
+            "csrf_token": _csrf(client.get(path).text), "client_name": "Joao da Silva",
+        })
+        assert first.status_code == 200
+        assert "CRM-NATINE-1001" in first.text
+        assert not created
+
+        with SessionLocal() as db:
+            db.get(Conversation, cid).assigned_user_id = second_seller_id
             db.commit()
 
-        page = client.get(path)
-        response = client.post(path + "/register-crm", data={
-            "csrf_token": _csrf(page.text), "client_name": "Joao da Silva",
-        }, follow_redirects=True)
-        assert response.status_code == 200
-        assert "outro responsável" in response.text
+        second_page = client.get(path).text
+        assert f'action="{register_path}"' in second_page
+        assert "CRM-NATINE-1001" not in second_page
+        second = client.post(register_path, data={
+            "csrf_token": _csrf(second_page), "client_name": "Joao da Silva",
+        })
+        assert second.status_code == 200
+        assert "Oportunidade registrada no CRM." in second.text
+        assert "CRM-FABIANO-1002" in second.text
+        assert [item["seller_username"] for item in created] == ["fabiano.braga"]
+
+        with SessionLocal() as db:
+            db.get(Conversation, cid).assigned_user_id = first_seller_id
+            db.commit()
+
+        first_page = client.get(path).text
+        assert "CRM-NATINE-1001" in first_page
+        assert "CRM-FABIANO-1002" not in first_page

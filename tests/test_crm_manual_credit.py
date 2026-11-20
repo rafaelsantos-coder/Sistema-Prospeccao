@@ -129,6 +129,15 @@ def test_manual_credit_uses_existing_crm_lead_and_never_saves_cpf(monkeypatch):
                     "protocol": "CRM-2026-17456",
                 }),
             ))
+            db.add(AuditLog(
+                action=credit.ACTION_UNCERTAIN,
+                entity_type="contact",
+                entity_id=str(contact_id),
+                payload_json=json.dumps({
+                    "opportunityId": 17455,
+                    "sellerUsername": "fabiano.braga",
+                }),
+            ))
             db.commit()
 
         page = client.get(url)
