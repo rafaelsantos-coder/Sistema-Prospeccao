@@ -36,7 +36,7 @@ from app.services.queue_routing import available_queues_for_user, get_queue
 from app.services.scoring import normalize_phone
 from app.services.telegram import configured as telegram_configured, ensure_telegram_queue
 from app.timeutils import utcnow
-from app.web import flash, render
+from app.web import csv_attachment, datetime_br, flash, render
 
 
 router = APIRouter(prefix="/dispatches")
@@ -357,6 +357,61 @@ def dispatch_detail(
         import_summary=import_summary,
         live_status=live_status,
     )
+
+
+def _spreadsheet_text(value: str | None) -> str:
+    text = value or ""
+    if text.startswith(("\t", "\r", "\n")) or text.lstrip().startswith(
+        ("=", "+", "-", "@", "＝", "＋", "－", "＠")
+    ):
+        return f"'{text}"
+    return text
+
+
+@router.get("/{dispatch_id}/report.csv")
+def download_dispatch_report(
+    dispatch_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    require_permission(actor, "reports.export")
+
+    dispatch = _dispatch_or_404(db, dispatch_id)
+    recipients = db.execute(
+        select(
+            CampaignDispatchRecipient.phone,
+            CampaignDispatchRecipient.status,
+            CampaignDispatchRecipient.sent_at,
+            CampaignDispatchRecipient.error,
+        )
+        .where(CampaignDispatchRecipient.dispatch_id == dispatch.id)
+        .order_by(CampaignDispatchRecipient.id)
+    )
+    rows = [["Telefone", "Resultado", "Status", "Enviado em", "Motivo"]]
+    for phone, recipient_status, sent_at, error in recipients:
+        rows.append([
+            _spreadsheet_text(phone),
+            "Enviado" if recipient_status == "ENVIADO" else "Não enviado",
+            recipient_status,
+            datetime_br(sent_at, fallback=""),
+            _spreadsheet_text(error),
+        ])
+
+    response = csv_attachment(rows, f"disparo-{dispatch.id}-relatorio.csv")
+    response.headers["Cache-Control"] = "no-store"
+    write_audit(
+        db,
+        user=actor,
+        action="CAMPAIGN_DISPATCH_REPORT_EXPORTED",
+        entity_type="campaign_dispatch",
+        entity_id=dispatch.id,
+        payload={"recipients": len(rows) - 1},
+    )
+    db.commit()
+    return response
 
 
 @router.get("/{dispatch_id}/live")
