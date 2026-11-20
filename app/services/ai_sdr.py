@@ -101,6 +101,13 @@ from app.timeutils import is_past, utcnow
 LOG = logging.getLogger("sulnet_ai_sdr")
 
 
+# A entrada aceita mídias na FILA-IA. Áudios são transcritos no webhook.
+# Em mídias sem interpretação disponível, a IA não deve inventar conteúdo.
+AI_INBOUND_MESSAGE_TYPES = frozenset({
+    "TEXT", "BUTTONS", "AUDIO", "IMAGE", "VIDEO", "DOCUMENT",
+    "STICKER", "LOCATION", "CONTACT", "REACTION", "LINK",
+})
+
 DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
 
 
@@ -367,7 +374,7 @@ def enqueue_ai_job(
         return None
     if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
         return None
-    if message.direction != "INBOUND" or message.message_type != "TEXT":
+    if message.direction != "INBOUND" or message.message_type not in AI_INBOUND_MESSAGE_TYPES:
         return None
 
     existing = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
@@ -972,7 +979,16 @@ def build_ai_context(
             }
             for item in history
         ],
-        "latest_customer_message": message.body,
+        "latest_customer_message": (
+            message.body if message.message_type in {"TEXT", "BUTTONS", "LOCATION", "CONTACT", "LINK"}
+            else (
+                f"O cliente enviou uma mensagem do tipo {message.message_type}. "
+                f"Legenda ou indicação disponível: {message.body or 'sem legenda'}. "
+                "Não afirme ter visto, ouvido ou interpretado o anexo quando não houver transcrição ou descrição verificável. "
+                "Responda acolhendo o envio e peça ao cliente que explique em poucas palavras o que deseja."
+            )
+        ),
+        "latest_customer_message_type": message.message_type,
         "knowledge": [
             {
                 "title": item.title,
