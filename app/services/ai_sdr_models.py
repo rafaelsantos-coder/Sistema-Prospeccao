@@ -28,6 +28,8 @@ class AIDecision(BaseModel):
     _policy_observations: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     # Tempo do modelo e ferramentas chamadas nesta decisão (diagnóstico de latência).
     _timing: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _contextual_reply: bool = PrivateAttr(default=False)
+    _service_handoff: dict[str, Any] = PrivateAttr(default_factory=dict)
     reply_text: str = Field(min_length=1, max_length=1800)
     quick_replies: list[QuickReply] = Field(default_factory=list, max_length=3)
     intent: Literal[

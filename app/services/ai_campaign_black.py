@@ -29,6 +29,10 @@ OFFER_MARK = "promocao black da sulnet"
 CUSTOMER_OFFER_QUESTION = "Você já está sabendo da Black da Sulnet, que beneficia os nossos clientes?"
 CUSTOMER_OFFER_MARK = "black da sulnet que beneficia"
 OPTIONS_MARK = "black que pula o fim de ano"
+QUOTE_COMBO_MARK = "combo black da sulnet"
+QUOTE_MOBILE_MARK = "telefonia movel da black sulnet"
+ORDINARY_FIRST_DUE = "A data da primeira fatura é confirmada no cadastro."
+COMBO_ACCEPTANCES = {"quero o combo", "quero contratar o combo", "contratar combo"}
 
 OPTIONS_TEXT = (
     "Black da Sulnet: a Black que pula o fim de ano! 🎉\n"
@@ -101,8 +105,43 @@ def choice_from_options(text: str | None) -> str:
     return ""
 
 
+def _current_quote_choice(history: list[dict] | None) -> str | None:
+    """Uma cotação direta substitui a escolha anterior de campanha."""
+    rows = list(history or [])
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        if str(row.get("direction") or "").upper() != "OUTBOUND":
+            continue
+        text = str(row.get("body") or "")
+        folded = _fold(text)
+        kind = "COMBO" if QUOTE_COMBO_MARK in folded else "MOBILE" if QUOTE_MOBILE_MARK in folded else ""
+        if not kind:
+            return "" if ORDINARY_FIRST_DUE in text and "Quer contratar esse plano?" in text else None
+        if not black_active():
+            return ""
+        latest = next(
+            (str(item.get("body") or "") for item in reversed(rows[index + 1:])
+             if str(item.get("direction") or "").upper() == "INBOUND"),
+            "",
+        )
+        inbound = _fold(latest)
+        if "?" in latest or re.search(r"\b(?:nao|mas|porem|se|talvez|depois|so fibra|sem chip|sem movel)\b", inbound):
+            return ""
+        if kind == "COMBO" and inbound in COMBO_ACCEPTANCES:
+            return kind
+        if kind == "COMBO" and "qual das opcoes" in folded:
+            return ""
+        from app.services.ai_sdr_policies import _explicit_purchase_commitment
+
+        return kind if _explicit_purchase_commitment({"history": [row], "latest_customer_message": latest}) else ""
+    return None
+
+
 def black_accepted(history: list[dict] | None) -> bool:
     """O cliente já respondeu "sim" à pergunta da Black nesta conversa."""
+    current = _current_quote_choice(history)
+    if current is not None:
+        return bool(current)
     rows = list(history or [])
     for index, row in enumerate(rows):
         if str(row.get("direction") or "").upper() != "OUTBOUND":
@@ -136,6 +175,9 @@ COMBO_STAGE_DECLINED = "DECLINED"
 
 def black_choice(history: list[dict] | None) -> str:
     """COMBO ou MOBILE, conforme a resposta do cliente às opções da Black."""
+    current = _current_quote_choice(history)
+    if current is not None:
+        return current
     rows = list(history or [])
     for index, row in enumerate(rows):
         if str(row.get("direction") or "").upper() == "OUTBOUND" and is_options_question(row.get("body")):

@@ -8,18 +8,18 @@ from __future__ import annotations
 import re
 import unicodedata
 from difflib import SequenceMatcher
-from typing import Any
 
 from app.models import Message
-from app.services.ai_quick_replies import QuickReply
 from app.services import ai_campaign_black as black
+from app.services.ai_quick_replies import QuickReply
 from app.services.ai_sdr_models import AIDecision, QualificationData
 from app.services.ai_sdr_policy import (
-    CENTRAL_REDIRECT_MESSAGE,
+    CENTRAL_REDIRECT_MESSAGE as CENTRAL_REDIRECT_MESSAGE,
+)
+from app.services.ai_sdr_policy import (
     CORPORATE_PLANS,
     FTTH_PLANS,
     MOBILE_PLANS,
-    PLAN_CHANGE_SERVICE_PHONE,
     SERVICE_CITIES,
 )
 
@@ -80,6 +80,23 @@ def _product_kind_from_text(
     if folded in internet:
         return "INTERNET"
 
+    if re.search(r"\b(?:sem (?:chip|movel)|(?:so|apenas|somente) (?:a )?(?:fibra|internet))\b", folded):
+        return "INTERNET"
+    quotes_or_requests = re.search(
+        r"\b(?:quero|queria|quanto|gostaria|preciso|preco|contratar|cotacao|valor|custa|planos?)\b", folded,
+    )
+    if quotes_or_requests:
+        mentions_mobile = re.search(r"\b(?:chips?|sulmovel|move[il]s?|celular|portabilidade)\b", folded)
+        mentions_fiber = re.search(r"\b(?:fibra|internet|conexao)\b", folded)
+        if "combo" in folded or (mentions_fiber and mentions_mobile and "internet para celular" not in folded):
+            return "COMBO"
+        if mentions_mobile:
+            return "MOBILE"
+        if mentions_fiber:
+            return "INTERNET"
+    if folded in {"combo", "combo fibra movel", "combo fibra e movel"}:
+        return "COMBO"
+
     product_question = (
         "internet" in previous
         and any(token in previous for token in ("telefonia movel", "movel"))
@@ -93,6 +110,9 @@ def _product_kind_from_text(
 
 
 def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
+    from app.services.audio_transcription import strip_transcription_prefix
+    from app.services.auto_reply import is_business_auto_reply
+
     facts: dict[str, object] = {
         "existing_customer": "",
         "customer_type": "",
@@ -100,6 +120,7 @@ def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
         "desired_product": "",
         "city": "",
         "answered_questions": [],
+        "sources": {},
     }
     answered: set[str] = set()
     previous_outbound = ""
@@ -108,27 +129,35 @@ def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
         if isinstance(row, dict):
             direction = str(row.get("direction") or "").upper()
             body = str(row.get("body") or "")
+            source_id = row.get("id")
+            created_at = row.get("created_at")
         else:
             direction = str(row.direction or "").upper()
             body = str(row.body or "")
+            source_id = row.id
+            created_at = row.created_at.isoformat() if row.created_at else None
 
         if direction == "OUTBOUND":
             previous_outbound = body
             continue
-        if direction != "INBOUND":
+        if direction != "INBOUND" or is_business_auto_reply(body):
             continue
 
+        body = strip_transcription_prefix(body)
+        source = {"message_id": source_id, "at": created_at}
         existing = _existing_customer_from_text(
             body,
             previous_outbound=previous_outbound,
         )
         if existing:
             facts["existing_customer"] = existing
+            facts["sources"]["existing_customer"] = source
             answered.add("EXISTING_CUSTOMER")
 
         customer_type = _customer_type_from_text(body)
         if customer_type:
             facts["customer_type"] = customer_type
+            facts["sources"]["customer_type"] = source
             answered.add("CUSTOMER_TYPE")
 
         product_kind = _product_kind_from_text(
@@ -137,31 +166,54 @@ def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
         )
         if product_kind:
             facts["product_kind"] = product_kind
-            facts["desired_product"] = (
-                "Internet" if product_kind == "INTERNET" else "Telefonia Móvel"
-            )
+            facts["desired_product"] = _PRODUCT_LABELS[product_kind]
+            facts["sources"]["product_kind"] = source
+            facts["sources"]["desired_product"] = source
             answered.add("PRODUCT")
 
-        folded = _fold_sales_text(body)
-        previous_folded = _fold_sales_text(previous_outbound)
-        asks_city = any(
-            cue in previous_folded
-            for cue in (
-                "qual e a sua cidade",
-                "qual sua cidade",
-                "em qual cidade",
-                "qual cidade",
-            )
-        )
-        for service_city in SERVICE_CITIES:
-            city_key = _fold_sales_text(service_city)
-            if folded == city_key or (asks_city and city_key in folded):
-                facts["city"] = service_city
-                answered.add("CITY")
-                break
+        city = _confirmed_city_from_text(body, previous_outbound)
+        if city:
+            facts["city"] = city
+            facts["sources"]["city"] = source
+            answered.add("CITY")
 
     facts["answered_questions"] = sorted(answered)
     return facts
+
+
+_PRODUCT_LABELS = {
+    "INTERNET": "Internet",
+    "MOBILE": "Telefonia Móvel",
+    "COMBO": "Fibra + Telefonia Móvel",
+}
+
+
+def _confirmed_city_from_text(value: str, previous_outbound: str = "") -> str:
+    folded = _fold_sales_text(value)
+    asks_city = bool(re.search(r"\b(?:qual (?:e )?(?:a )?(?:sua )?cidade|nome da cidade)\b", _fold_sales_text(previous_outbound)))
+    locations = []
+    for city in SERVICE_CITIES:
+        name = _fold_sales_text(city)
+        if folded == name:
+            return city
+        for match in re.finditer(rf"\b(?:e em|sera em|vai ser em|instalar em|instalacao em|na verdade em) {name}\b", folded):
+            if not folded[:match.start()].rstrip().endswith("nao"):
+                locations.append((match.start(), city))
+    if locations:
+        return max(locations)[1]
+    matches = [
+        city for city in SERVICE_CITIES
+        if re.search(rf"\b{_fold_sales_text(city)}\b", folded)
+    ]
+    if len(matches) != 1:
+        return ""
+    city = matches[0]
+    name = _fold_sales_text(city)
+    if re.search(rf"\bnao (?:e )?(?:em |de |para )?{name}\b", folded):
+        return ""
+    if asks_city or re.search(rf"\b(?:em|de|para|pra|cidade) {name}\b", folded):
+        return city
+    return ""
 
 
 # Provedores concorrentes: "sou cliente da Vivo" não confirma Sulnet.
@@ -199,7 +251,6 @@ def _existing_customer_from_text(
     previous_outbound: str | None = None,
 ) -> str:
     folded = _fold_sales_text(value)
-    previous = _fold_sales_text(previous_outbound)
     if not folded:
         return ""
 
@@ -342,6 +393,9 @@ def _customer_type_from_text(value: str | None) -> str:
         "internet para empresa",
         "plano corporativo",
         "agora e para empresa",
+        "para minha loja",
+        "plano empresarial",
+        "internet empresarial",
     )
     residential_exact = {
         "casa",
@@ -358,6 +412,10 @@ def _customer_type_from_text(value: str | None) -> str:
         "preciso para casa",
         "internet para casa",
         "agora e para casa",
+        "pra casa",
+        "para casa",
+        "internet residencial",
+        "fibra residencial",
     )
 
     if folded in company_exact or any(cue in folded for cue in company_cues):
@@ -1155,80 +1213,25 @@ def _existing_customer_plan_change_requested(context: dict) -> bool:
     return confirmed_existing or mentions_existing_service
 
 
-# Assuntos de quem já é cliente que não são venda nova: vão para a central.
-_EXISTING_CUSTOMER_SERVICE_CUES = (
-    "upgrade ou suporte",
-    "upgrade",
-    "suporte tecnico",
-    "preciso de suporte",
-    "falar com o suporte",
-    "falar com suporte",
-    "financeiro",
-    "2 via",
-    "segunda via",
-    "boleto da minha",
-    "minha fatura",
-    "sem internet",
-    "internet caiu",
-    "internet lenta",
-    "internet ta lenta",
-    "internet esta lenta",
-    "internet nao funciona",
-    "internet parou",
-    "mudanca de endereco",
-    "cancelar meu plano",
-    "cancelar minha internet",
-)
-
-
-# Relato de problema no serviço: quem diz isso quase sempre já tem a internet,
-# então não se vende plano nessa hora (conversa Rafael Trennepohl, 06/11: "Estou com
-# problema na internet" e a IA ofereceu telefonia móvel).
-_SERVICE_PROBLEM_CUES = (
-    "problema",
-    "problemas",
-    "sem sinal",
-    "caiu",
-    "caindo",
-    "lenta",
-    "lento",
-    "nao funciona",
-    "nao esta funcionando",
-    "nao pega",
-    "travando",
-    "sem conexao",
-)
-
-
-def _existing_customer_service_requested(context: dict) -> bool:
-    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
-    if not latest:
-        return False
-    if any(cue in latest for cue in _SERVICE_PROBLEM_CUES):
-        return True
-    if _existing_customer_from_context(context) != "CLIENTE":
-        return False
-    return any(cue in latest for cue in _EXISTING_CUSTOMER_SERVICE_CUES)
-
-
 def _apply_existing_customer_plan_change_policy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
-    if not (
-        _existing_customer_plan_change_requested(context)
-        or _existing_customer_service_requested(context)
-    ):
+    from app.services.ai_service_handoff import central_handoff_reply, handoff_summary, service_handoff
+
+    decision.service_redirect = False
+    if decision.intent == "DO_NOT_CONTACT" or decision.sales_state == "OPT_OUT":
+        return decision
+    handoff = service_handoff(context)
+    if not handoff:
         return decision
 
-    # Canal exclusivo comercial: upgrade, suporte e financeiro vão para a central,
-    # com botão que abre o WhatsApp oficial (o envio monta o botão de link).
-    decision.reply_text = CENTRAL_REDIRECT_MESSAGE
+    decision.reply_text = central_handoff_reply(handoff)
     decision.quick_replies = []
     decision.intent = "INFORMATION"
     decision.sales_state = "WAITING_CUSTOMER"
     decision.recommended_stage = "CONTATO_REALIZADO"
-    decision.qualification.existing_customer = "CLIENTE"
+    decision.qualification.existing_customer = _existing_customer_from_context(context) or "NAO_INFORMADO"
     decision.handoff_target = "NONE"
     decision.handoff_recommended = False
     decision.handoff_reason = ""
@@ -1238,14 +1241,16 @@ def _apply_existing_customer_plan_change_policy(
     decision.offer_price = None
     decision.concession_level = 0
     decision.free_months = 0
-    decision.summary = (
-        "Cliente atual pediu upgrade, suporte ou financeiro e foi direcionado à central "
-        f"{PLAN_CHANGE_SERVICE_PHONE}."
-    )
-    decision.next_action = "Tratativa comercial encerrada; o assunto segue pela central de atendimento."
+    decision.summary = handoff_summary(handoff)
+    decision.next_action = "Cliente envia o resumo à Central pelo WhatsApp."
     decision.journey_state = "DISCOVERY"
-    decision.journey_pending_action = "Nenhuma ação comercial pendente."
+    if handoff["new_connection"]:
+        decision.journey_pending_action = "Retomar o pedido de nova conexão quando o cliente responder."
+    else:
+        decision.journey_pending_action = "Aguardar a continuidade do atendimento na Central."
     decision.service_redirect = True
+    decision._contextual_reply = True
+    decision._service_handoff = handoff
     return decision
 
 
@@ -1465,6 +1470,8 @@ def _product_already_in_talk(context: dict) -> str:
     """
     facts = context.get("confirmed_facts") or {}
     fact_kind = str(facts.get("product_kind") or "").upper()
+    if fact_kind == "COMBO":
+        return "INTERNET"
     if fact_kind in {"INTERNET", "MOBILE"}:
         return fact_kind
     memory = _journey_memory_from_context(context)
@@ -1953,6 +1960,8 @@ _EXPLICIT_CONTACT_STOP_CUES = (
     "nao me chame",
     "pare de me chamar",
     "pare de mandar",
+    "parem de mandar",
+    "parem de me chamar",
     "me remova",
     "remover meu numero",
     "sair da lista",
@@ -2592,6 +2601,8 @@ def _fast_purchase_decision(plan: dict, city: str, *, handoff: bool) -> AIDecisi
 def _journey_product_kind(decision: AIDecision, context: dict) -> str:
     facts = context.get("confirmed_facts") or {}
     fact_kind = str(facts.get("product_kind") or "").upper()
+    if fact_kind == "COMBO":
+        return "INTERNET"
     if fact_kind in {"INTERNET", "MOBILE"}:
         return fact_kind
 
@@ -2600,7 +2611,7 @@ def _journey_product_kind(decision: AIDecision, context: dict) -> str:
         previous_outbound=_last_outbound_text(context),
     )
     if latest_kind:
-        return latest_kind
+        return "INTERNET" if latest_kind == "COMBO" else latest_kind
 
     memory = _journey_memory_from_context(context)
     combined = _fold_sales_text(
@@ -2707,7 +2718,7 @@ def _journey_integrity_issues(
     ):
         issues.append("STATE_REGRESSION_CITY")
 
-    if _sdr_reply_is_stale_repetition(decision, context):
+    if not decision._contextual_reply and _sdr_reply_is_stale_repetition(decision, context):
         issues.append("REPEATED_QUESTION")
 
     if (
