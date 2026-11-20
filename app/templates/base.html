@@ -30,6 +30,11 @@
         <span class="nav-icon">◎</span><span>Leads e CRM</span>
       </a>
       {% endif %}
+      {% if 'feasibility_map.view' in current_user.permissions %}
+      <a href="/feasibility-map" class="nav-item {% if active_nav == 'feasibility-map' %}active{% endif %}"{% if active_nav == 'feasibility-map' %} aria-current="page"{% endif %}>
+        <span class="nav-icon" aria-hidden="true">⌖</span><span>Mapa de Viabilidade</span>
+      </a>
+      {% endif %}
       {% if 'conversations.view' in current_user.permissions %}
       <a href="/conversations" class="nav-item {% if active_nav == 'conversations' %}active{% endif %}">
         <span class="nav-icon">◌</span><span>Conversas</span>

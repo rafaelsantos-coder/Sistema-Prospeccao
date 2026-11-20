@@ -26,6 +26,7 @@ PERMISSION_GROUPS: tuple[dict[str, Any], ...] = (
     {"key": "leads", "title": "Leads e CRM", "description": "Oportunidades e prospecção comercial",
      "items": [
          ("leads.view", "Ver leads e oportunidades", ALL_HUMAN_ROLES),
+         ("feasibility_map.view", "Consultar Mapa de Viabilidade", ALL_HUMAN_ROLES),
          ("leads.create", "Criar novos leads", ALL_HUMAN_ROLES),
          ("leads.edit", "Atualizar etapas e atividades", ALL_HUMAN_ROLES),
          ("leads.export", "Exportar listas de leads", ALL_HUMAN_ROLES),
@@ -146,6 +147,7 @@ REQUIRES: dict[str, str] = {
 # dos colaboradores atuais sem revisão explícita do administrador.
 _BASE_CONSULTOR = {
     "dashboard.view", "leads.view", "leads.create", "leads.edit", "leads.export",
+    "feasibility_map.view",
     "conversations.view", "conversations.reply", "conversations.transfer",
     "conversations.blacklist", "crm.register", "crm.credit", "crm.contest",
     "prospecting.view", "prospecting.manage", "campaigns.view", "campaigns.manage",
@@ -346,6 +348,8 @@ def permission_for_request(path: str, method: str) -> str | None:
         return "blacklist.manage" if write else "blacklist.view"
     if path == "/reports/credit-map" or path.startswith("/api/reports/credit-map"):
         return "credit_map.import" if write else "credit_map.view"
+    if path in {"/feasibility-map", "/api/feasibility-map"} and not write:
+        return "feasibility_map.view"
     if path == "/reports" or path.startswith("/reports/"):
         return "reports.export" if "/export/" in path or path.endswith((".csv", ".pdf")) else "reports.view"
     if path == "/settings" or path.startswith("/settings/"):
@@ -371,6 +375,7 @@ _HOME_ROUTES = (
     ("dashboard.view", "/dashboard"),
     ("conversations.view", "/conversations"),
     ("leads.view", "/leads"),
+    ("feasibility_map.view", "/feasibility-map"),
     ("prospecting.view", "/prospecting"),
     ("campaigns.view", "/campaigns"),
     ("dispatches.view", "/dispatches"),

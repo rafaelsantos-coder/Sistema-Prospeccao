@@ -20,6 +20,46 @@ STATUSES = {'Online', 'Parcial', 'Offline', 'Vazia'}
 COUNTS = ('portas', 'usadas', 'livres', 'online', 'offline')
 MAX_NAP_BYTES = 15 * 1024 * 1024
 
+# Prefixos da coluna "Prefixo" na base NAP importada.
+NAP_CITIES = {
+    'BVB': 'Boa Vista do Buricá',
+    'CBT': 'Caibaté',
+    'CRR': 'Cerro Largo',
+    'CSU': 'Crissiumal',
+    'DMC': 'Doutor Maurício Cardoso',
+    'EIJ': 'Entre-Ijuís',
+    'GDM': 'Guarani das Missões',
+    'GIR': 'Giruá',
+    'HZA': 'Horizontina',
+    'IDD': 'Independência',
+    'NVN': 'Nova Candelária',
+    'SAN': 'Santo Ângelo',
+    'SETE': 'Sete de Setembro',
+    'SJI': 'São José do Inhacorá',
+    'SRO': 'Santa Rosa',
+    'SSF': 'Senador Salgado Filho',
+    'STC': 'Santo Cristo',
+    'TDU': 'Tucunduva',
+    'TMI': 'Três de Maio',
+    'TUD': 'Tuparendi',
+}
+
+
+def feasibility_snapshot(snapshot: dict) -> dict:
+    """Projeta os campos de rede usados pelo mapa comercial."""
+    naps = []
+    fields = ('id', 'nome', 'status', 'lat', 'lng', 'original_lat', 'original_lng', 'portas', 'livres')
+    for nap in snapshot.get('naps', []):
+        prefix = nap['nome'].upper().removeprefix('PROJETO-').split('-', 1)[0]
+        naps.append({
+            **{field: nap[field] for field in fields},
+            'city': NAP_CITIES.get(prefix, ''),
+        })
+    return {
+        'reference_at': snapshot.get('sessions_at') or snapshot.get('registration_at'),
+        'naps': naps,
+    }
+
 
 def _coordinates(lat: Any, lng: Any) -> tuple[float, float]:
     if not (
