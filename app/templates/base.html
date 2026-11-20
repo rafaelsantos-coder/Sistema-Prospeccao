@@ -30,7 +30,7 @@
         <span class="nav-icon">◎</span><span>Leads e CRM</span>
       </a>
       {% endif %}
-      {% if 'feasibility_map.view' in current_user.permissions %}
+      {% if 'feasibility_map.view' in current_user.permissions and current_user.role|upper != 'CONSULTOR' %}
       <a href="/feasibility-map" class="nav-item {% if active_nav == 'feasibility-map' %}active{% endif %}"{% if active_nav == 'feasibility-map' %} aria-current="page"{% endif %}>
         <span class="nav-icon" aria-hidden="true">⌖</span><span>Mapa de Viabilidade</span>
       </a>
@@ -160,6 +160,7 @@
         <h1>{{ page_title }}</h1>
       </div>
       <div class="topbar-actions">
+        {% block topbar_actions %}{% endblock %}
         {% if 'crm.register' in current_user.permissions and page_title == "Conversas" and conversation is defined and conversation %}
           {% if crm_manual_status is defined and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
           <span class="button button-secondary crm-manual-topbar-state" title="Oportunidade já vinculada ao CRM">✓ Registrado no CRM</span>

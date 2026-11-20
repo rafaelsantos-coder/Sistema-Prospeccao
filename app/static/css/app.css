@@ -95,6 +95,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .topbar h1 { margin: 2px 0 0; font-size: 22px; line-height: 1.1; letter-spacing: -.025em; }
 .topbar-context { color: var(--muted); font-size: 9px; letter-spacing: .17em; font-weight: 800; }
 .topbar-actions { display: flex; gap: 10px; align-items: center; }
+.topbar-actions:has(.chat-feasibility-link) { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
+.chat-feasibility-link { white-space: nowrap; }
 .mobile-menu { display: none; border: 0; background: var(--surface-3); width: 38px; height: 38px; border-radius: 10px; cursor: pointer; }
 .page-content { padding: 30px 34px 48px; max-width: 1680px; margin: 0 auto; }
 
@@ -495,6 +497,9 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .topbar { padding: 0 14px; }
   .topbar-actions .button { font-size: 0; width: 40px; padding: 0; }
   .topbar-actions .button span { font-size: 18px; }
+  .topbar:has(.chat-feasibility-link) { height: auto; min-height: 76px; flex-wrap: wrap; justify-content: flex-start; gap: 6px 10px; padding-block: 8px; }
+  .topbar-actions:has(.chat-feasibility-link) { margin-inline-start: auto; }
+  .topbar-actions .chat-feasibility-link { width: auto; padding-inline: 8px; font-size: 11px; }
   .page-lead { align-items: flex-start; flex-direction: column; }
   .metric-grid-6 { grid-template-columns: 1fr 1fr; gap: 10px; }
   .metric-card { min-height: 112px; padding: 14px; }
