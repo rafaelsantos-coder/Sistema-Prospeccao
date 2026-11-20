@@ -20,7 +20,7 @@ from app.services.ai_queue_coverage import (
     COVERAGE_CAMPAIGN_KEY,
     ensure_unanswered_coverage_all_queues,
 )
-from app.services.ai_sdr import claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
+from app.services.ai_sdr import AI_INBOUND_MESSAGE_TYPES, claim_ai_job, enqueue_ai_job, process_ai_job, queue_ai_binding
 from app.services.ai_seller import (
     active_closer,
     poll_pending_contracts,
@@ -670,7 +670,7 @@ def _recover_recent_unqueued_inbounds() -> int:
                 select(Message)
                 .where(
                     Message.direction == "INBOUND",
-                    Message.message_type == "TEXT",
+                    Message.message_type.in_(AI_INBOUND_MESSAGE_TYPES),
                     Message.created_at >= threshold,
                 )
                 .order_by(Message.id.desc())
@@ -903,7 +903,7 @@ def _takeover_unanswered_human_conversations(*, limit: int = 50) -> int:
                     .order_by(Message.id.desc())
                     .limit(1)
                 )
-                if not latest or latest.direction != "INBOUND" or latest.message_type != "TEXT":
+                if not latest or latest.direction != "INBOUND" or latest.message_type not in AI_INBOUND_MESSAGE_TYPES:
                     continue
                 received_at = utc_naive(latest.created_at)
                 if not received_at or now - received_at < threshold:
@@ -1040,7 +1040,7 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
                 select(Message.id)
                 .where(
                     Message.direction == "INBOUND",
-                    Message.message_type == "TEXT",
+                    Message.message_type.in_(AI_INBOUND_MESSAGE_TYPES),
                     Message.created_at >= since,
                     Message.created_at <= now - STALLED_AFTER,
                 )
@@ -1214,7 +1214,7 @@ def _review_today_fila_ia() -> dict[str, int]:
                 if not latest or latest.direction != "INBOUND":
                     counts["answered"] += 1
                     continue
-                if latest.message_type != "TEXT":
+                if latest.message_type not in AI_INBOUND_MESSAGE_TYPES:
                     counts["non_text"] += 1
                     continue
                 prior_job = db.scalar(select(AIJob).where(
