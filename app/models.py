@@ -1192,6 +1192,15 @@ class CreditMapAddress(Base):
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+class CreditMapNetwork(Base):
+    """Última leitura completa das caixas NAP."""
+    __tablename__ = 'credit_map_network'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 # Prospecta VOZ: independente das filas WhatsApp/Z-API.
 class VoiceSipAccount(Base):
     __tablename__ = "voice_sip_accounts"

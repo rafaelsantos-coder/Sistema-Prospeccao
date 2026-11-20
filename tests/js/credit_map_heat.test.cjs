@@ -9,6 +9,7 @@ const script = fs.readFileSync(path.join(__dirname, '../../app/static/js/credit_
 const sandbox = {window: {}};
 vm.runInNewContext(script, sandbox);
 const heat = sandbox.window.SulnetCreditHeat;
+const network = require('../../app/static/js/credit_map_network.js');
 
 const hoods = [
   {name: 'CENTRO', approved: 100, rejected: 25},
@@ -22,6 +23,26 @@ const streets = [
   {neighborhood: 'CENTRO', street: 'RUA UM', approved: 30, rejected: 10, lat: -28.301, lng: -54.261},
   {neighborhood: 'CENTRO', street: 'RUA DOIS', approved: 20, rejected: 5, lat: -28.302, lng: -54.262},
 ];
+
+test('rede cruza GPS e ruas por proximidade sem duplicar consultas entre caixas', () => {
+  const nap = (id, lat, livres, status = 'Online') => ({
+    id, lat: lat + .0002, lng: -54.26, original_lat: lat, original_lng: -54.26, livres, status,
+  });
+  const naps = [nap(1, -28.300, 0), nap(2, -28.3001, 1, 'Offline'), nap(3, -28.301, 4)];
+  const address = (count, signed, extra = {}) => ({
+    lat: -28.300, lng: -54.26, count, signed, source_coordinates: true, ...extra,
+  });
+  const addresses = [
+    address(2, false), address(3, true),
+    address(99, false, {source_coordinates: false}), address(50, false, {lat: -28.31}),
+  ];
+  const streets = [{lat: -28.3, lng: -54.26, rejected: 7}];
+  const matches = network.cross(naps, addresses, streets, 250);
+  assert.deepEqual(matches.get(1), {approved: 3, signed: 3, unsigned: 0, opportunities: 0, rejected: 7});
+  assert.deepEqual(matches.get(3), {approved: 2, signed: 0, unsigned: 2, opportunities: 2, rejected: 0});
+  assert.equal(matches.has(2), false);
+  assert.equal(network.cross(naps, addresses, streets, 100).get(1).opportunities, 0);
+});
 
 test('mapa verde usa GPS de aprovados e saldo aproximado do bairro sem duplicar consultas', () => {
   const gpsRows = [
