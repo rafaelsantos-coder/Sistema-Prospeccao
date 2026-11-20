@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.access_control import has_permission
+from app.services.ai_reply_delivery import reply_statuses
 from app.services.ai_sdr import AI_INBOUND_MESSAGE_TYPES, enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
 from app.services.global_blacklist import (
@@ -685,6 +686,9 @@ def _render_inbox(
     if selected and selected.id not in visible_ids:
         visible_ids.append(selected.id)
     conversation_queue_labels = _conversation_queue_labels(db, visible_ids)
+    ai_reply_statuses = reply_statuses(
+        db, [cid for cid, queue in conversation_queue_labels.items() if queue["code"] == "FILA-IA"],
+    )
     commercial_tags = tag_map(db, visible_ids)
     commercial_insights = insight_map(db, visible_ids)
     quick_queues = (
@@ -719,6 +723,7 @@ def _render_inbox(
         transfer_queues=transfer_queues,
         selected_queue=selected_queue,
         conversation_queue_labels=conversation_queue_labels,
+        ai_reply_statuses=ai_reply_statuses,
         quick_outbound_queues=[q for q, _instance in quick_queues],
         quick_preferred_queue_id=quick_preferred_queue_id,
         latest_ai_run=latest_ai_run,
@@ -1574,6 +1579,9 @@ def conversation_inbox_api(
     )
     ids = [item.id for item in conversations]
     queue_labels = _conversation_queue_labels(db, ids)
+    ai_reply_statuses = reply_statuses(
+        db, [cid for cid, label in queue_labels.items() if label["code"] == "FILA-IA"],
+    )
     tags = tag_map(db, ids)
     insights = insight_map(db, ids)
     return {
@@ -1593,6 +1601,7 @@ def conversation_inbox_api(
                 "preview": item.last_message_preview or "Conversa iniciada",
                 "queue_id": queue_labels.get(item.id, {}).get("id"),
                 "queue_name": queue_labels.get(item.id, {}).get("name"),
+                "ai_reply_status": ai_reply_statuses.get(item.id),
                 "owner": item.assigned_user.name if item.assigned_user else "Sem responsável",
                 "status": item.status,
                 "unread_count": int(item.unread_count or 0),
@@ -1642,8 +1651,15 @@ def conversation_messages_api(
         mark_conversation_read(db, conversation)
         db.commit()
     location_urls = location_urls_for(db, items)
+    selected_queue = queue_for_conversation(db, conversation.id)
+    ai_reply_status = (
+        reply_statuses(db, [conversation.id]).get(conversation.id)
+        if selected_queue and selected_queue.code == "FILA-IA"
+        else None
+    )
     return {
         "conversation_id": conversation.id,
+        "ai_reply_status": ai_reply_status,
         "items": [
             {
                 "id": item.id,

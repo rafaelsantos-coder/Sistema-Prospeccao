@@ -15,6 +15,8 @@ def test_reconhece_respostas_automaticas_reais():
     assert is_business_auto_reply(
         "A Fronza Odontologia agradece o seu contato. No momento, não estamos disponíveis."
     )
+    assert is_business_auto_reply("Opção de menu inválida.")
+    assert is_business_auto_reply("Seu atendimento foi finalizado.")
 
 
 def test_cliente_de_verdade_nao_e_resposta_automatica():
@@ -26,6 +28,8 @@ def test_cliente_de_verdade_nao_e_resposta_automatica():
         "119 da internet mais o valor do móvel?",
         "Como podemos fazer para contratar?",
         "Quero ver plano para minha empresa",
+        "Qual o horário de atendimento?",
+        "Recebi uma mensagem automática, pode me ajudar?",
     ):
         assert not is_business_auto_reply(text), text
 

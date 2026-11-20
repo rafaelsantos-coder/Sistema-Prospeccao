@@ -200,6 +200,10 @@
             {% else %}
             <span class="conversation-queue-chip queue-missing" title="Atendimento sem fila vinculada">Sem fila definida</span>
             {% endif %}
+            {% set ai_reply = ai_reply_statuses.get(item.id) %}
+            {% if ai_reply %}
+            <span class="ai-reply-status ai-reply-{{ ai_reply.code }}{% if ai_reply.attention %} ai-reply-attention{% endif %}">{{ ai_reply.label }}</span>
+            {% endif %}
           </div>
           <div class="conversation-row-meta">
             <span>{{ item.assigned_user.name if item.assigned_user else 'Sem responsável' }}</span>
@@ -240,6 +244,8 @@
             {% else %}
             <span class="chat-queue-chip queue-missing" title="Este atendimento não está vinculado a uma fila">Sem fila definida</span>
             {% endif %}
+            {% set ai_reply = ai_reply_statuses.get(conversation.id) %}
+            <span role="status" data-ai-reply-status class="ai-reply-status{% if ai_reply %} ai-reply-{{ ai_reply.code }}{% if ai_reply.attention %} ai-reply-attention{% endif %}{% endif %}" {% if not ai_reply %}hidden{% endif %}>{{ ai_reply.label if ai_reply else '' }}</span>
           </div>
         </div>
       </div>
@@ -353,7 +359,7 @@
             {% endif %}
             <div class="message-foot">
               <time>{{ item.created_at|datetime_br }}</time>
-              {% if item.direction == 'OUTBOUND' %}<span class="message-status-ticks" title="{{ item.status }}">{{ '✓✓' if item.status in ['RECEIVED','READ','PLAYED'] else '✓' }}</span>{% endif %}
+              {% if item.direction == 'OUTBOUND' %}<span class="message-status-ticks" title="{{ item.status }}">{{ '✓✓' if item.status in ['DELIVERED','RECEIVED','READ','PLAYED'] else '…' if item.status in ['PENDING','SENDING'] else '!' if item.status in ['FAILED','ERROR','NOT_SENT','UNDELIVERED','UNKNOWN','CANCELED'] else '✓' }}</span>{% endif %}
             </div>
           </div>
         </div>
@@ -1143,6 +1149,21 @@
     }
   };
 
+  const replyTicks = status => {
+    if (['DELIVERED', 'RECEIVED', 'READ', 'PLAYED'].includes(status)) return '✓✓';
+    if (['PENDING', 'SENDING'].includes(status)) return '…';
+    if (['FAILED', 'ERROR', 'NOT_SENT', 'UNDELIVERED', 'UNKNOWN', 'CANCELED'].includes(status)) return '!';
+    return '✓';
+  };
+
+  const renderAIReplyStatus = (element, state) => {
+    element.hidden = !state;
+    element.className = 'ai-reply-status' + (state ? ' ai-reply-' + state.code : '') +
+      (state && state.attention ? ' ai-reply-attention' : '');
+    const label = state ? state.label : '';
+    if (element.textContent !== label) element.textContent = label;
+  };
+
   const renderInbox = data => {
     updateCounts(data.counts || {});
     updateQueueSummary(data.counts || {});
@@ -1197,6 +1218,11 @@
       queueChip.textContent = item.queue_name ? 'Fila: ' + item.queue_name : 'Sem fila definida';
       queueChip.title = item.queue_name ? 'Fila atual: ' + item.queue_name : 'Atendimento sem fila vinculada';
       queueRow.append(queueChip);
+      if (item.ai_reply_status) {
+        const replyStatus = document.createElement('span');
+        renderAIReplyStatus(replyStatus, item.ai_reply_status);
+        queueRow.append(replyStatus);
+      }
 
       const meta = document.createElement('div');
       meta.className = 'conversation-row-meta';
@@ -1400,7 +1426,7 @@
     if (item.direction === 'OUTBOUND') {
       const ticks = document.createElement('span');
       ticks.className = 'message-status-ticks';
-      ticks.textContent = ['RECEIVED','READ','PLAYED'].includes(item.status) ? '✓✓' : '✓';
+      ticks.textContent = replyTicks(item.status);
       ticks.title = item.status;
       foot.append(ticks);
     }
@@ -1418,10 +1444,20 @@
       if (!response.ok) return;
       const data = await response.json();
       let received = false;
+      const replyStatus = document.querySelector('[data-ai-reply-status]');
+      if (replyStatus) renderAIReplyStatus(replyStatus, data.ai_reply_status);
       for (const item of data.items || []) {
         appendMessage(item);
         lastId = Math.max(lastId, Number(item.id || 0));
         received = true;
+      }
+      const status = data.ai_reply_status;
+      if (status && status.outbound_id && status.outbound_status) {
+        const ticks = stream.querySelector('[data-message-id="' + Number(status.outbound_id) + '"] .message-status-ticks');
+        if (ticks) {
+          ticks.textContent = replyTicks(status.outbound_status);
+          ticks.title = status.outbound_status;
+        }
       }
       if (received) {
         scrollBottom();

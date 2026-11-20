@@ -393,7 +393,9 @@ def unanswered_customers(db: Session) -> list[dict]:
     Em 09/11 a fila 1 ficou sem vínculo de IA e dois clientes esperaram sem
     ninguém saber. Inclui filas sem IA e vendedor offline.
     """
-    from app.models import AIConversationState, Conversation  # noqa: PLC0415
+    from app.models import ConversationQueueLink, ServiceQueue
+    from app.services.ai_reply_delivery import reply_statuses
+    from app.services.auto_reply import latest_inbound_is_auto_reply
     from app.services.queue_routing import queue_for_conversation, usable_ai_binding, human_online_in_queue  # noqa: PLC0415
 
     now = utcnow()
@@ -407,32 +409,46 @@ def unanswered_customers(db: Session) -> list[dict]:
         .order_by(Message.id.desc())
         .limit(400)
     ).all()
+    ai_ids = list(db.scalars(
+        select(ConversationQueueLink.conversation_id)
+        .join(ServiceQueue, ServiceQueue.id == ConversationQueueLink.queue_id)
+        .where(
+            ServiceQueue.code == "FILA-IA",
+            ConversationQueueLink.conversation_id.in_({cid for cid, _ in latest_inbound}),
+        )
+    ))
+    ai_replies = reply_statuses(db, ai_ids)
     found: list[dict] = []
     seen: set[int] = set()
     for conversation_id, message_id in latest_inbound:
         if conversation_id in seen:
             continue
         seen.add(conversation_id)
-        later = db.scalar(
-            select(Message.id)
-            .where(Message.conversation_id == conversation_id, Message.id > message_id)
-            .limit(1)
-        )
-        if later:
-            continue
+        ai_reply = ai_replies.get(conversation_id)
+        if ai_reply:
+            if ai_reply["inbound_id"] != message_id or not ai_reply["attention"]:
+                continue
+        else:
+            later = db.scalar(
+                select(Message.id)
+                .where(Message.conversation_id == conversation_id, Message.id > message_id)
+                .limit(1)
+            )
+            if later or latest_inbound_is_auto_reply(db, conversation_id):
+                continue
         conversation = db.get(Conversation, conversation_id)
-        if not conversation or conversation.status in _CLOSED_STATUSES:
-            continue
-        from app.services.auto_reply import latest_inbound_is_auto_reply  # noqa: PLC0415
-
-        if latest_inbound_is_auto_reply(db, conversation_id):
+        failed = bool(ai_reply and ai_reply["code"] == "failed")
+        if not conversation or (
+            conversation.status in _CLOSED_STATUSES
+            and not (failed and conversation.status == "RESOLVIDO")
+        ):
             continue
         ai_state = db.scalar(
             select(AIConversationState.state).where(
                 AIConversationState.conversation_id == conversation_id
             )
         )
-        if ai_state in _QUIET_AI_STATES:
+        if ai_state == "OPT_OUT" or (ai_state == "COMPLETED" and not failed):
             continue
         queue = queue_for_conversation(db, conversation_id)
         binding = usable_ai_binding(db, queue.id) if queue else None
@@ -455,6 +471,7 @@ def unanswered_customers(db: Session) -> list[dict]:
                 "assigned_user_id": conversation.assigned_user_id,
                 "human_online": human_online_in_queue(db, queue.id) if queue else False,
                 "message_type": inbound_message.message_type if inbound_message else "",
+                "delivery_failed": failed,
             }
         )
     return found
@@ -479,7 +496,8 @@ def check_unanswered_customers(db: Session) -> int:
     # designado, sem abrir logs técnicos. Não expõe dados pessoais no alerta.
     waiting.sort(key=lambda item: item.get("age_minutes", 0), reverse=True)
     cases = ", ".join(
-        f"#{item['conversation_id']} ({item.get('age_minutes', 0)}min; "
+        f"#{item['conversation_id']} ({item.get('age_minutes', 0)}min"
+        f"{'; falha na resposta' if item.get('delivery_failed') else ''}; "
         f"fila {item['queue_id'] or '-'}; "
         f"responsável {item.get('assigned_user_id') or 'sem atribuição'})"
         for item in waiting[:12]

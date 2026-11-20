@@ -24,6 +24,7 @@ from app.models import (
     ZApiInstance,
 )
 from app.security import hash_password
+from app.services.ai_reply_delivery import process_next_ai_reply
 from app.services.ai_followups import _followup_exposes_internal_handoff, _followup_is_repetitive, _pending_action_from_theme, _unique_followup_fallback
 from app.services.ai_sdr_policy import followup_spec
 from app.services.ai_sdr import (
@@ -440,6 +441,7 @@ def test_auto_mode_sends_reply_to_whatsapp(monkeypatch):
             db.commit()
 
             assert outcome == "completed"
+            assert process_next_ai_reply(db)
             assert sent == [(lead.phone, decision.reply_text)]
             run = db.scalar(select(AIRun).where(AIRun.job_id == job.id))
             assert run is not None
@@ -982,6 +984,7 @@ def test_auto_mode_uses_buttons_for_casa_or_empresa_question(monkeypatch):
             db.commit()
 
             assert outcome == "completed"
+            assert process_next_ai_reply(db)
             assert sent_buttons == [
                 (
                     lead.phone,

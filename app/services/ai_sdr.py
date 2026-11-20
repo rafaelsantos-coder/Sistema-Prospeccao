@@ -376,6 +376,14 @@ def enqueue_ai_job(
         return None
     if message.direction != "INBOUND" or message.message_type not in AI_INBOUND_MESSAGE_TYPES:
         return None
+    from app.services.auto_reply import is_automatic_inbound
+
+    if is_automatic_inbound(message):
+        from app.services.ai_followups import cancel_pending_followups
+
+        cancel_pending_followups(db, conversation.id, reason="RESPOSTA_AUTOMATICA")
+        LOG.info("ai_waiting_human conversation=%s message=%s", conversation.id, message.id)
+        return None
 
     existing = db.scalar(select(AIJob).where(AIJob.message_id == message.id))
     if existing:
@@ -651,6 +659,10 @@ def _conversation_messages(
             .where(
                 Message.conversation_id == conversation_id,
                 Message.direction.in_({"INBOUND", "OUTBOUND"}),
+                ~(
+                    (Message.direction == "OUTBOUND")
+                    & Message.status.in_({"PENDING", "SENDING", "FAILED", "UNKNOWN", "CANCELED"})
+                ),
             )
             .order_by(Message.id.desc())
             .limit(max(4, min(limit, 200)))
@@ -1325,84 +1337,32 @@ def _send_autonomous_reply(
     if not phone:
         raise AIConfigurationError("Contato da conversa não possui telefone.")
 
-    from app.services.conversation_engine import register_message
-    from app.services.zapi_instances import service_for_conversation
+    from app.services.ai_reply_delivery import queue_ai_reply
 
-    zapi = service_for_conversation(db, conversation.id)
     quick_replies = quick_replies_for_message(
         decision.reply_text,
         decision.quick_replies,
     )
     if decision.service_redirect:
-        # Upgrade, suporte e financeiro: botão que abre o WhatsApp da central.
         from app.services.ai_sdr_policy import CENTRAL_BUTTON_LABEL, CENTRAL_WHATSAPP_URL
-        from app.services.zapi import ZApiError
 
-        try:
-            result = zapi.send_link_button(
-                phone=phone,
-                message=decision.reply_text,
-                label=CENTRAL_BUTTON_LABEL,
-                url=CENTRAL_WHATSAPP_URL,
-            )
-            message_type = "BUTTONS"
-        except ZApiError:
-            LOG.warning("central_link_button_failed conversation=%s", conversation.id)
-            result = zapi.send_text(
-                phone=phone,
-                message=f"{decision.reply_text}\n{CENTRAL_WHATSAPP_URL}",
-            )
-            message_type = "TEXT"
-    elif quick_replies:
-        result = zapi.send_button_list(
-            phone=phone,
-            message=decision.reply_text,
-            buttons=quick_replies,
+        return queue_ai_reply(
+            db,
+            conversation=conversation,
+            agent=agent,
+            inbound_id=job.message_id,
+            text=decision.reply_text,
+            link_url=CENTRAL_WHATSAPP_URL,
+            link_label=CENTRAL_BUTTON_LABEL,
         )
-        message_type = "BUTTONS"
-    else:
-        result = zapi.send_text(
-            phone=phone,
-            message=decision.reply_text,
-        )
-        message_type = "TEXT"
-    provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
-    zaap_id = str(result.get("zaapId") or "").strip() or None
-    message = register_message(
+    return queue_ai_reply(
         db,
-        conversation,
-        direction="OUTBOUND",
-        message_type=message_type,
-        body=decision.reply_text,
-        sender_user_id=agent.user_id,
-        provider_message_id=provider_id,
-        provider_zaap_id=zaap_id,
-        status="SENT",
+        conversation=conversation,
+        agent=agent,
+        inbound_id=job.message_id,
+        text=decision.reply_text,
+        buttons=quick_replies,
     )
-    db.flush()
-    write_audit(
-        db,
-        user=agent.user,
-        action="AI_SDR_REPLY_SENT",
-        entity_type="conversation",
-        entity_id=conversation.id,
-        payload={
-            "ai_job_id": job.id,
-            "message_id": message.id,
-            "provider_message_id": provider_id,
-            "handoff_recommended": decision.handoff_recommended,
-            "quick_reply_count": len(quick_replies),
-        },
-    )
-    LOG.info(
-        "ai_reply_sent job=%s conversation=%s message=%s handoff=%s buttons=%s",
-        job.id,
-        conversation.id,
-        message.id,
-        decision.handoff_recommended,
-        len(quick_replies),
-    )
-    return message
 
 
 def _append_note(existing: str, value: str) -> str:
@@ -1919,17 +1879,18 @@ def _try_fast_purchase_path(
     if not request:
         return None
     plan, city = request["plan"], request["city"]
-    if city and not _plan_available_in_city(plan, city):
+    if city and "cities" in plan and not _plan_available_in_city(plan, city):
         # Cidade fora da cobertura deste plano: o fluxo normal apresenta as opções.
         return None
 
     from app.services.ai_seller import start_closing_from_sdr
 
-    handoff = bool(city)
+    handoff = bool(city or "data_gb" in plan)
     decision = _fast_purchase_decision(plan, city, handoff=handoff)
     try:
         with db.begin_nested():
             if handoff:
+                _apply_crm_decision(db, agent=agent, job=job, decision=decision)
                 if not start_closing_from_sdr(db, sdr_agent=agent, job=job, decision=decision):
                     raise AIConfigurationError("Vendedor IA indisponível para o caminho rápido.")
             else:
@@ -2200,17 +2161,12 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         LOG.warning("ai_reply_limit_reached conversation=%s", job.conversation_id)
         return "skipped"
 
-    from app.services.auto_reply import (  # noqa: PLC0415
-        ai_already_spoke_after_auto_reply,
-        only_auto_replies,
-    )
+    from app.services.auto_reply import is_automatic_inbound, latest_inbound_is_auto_reply
 
-    auto_reply_only = only_auto_replies(db, job.conversation_id)
-    if auto_reply_only and (
-        agent.role_type == "CLOSER" or ai_already_spoke_after_auto_reply(db, job.conversation_id)
-    ):
+    message = db.get(Message, job.message_id)
+    if (message and is_automatic_inbound(message)) or latest_inbound_is_auto_reply(db, job.conversation_id):
         job.status = "IGNORADO"
-        job.error = "Só resposta automática de empresa; a IA já deixou recado ao responsável."
+        job.error = "RESPOSTA_AUTOMATICA"
         LOG.info("ai_job_skipped conversation=%s reason=auto_reply", job.conversation_id)
         return "skipped"
 
@@ -2260,8 +2216,6 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "skipped"
 
     context = build_ai_context(db, job=job, agent=agent)
-    if auto_reply_only:
-        context["business_auto_reply"] = True
     # Autorização explícita: apenas a FILA-IA ativa pode responder em AUTO.
     # Não habilita o modo autônomo global nem SDR nas outras filas.
     current_queue = queue_for_conversation(db, job.conversation_id)

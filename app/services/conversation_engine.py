@@ -919,7 +919,7 @@ def store_received_payload(
         existing = db.scalar(select(Message).where(Message.provider_message_id == provider_id))
         if existing:
             if payload.get("status"):
-                existing.status = str(payload["status"]).upper()
+                apply_provider_message_status(existing, str(payload["status"]).upper(), utcnow())
             return existing.conversation, existing, False
 
     normalized = payload_counterparty_phone(payload)
@@ -1010,6 +1010,23 @@ def store_received_payload(
     return conversation, message, True
 
 
+def apply_provider_message_status(message: Message, status_value: str, received_at) -> None:
+    from app.services.ai_reply_delivery import DELIVERED_STATUSES, FAILED_STATUSES
+
+    if not status_value:
+        return
+    if status_value in DELIVERED_STATUSES:
+        message.delivered_at = message.delivered_at or received_at
+        if status_value in {"READ", "PLAYED"}:
+            message.read_at = message.read_at or received_at
+            message.status = status_value
+        elif not message.read_at:
+            message.status = status_value
+    elif not message.delivered_at and not message.read_at:
+        if message.status not in FAILED_STATUSES or status_value in FAILED_STATUSES:
+            message.status = status_value
+
+
 def update_message_statuses(db: Session, payload: dict[str, Any]) -> int:
     status_value = str(payload.get("status") or "").upper().strip()
     ids = payload.get("ids") or []
@@ -1031,17 +1048,13 @@ def update_message_statuses(db: Session, payload: dict[str, Any]) -> int:
                     Message.provider_message_id.in_(ids),
                     Message.provider_zaap_id.in_(ids),
                 )
-            )
+            ).with_for_update()
         )
     )
+    matched_ids: set[str] = set()
     for message in messages:
-        if status_value:
-            message.status = status_value
-        if status_value == "RECEIVED":
-            message.delivered_at = message.delivered_at or now
-        if status_value in {"READ", "PLAYED"}:
-            message.delivered_at = message.delivered_at or now
-            message.read_at = message.read_at or now
+        matched_ids.update(value for value in (message.provider_message_id, message.provider_zaap_id) if value)
+        apply_provider_message_status(message, status_value, now)
         db.add(
             MessageEvent(
                 message_id=message.id,
@@ -1051,17 +1064,16 @@ def update_message_statuses(db: Session, payload: dict[str, Any]) -> int:
                 payload_json=json.dumps(payload, ensure_ascii=False, default=str),
             )
         )
-    if not messages:
-        for item in ids:
-            db.add(
-                MessageEvent(
-                    message_id=None,
-                    provider_message_id=item,
-                    event_type="STATUS_UNMATCHED",
-                    status=status_value or None,
-                    payload_json=json.dumps(payload, ensure_ascii=False, default=str),
-                )
+    for item in set(ids) - matched_ids:
+        db.add(
+            MessageEvent(
+                message_id=None,
+                provider_message_id=item,
+                event_type="STATUS_UNMATCHED",
+                status=status_value or None,
+                payload_json=json.dumps(payload, ensure_ascii=False, default=str),
             )
+        )
     return len(messages)
 
 

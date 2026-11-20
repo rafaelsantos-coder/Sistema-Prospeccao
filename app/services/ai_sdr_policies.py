@@ -2474,8 +2474,32 @@ def _ad_style_plan_interest(value: str | None) -> bool:
     )
 
 
+def _last_offered_catalog_plan(context: dict) -> dict | None:
+    """Vincula o aceite a uma única oferta, com nome e valor compatíveis com o catálogo."""
+    offer_text = _last_outbound_text(context)
+    folded = _fold_sales_text(offer_text)
+    prices = {
+        float(value.replace(",", "."))
+        for value in re.findall(r"\bR\$\s*(\d{1,4}[,.]\d{2})\b", offer_text, flags=re.IGNORECASE)
+    }
+    if not prices:
+        return None
+    corporate = bool(re.search(r"\b(?:corp|corporativo|empresarial)\b", folded))
+    fiber_plans = CORPORATE_PLANS if corporate else FTTH_PLANS
+    candidates = [
+        plan for plan in fiber_plans
+        if re.search(rf"\b{plan['download_mbps']}\s*(?:mega|mbps|mb)\b", folded)
+        and float(plan.get("price_fidelity") or plan["price"]) in prices
+    ]
+    candidates.extend(
+        plan for plan in MOBILE_PLANS
+        if re.search(rf"\b{plan['data_gb']}\s*gb\b", folded) and float(plan["price"]) in prices
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _fast_purchase_request(context: dict) -> dict | None:
-    """Intenção explícita de compra de um plano FTTH conhecido.
+    """Intenção explícita de compra de um plano conhecido.
 
     Devolve {"plan": <plano>, "city": <cidade ou "">} ou None. Considera a
     mensagem atual e, quando a última pergunta foi a de cidade deste caminho,
@@ -2483,14 +2507,25 @@ def _fast_purchase_request(context: dict) -> dict | None:
     """
     latest = str(context.get("latest_customer_message") or "")
     plan = None
-    if _explicit_purchase_commitment(context) or _ad_style_plan_interest(latest):
+    if _existing_customer_plan_change_requested(context) or _explicit_human_request(context):
+        return None
+    if _ad_style_plan_interest(latest):
         plan = _ftth_plan_by_speed(_requested_plan_speed(latest))
+    elif _explicit_purchase_commitment(context) and not _customer_asked_direct_question(context):
+        folded = _fold_sales_text(latest)
+        if not re.search(r"\b(?:mas|porem|talvez|se|depois)\b", folded):
+            plan = _ftth_plan_by_speed(_requested_plan_speed(latest)) or _last_offered_catalog_plan(context)
 
     if not plan:
         last_outbound = _fold_sales_text(_last_outbound_text(context))
         if _FAST_PURCHASE_CITY_MARK not in last_outbound:
             return None
+        if not _service_city_in_text(latest):
+            return None
+        plan = _last_offered_catalog_plan(context)
         for row in reversed(context.get("history") or []):
+            if plan:
+                break
             if str(row.get("direction") or "").upper() != "INBOUND":
                 continue
             body = str(row.get("body") or "")
@@ -2508,9 +2543,9 @@ def _fast_purchase_request(context: dict) -> dict | None:
 
 
 def _fast_purchase_decision(plan: dict, city: str, *, handoff: bool) -> AIDecision:
-    speed = int(plan["download_mbps"])
-    price = float(plan["price_fidelity"])
-    plan_label = f"Fibra {speed} Mega"
+    speed = plan.get("download_mbps")
+    price = float(plan.get("price_fidelity") or plan["price"])
+    plan_label = f"Fibra {speed} Mega" if "price_fidelity" in plan else plan["name"]
     if handoff:
         reply = f"Perfeito! Vamos seguir com a contratação do {plan_label} por R$ {_format_brl(price)}."
         summary = (
@@ -2518,8 +2553,9 @@ def _fast_purchase_decision(plan: dict, city: str, *, handoff: bool) -> AIDecisi
             + (f" em {city}." if city else ".")
         )
     else:
+        availability_label = f"{speed} Mega" if "price_fidelity" in plan else plan_label
         reply = (
-            f"Ótimo! Para confirmar a disponibilidade do plano de {speed} Mega por "
+            f"Ótimo! Para confirmar a disponibilidade do plano de {availability_label} por "
             f"R$ {_format_brl(price)}, em qual cidade será a instalação?"
         )
         summary = f"Intenção explícita de contratar {plan_label}; aguardando a cidade."

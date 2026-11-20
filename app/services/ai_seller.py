@@ -3587,6 +3587,8 @@ def _send_text(
     source: str = "CLOSER_TEXT",
     guardian_metadata: dict[str, Any] | None = None,
     handoff_notice: bool = False,
+    inbound_id: int | None = None,
+    allow_resolved: bool = False,
 ) -> Message:
     from app.services.conversation_engine import register_message
     from app.services.zapi_instances import service_for_conversation
@@ -3639,6 +3641,15 @@ def _send_text(
                 text = guardian.reply_text
             fixed_buttons = list(guardian.buttons)
 
+    if inbound_id is not None:
+        from app.services.ai_reply_delivery import queue_ai_reply
+
+        return queue_ai_reply(
+            db, conversation=conversation, agent=agent, inbound_id=inbound_id, text=text,
+            buttons=fixed_buttons if len(fixed_buttons) >= 2 else None,
+            allow_resolved=allow_resolved,
+        )
+
     zapi = service_for_conversation(db, conversation.id)
     if len(fixed_buttons) >= 2:
         result = zapi.send_button_list(
@@ -3673,6 +3684,7 @@ def _send_fixed_step_prompt(
     agent: AIAgentProfile,
     conversation: Conversation,
     text: str,
+    inbound_id: int | None = None,
 ) -> Message:
     """Envia o texto fixo de uma etapa do fechamento sem a revisão do Guardião."""
     from app.services.conversation_engine import register_message
@@ -3681,6 +3693,10 @@ def _send_fixed_step_prompt(
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone or not text.strip():
         raise CRMIntegrationError("Contato sem telefone ou mensagem vazia.")
+    if inbound_id is not None:
+        from app.services.ai_reply_delivery import queue_ai_reply
+
+        return queue_ai_reply(db, conversation=conversation, agent=agent, inbound_id=inbound_id, text=text)
     result = service_for_conversation(db, conversation.id).send_text(phone=phone, message=text)
     message = register_message(
         db,
@@ -3796,6 +3812,7 @@ def _send_step_message(
     state: AIClosingState,
     text: str,
     authoritative_contract_knowledge: bool = False,
+    inbound_id: int | None = None,
 ) -> Message:
     _assert_closer_owns_conversation(
         db,
@@ -3834,6 +3851,7 @@ def _send_step_message(
         return recent_duplicate
 
     collected = _load_collected(state)
+    allow_resolved = state.step == "COMPLETED" or bool(collected.get("_service_redirect"))
     guardian_metadata = _playbook_recovery_metadata(
         state,
         collected,
@@ -3858,6 +3876,8 @@ def _send_step_message(
             source="CLOSER_STEP",
             guardian_metadata=guardian_metadata,
             handoff_notice=state.step == "ESCALATED",
+            inbound_id=inbound_id,
+            allow_resolved=allow_resolved,
         )
 
     from app.services.conversation_engine import register_message
@@ -3900,6 +3920,16 @@ def _send_step_message(
             source="CLOSER_STEP",
             guardian_metadata=guardian_metadata,
             handoff_notice=state.step == "ESCALATED",
+            inbound_id=inbound_id,
+            allow_resolved=allow_resolved,
+        )
+
+    if inbound_id is not None:
+        from app.services.ai_reply_delivery import queue_ai_reply
+
+        return queue_ai_reply(
+            db, conversation=conversation, agent=agent, inbound_id=inbound_id, text=text, buttons=buttons,
+            allow_resolved=allow_resolved,
         )
 
     zapi = service_for_conversation(db, conversation.id)
@@ -4943,6 +4973,7 @@ def start_closing_from_sdr(
             state.offer_price = new_price
         collected.pop("_sale_accepted", None)
         collected.pop("_sale_intent_confirmed", None)
+        collected.pop("_accepted_offer", None)
         collected.pop("planId", None)
         # Mudou o produto: a promoção anterior não deve ser aplicada ao novo
         # plano sem aprovação explícita do catálogo comercial.
@@ -4966,6 +4997,12 @@ def start_closing_from_sdr(
     collected["handoffReason"] = str(getattr(decision, "handoff_reason", "") or "")
     if not plan_change:
         collected["_sale_intent_confirmed"] = True
+        if not collected.get("_accepted_offer"):
+            collected["_accepted_offer"] = {
+                "inbound_id": job.message_id,
+                "plan": state.plan_label,
+                "monthly_value": _money_for_api(state.offer_price),
+            }
     offered_months = max(0, min(3, int(getattr(decision, "free_months", 0) or 0)))
     if plan_change:
         offered_months = 0
@@ -5074,6 +5111,7 @@ def start_closing_from_sdr(
             conversation=conversation,
             state=state,
             text=prompt,
+            inbound_id=job.message_id,
         )
     except GuardianBlockedError as exc:
         # A conversa já é do Vendedor IA e o job do SDR não volta mais: se a
@@ -5084,7 +5122,9 @@ def start_closing_from_sdr(
             "closer_first_prompt_guardian_override conversation=%s",
             conversation.id,
         )
-        _send_fixed_step_prompt(db, agent=closer, conversation=conversation, text=prompt)
+        _send_fixed_step_prompt(
+            db, agent=closer, conversation=conversation, text=prompt, inbound_id=job.message_id,
+        )
         write_audit(
             db,
             user=closer.user,
@@ -5119,6 +5159,7 @@ def start_closing_from_sdr(
             "plan": state.plan_label,
         },
     )
+    crm_notes.record_milestones_safe(db, conversation.id)
     return True
 
 
@@ -6225,6 +6266,7 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 state=state,
                 text=reply,
                 authoritative_contract_knowledge=bool(contract_knowledge_reply),
+                inbound_id=message.id,
             )
             _schedule_seller_followup(
                 db,

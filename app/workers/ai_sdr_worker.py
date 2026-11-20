@@ -1282,6 +1282,9 @@ def _review_yesterday_and_today_fila_ia() -> dict[str, int]:
 
 
 def run() -> None:
+    from app.services.ai_reply_delivery import process_next_ai_reply
+    from app.services.crm_notes import check_completed_activation
+
     if not settings.is_production:
         Base.metadata.create_all(bind=engine)
     # Executar a exclusividade ANTES de qualquer recuperacao ou emissao da IA.
@@ -1312,6 +1315,11 @@ def run() -> None:
         bool(settings.openai_api_key),
         poll,
     )
+    with SessionLocal() as readiness_db:
+        LOG.info(
+            "sulia_reply_delivery_ready closer_ready=%s",
+            active_closer(readiness_db) is not None,
+        )
     if settings.ai_maintenance_enabled and settings.ai_supervisor_shadow_enabled:
         supervisor_thread = threading.Thread(
             target=run_shadow_supervisor_loop,
@@ -1397,6 +1405,7 @@ def run() -> None:
     last_fila_ia_review = time.monotonic()
     last_ops_alerts = time.monotonic() - 90
     last_crm_prospect = time.monotonic() - 100
+    last_activation_check = time.monotonic()
     last_stale_recovery = time.monotonic()
     last_scope_enforcement = time.monotonic()
     while True:
@@ -1490,6 +1499,7 @@ def run() -> None:
         job_id = None
         followup_id = None
         try:
+            process_next_ai_reply(db)
             job = claim_ai_job(db)
             if job:
                 job_id = job.id
@@ -1506,6 +1516,7 @@ def run() -> None:
                         outcome,
                         job.attempts,
                     )
+                    process_next_ai_reply(db)
 
             # Follow-up tem cota própria em toda volta do worker. Assim ele não
             # fica eternamente atrás de novas mensagens inbound.
@@ -1527,6 +1538,9 @@ def run() -> None:
                     )
             elif not job:
                 contract_updates = poll_pending_contracts(db)
+                if settings.ai_seller_enabled and now_mono - last_activation_check >= 60:
+                    check_completed_activation(db)
+                    last_activation_check = now_mono
                 db.commit()
                 if contract_updates:
                     LOG.info("ai_closer_contract_updates=%s", contract_updates)
