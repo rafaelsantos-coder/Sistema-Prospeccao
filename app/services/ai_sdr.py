@@ -2257,7 +2257,20 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     context = build_ai_context(db, job=job, agent=agent)
     if auto_reply_only:
         context["business_auto_reply"] = True
-    effective_mode = _effective_execution_mode(agent)
+    # Autorização explícita: apenas a FILA-IA ativa pode responder em AUTO.
+    # Não habilita o modo autônomo global nem SDR nas outras filas.
+    current_queue = queue_for_conversation(db, job.conversation_id)
+    if (
+        agent.role_type == "SDR"
+        and current_queue is not None
+        and current_queue.code == "FILA-IA"
+        and current_queue.id == job.queue_id
+        and binding_for_conversation(db, job.conversation_id) is not None
+        and ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id)
+    ):
+        effective_mode = "AUTO"
+    else:
+        effective_mode = _effective_execution_mode(agent)
     run = AIRun(
         job_id=job.id,
         agent_id=agent.id,
