@@ -4922,15 +4922,24 @@ def start_closing_from_sdr(
                 f"{state.handoff_summary}\n{latest_summary}".strip()
             )[-5000:]
 
+    from app.services.dispatch_offer import MARKER as dispatch_marker
+
+    dispatch_sale = dispatch_marker in str(getattr(decision, "summary", "") or "")
     black_combo = False
     # Rechamada com mensalidades grátis: a tag da Black tem prioridade no CRM e
     # trocaria o contrato prometido, então a Black não entra nesta venda.
-    if not recall_campaign.has_marker(state.handoff_summary) and _black_campaign_accepted(db, conversation.id):
+    if not dispatch_sale and not recall_campaign.has_marker(state.handoff_summary) and _black_campaign_accepted(db, conversation.id):
         state.handoff_summary = black_campaign.with_marker(state.handoff_summary)[-5000:]
         black_combo = _black_campaign_choice(db, conversation.id) == "COMBO"
 
     plan_change = state.step == PLAN_CHANGE_STEP
     collected = _load_collected(state)
+    if dispatch_sale:
+        state.handoff_summary = str(decision.summary)
+        state.plan_label = plan_label
+        state.offer_price = _money(decision.offer_price)
+        for key in ("_black_combo", "planId", "_accepted_offer"):
+            collected.pop(key, None)
     customer_history = _conversation_history_rows(db, conversation.id)
     confirmed_city = (
         _customer_confirmed_city(customer_history)
@@ -5004,7 +5013,7 @@ def start_closing_from_sdr(
                 "monthly_value": _money_for_api(state.offer_price),
             }
     offered_months = max(0, min(3, int(getattr(decision, "free_months", 0) or 0)))
-    if plan_change:
+    if plan_change and not dispatch_sale:
         offered_months = 0
     if recall_accepted:
         offered_months = max(offered_months, recall_campaign.FREE_MONTHS)
