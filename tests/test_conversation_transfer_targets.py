@@ -152,15 +152,15 @@ def test_pass_to_ai_moves_conversation_to_ai_queue_and_answers_now():
             assert agent is not None
             human_queue = _queue(db, "QUEUE-TRANSFER-NO-AI", "Fila Sem IA Transferência")
             ai_queue = db.scalar(select(ServiceQueue).where(ServiceQueue.code == "FILA-IA")) or _queue(db, "FILA-IA", "Fila IA")
-            db.add(
-                AIQueueBinding(
-                    queue_id=ai_queue.id,
-                    agent_id=agent.id,
-                    handling_mode="AI_WHEN_OFFLINE",
-                    active=True,
-                    fallback_to_human=True,
-                )
-            )
+            binding = db.scalar(select(AIQueueBinding).where(AIQueueBinding.queue_id == ai_queue.id))
+            if binding is None:
+                binding = AIQueueBinding(queue_id=ai_queue.id)
+                db.add(binding)
+            binding.agent_id = agent.id
+            binding.handling_mode = "AI_WHEN_OFFLINE"
+            binding.active = True
+            binding.manual_authorized = True
+            binding.fallback_to_human = True
             conversation = _conversation_with_pending_inbound(db, human_queue, "5555988870102")
             instance = create_zapi_instance(
                 db, name="Origem do teste de transferência", phone_label="Origem",
