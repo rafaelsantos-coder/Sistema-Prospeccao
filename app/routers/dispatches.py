@@ -25,6 +25,7 @@ from app.services.chat_reports import format_duration
 from app.services.global_blacklist import is_globally_blocked
 from app.services.dispatch_queue import (
     dispatch_counts,
+    dispatch_counts_many,
     ensure_dispatch_lead,
     estimated_duration_seconds,
     parse_dispatch_csv,
@@ -97,7 +98,7 @@ def dispatch_list(request: Request, db: Session = Depends(get_db)):
             .limit(200)
         )
     )
-    counts = {item.id: dispatch_counts(db, item.id) for item in dispatches}
+    counts = dispatch_counts_many(db, [item.id for item in dispatches])
 
     return render(
         request,
