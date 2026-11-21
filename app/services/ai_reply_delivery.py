@@ -131,7 +131,32 @@ def _send(delivery: AIReplyDelivery, message: Message, zapi, phone: str) -> dict
             return zapi.send_text(phone=phone, message=f"{message.body}\n{delivery.link_url}")
     buttons = json.loads(delivery.buttons_json)
     if buttons:
-        return zapi.send_button_list(phone=phone, message=message.body, buttons=buttons)
+        try:
+            return zapi.send_button_list(phone=phone, message=message.body, buttons=buttons)
+        except ZApiError as exc:
+            # O endpoint de botoes da Z-API pode rejeitar um modelo com HTTP 400
+            # mesmo quando o envio de texto esta operacional. Nao perder o lead.
+            # Outros erros (401/403/429, rede ou resposta incerta) seguem a
+            # politica normal de falhas, sem risco de duplicar mensagens.
+            if exc.status_code not in UNSUPPORTED_LINK:
+                raise
+            labels = [
+                str(item.get("label") or "").strip()
+                for item in buttons if isinstance(item, dict)
+            ]
+            labels = [label for label in labels if label]
+            fallback_text = message.body
+            if labels:
+                fallback_text += "\n\nResponda com uma das opcoes: \n" + "\n".join(
+                    f"{index}. {label}" for index, label in enumerate(labels, start=1)
+                )
+            LOG.warning(
+                "ai_reply_buttons_fallback_to_text message=%s status=%s",
+                message.id, exc.status_code,
+            )
+            result = zapi.send_text(phone=phone, message=fallback_text)
+            message.message_type = "TEXT"
+            return result
     return zapi.send_text(phone=phone, message=message.body)
 
 
