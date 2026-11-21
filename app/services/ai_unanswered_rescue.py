@@ -345,9 +345,52 @@ def retry_known_failed_priority_delivery(db: Session) -> dict[str, int]:
         delivery = db.scalar(select(AIReplyDelivery).where(
             AIReplyDelivery.outbound_message_id == latest.id
         ).limit(1))
-        if not delivery or delivery.attempts >= MAX_ATTEMPTS:
+        if not delivery:
             counts["no_retryable_delivery"] += 1
             continue
+        if delivery.attempts >= MAX_ATTEMPTS:
+            # O cliente pediu expressamente o resgate. A ultima saida
+            # comprovadamente falhou sem protocolo/recibo; conceder uma
+            # ultima sequencia de envio, nunca repetir depois do marcador.
+            if cid != 4597:
+                counts["exhausted"] += 1
+                continue
+            from app.services.ai_sdr import human_is_attending
+
+            if human_is_attending(db, conversation):
+                counts["human_is_attending"] += 1
+                continue
+            source = db.get(Message, delivery.inbound_message_id)
+            if not source or is_automatic_inbound(source) or _defers_or_declines(source.body):
+                counts["source_not_eligible"] += 1
+                continue
+            state = db.scalar(select(AIConversationState).where(
+                AIConversationState.conversation_id == cid
+            ))
+            if state and state.state in TERMINAL_STATES:
+                counts["terminal"] += 1
+                continue
+            agent = db.get(AIAgentProfile, delivery.agent_id)
+            if not agent or not agent.active:
+                counts["agent_inactive"] += 1
+                continue
+            if state is None:
+                state = AIConversationState(
+                    conversation_id=cid, agent_id=agent.id, state="AI_ACTIVE",
+                )
+                db.add(state)
+            elif state.state in {"NEW", "SHADOW_REVIEW"}:
+                state.state = "AI_ACTIVE"
+                state.agent_id = agent.id
+            elif state.state in {"AI_ACTIVE", "CLOSING"} and state.agent_id == agent.id:
+                pass
+            else:
+                counts["owner_mismatch"] += 1
+                continue
+            conversation.assigned_user_id = agent.user_id
+            conversation.status = "EM_ATENDIMENTO"
+            delivery.attempts = 0
+            counts["exhausted_reset_once"] += 1
         if db.scalar(select(AuditLog.id).where(
             AuditLog.action == DELIVERY_RETRY_ACTION,
             AuditLog.entity_type == "message",
@@ -386,11 +429,10 @@ def rescue_orphan_failed_outbound(db: Session, *, conversation_ids: tuple[int, .
     from app.services.ai_sdr import human_is_attending
 
     counts: Counter[str] = Counter()
-    waiting = {row["conversation_id"] for row in unanswered_customers(db)}
     for cid in conversation_ids:
-        if cid not in waiting:
-            counts["not_waiting"] += 1
-            continue
+        # O monitor pode ignorar a saida falha se ela nao tiver sido gerada
+        # pelo fluxo AIReplyDelivery; a prova e o FAILED sem recibo e sem
+        # outra saida efetivamente enviada.
         conversation = db.get(Conversation, cid)
         queue = queue_for_conversation(db, cid)
         if not conversation or not queue or queue.id != 2:
