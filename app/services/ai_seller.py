@@ -2892,6 +2892,7 @@ def _prepare_contract_before_win(
             _ensure_port_date(client, state, collected)
         except CRMIntegrationError:
             LOG.warning("seller_port_date_default_failed opportunity=%s", state.opportunity_id)
+        _sync_fiber_nap(client, state, collected, before_contract=True)
         try:
             generated = client.generate_agent_contract(
                 state.opportunity_id,
@@ -3131,6 +3132,7 @@ def _finalize_signed_sale(
 
     idempotency_key = _win_idempotency_key(state)
     collected["_win_idempotency_key"] = idempotency_key
+    _sync_fiber_nap(client, state, collected, before_contract=True)
     won = client.mark_won(
         state.opportunity_id,
         idempotency_key=idempotency_key,
@@ -4191,6 +4193,7 @@ def _combo_after_first_signature(state: AIClosingState, collected: dict[str, Any
     if not _black_combo_pending(collected):
         return None
     combo = collected["_black_combo"]
+    collected.pop("fiberFeasibility", None)
     combo["stage"] = black_campaign.COMBO_STAGE_MOBILE
     combo["fiber"] = {
         "opportunity_id": state.opportunity_id,
@@ -4252,6 +4255,21 @@ def _after_signed_text(state: AIClosingState, collected: dict[str, Any]) -> str:
 def _fiber_sale(state, collected):
     product = _norm(f"{state.plan_label} {collected.get('categoryName', '')}")
     return any(word in product for word in ("fibra", "ftth", "banda larga", "combo", "corporativ")) or bool(_resid_fiber_speed(state.plan_label))
+
+
+def _sync_fiber_nap(client, state, collected, *, before_contract=False):
+    result = collected.get("fiberFeasibility")
+    if not state.opportunity_id or not isinstance(result, dict) or not _fiber_sale(state, collected):
+        return
+    nap = result.get("nap")
+    if before_contract and not nap:
+        raise CRMIntegrationError("Viabilidade de fibra pendente para esta contratação.")
+    value = f"{nap['name']} ({nap['id']}) — {nap['meters']:g} m" if nap else ""
+    stamp = [state.opportunity_id, value]
+    if not before_contract and collected.get("_confirmed_fiber_nap") == stamp:
+        return
+    client.sync_fiber_nap(state.opportunity_id, value)
+    collected["_confirmed_fiber_nap"] = stamp
 
 
 def _check_fiber_location(db, state, collected, point):
@@ -5151,6 +5169,10 @@ def start_closing_from_sdr(
                 point = feasibility.locate(db, body, collected.get("city"), inbound)
                 break
         prompt = _check_fiber_location(db, state, collected, point)
+        try:
+            _sync_fiber_nap(SulnetCRMClient.from_settings(), state, collected)
+        except CRMIntegrationError:
+            LOG.warning("seller_fiber_nap_sync_pending opportunity=%s", state.opportunity_id)
         _save_collected(state, collected)
     if not prompt:
         prompt = _prompt_for_step(state, collected)
@@ -5790,7 +5812,7 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     old_address = collected.get("_checked_fiber_address")
                     if point or old_address and old_address != current or not collected.get("fiberFeasibility"):
                         if not point:
-                            collected.pop("fiberFeasibility", None)
+                            collected["fiberFeasibility"] = {"status": "awaiting_pin", "nap": None}
                         reply = _check_fiber_location(db, state, collected, point)
                     collected["_checked_fiber_address"] = current
 
@@ -6326,6 +6348,11 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             reply = "Vou conferir o andamento da sua contratação."
             state.step = "WAITING_CONTRACT"
 
+        if state.step not in {"WAITING_SIGNATURE", "COMPLETED"}:
+            try:
+                _sync_fiber_nap(client, state, collected)
+            except CRMIntegrationError:
+                LOG.warning("seller_fiber_nap_sync_pending opportunity=%s", state.opportunity_id)
         reply = _sdr_ia_auto_advance(state, collected, reply)
         # Rodada sem falha do CRM: encerra o bloqueio anterior, se havia.
         collected.pop("_hold_retries", None)

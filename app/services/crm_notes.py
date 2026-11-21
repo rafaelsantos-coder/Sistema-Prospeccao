@@ -42,7 +42,7 @@ def pending_notes(state: AIClosingState, collected: dict[str, Any]) -> list[tupl
         text = f"Cliente aceitou a oferta de {accepted['plan']}" + (f" por {price}/mês." if price else ".")
         notes.append((f"accept:{accepted['inbound_id']}", "Oferta aceita", text))
     check = collected.get("fiberFeasibility") or {}
-    if check:
+    if check and check.get("point"):
         nap = check.get("nap")
         point = ", ".join(str(v) for v in check["point"])
         if nap:
