@@ -118,11 +118,7 @@ DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
 
 
 def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None:
-    if (
-        not queue_id
-        or not ai_allowed_for_queue(queue_id)
-        or is_general_commercial_queue(db.get(ServiceQueue, queue_id))
-    ):
+    if not queue_id or not ai_allowed_for_queue(queue_id):
         return None
     stmt = (
         select(AIQueueBinding)
@@ -180,11 +176,10 @@ def _test_phone_binding(db: Session, conversation_id: int, queue) -> Any | None:
 
 
 def is_human_only_queue(queue: ServiceQueue | None) -> bool:
-    """Natine é humana; com escopo exclusivo, só a Fila IA pode receber IA."""
+    """Respeita as filas configuradas exclusivamente para humanos."""
     return bool(
         queue and (
-            is_general_commercial_queue(queue)
-            or (not manual_queue_control_enabled() and queue.name.strip().casefold() == "natine")
+            (not manual_queue_control_enabled() and queue.name.strip().casefold() == "natine")
             or not ai_allowed_for_queue(queue.id)
         )
     )
@@ -383,7 +378,7 @@ def enqueue_ai_job(
     message: Message,
     takeover: bool = False,
 ) -> AIJob | None:
-    # Escopo comercial: somente Fila IA tem SDR e Vendedor IA.
+    # Somente filas explicitamente autorizadas podem iniciar SDR e Vendedor IA.
     if not ai_allowed_for_conversation(db, conversation.id):
         LOG.info("ai_job_skipped conversation=%s reason=exclusive_ai_queue", conversation.id)
         return None
@@ -2310,8 +2305,8 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         return "skipped"
 
     context = build_ai_context(db, job=job, agent=agent)
-    # Autorização explícita: apenas a FILA-IA ativa pode responder em AUTO.
-    # Não habilita o modo autônomo global nem SDR nas outras filas.
+    # Fila IA e Geral Comercial com vinculacao explicita executam em AUTO.
+    # Outras filas continuam exigindo suas proprias autorizacoes.
     current_queue = queue_for_conversation(db, job.conversation_id)
     current_binding = binding_for_conversation(db, job.conversation_id)
     is_authorized_ai_queue = (
@@ -2319,6 +2314,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         and current_queue is not None
         and (
             is_dedicated_ai_queue(current_queue)
+            or is_general_commercial_queue(current_queue)
             or manual_ai_handoff_authorized(db, job.conversation_id)
         )
         and current_binding is not None
