@@ -148,6 +148,7 @@ def campaign_queue_counts(db: Session, campaign_id: int) -> dict[str, int]:
     return {
         "pending": result.get("PENDENTE", 0),
         "sending": result.get("ENVIANDO", 0),
+        "unknown": result.get("INDETERMINADO", 0),
         "sent": result.get("ENVIADO", 0),
         "failed": result.get("FALHOU", 0),
         "skipped": result.get("IGNORADO", 0),
@@ -168,7 +169,9 @@ def _sent_today(db: Session, campaign: Campaign) -> int:
     )
 
 
-def claim_next_recipient(db: Session) -> CampaignRecipient | None:
+def claim_next_recipient(
+    db: Session, *, campaign_id: int | None = None,
+) -> CampaignRecipient | None:
     now = utcnow()
     recipient = db.scalar(
         select(CampaignRecipient)
@@ -176,6 +179,7 @@ def claim_next_recipient(db: Session) -> CampaignRecipient | None:
         .where(
             CampaignRecipient.status == "PENDENTE",
             Campaign.status == "ATIVA",
+            *([Campaign.id == campaign_id] if campaign_id is not None else []),
             (CampaignRecipient.scheduled_at.is_(None) | (CampaignRecipient.scheduled_at <= now)),
         )
         .order_by(CampaignRecipient.created_at.asc())
@@ -184,6 +188,7 @@ def claim_next_recipient(db: Session) -> CampaignRecipient | None:
     )
     if recipient:
         recipient.status = "ENVIANDO"
+        recipient.attempts = int(recipient.attempts or 0) + 1
         db.flush()
     return recipient
 
@@ -213,7 +218,6 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         recipient.error = "Campanha sem fila de atendimento configurada."
         return "failed"
 
-    recipient.attempts = int(recipient.attempts or 0) + 1
     quick_replies = campaign_quick_replies(campaign)
     zapi_instance = queue_instance(db, service_queue.id)
     zapi = service_for_queue(db, service_queue.id)
@@ -231,13 +235,14 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         recipient.error = str(exc)[:500]
         return "skipped"
     except ZApiError as exc:
-        recipient.error = str(exc)[:500]
-        if recipient.attempts >= 3:
-            recipient.status = "FALHOU"
-        else:
-            recipient.status = "PENDENTE"
-            recipient.scheduled_at = utcnow() + timedelta(minutes=5 * recipient.attempts)
-        return "failed"
+        # Timeout/resposta perdida pode ocorrer DEPOIS da aceitação no provedor.
+        # Nunca transformar esse cenário em reenvio automático.
+        recipient.status = "INDETERMINADO"
+        recipient.error = (
+            "Resultado externo incerto; verificar Z-API antes de qualquer tentativa. "
+            + str(exc)
+        )[:500]
+        return "unknown"
 
     contact = ensure_contact(db, lead.phone, lead=lead)
     conversation = ensure_open_conversation(
