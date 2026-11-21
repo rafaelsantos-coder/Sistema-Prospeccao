@@ -207,7 +207,8 @@ def manual_ai_handoff_authorized(db: Session, conversation_id: int) -> bool:
             ConversationQueueLink.conversation_id == conversation_id
         )
     )
-    if not link or link.origin != "MANUAL_AI":
+    if not link or getattr(link, "origin", None) != "MANUAL_AI":
+        # Doubles de testes antigos podem retornar objetos simplificados.
         return False
     queue = db.get(ServiceQueue, link.queue_id)
     if not queue or not queue.active:
