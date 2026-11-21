@@ -173,7 +173,7 @@ def test_resume_requires_csrf_admin_existing_campaign_and_pending_contacts():
         with _paused_campaign(pending=False) as case:
             cid = case["campaign"]
             html = client.get(f"/voice/campaigns/{cid}/details").text
-            assert "Nenhum" not in html or "Nao ha contatos pendentes" in html
+            assert "Nao ha contatos pendentes para continuar" in html
             assert re.search(r'type="submit" disabled[^>]*>▶ Continuar de onde parou', html)
             assert client.post(f"/voice/campaigns/{cid}/resume",
                                data={"csrf_token": token}, follow_redirects=False).status_code == 303
