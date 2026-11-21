@@ -4530,12 +4530,8 @@ def _seller_followup_prompt(
         if followup_step <= 1
         else "Quando puder, seguimos exatamente de onde paramos: "
     )
-    playbook_question = str(collected.get("_playbook_question") or "").strip()
-    playbook_step = str(collected.get("_playbook_step") or "").strip()
-    # Playbook é a pergunta inicial, nunca o texto de todas as retomadas.
-    if playbook_question and playbook_step == state.step and followup_step <= 1:
-        return playbook_question
-
+    # A pergunta do playbook já foi enviada como passo inicial; retomadas
+    # usam texto diferente para não repetir exatamente o último WhatsApp.
     if state.step == "CPF":
         if followup_step <= 1:
             return (
