@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import unicodedata
 from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
@@ -28,6 +30,101 @@ from app.models import (
 from app.services.audit import write_audit
 
 LOG = logging.getLogger("sulnet_ai_queue_scope")
+
+
+def is_general_commercial_queue(queue: ServiceQueue | None) -> bool:
+    """Geral Comercial e sempre humana; somente transferencia para Fila IA ativa SulIA."""
+    if queue is None:
+        return False
+    raw_name = str(getattr(queue, "name", "") or "")
+    raw_code = str(getattr(queue, "code", "") or "")
+    normalized_name = unicodedata.normalize("NFKD", raw_name)
+    normalized_name = "".join(
+        c for c in normalized_name if not unicodedata.combining(c)
+    )
+    name_words = set(re.findall(r"[a-z0-9]+", normalized_name.casefold()))
+    code_words = set(re.findall(r"[a-z0-9]+", raw_code.casefold()))
+    return (
+        {"geral", "comercial"}.issubset(name_words)
+        or {"geral", "comercial"}.issubset(code_words)
+        or raw_code.strip().upper() in {"FILA-GERAL", "FILA_GERAL", "GERAL"}
+    )
+
+
+def enforce_general_commercial_human_only(db: Session) -> dict[str, int]:
+    """Cancela pendencias e libera conversas IA na Geral, mantendo historico."""
+    target_ids = [
+        queue.id for queue in db.scalars(select(ServiceQueue))
+        if is_general_commercial_queue(queue)
+    ]
+    if not target_ids:
+        return {"queues": 0, "bindings": 0, "jobs": 0, "followups": 0, "released": 0}
+
+    bindings = 0
+    for binding in db.scalars(
+        select(AIQueueBinding).where(AIQueueBinding.queue_id.in_(target_ids))
+    ):
+        if binding.active or binding.manual_authorized:
+            binding.active = False
+            binding.manual_authorized = False
+            bindings += 1
+
+    linked = select(ConversationQueueLink.conversation_id).where(
+        ConversationQueueLink.queue_id.in_(target_ids)
+    )
+    jobs = 0
+    for job in db.scalars(
+        select(AIJob).where(
+            AIJob.conversation_id.in_(linked),
+            AIJob.status.in_(("PENDENTE", "PROCESSANDO")),
+        )
+    ):
+        job.status = "CANCELADO"
+        job.error = "GERAL_COMERCIAL_HUMANA"
+        job.locked_at = None
+        jobs += 1
+
+    followups = 0
+    for job in db.scalars(
+        select(AIFollowupJob).where(
+            AIFollowupJob.conversation_id.in_(linked),
+            AIFollowupJob.status.in_(("PENDENTE", "PROCESSANDO")),
+        )
+    ):
+        job.status = "CANCELADO"
+        job.error = "GERAL_COMERCIAL_HUMANA"
+        job.locked_at = None
+        followups += 1
+
+    ai_user_ids = set(db.scalars(select(AIAgentProfile.user_id)))
+    released = 0
+    for state in db.scalars(
+        select(AIConversationState).where(
+            AIConversationState.conversation_id.in_(linked),
+            AIConversationState.state.in_(("AI_ACTIVE", "CLOSING")),
+        )
+    ):
+        state.state = "HUMAN_ACTIVE"
+        state.handoff_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        conversation = db.get(Conversation, state.conversation_id)
+        if conversation and conversation.assigned_user_id in ai_user_ids:
+            conversation.assigned_user_id = None
+            if conversation.status not in ("RESOLVIDO", "ENCERRADO", "BLOQUEADO"):
+                conversation.status = "EM_FILA"
+        released += 1
+
+    summary = {
+        "queues": len(target_ids), "bindings": bindings, "jobs": jobs,
+        "followups": followups, "released": released,
+    }
+    if bindings or jobs or followups or released:
+        write_audit(
+            db, user=None, action="AI_GERAL_COMERCIAL_HUMAN_ONLY",
+            entity_type="service_queue", entity_id=target_ids[0],
+            payload=summary,
+        )
+        LOG.warning("ai_general_commercial_human_only %s", summary)
+    return summary
 
 
 def manual_queue_control_enabled() -> bool:
@@ -56,7 +153,10 @@ def ai_allowed_for_queue(queue_id: int | None) -> bool:
 
 
 def ai_queue_enabled(db: Session, queue_id: int | None) -> bool:
-    """Autorizacao efetiva: no modo manual falha fechado para vinculos legados."""
+    """Autorizacao efetiva, com bloqueio absoluto da Geral Comercial."""
+    queue = db.get(ServiceQueue, queue_id) if queue_id else None
+    if is_general_commercial_queue(queue):
+        return False
     if not ai_allowed_for_queue(queue_id):
         return False
     if not manual_queue_control_enabled():
@@ -84,14 +184,17 @@ def ai_allowed_for_conversation(
     *,
     fallback_queue_id: int | None = None,
 ) -> bool:
-    if not manual_queue_control_enabled() and exclusive_ai_queue_id() is None:
-        return True
     current = db.scalar(
         select(ConversationQueueLink.queue_id).where(
             ConversationQueueLink.conversation_id == conversation_id
         )
     )
     queue_id = current if current is not None else fallback_queue_id
+    queue = db.get(ServiceQueue, queue_id) if queue_id else None
+    if is_general_commercial_queue(queue):
+        return False
+    if not manual_queue_control_enabled() and exclusive_ai_queue_id() is None:
+        return True
     return ai_queue_enabled(db, queue_id) if manual_queue_control_enabled() else ai_allowed_for_queue(queue_id)
 
 
