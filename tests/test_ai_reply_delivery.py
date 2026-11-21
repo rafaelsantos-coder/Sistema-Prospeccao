@@ -435,3 +435,67 @@ def test_support_during_closing_preserves_existing_contract_step(chat, monkeypat
     db.flush()
     delivery = db.scalar(select(AIReplyDelivery))
     assert "Conexão lenta" in parse_qs(urlsplit(delivery.link_url).query)["text"][0]
+
+
+def test_zapi_rejects_button_list_and_sulia_sends_readable_text(chat, monkeypatch):
+    """HTTP 400 em botoes nao pode deixar o cliente quente sem resposta."""
+    db, conversation, agent, _ = chat
+    inbound = _inbound(db, conversation, "Quero contratar")
+    pending = queue_ai_reply(
+        db,
+        conversation=conversation,
+        agent=agent,
+        inbound_id=inbound.id,
+        text="Qual plano voce prefere?",
+        buttons=[{"id": "650", "label": "650 Mega"}, {"id": "800", "label": "800 Mega"}],
+    )
+    db.commit()
+    sent_text = []
+
+    def send_buttons(**_kwargs):
+        raise ZApiError("Formato de botoes rejeitado.", status_code=400)
+
+    def send_text(**kwargs):
+        sent_text.append(kwargs)
+        return {"messageId": "fallback-confirmado-123"}
+
+    monkeypatch.setattr(
+        "app.services.zapi_instances.service_for_conversation",
+        lambda *_: SimpleNamespace(send_button_list=send_buttons, send_text=send_text),
+    )
+    assert process_next_ai_reply(db)
+    assert pending.status == "SENT"
+    assert pending.message_type == "TEXT"
+    assert pending.provider_message_id == "fallback-confirmado-123"
+    assert len(sent_text) == 1
+    assert "Qual plano voce prefere?" in sent_text[0]["message"]
+    assert "1. 650 Mega" in sent_text[0]["message"]
+    assert "2. 800 Mega" in sent_text[0]["message"]
+    assert db.scalar(select(func.count()).select_from(AIReplyDelivery)) == 1
+
+
+def test_zapi_forbidden_buttons_does_not_try_fallback(chat, monkeypatch):
+    """Erros de credencial nunca devem ser mascarados como incompatibilidade."""
+    db, conversation, agent, _ = chat
+    inbound = _inbound(db, conversation, "Quero contratar")
+    pending = queue_ai_reply(
+        db, conversation=conversation, agent=agent,
+        inbound_id=inbound.id, text="Deseja fibra?",
+        buttons=[{"id": "sim", "label": "Sim"}],
+    )
+    db.commit()
+    sent_text = []
+
+    def send_buttons(**_kwargs):
+        raise ZApiError("Acesso negado.", status_code=403)
+
+    monkeypatch.setattr(
+        "app.services.zapi_instances.service_for_conversation",
+        lambda *_: SimpleNamespace(
+            send_button_list=send_buttons,
+            send_text=lambda **kwargs: sent_text.append(kwargs),
+        ),
+    )
+    assert process_next_ai_reply(db)
+    assert pending.status == "FAILED"
+    assert not sent_text
