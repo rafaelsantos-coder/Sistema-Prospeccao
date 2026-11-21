@@ -30,6 +30,21 @@ from app.services.audit import write_audit
 LOG = logging.getLogger("sulnet_ai_queue_scope")
 
 
+def is_dedicated_ai_queue(queue: ServiceQueue | None) -> bool:
+    """Reconhece apenas a fila dedicada de IA, inclusive seu nome na interface.
+
+    Não confunde "Geral Comercial" com "Fila IA". Esta identificação não
+    concede autorização: o vínculo ativo/permitido continua obrigatório.
+    """
+    if not queue or not queue.active:
+        return False
+
+    def _normalized(value: str | None) -> str:
+        return " ".join(str(value or "").replace("-", " ").replace("_", " ").casefold().split())
+
+    return _normalized(queue.code) == "fila ia" or _normalized(queue.name) == "fila ia"
+
+
 def manual_queue_control_enabled() -> bool:
     return os.getenv("AI_QUEUE_MANUAL_CONTROL", "false").strip().lower() in {"1", "true", "yes", "on"}
 
