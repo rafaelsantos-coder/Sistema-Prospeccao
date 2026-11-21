@@ -1420,6 +1420,24 @@ def assign_conversation(
     target = eligible.get(assigned_user_id)
     if not target:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    # Reatribuir a uma pessoa encerra imediatamente a delegacao da SulIA.
+    # Sem revogar MANUAL_AI, a IA poderia voltar antes de o humano responder.
+    queue_link = db.scalar(
+        select(ConversationQueueLink).where(
+            ConversationQueueLink.conversation_id == conversation.id
+        )
+    )
+    if queue_link and queue_link.origin == MANUAL_AI_ORIGIN:
+        queue_link.origin = MANUAL_TRANSFER_ORIGIN
+        from app.models import AIConversationState  # noqa: PLC0415
+
+        ai_state = db.scalar(
+            select(AIConversationState).where(
+                AIConversationState.conversation_id == conversation.id
+            )
+        )
+        if ai_state and ai_state.state in {"AI_ACTIVE", "CLOSING"}:
+            ai_state.state = "HUMAN_ACTIVE"
     previous = conversation.assigned_user_id
     conversation.assigned_user_id = target.id
     conversation.status = "ATRIBUIDO" if conversation.status == "EM_FILA" else conversation.status
