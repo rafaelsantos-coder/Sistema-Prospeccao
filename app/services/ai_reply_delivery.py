@@ -1,4 +1,4 @@
-"""Entrega de respostas reativas na Fila IA."""
+"""Entrega de respostas reativas nas filas autorizadas para a SulIA."""
 
 from __future__ import annotations
 
@@ -49,16 +49,10 @@ def queue_ai_reply(
     allow_resolved: bool = False,
 ) -> Message:
     from app.services.conversation_engine import register_message
-    from app.services.ai_queue_scope import (
-        is_general_commercial_queue, manual_ai_handoff_authorized,
-    )
-    from app.services.queue_routing import queue_for_conversation
+    from app.services.ai_queue_scope import ai_allowed_for_conversation
 
-    if (
-        is_general_commercial_queue(queue_for_conversation(db, conversation.id))
-        and not manual_ai_handoff_authorized(db, conversation.id)
-    ):
-        raise ValueError("Geral Comercial e humana: a IA requer delegacao manual desta conversa.")
+    if not ai_allowed_for_conversation(db, conversation.id):
+        raise ValueError("IA nao autorizada para a fila desta conversa.")
     previous = db.scalar(
         select(Message)
         .join(AIReplyDelivery, AIReplyDelivery.outbound_message_id == Message.id)
