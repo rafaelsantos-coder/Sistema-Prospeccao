@@ -221,9 +221,17 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
         return service_for_telegram_conversation(db, conversation)  # type: ignore[return-value]
 
     if manually_transferred_to_ai(db, conversation_id):
-        instance = conversation_instance(db, conversation_id)
+        # Delegar para a SulIA nao troca a fila/linha WhatsApp: a instancia
+        # da fila original prevalece, mesmo que a Fila IA esteja desconectada.
+        queue = queue_for_conversation(db, conversation_id)
+        instance = queue_instance(db, queue.id) if queue else None
         if not instance:
-            raise ZApiNotConfigured("A conversa transferida à IA está sem a conexão WhatsApp de origem.")
+            instance = conversation_instance(db, conversation_id)
+        if not instance:
+            raise ZApiNotConfigured("A conversa delegada à IA está sem a conexão WhatsApp de origem.")
+        current = conversation_instance(db, conversation_id)
+        if not current or current.id != instance.id:
+            bind_conversation_instance(db, conversation_id, instance.id)
         return service_for_instance(instance)
 
     queue = queue_for_conversation(db, conversation_id)
