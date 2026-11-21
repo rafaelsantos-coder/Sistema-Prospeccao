@@ -91,7 +91,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _show_corporate_differentials,
 )
 from app.services.ai_sdr_policy import MAX_AI_REPLIES_PER_HOUR, SULIA_SYSTEM_PROMPT, UNTRUSTED_INPUT_NOTICE
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, is_general_commercial_queue, manual_queue_control_enabled
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, is_dedicated_ai_queue, is_general_commercial_queue, manual_queue_control_enabled
 from app.services.audit import write_audit
 from app.services.queue_routing import (
     AI_WHEN_HUMAN_IDLE,
@@ -488,7 +488,7 @@ def enqueue_ai_job(
     queue_for_human_guard = queue_for_conversation(db, conversation.id)
     if (
         not takeover
-        and (not queue_for_human_guard or queue_for_human_guard.code != "FILA-IA")
+        and not is_dedicated_ai_queue(queue_for_human_guard)
         and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
         and human_stepped_in(db, conversation)
     ):
@@ -2294,7 +2294,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     is_authorized_ai_queue = (
         agent.role_type == "SDR"
         and current_queue is not None
-        and current_queue.code == "FILA-IA"
+        and is_dedicated_ai_queue(current_queue)
         and current_queue.id == job.queue_id
         and binding_for_conversation(db, job.conversation_id) is not None
         and ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id)

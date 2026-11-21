@@ -14,7 +14,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, AuditLog, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_pending_scope import UNREAD_RECOVERY_SINCE_UTC, in_unread_recovery_window
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, ai_queue_enabled, manual_queue_control_enabled, enforce_exclusive_ai_queue, enforce_general_commercial_human_only, exclusive_ai_queue_id
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, ai_queue_enabled, is_dedicated_ai_queue, manual_queue_control_enabled, enforce_exclusive_ai_queue, enforce_general_commercial_human_only, exclusive_ai_queue_id
 from app.services.ai_queue_coverage import (
     COVERAGE_ACTION,
     COVERAGE_CAMPAIGN_KEY,
@@ -1070,7 +1070,10 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
             if not state or state.state in {"OPT_OUT", "COMPLETED", "SHADOW_REVIEW"}:
                 # Sem estado = a IA nunca atendeu: fica com a recuperação normal / fila.
                 continue
-            if human_is_attending(db, conversation) or human_stepped_in(db, conversation):
+            current_queue = queue_for_conversation(db, conversation.id)
+            if human_is_attending(db, conversation) or (
+                not is_dedicated_ai_queue(current_queue) and human_stepped_in(db, conversation)
+            ):
                 # Não sobrescrever o responsável humano. Os alertas operacionais
                 # continuam cobrando resposta, mesmo sem a IA intervir.
                 continue
@@ -1141,12 +1144,16 @@ def _review_yesterday_and_today_fila_ia() -> dict[str, int]:
 
     counts: Counter[str] = Counter()
     with SessionLocal() as db:
-        queue = db.scalar(select(ServiceQueue).where(
-            ServiceQueue.code == "FILA-IA",
+        queue_candidates = list(db.scalars(select(ServiceQueue).where(
             ServiceQueue.active.is_(True),
-        ))
-        if not queue or not ai_queue_enabled(db, queue.id):
-            LOG.error("ai_today_review_not_authorized: FILA-IA missing or disabled")
+        ).order_by(ServiceQueue.id.asc())))
+        dedicated_queues = [queue for queue in queue_candidates if is_dedicated_ai_queue(queue)]
+        queue = next((item for item in dedicated_queues if ai_queue_enabled(db, item.id)), None)
+        if queue is None:
+            LOG.error(
+                "ai_today_review_not_authorized: dedicated_queue_ids=%s active_binding_missing",
+                [item.id for item in dedicated_queues],
+            )
             return {"not_authorized": 1}
 
         local_now = datetime.now(ZoneInfo(settings.default_timezone))
