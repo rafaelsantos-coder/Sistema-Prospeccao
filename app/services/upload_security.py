@@ -39,6 +39,9 @@ _ALLOWED: dict[str, set[str]] = {
     ".m4a": {"audio/mp4", "audio/x-m4a", "application/octet-stream"},
     ".aac": {"audio/aac", "audio/x-aac", "application/octet-stream"},
     ".amr": {"audio/amr", "audio/amr-wb", "application/octet-stream"},
+    # O MediaRecorder do Chrome grava audio/WEBM (Opus) antes da conversao para OGG.
+    # Aceitamos somente MIME de audio; video/webm nao e permitido neste fluxo.
+    ".webm": {"audio/webm"},
 }
 
 
@@ -74,6 +77,9 @@ def _signature_ok(extension: str, data: bytes) -> bool:
         return head.startswith(b"OggS")
     if extension == ".wav":
         return len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WAVE"
+    if extension == ".webm":
+        # EBML: assinatura do container WebM; o ffmpeg valida o audio na conversao.
+        return head.startswith(b"\x1a\x45\xdf\xa3")
     if extension == ".aac":
         return len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF6) == 0xF0
     if extension == ".amr":
