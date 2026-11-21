@@ -28,6 +28,8 @@ LOG = logging.getLogger("sulnet_ai_reply_delivery")
 DELIVERED_STATUSES = frozenset({"DELIVERED", "RECEIVED", "READ", "PLAYED"})
 FAILED_STATUSES = frozenset({"FAILED", "ERROR", "NOT_SENT", "UNDELIVERED"})
 MAX_ATTEMPTS = 3
+TEXT_RESCUE_MARKER = "TEXT_RESCUE_V1"
+TEXT_RESCUE_WINDOW = timedelta(hours=12)
 LOCK_TIMEOUT = timedelta(minutes=3)
 ALERT_AFTER = timedelta(minutes=10)
 UNSUPPORTED_LINK = frozenset({400, 404, 405, 415, 422})
@@ -119,6 +121,19 @@ def _result_ids(result: dict) -> tuple[str | None, str | None]:
     return provider_id, zaap_id
 
 
+def _button_fallback_text(message: Message, buttons: list) -> str:
+    labels = [
+        str(item.get("label") or "").strip()
+        for item in buttons if isinstance(item, dict)
+    ]
+    labels = [label for label in labels if label]
+    if not labels:
+        return message.body
+    return message.body + "\\n\\nResponda com uma das opcoes: \\n" + "\\n".join(
+        f"{index}. {label}" for index, label in enumerate(labels, start=1)
+    )
+
+
 def _send(delivery: AIReplyDelivery, message: Message, zapi, phone: str) -> dict:
     if delivery.link_url:
         try:
@@ -131,30 +146,27 @@ def _send(delivery: AIReplyDelivery, message: Message, zapi, phone: str) -> dict
             return zapi.send_text(phone=phone, message=f"{message.body}\n{delivery.link_url}")
     buttons = json.loads(delivery.buttons_json)
     if buttons:
+        if delivery.link_label == TEXT_RESCUE_MARKER:
+            LOG.warning("ai_reply_exhausted_buttons_rescue message=%s", message.id)
+            result = zapi.send_text(
+                phone=phone, message=_button_fallback_text(message, buttons),
+            )
+            message.message_type = "TEXT"
+            return result
         try:
             return zapi.send_button_list(phone=phone, message=message.body, buttons=buttons)
         except ZApiError as exc:
-            # O endpoint de botoes da Z-API pode rejeitar um modelo com HTTP 400
-            # mesmo quando o envio de texto esta operacional. Nao perder o lead.
-            # Outros erros (401/403/429, rede ou resposta incerta) seguem a
-            # politica normal de falhas, sem risco de duplicar mensagens.
+            # Quando a Z-API rejeita botoes, entregar o conteudo em texto.
+            # Erros de acesso, limites e resposta incerta continuam protegidos.
             if exc.status_code not in UNSUPPORTED_LINK:
                 raise
-            labels = [
-                str(item.get("label") or "").strip()
-                for item in buttons if isinstance(item, dict)
-            ]
-            labels = [label for label in labels if label]
-            fallback_text = message.body
-            if labels:
-                fallback_text += "\n\nResponda com uma das opcoes: \n" + "\n".join(
-                    f"{index}. {label}" for index, label in enumerate(labels, start=1)
-                )
             LOG.warning(
                 "ai_reply_buttons_fallback_to_text message=%s status=%s",
                 message.id, exc.status_code,
             )
-            result = zapi.send_text(phone=phone, message=fallback_text)
+            result = zapi.send_text(
+                phone=phone, message=_button_fallback_text(message, buttons),
+            )
             message.message_type = "TEXT"
             return result
     return zapi.send_text(phone=phone, message=message.body)
@@ -235,6 +247,19 @@ def process_next_ai_reply(db: Session) -> bool:
                     & Message.delivered_at.is_(None)
                 ),
                 ((Message.status == "SENDING") & (AIReplyDelivery.locked_at < now - LOCK_TIMEOUT)),
+                (
+                    Message.status.in_(FAILED_STATUSES)
+                    & (AIReplyDelivery.attempts >= MAX_ATTEMPTS)
+                    & (AIReplyDelivery.link_label == "")
+                    & (AIReplyDelivery.link_url == "")
+                    & (AIReplyDelivery.buttons_json != "[]")
+                    & (Message.provider_message_id.is_(None))
+                    & (Message.provider_zaap_id.is_(None))
+                    & (Message.sent_at.is_(None))
+                    & (Message.delivered_at.is_(None))
+                    & (Message.created_at >= now - TEXT_RESCUE_WINDOW)
+                    & (AIReplyDelivery.available_at <= now)
+                ),
             )
         )
         .order_by(AIReplyDelivery.available_at, AIReplyDelivery.id)
@@ -257,6 +282,19 @@ def process_next_ai_reply(db: Session) -> bool:
         message.status = "CANCELED"
         db.commit()
         return True
+
+    if (
+        message.status in FAILED_STATUSES
+        and delivery.attempts >= MAX_ATTEMPTS
+        and delivery.link_label == ""
+    ):
+        # Rescue de uma resposta rejeitada, sem ID do provedor. O marcador
+        # persiste antes do envio: no maximo uma tentativa extra em texto.
+        delivery.link_label = TEXT_RESCUE_MARKER
+        LOG.warning(
+            "ai_reply_exhausted_rescue_scheduled conversation=%s message=%s",
+            conversation.id, message.id,
+        )
 
     message.status = "SENDING"
     message.provider_message_id = None
