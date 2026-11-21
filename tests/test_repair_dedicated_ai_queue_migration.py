@@ -91,3 +91,16 @@ def test_migration_falha_fechado_se_houver_duas_filas_ia_ativas(monkeypatch):
                 migration.upgrade()
     finally:
         engine.dispose()
+
+
+def test_migration_em_banco_limpo_adiada_sem_erros(monkeypatch):
+    engine = _database()
+    try:
+        migration = _module()
+        with engine.begin() as connection:
+            monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
+            migration.upgrade()
+        with Session(engine) as db:
+            assert not list(db.scalars(select(AIQueueBinding)))
+    finally:
+        engine.dispose()
