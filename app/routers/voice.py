@@ -1192,6 +1192,9 @@ def start_voice_campaign(campaign_id: int, request: Request, csrf_token: str = F
     ).with_for_update())
     if not campaign or campaign.status not in {"RASCUNHO", "PRONTA", VOICE_STATUS_HOMOLOGACAO, "PAUSADA"}:
         return _error(request, "Campanha nao pode ser iniciada neste estado.", "/voice/campaigns")
+    if campaign.status == "PAUSADA" and campaign.started_at is not None:
+        return _error(request, "Campanha ja iniciada: use Continuar de onde parou para preservar o progresso.",
+                      f"/voice/campaigns?open={campaign_id}")
     if authorization != "sim":
         write_audit(db, user=actor, action="VOICE_CAMPAIGN_START_BLOCKED",
                     entity_type="voice_campaign", entity_id=campaign_id,
@@ -1218,6 +1221,56 @@ def start_voice_campaign(campaign_id: int, request: Request, csrf_token: str = F
     return RedirectResponse("/voice/campaigns", status_code=303)
 
 
+@router.post("/campaigns/{campaign_id}/resume")
+def resume_voice_campaign(campaign_id: int, request: Request, csrf_token: str = Form(...),
+                          db: Session = Depends(get_db)):
+    """Continua apenas contatos ainda nao discados, sem abrir nova rodada."""
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    # Lock the campaign so two resume requests cannot start separate executions.
+    campaign = db.scalar(select(VoiceCampaign).where(
+        VoiceCampaign.id == campaign_id
+    ).with_for_update())
+    destination = f"/voice/campaigns?open={campaign_id}"
+    if not campaign or campaign.status != "PAUSADA" or campaign.started_at is None:
+        return _error(request, "Somente uma campanha ja iniciada e pausada pode continuar.", destination)
+    if _campaign_calls_in_flight(db, campaign_id):
+        return _error(request, "Aguarde o encerramento da ligacao em andamento antes de continuar.", destination)
+    # The worker only claims PENDENTE recipients with zero attempts.
+    # Never reset previously attempted contacts or create a new campaign.
+    pending = db.scalar(select(func.count(VoiceRecipient.id)).where(
+        VoiceRecipient.campaign_id == campaign_id,
+        VoiceRecipient.status == "PENDENTE",
+        VoiceRecipient.attempts == 0,
+    )) or 0
+    if not pending:
+        return _error(request, "Nenhum contato pendente para continuar. Use Reenviar apenas se desejar uma nova rodada.",
+                      destination)
+    failures = check_campaign_ready(db, campaign)
+    if failures:
+        write_audit(db, user=actor, action="VOICE_CAMPAIGN_RESUME_BLOCKED",
+                    entity_type="voice_campaign", entity_id=campaign_id,
+                    payload={"reasons": failures, "pending": pending})
+        db.commit()
+        return _error(request, "Campanha nao retomada: " + " / ".join(failures[:3]), destination)
+    campaign.status = "EM_EXECUCAO"
+    campaign.stopped_at = None
+    # Preserve started_at, last_call_at, all recipient statuses and prior attempts.
+    write_audit(db, user=actor, action="VOICE_CAMPAIGN_RESUMED",
+                entity_type="voice_campaign", entity_id=campaign_id,
+                payload={"pending": pending, "history_preserved": True, "new_round": False})
+    db.commit()
+    if within_call_window(campaign):
+        flash(request, f"Campanha retomada de onde parou: {pending} contato(s) aguardam a primeira ligacao.")
+    else:
+        next_window = next_call_window_start(campaign)
+        schedule = next_window.strftime("%d/%m/%Y as %H:%M") if next_window else "a proxima janela configurada"
+        flash(request, f"Campanha retomada sem repetir contatos. {pending} pendente(s); discagem aguarda {schedule}.")
+    return RedirectResponse(destination, status_code=303)
+
+
 @router.post("/campaigns/{campaign_id}/pause")
 def pause_voice_campaign(campaign_id: int, request: Request, csrf_token: str = Form(...),
                          db: Session = Depends(get_db)):
@@ -1225,7 +1278,9 @@ def pause_voice_campaign(campaign_id: int, request: Request, csrf_token: str = F
     if redirect:
         return redirect
     validate_csrf(request, csrf_token)
-    campaign = db.get(VoiceCampaign, campaign_id)
+    campaign = db.scalar(select(VoiceCampaign).where(
+        VoiceCampaign.id == campaign_id
+    ).with_for_update())
     if not campaign or campaign.status != "EM_EXECUCAO":
         return _error(request, "Campanha nao esta em execucao.", "/voice/campaigns")
     campaign.status = "PAUSADA"
