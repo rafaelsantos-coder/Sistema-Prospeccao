@@ -144,7 +144,7 @@ def test_offline_seller_of_queue_is_listed_and_can_receive_conversation():
             db.close()
 
 
-def test_pass_to_ai_moves_conversation_to_ai_queue_and_answers_now():
+def test_pass_to_ai_keeps_original_queue_instance_and_answers_now():
     with TestClient(app) as client:
         db = SessionLocal()
         try:
@@ -168,7 +168,7 @@ def test_pass_to_ai_moves_conversation_to_ai_queue_and_answers_now():
                 instance_token="test-token", client_token="test-client", created_by_id=None,
             )
             bind_queue_instance(db, human_queue.id, instance.id)
-            source_queue_id, instance_id = human_queue.id, instance.id
+            source_queue_id, ai_queue_id, instance_id = human_queue.id, ai_queue.id, instance.id
             message = db.scalar(select(Message).where(Message.conversation_id == conversation.id))
             job = AIJob(agent_id=agent.id, queue_id=human_queue.id, conversation_id=conversation.id,
                         message_id=message.id, status="CONCLUIDO")
@@ -200,8 +200,11 @@ def test_pass_to_ai_moves_conversation_to_ai_queue_and_answers_now():
             )
             assert link is not None
             assert link.origin == MANUAL_AI_ORIGIN
-            assert link.queue_id != human_queue.id
-            assert usable_ai_binding(db, link.queue_id) is not None
+            assert link.queue_id == source_queue_id
+            assert usable_ai_binding(db, ai_queue_id) is not None
+            from app.services.ai_queue_scope import ai_allowed_for_conversation, manual_ai_handoff_authorized
+            assert manual_ai_handoff_authorized(db, conversation_id)
+            assert ai_allowed_for_conversation(db, conversation_id)
             job = db.scalar(select(AIJob).where(AIJob.conversation_id == conversation_id))
             assert job is not None
             assert job.status == "PENDENTE"
