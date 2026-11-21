@@ -5400,8 +5400,12 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
         job.error = "IA autorizada somente na Fila IA."
         return "skipped"
     from app.services.ai_sdr import is_human_only_queue  # noqa: PLC0415
+    from app.services.ai_queue_scope import manual_ai_handoff_authorized  # noqa: PLC0415
     from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
-    if is_human_only_queue(queue_for_conversation(db, job.conversation_id)):
+    if (
+        is_human_only_queue(queue_for_conversation(db, job.conversation_id))
+        and not manual_ai_handoff_authorized(db, job.conversation_id)
+    ):
         job.status = "IGNORADO"
         job.error = "Fila Natine exclusiva de atendimento humano."
         return "skipped"
@@ -7199,8 +7203,13 @@ def poll_pending_contracts(db: Session, *, limit: int = 10) -> int:
         if not ai_allowed_for_conversation(db, state.conversation_id):
             continue
         from app.services.ai_sdr import is_human_only_queue  # noqa: PLC0415
+        from app.services.ai_queue_scope import manual_ai_handoff_authorized  # noqa: PLC0415
         from app.services.queue_routing import queue_for_conversation  # noqa: PLC0415
-        if hasattr(db, "scalar") and is_human_only_queue(queue_for_conversation(db, state.conversation_id)):
+        if (
+            hasattr(db, "scalar")
+            and is_human_only_queue(queue_for_conversation(db, state.conversation_id))
+            and not manual_ai_handoff_authorized(db, state.conversation_id)
+        ):
             continue
         agent = db.get(AIAgentProfile, state.agent_id)
         if (
