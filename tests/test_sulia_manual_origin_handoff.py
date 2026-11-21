@@ -31,7 +31,7 @@ from app.services.ai_queue_scope import (
     manual_ai_handoff_authorized,
 )
 from app.services.ai_reply_delivery import process_next_ai_reply, queue_ai_reply
-from app.services.conversation_engine import ensure_open_conversation
+from app.services.conversation_engine import ensure_open_conversation, store_received_payload
 from app.services.queue_routing import (
     MANUAL_AI_ORIGIN,
     MANUAL_TRANSFER_ORIGIN,
@@ -182,6 +182,32 @@ def test_delegated_general_keeps_queue_and_uses_original_whatsapp(monkeypatch):
             assert link.queue_id == human.id
             assert link.origin == MANUAL_AI_ORIGIN
             assert same.assigned_user_id is None
+
+            # Novo inbound pelo WhatsApp da fila original gera outro AIJob,
+            # sem mover o cliente ou atribuir o atendimento a um vendedor.
+            next_conv, next_message, created = store_received_payload(
+                db,
+                {
+                    "phone": conv.contact.phone,
+                    "messageId": "MANUAL-IA-NEXT-INBOUND-001",
+                    "senderName": "Lead quente",
+                    "text": {"message": "Pode consultar meu CPF?"},
+                    "fromMe": False,
+                    "status": "RECEIVED",
+                },
+                queue_id=human.id,
+                zapi_instance_id=origin.id,
+            )
+            assert created and next_conv.id == conv.id
+            next_job = db.scalar(
+                select(AIJob).where(AIJob.message_id == next_message.id)
+            )
+            assert next_job is not None
+            assert next_job.status == "PENDENTE"
+            assert next_job.agent_id == agent.id
+            assert next_job.queue_id == human.id
+            assert link.origin == MANUAL_AI_ORIGIN
+            assert next_conv.assigned_user_id is None
     finally:
         engine.dispose()
 
