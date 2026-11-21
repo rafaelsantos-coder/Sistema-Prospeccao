@@ -1257,6 +1257,15 @@ def _review_yesterday_and_today_fila_ia() -> dict[str, int]:
                         and "SDR perdeu a propriedade da conversa" in (prior_job.error or "")
                         and (not state or state.state not in {"OPT_OUT", "COMPLETED", "CLOSING"})
                     ):
+                        # Reconciliar a tarefa com a fila e o SDR atuais ANTES
+                        # de recolocar na fila. Sem isso a tentativa falha em
+                        # loop se o job veio de uma fila antiga.
+                        binding = queue_ai_binding(db, queue.id)
+                        if not (binding and binding.agent and binding.agent.active):
+                            counts["owner_failure_binding_missing"] += 1
+                            continue
+                        prior_job.queue_id = queue.id
+                        prior_job.agent_id = binding.agent_id
                         prior_job.status = "PENDENTE"
                         prior_job.available_at = utcnow()
                         prior_job.locked_at = None
