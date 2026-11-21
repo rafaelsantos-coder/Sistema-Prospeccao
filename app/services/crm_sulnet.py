@@ -1260,6 +1260,47 @@ class SulnetCRMClient:
                     return None
         return None
 
+    def sync_fiber_nap(self, opportunity_id: int, value: str) -> None:
+        """Atualiza as duas representações do formulário e confirma a leitura."""
+        path = f"/api/opportunities/{opportunity_id}"
+
+        def product_info() -> dict[str, Any]:
+            payload = self._request("GET", path)
+            if not isinstance(payload, dict):
+                raise CRMIntegrationError("Resposta inválida na leitura da Caixa NAP.")
+            record = payload.get("data", payload)
+            if isinstance(record, dict):
+                record = record.get("opportunity", record.get("lead", record))
+            if not isinstance(record, dict) or not ("productInfo" in record or "product_info" in record):
+                raise CRMIntegrationError("CRM não retornou os dados de produto para a Caixa NAP.")
+            raw = record.get("productInfo")
+            if raw is None:
+                raw = record.get("product_info")
+            if raw is None or raw == "":
+                return {}
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except ValueError as exc:
+                    raise CRMIntegrationError("Dados de produto inválidos para a Caixa NAP.") from exc
+            if not isinstance(raw, dict):
+                raise CRMIntegrationError("Formato inesperado de produto ao gravar Caixa NAP.")
+            return raw
+
+        def matches(info: dict[str, Any]) -> bool:
+            fiber = info.get("fibra") or {}
+            form = info.get("categoryForm") or {}
+            values = form.get("values") or {}
+            return fiber.get("caixaNap") == value and values.get("caixa_nap") == value
+
+        current = product_info()
+        if matches(current):
+            return
+        patch = {"fibra": {"caixaNap": value}, "categoryForm": {"values": {"caixa_nap": value}}}
+        self._request("PATCH", path, json_body={"productInfo": self._deep_merge_dict(current, patch)})
+        if not matches(product_info()):
+            raise CRMIntegrationError("CRM não confirmou a Caixa NAP nos dois campos da oportunidade.")
+
     def add_opportunity_note(
         self,
         opportunity_id: int,
