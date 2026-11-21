@@ -43,8 +43,12 @@ def _ready(db):
 
 
 def _customer(db, queue_id, *, body="Quero o combo", assigned_user_id=None):
+    from app.models import Contact
+    from sqlalchemy import func
+
+    next_contact = int(db.scalar(select(func.max(Contact.id))) or 0) + 1
     contact = Contact(
-        name="Cliente teste", phone=f"555599000{queue_id:04d}{db.scalar(select(Conversation.id).limit(1)) or 0:02d}",
+        name="Cliente teste", phone=f"555599000{next_contact:06d}",
     )
     db.add(contact)
     db.flush()
