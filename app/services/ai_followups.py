@@ -22,6 +22,7 @@ from app.models import (
     Lead,
     Message,
 )
+from app.services import dispatch_offer
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT, followup_spec, next_business_time
 from app.services.audit import write_audit
@@ -154,6 +155,7 @@ def schedule_followup(
     source_message_id: int | None,
     step: int = 1,
     pending_action: str | None = None,
+    pilot_theme: str | None = None,
 ) -> AIFollowupJob | None:
     from app.services.ai_queue_scope import ai_allowed_for_conversation  # noqa: PLC0415
     if not ai_allowed_for_conversation(db, conversation_id, fallback_queue_id=queue_id):
@@ -227,12 +229,25 @@ def schedule_followup(
     if last_terminal:
         return None
 
+    # A mesma resposta ao disparo recebe apenas uma retomada no piloto,
+    # inclusive se o worker tentar reconstruir a cadência depois de reiniciar.
+    if source_message_id and db.scalar(select(AIFollowupJob.id).where(
+        AIFollowupJob.conversation_id == conversation_id,
+        AIFollowupJob.source_message_id == source_message_id,
+        AIFollowupJob.theme.in_(dispatch_offer.PILOT_DELAYS),
+    ).limit(1)):
+        return None
+
     cancel_pending_followups(db, conversation_id, reason="FOLLOWUP_REAGENDADO")
     delay, theme = followup_spec(step)
     clean_pending = re.sub(r"\s+", " ", str(pending_action or "")).strip()
     if clean_pending:
         theme = f"{theme}. Pendência atual: {clean_pending[:500]}"
-    if closing_awaits_customer(db, conversation_id):
+    if pilot_theme in dispatch_offer.PILOT_DELAYS:
+        theme = pilot_theme
+        due = business_window_start(utcnow() + dispatch_offer.PILOT_DELAYS[theme])
+        due = _limit_one_unanswered_per_day(db, conversation_id, due)
+    elif closing_awaits_customer(db, conversation_id):
         delay = CLOSING_CADENCE[min(max(1, step), len(CLOSING_CADENCE)) - 1]
         due = closing_window_start(utcnow() + delay)
     else:
@@ -619,7 +634,7 @@ def _customer_declined(db: Session, conversation_id: int) -> bool:
 
 
 def _followup_spacing_hold(
-    db: Session, conversation_id: int, now: datetime, *, closing: bool = False
+    db: Session, conversation_id: int, now: datetime, *, closing: bool = False, pilot_theme: str | None = None
 ) -> datetime | None:
     """Nada de rajada: o follow-up só sai 2 h depois da última mensagem nossa."""
     from app.services.ai_sdr import human_stepped_in  # noqa: PLC0415
@@ -638,7 +653,9 @@ def _followup_spacing_hold(
         .limit(1)
     )
     last = utc_naive(last_outbound_at)
-    if closing:
+    if pilot_theme in dispatch_offer.PILOT_DELAYS:
+        gap = dispatch_offer.PILOT_DELAYS[pilot_theme]
+    elif closing:
         gap = CLOSING_FOLLOWUP_GAP
     else:
         gap = ENGAGED_FOLLOWUP_DELAY if customer_engaged(db, conversation_id, now) else FOLLOWUP_MIN_GAP
@@ -722,6 +739,9 @@ def _followup_allowed(
         AIFollowupJob.sent_at.is_not(None),
     )
     last_inbound_at = _latest_inbound_at(db, conversation.id)
+    if getattr(job, "theme", None) in dispatch_offer.PILOT_DELAYS:
+        if not last_inbound_at or utcnow() - utc_naive(last_inbound_at) >= timedelta(hours=24):
+            return False, "JANELA_DO_CLIENTE_ENCERRADA"
     if last_inbound_at:
         sent_stmt = sent_stmt.where(AIFollowupJob.sent_at > utc_naive(last_inbound_at))
     unanswered_sent = len(list(db.scalars(sent_stmt)))
@@ -749,6 +769,8 @@ def _generate_followup(
     job: AIFollowupJob,
     avoid_messages: list[str] | None = None,
 ) -> FollowupDecision:
+    if getattr(job, "theme", None) in dispatch_offer.PILOT_DELAYS:
+        return FollowupDecision(reply_text=dispatch_offer.pilot_followup_text(job.theme))
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY não configurada.")
 
@@ -908,7 +930,9 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         job.attempts = max(0, int(job.attempts or 0) - 1)
         return "outside_business_hours"
 
-    hold_until = _followup_spacing_hold(db, job.conversation_id, now, closing=closing)
+    pilot = getattr(job, "theme", None) in dispatch_offer.PILOT_DELAYS
+    spacing_options = {"pilot_theme": job.theme} if pilot else {}
+    hold_until = _followup_spacing_hold(db, job.conversation_id, now, closing=closing, **spacing_options)
     if hold_until and hold_until > now:
         job.status = "PENDENTE"
         job.due_at = hold_until
@@ -937,6 +961,10 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         previous_outbound = _recent_outbound_bodies(history)
         decision = _generate_followup(db, agent=agent, job=job)
 
+        if pilot and decision.reply_text in previous_outbound:
+            job.status = "CANCELADO"
+            job.error = "PILOTO_MENSAGEM_JA_ENVIADA"
+            return "cancelled"
         if _followup_exposes_internal_handoff(decision.reply_text):
             first_attempt = decision.reply_text
             decision = _generate_followup(
@@ -951,7 +979,7 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                     previous_messages=previous_outbound + [first_attempt],
                 )
 
-        if _followup_is_repetitive(decision.reply_text, previous_outbound):
+        if not pilot and _followup_is_repetitive(decision.reply_text, previous_outbound):
             first_attempt = decision.reply_text
             decision = _generate_followup(
                 db,
@@ -960,7 +988,7 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                 avoid_messages=previous_outbound + [first_attempt],
             )
 
-        if _followup_is_repetitive(decision.reply_text, previous_outbound):
+        if not pilot and _followup_is_repetitive(decision.reply_text, previous_outbound):
             decision = _unique_followup_fallback(
                 step=job.step,
                 previous_messages=previous_outbound,
@@ -1112,6 +1140,12 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
                 "quick_reply_count": len(quick_replies),
             },
         )
+
+        if pilot:
+            write_audit(db, user=agent.user, action="DISPATCH_PILOT_REMINDER",
+                        entity_type="message", entity_id=message.id,
+                        payload={"source_message_id": job.source_message_id})
+            return "sent"
 
         schedule_followup(
             db,
