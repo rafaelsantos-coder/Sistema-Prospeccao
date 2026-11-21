@@ -33,6 +33,7 @@ from app.services.ai_learning import run_learning_loop
 from app.services.ai_engineer import run_engineer_loop
 from app.services.ai_weekly_analyst import run_weekly_analyst_loop
 from app.services.ai_sdr_policy import followup_spec
+from app.services.ai_unanswered_rescue import recover_reported_unanswered
 from app.services.queue_routing import MANUAL_AI_ORIGIN, MANUAL_TRANSFER_ORIGIN, bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utc_naive, utcnow
@@ -1458,6 +1459,15 @@ def run() -> None:
     if recovered_recent:
         LOG.info("Mensagens recentes sem job recuperadas=%s", recovered_recent)
     _review_yesterday_and_today_fila_ia()
+    # Resgate unico de quatro alertas confirmados: sem modificar campanhas
+    # ou reabrir conversas ja respondidas. O envio continua na fila normal.
+    try:
+        with SessionLocal() as rescue_db:
+            rescue_result = recover_reported_unanswered(rescue_db)
+            rescue_db.commit()
+            LOG.warning("SulIA resgate de mensagens confirmadas=%s", rescue_result)
+    except Exception:
+        LOG.exception("Falha no resgate imediato das mensagens sem resposta.")
     if settings.ai_sdr_enabled and settings.ai_autonomous_enabled:
         try:
             claimed = _takeover_unanswered_human_conversations()
