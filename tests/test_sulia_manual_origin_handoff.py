@@ -27,7 +27,6 @@ from app.services import ai_sdr, zapi_instances
 from app.services.ai_queue_scope import (
     ai_allowed_for_conversation,
     enforce_exclusive_ai_queue,
-    enforce_general_commercial_human_only,
     manual_ai_handoff_authorized,
 )
 from app.services.ai_reply_delivery import process_next_ai_reply, queue_ai_reply
@@ -254,14 +253,13 @@ def test_scope_repairs_preserve_only_explicit_manual_handoff(monkeypatch):
                 conversation_id=conv.id, agent_id=agent.id, state="AI_ACTIVE",
             ))
             db.flush()
-            general = enforce_general_commercial_human_only(db)
-            assert general["jobs"] == 0
-            assert general["released"] == 0
+            # A restricao antiga de revogacao automatica da Geral foi removida.
+            # Uma delegacao manual continua valida mesmo sem vinculo automatico.
             assert original_job.status == "PENDENTE"
             assert ai_allowed_for_conversation(db, conv.id)
 
-            # Mesmo com escopo legado exclusivo a delegacao explicita persiste,
-            # mas outras conversas da Geral permanecem humanas.
+            # Sob escopo legado exclusivo, a delegacao explicita ainda persiste.
+            # As demais conversas sem vinculo aprovado permanecem humanas.
             monkeypatch.setenv("AI_QUEUE_MANUAL_CONTROL", "false")
             monkeypatch.setenv("AI_EXCLUSIVE_QUEUE_ID", str(dedicated.id))
             enforce_exclusive_ai_queue(db)

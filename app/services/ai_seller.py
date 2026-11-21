@@ -3518,7 +3518,7 @@ def _assert_closer_owns_conversation(
 ) -> None:
     from app.services.ai_queue_scope import ai_allowed_for_conversation
     if not ai_allowed_for_conversation(db, conversation.id):
-        raise CRMIntegrationError("Geral Comercial: IA nao autorizada a enviar mensagem.")
+        raise CRMIntegrationError("Fila nao autorizada para o Vendedor IA.")
     ai_state = db.scalar(
         select(AIConversationState).where(
             AIConversationState.conversation_id == conversation.id
@@ -3702,7 +3702,7 @@ def _send_fixed_step_prompt(
 
     from app.services.ai_queue_scope import ai_allowed_for_conversation
     if not ai_allowed_for_conversation(db, conversation.id):
-        raise CRMIntegrationError("Geral Comercial: IA nao autorizada a enviar mensagem.")
+        raise CRMIntegrationError("Fila nao autorizada para o Vendedor IA.")
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone or not text.strip():
         raise CRMIntegrationError("Contato sem telefone ou mensagem vazia.")

@@ -14,7 +14,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, AuditLog, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_pending_scope import UNREAD_RECOVERY_SINCE_UTC, in_unread_recovery_window
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, ai_queue_enabled, is_dedicated_ai_queue, manual_queue_control_enabled, enforce_exclusive_ai_queue, enforce_general_commercial_human_only, exclusive_ai_queue_id
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, ai_queue_enabled, is_dedicated_ai_queue, manual_queue_control_enabled, enforce_exclusive_ai_queue, exclusive_ai_queue_id
 from app.services.ai_queue_coverage import (
     COVERAGE_ACTION,
     COVERAGE_CAMPAIGN_KEY,
@@ -1332,17 +1332,12 @@ def run() -> None:
 
     if not settings.is_production:
         Base.metadata.create_all(bind=engine)
-    # Executar a exclusividade ANTES de qualquer recuperacao ou emissao da IA.
+    # Conciliar escopo legado somente quando modo manual de filas estiver desligado.
     if exclusive_ai_queue_id() is not None:
         with SessionLocal() as scope_db:
             scope_result = enforce_exclusive_ai_queue(scope_db)
             scope_db.commit()
             LOG.warning("Escopo IA exclusivo preparado: %s", scope_result)
-    # Mesmo com controle manual de filas, a Geral Comercial nunca recebe IA.
-    with SessionLocal() as human_scope_db:
-        general_result = enforce_general_commercial_human_only(human_scope_db)
-        human_scope_db.commit()
-        LOG.warning("Geral Comercial em modo humano: %s", general_result)
     # Observador comercial isolado: roda sem permissão de enviar WhatsApp,
     # independentemente do escopo de atuação do SDR/Vendedor IA.
     threading.Thread(
@@ -1370,6 +1365,29 @@ def run() -> None:
             "sulia_reply_delivery_ready closer_ready=%s",
             active_closer(readiness_db) is not None,
         )
+        # Verificacao observavel da autorizacao efetiva em producao.
+        from app.models import ServiceQueue
+        from app.services.ai_queue_scope import is_general_commercial_queue
+
+        general_queues = [
+            queue for queue in readiness_db.scalars(
+                select(ServiceQueue).where(ServiceQueue.active.is_(True))
+            )
+            if is_general_commercial_queue(queue)
+        ]
+        for queue in general_queues:
+            binding = queue_ai_binding(readiness_db, queue.id)
+            enabled = ai_queue_enabled(readiness_db, queue.id)
+            level = LOG.info if enabled else LOG.error
+            level(
+                "sulia_general_commercial_ready queue=%s enabled=%s mode=%s "
+                "manual_control=%s",
+                queue.id, enabled,
+                binding.handling_mode if binding else "SEM_VINCULO",
+                manual_queue_control_enabled(),
+            )
+        if not general_queues:
+            LOG.error("sulia_general_commercial_missing_queue")
     if settings.ai_maintenance_enabled and settings.ai_supervisor_shadow_enabled:
         supervisor_thread = threading.Thread(
             target=run_shadow_supervisor_loop,
@@ -1473,15 +1491,13 @@ def run() -> None:
         missing_key_logged = False
 
         now_mono = time.monotonic()
-        if now_mono - last_scope_enforcement >= 60:
+        if exclusive_ai_queue_id() is not None and now_mono - last_scope_enforcement >= 60:
             try:
                 with SessionLocal() as scope_db:
-                    if exclusive_ai_queue_id() is not None:
-                        enforce_exclusive_ai_queue(scope_db)
-                    enforce_general_commercial_human_only(scope_db)
+                    enforce_exclusive_ai_queue(scope_db)
                     scope_db.commit()
             except Exception:
-                LOG.exception("Falha na reconciliacao das filas IA e Geral Comercial")
+                LOG.exception("Falha na reconciliacao do escopo legado exclusivo de IA")
             last_scope_enforcement = now_mono
         if now_mono - last_inbound_recovery >= 60:
             try:
