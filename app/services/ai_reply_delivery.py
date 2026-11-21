@@ -129,7 +129,7 @@ def _button_fallback_text(message: Message, buttons: list) -> str:
     labels = [label for label in labels if label]
     if not labels:
         return message.body
-    return message.body + "\\n\\nResponda com uma das opcoes: \\n" + "\\n".join(
+    return message.body + "\n\nResponda com uma das opcoes: \n" + "\n".join(
         f"{index}. {label}" for index, label in enumerate(labels, start=1)
     )
 
