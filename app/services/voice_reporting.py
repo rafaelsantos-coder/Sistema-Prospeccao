@@ -26,6 +26,8 @@ COMMAND_LABELS = {
     "VOICE_CAMPAIGN_START_BLOCKED": "Tentativa de início bloqueada",
     "VOICE_CAMPAIGN_STARTED": "Início autorizado pelo administrador",
     "VOICE_CAMPAIGN_PAUSED": "Campanha pausada pelo administrador",
+    "VOICE_CAMPAIGN_RESUMED": "Campanha retomada de onde parou",
+    "VOICE_CAMPAIGN_RESUME_BLOCKED": "Tentativa de retomada bloqueada",
     "VOICE_LEGAL_BASIS_CONFIRMED": "Base legal confirmada pelo administrador",
 }
 
@@ -47,7 +49,7 @@ def _last_command(db: Session, campaign_id: int) -> dict:
             "at": None, "detail": "A campanha ainda não recebeu uma ordem de discagem.",
         }
     details = ""
-    if row.action == "VOICE_CAMPAIGN_START_BLOCKED":
+    if row.action in {"VOICE_CAMPAIGN_START_BLOCKED", "VOICE_CAMPAIGN_RESUME_BLOCKED"}:
         try:
             reasons = json.loads(row.payload_json or "{}").get("reasons") or []
             details = " / ".join(str(reason) for reason in reasons[:4])
