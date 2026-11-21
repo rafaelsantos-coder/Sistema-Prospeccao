@@ -316,7 +316,7 @@ def retry_known_failed_priority_delivery(db: Session) -> dict[str, int]:
     Só falha CONFIRMADA sem protocolo do provedor pode ser reenviada. Uma
     tentativa UNKNOWN jamais deve ser duplicada automaticamente.
     """
-    from app.services.ai_reply_delivery import FAILED_STATUSES, MAX_ATTEMPTS
+    from app.services.ai_reply_delivery import FAILED_STATUSES, MAX_ATTEMPTS, TEXT_RESCUE_MARKER
 
     counts: Counter[str] = Counter()
     for cid in PRIORITY_CONVERSATION_IDS:
@@ -390,6 +390,10 @@ def retry_known_failed_priority_delivery(db: Session) -> dict[str, int]:
             conversation.assigned_user_id = agent.user_id
             conversation.status = "EM_ATENDIMENTO"
             delivery.attempts = 0
+            # Prefere texto puro se o provedor rejeitou repetidamente o menu
+            # de botoes; nunca perde o conteudo original.
+            if delivery.buttons_json not in {"", "[]"} and not delivery.link_url:
+                delivery.link_label = TEXT_RESCUE_MARKER
             counts["exhausted_reset_once"] += 1
         if db.scalar(select(AuditLog.id).where(
             AuditLog.action == DELIVERY_RETRY_ACTION,
