@@ -118,7 +118,11 @@ DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
 
 
 def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None:
-    if not queue_id or not ai_allowed_for_queue(queue_id):
+    if (
+        not queue_id
+        or not ai_allowed_for_queue(queue_id)
+        or is_general_commercial_queue(db.get(ServiceQueue, queue_id))
+    ):
         return None
     stmt = (
         select(AIQueueBinding)
