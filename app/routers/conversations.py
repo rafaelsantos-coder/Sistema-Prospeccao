@@ -28,6 +28,7 @@ from app.models import (
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.access_control import has_permission
 from app.services.ai_reply_delivery import reply_statuses
+from app.services.ai_queue_scope import is_dedicated_ai_queue
 from app.services.ai_sdr import AI_INBOUND_MESSAGE_TYPES, enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
 from app.services.global_blacklist import (
@@ -1704,7 +1705,7 @@ def conversation_messages_api(
     selected_queue = queue_for_conversation(db, conversation.id)
     ai_reply_status = (
         reply_statuses(db, [conversation.id]).get(conversation.id)
-        if selected_queue and selected_queue.code == "FILA-IA"
+        if is_dedicated_ai_queue(selected_queue)
         else None
     )
     return {
