@@ -274,7 +274,7 @@ def _move_conversation_to_queue(
     queue: ServiceQueue,
     reason: str,
 ) -> dict:
-    """Troca a fila da conversa e entrega para a IA da fila ou para um vendedor online."""
+    """Transfere fila ou delega uma conversa a IA sem trocar seu numero de saida."""
     previous_queue = queue_for_conversation(db, conversation.id)
     previous_user_id = conversation.assigned_user_id
     if reason == "AI" and previous_queue and not conversation_instance(db, conversation.id):
@@ -289,7 +289,8 @@ def _move_conversation_to_queue(
         conversation.status = "EM_FILA"
 
     result = {"ai_job": None, "assigned": None, "pending_message": None}
-    binding = usable_ai_binding(db, queue.id)
+    ai_queue = ai_transfer_queue(db) if reason == "AI" else None
+    binding = usable_ai_binding(db, ai_queue.id if ai_queue else queue.id) if (ai_queue or reason != "AI") else None
     if binding:
         message = _pending_inbound_message(db, conversation)
         result["pending_message"] = message
@@ -1503,9 +1504,15 @@ def transfer_conversation_to_ai(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    queue = ai_transfer_queue(db)
+    ai_queue = ai_transfer_queue(db)
+    if not ai_queue:
+        flash(request, "A SulIA precisa estar ativa e autorizada para receber o atendimento.", "warning")
+        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+    # A transferencia e de responsabilidade, NAO de fila. A saida continua
+    # no mesmo WhatsApp usado para falar com o cliente.
+    queue = queue_for_conversation(db, conversation.id)
     if not queue:
-        flash(request, "A Fila IA precisa estar ativa e vinculada à SulIA para receber o atendimento.", "warning")
+        flash(request, "A conversa precisa estar vinculada a uma fila de origem.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
     result = _move_conversation_to_queue(
@@ -1517,18 +1524,18 @@ def transfer_conversation_to_ai(
     )
     db.commit()
     if result["ai_job"]:
-        flash(request, f"Conversa passada para a IA (fila {queue.name}). Ela vai responder o cliente agora.")
+        flash(request, f"Conversa delegada à SulIA na fila {queue.name}, usando o WhatsApp original. Ela vai responder o cliente agora.")
     elif result["pending_message"]:
         flash(
             request,
-            f"Conversa movida para a fila {queue.name}, mas a IA não pôde assumir "
+            f"Conversa mantida na fila {queue.name}, mas a IA não pôde assumir "
             "(cliente pediu para sair ou atendimento já concluído). Atribua a um vendedor.",
             "warning",
         )
     else:
         flash(
             request,
-            f"Conversa passada para a IA (fila {queue.name}). Não há mensagem do cliente pendente; "
+            f"Conversa delegada à SulIA na fila {queue.name}, com WhatsApp original. Não há mensagem do cliente pendente; "
             "a IA responde na próxima mensagem ou no follow-up.",
         )
     return _after_queue_transfer_redirect(user, conversation)
