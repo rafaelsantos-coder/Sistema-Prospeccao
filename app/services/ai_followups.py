@@ -108,10 +108,10 @@ def hot_lead_awaits_customer(db: Session, conversation_id: int) -> bool:
     )
     return bool(
         state
-        and state.state == "AI_ACTIVE"
+        and getattr(state, "state", None) == "AI_ACTIVE"
         and (
-            str(state.temperature or "").upper() == "QUENTE"
-            or state.last_intent == "PURCHASE_INTENT"
+            str(getattr(state, "temperature", "") or "").upper() == "QUENTE"
+            or getattr(state, "last_intent", None) == "PURCHASE_INTENT"
         )
     )
 
