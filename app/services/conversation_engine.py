@@ -139,9 +139,16 @@ def _queue_reserved_for_ai(
     queue: ServiceQueue | None,
     conversation_id: int | None = None,
 ) -> bool:
-    if not queue or not settings.ai_sdr_enabled or not settings.ai_autonomous_enabled:
+    if not queue or not settings.ai_sdr_enabled:
         return False
-    if not ai_queue_enabled(db, queue.id):
+    if conversation_id:
+        from app.services.ai_queue_scope import manual_ai_handoff_authorized  # noqa: PLC0415
+
+        if manual_ai_handoff_authorized(db, conversation_id):
+            # Delegacao individual nao permite que o roteamento automatico
+            # atribua um vendedor ao proximo inbound desta conversa.
+            return True
+    if not settings.ai_autonomous_enabled or not ai_queue_enabled(db, queue.id):
         return False
     binding = db.scalar(
         select(AIQueueBinding).where(
