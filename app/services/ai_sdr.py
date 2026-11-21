@@ -2291,11 +2291,13 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     # Autorização explícita: apenas a FILA-IA ativa pode responder em AUTO.
     # Não habilita o modo autônomo global nem SDR nas outras filas.
     current_queue = queue_for_conversation(db, job.conversation_id)
+    current_binding = binding_for_conversation(db, job.conversation_id)
     is_authorized_ai_queue = (
         agent.role_type == "SDR"
         and current_queue is not None
         and is_dedicated_ai_queue(current_queue)
-        and binding_for_conversation(db, job.conversation_id) is not None
+        and current_binding is not None
+        and current_binding.agent_id == agent.id
         and ai_allowed_for_conversation(db, job.conversation_id)
     )
     if is_authorized_ai_queue and current_queue.id != job.queue_id:
