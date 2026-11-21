@@ -1876,6 +1876,10 @@ def _advance_with_playbook(
     *,
     fallback_step: str,
 ) -> str:
+    if fallback_step == "CEP" and _fiber_sale(state, collected) and not collected.get("cep"):
+        state.step = "CEP"
+        collected.pop("_playbook_question", None)
+        return _prompt_for_step(state, collected)
     next_step, question = _query_playbook_guidance(
         client,
         state,
@@ -4047,7 +4051,9 @@ def _create_crm_if_ready(
 
     synced_id = prospect_sync.synced_opportunity_id(db, conversation.id)
     if not synced_id and not _looks_like_full_name(name):
-        return
+        if not _fiber_sale(state, collected):
+            return
+        name = prospect_sync._client_name(conversation, conversation.contact, conversation.lead)
 
     client = SulnetCRMClient.from_settings()
     if synced_id:
@@ -4284,6 +4290,32 @@ def _check_fiber_location(db, state, collected, point):
         return feasibility.REVIEW
     state.step = collected.pop("_after_fiber_location", "PLAN_CONFIRM")
     return "Temos disponibilidade de fibra nesse local! " + _prompt_for_step(state, collected)
+
+
+def _installation_address_step(db, client, state, collected):
+    for field, step, question in (
+        ("street", "ADDRESS_DETAILS", "Qual é a rua da instalação?"),
+        ("number", "ADDRESS_NUMBER", "Qual é o número do imóvel?"),
+        ("neighborhood", "ADDRESS_DETAILS", "Qual é o bairro da instalação?"),
+    ):
+        if not str(collected.get(field) or "").strip():
+            state.step = step
+            collected.update(_playbook_code=field, _playbook_step=step, _playbook_question=question)
+            return question
+
+    collected.pop("_playbook_question", None)
+    current = ", ".join(str(collected.get(k) or "") for k in ("street", "number", "city"))
+    point = feasibility.address_point(db, current, collected.get("city"))
+    state.step = "PLAN_CONFIRM" if _looks_like_full_name(str(collected.get("name") or "")) else "NAME"
+    if not point:
+        collected["fiberFeasibility"] = {"status": "awaiting_pin", "nap": None}
+    reply = _check_fiber_location(db, state, collected, point)
+    collected["_checked_fiber_address"] = current
+    if state.step == "PLAN_CONFIRM":
+        return "Temos disponibilidade de fibra nesse local! " + _advance_with_playbook(
+            client, state, collected, fallback_step="PLAN_CONFIRM",
+        )
+    return reply
 
 
 def _prompt_for_step(state: AIClosingState, collected: dict[str, Any]) -> str:
@@ -5069,12 +5101,13 @@ def start_closing_from_sdr(
     )
     _save_collected(state, collected)
 
+    fiber_entry = created_state and _fiber_sale(state, collected)
     if created_state:
         has_crm_lead = bool(
             state.opportunity_id or prospect_sync.synced_opportunity_id(db, conversation.id)
         )
         # CPF primeiro: o nome completo vem do CRM pela consulta cadastral.
-        state.step = "CPF" if (collected.get("name") or has_crm_lead) else "NAME"
+        state.step = "CPF" if (fiber_entry or collected.get("name") or has_crm_lead) else "NAME"
     conversation.assigned_user_id = closer.user_id
     conversation.status = "EM_ATENDIMENTO"
     if conversation.lead:
@@ -5139,8 +5172,9 @@ def start_closing_from_sdr(
 
     prompt = ""
     try:
-        _create_crm_if_ready(db, state=state, conversation=conversation)
-        if state.opportunity_id and not plan_change:
+        if not fiber_entry:
+            _create_crm_if_ready(db, state=state, conversation=conversation)
+        if state.opportunity_id and not plan_change and not fiber_entry:
             playbook_client = SulnetCRMClient.from_settings()
             prompt = _advance_with_playbook(
                 playbook_client,
@@ -5153,27 +5187,6 @@ def start_closing_from_sdr(
         state.last_error = str(exc)
         LOG.warning("closer_crm_create_deferred conversation=%s error=%s", conversation.id, exc)
 
-    if created_state and _fiber_sale(state, collected):
-        recent = db.scalars(
-            select(Message).where(
-                Message.conversation_id == conversation.id, Message.direction == "INBOUND",
-                Message.id <= job.message_id, Message.created_at >= utcnow() - timedelta(hours=24),
-            ).order_by(Message.id.desc()).limit(30)
-        )
-        point = None
-        for inbound in recent:
-            body = inbound.body or ""
-            if inbound.message_type == "LOCATION" or feasibility.coordinates(body) or re.search(
-                r"\b(rua|avenida|travessa|estrada)\b", body, re.I
-            ):
-                point = feasibility.locate(db, body, collected.get("city"), inbound)
-                break
-        prompt = _check_fiber_location(db, state, collected, point)
-        try:
-            _sync_fiber_nap(SulnetCRMClient.from_settings(), state, collected)
-        except CRMIntegrationError:
-            LOG.warning("seller_fiber_nap_sync_pending opportunity=%s", state.opportunity_id)
-        _save_collected(state, collected)
     if not prompt:
         prompt = _prompt_for_step(state, collected)
     try:
@@ -5451,14 +5464,11 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             collected,
             text,
         )
-        can_check = _fiber_sale(state, collected) and state.step not in {
-            "WAITING_CONTRACT", "WAITING_SIGNATURE", "COMPLETED",
-        }
+        if state.step == "FIBER_LOCATION" and not collected.get("cpf"):
+            collected.pop("_after_fiber_location", None)
+            state.step = "CPF"
         point = None
-        if state.step == "FIBER_LOCATION" or (can_check and (
-            message.message_type == "LOCATION" or feasibility.coordinates(text)
-            or re.search(r"\b(rua|avenida|travessa|estrada)\b", text, re.I)
-        )):
+        if state.step == "FIBER_LOCATION":
             point = feasibility.locate(db, text, collected.get("city"), message)
         if (state.step == "FIBER_LOCATION" and not point
                 and collected.get("fiberFeasibility", {}).get("status") in {"review", "no_data"}):
@@ -5544,7 +5554,8 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     client,
                     state,
                     collected,
-                    fallback_step="CEP" if collected.get("cpf") else "CPF",
+                    fallback_step=("PLAN_CONFIRM" if collected.get("cep") and collected.get("fiberFeasibility", {}).get("nap")
+                                   else "CEP" if collected.get("cpf") else "CPF"),
                 )
 
         elif state.step == "CPF":
@@ -5580,7 +5591,7 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     collected["creditStatus"] = state.credit_status
                     _adopt_name_from_crm(client, state, collected, conversation, credit)
                     _save_collected(state, collected)
-                    if credit.get("approved") and not _looks_like_full_name(str(collected.get("name") or "")):
+                    if credit.get("approved") and not _fiber_sale(state, collected) and not _looks_like_full_name(str(collected.get("name") or "")):
                         # O CRM não devolveu o nome: pede só agora, já com a consulta aprovada.
                         state.step = "NAME"
                         reply = _prompt_for_step(state, collected)
@@ -5715,27 +5726,19 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 reply = "Pode me informar o CEP com 8 dígitos do endereço de instalação?"
             else:
                 address = client.lookup_cep(cep)
-                collected.update({
-                    "cep": address.get("cep") or cep,
-                    "street": address.get("street") or "",
-                    "neighborhood": address.get("neighborhood") or "",
-                    "city": address.get("city") or "",
-                    "uf": address.get("uf") or "",
-                })
-                client.update_opportunity(state.opportunity_id or 0, {
-                    "cep": collected["cep"],
-                    "street": collected["street"],
-                    "neighborhood": collected["neighborhood"],
-                    "city": collected["city"],
-                    "uf": collected["uf"],
-                })
+                patch = {key: address[key] for key in ("street", "neighborhood", "city", "uf") if address.get(key)}
+                patch["cep"] = address.get("cep") or cep
+                number = address.get("addressNumber") or address.get("number")
+                if number:
+                    patch["addressNumber"] = str(number)
+                    collected["number"] = str(number)
+                collected.update({key: value for key, value in patch.items() if key != "addressNumber"})
+                client.update_opportunity(state.opportunity_id or 0, patch)
                 _save_collected(state, collected)
-                reply = _advance_with_playbook(
-                    client,
-                    state,
-                    collected,
-                    fallback_step="ADDRESS_NUMBER",
-                )
+                if _fiber_sale(state, collected):
+                    reply = _installation_address_step(db, client, state, collected)
+                else:
+                    reply = _advance_with_playbook(client, state, collected, fallback_step="ADDRESS_NUMBER")
 
         elif state.step == "ADDRESS_DETAILS":
             playbook_code = _playbook_code_key(
@@ -5756,12 +5759,8 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     state.opportunity_id or 0,
                     {"street": collected["street"]},
                 )
-                reply = _advance_with_playbook(
-                    client,
-                    state,
-                    collected,
-                    fallback_step="ADDRESS_NUMBER",
-                )
+                reply = (_installation_address_step(db, client, state, collected) if _fiber_sale(state, collected)
+                         else _advance_with_playbook(client, state, collected, fallback_step="ADDRESS_NUMBER"))
             elif playbook_code in {"neighborhood", "bairro"}:
                 value = re.sub(
                     r"^bairro\s*[:\-]?\s*",
@@ -5774,12 +5773,8 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     state.opportunity_id or 0,
                     {"neighborhood": collected["neighborhood"]},
                 )
-                reply = _advance_with_playbook(
-                    client,
-                    state,
-                    collected,
-                    fallback_step="ADDRESS_NUMBER",
-                )
+                reply = (_installation_address_step(db, client, state, collected) if _fiber_sale(state, collected)
+                         else _advance_with_playbook(client, state, collected, fallback_step="ADDRESS_NUMBER"))
             else:
                 collected["_playbook_unmapped_code"] = str(
                     collected.get("_playbook_code") or ""
@@ -5800,21 +5795,10 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     "complement": complement,
                 })
                 _save_collected(state, collected)
-                reply = _advance_with_playbook(
-                    client,
-                    state,
-                    collected,
-                    fallback_step="PLAN_CONFIRM",
-                )
                 if _fiber_sale(state, collected):
-                    current = ", ".join(str(collected.get(k) or "") for k in ("street", "number", "city"))
-                    point = feasibility.address_point(db, current, collected.get("city"))
-                    old_address = collected.get("_checked_fiber_address")
-                    if point or old_address and old_address != current or not collected.get("fiberFeasibility"):
-                        if not point:
-                            collected["fiberFeasibility"] = {"status": "awaiting_pin", "nap": None}
-                        reply = _check_fiber_location(db, state, collected, point)
-                    collected["_checked_fiber_address"] = current
+                    reply = _installation_address_step(db, client, state, collected)
+                else:
+                    reply = _advance_with_playbook(client, state, collected, fallback_step="PLAN_CONFIRM")
 
         elif state.step == "PLAN_CONFIRM":
             answer = _yes_no(text)
