@@ -368,3 +368,158 @@ def retry_known_failed_priority_delivery(db: Session) -> dict[str, int]:
         )
     LOG.warning("ai_priority_delivery_summary %s", dict(counts))
     return dict(counts)
+
+
+
+ORPHAN_FAILED_ACTION = "AI_ORPHAN_FAILED_OUTBOUND_RESCUE_20261121"
+
+
+def rescue_orphan_failed_outbound(db: Session, *, conversation_ids: tuple[int, ...] = (4597,)) -> dict[str, int]:
+    """Retoma uma ultima saida comprovadamente falha que nao tem AIReplyDelivery.
+
+    A falha sem provider_message_id, zaapId, sent_at ou delivered_at prova que
+    a ultima tentativa nao foi aceita. A IA responde a ultima mensagem real do
+    cliente, nunca a uma mensagem automatica e nunca se houver saida confirmada
+    depois dela. Trata somente a conversa solicitada pela gestao.
+    """
+    from app.services.ai_reply_delivery import DELIVERED_STATUSES, FAILED_STATUSES
+    from app.services.ai_sdr import human_is_attending
+
+    counts: Counter[str] = Counter()
+    waiting = {row["conversation_id"] for row in unanswered_customers(db)}
+    for cid in conversation_ids:
+        if cid not in waiting:
+            counts["not_waiting"] += 1
+            continue
+        conversation = db.get(Conversation, cid)
+        queue = queue_for_conversation(db, cid)
+        if not conversation or not queue or queue.id != 2:
+            counts["missing_or_moved"] += 1
+            continue
+        if conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+            counts["closed"] += 1
+            continue
+        if conversation.lead and (
+            conversation.lead.do_not_contact
+            or conversation.lead.stage in {"GANHO", "NAO_CONTATAR"}
+        ):
+            counts["blocked_lead"] += 1
+            continue
+        if not ai_allowed_for_conversation(db, cid) or human_is_attending(db, conversation):
+            counts["not_authorized_or_human"] += 1
+            continue
+
+        latest = db.scalar(select(Message).where(
+            Message.conversation_id == cid,
+            Message.direction.in_(["INBOUND", "OUTBOUND"]),
+        ).order_by(Message.id.desc()).limit(1))
+        if (
+            not latest or latest.direction != "OUTBOUND"
+            or latest.status not in FAILED_STATUSES
+            or latest.provider_message_id or latest.provider_zaap_id
+            or latest.sent_at or latest.delivered_at or latest.read_at
+        ):
+            counts["not_proven_failed"] += 1
+            continue
+        if db.scalar(select(AuditLog.id).where(
+            AuditLog.action == ORPHAN_FAILED_ACTION,
+            AuditLog.entity_type == "message",
+            AuditLog.entity_id == str(latest.id),
+        ).limit(1)):
+            counts["already_rescued"] += 1
+            continue
+        if db.scalar(select(AIReplyDelivery.id).where(
+            AIReplyDelivery.outbound_message_id == latest.id
+        ).limit(1)):
+            counts["existing_delivery"] += 1
+            continue
+        inbound = db.scalar(select(Message).where(
+            Message.conversation_id == cid,
+            Message.direction == "INBOUND",
+            Message.id < latest.id,
+        ).order_by(Message.id.desc()).limit(1))
+        if (
+            not inbound or inbound.message_type not in AI_INBOUND_MESSAGE_TYPES
+            or is_automatic_inbound(inbound) or _defers_or_declines(inbound.body)
+        ):
+            counts["inbound_not_eligible"] += 1
+            continue
+        # Nenhuma outra resposta a essa mensagem pode estar em trânsito.
+        if db.scalar(select(AIReplyDelivery.id).where(
+            AIReplyDelivery.inbound_message_id == inbound.id
+        ).limit(1)):
+            counts["source_delivery_exists"] += 1
+            continue
+        acknowledged = db.scalar(select(Message.id).where(
+            Message.conversation_id == cid,
+            Message.direction == "OUTBOUND",
+            Message.id > inbound.id,
+            (
+                Message.status.in_(DELIVERED_STATUSES | {"SENT"})
+                | Message.provider_message_id.is_not(None)
+                | Message.provider_zaap_id.is_not(None)
+                | Message.sent_at.is_not(None)
+                | Message.delivered_at.is_not(None)
+            ),
+        ).limit(1))
+        if acknowledged:
+            counts["another_reply_exists"] += 1
+            continue
+        state = db.scalar(select(AIConversationState).where(
+            AIConversationState.conversation_id == cid
+        ))
+        if state and state.state in TERMINAL_STATES:
+            counts["terminal"] += 1
+            continue
+        binding = binding_for_conversation(db, cid)
+        if not binding or not binding.agent or not binding.agent.active:
+            counts["no_binding"] += 1
+            continue
+        agent = binding.agent
+        if state and state.state == "CLOSING":
+            agent = db.get(AIAgentProfile, state.agent_id)
+            if not agent or not agent.active or agent.role_type != "CLOSER":
+                counts["closer_not_ready"] += 1
+                continue
+
+        prior_job = db.scalar(select(AIJob).where(
+            AIJob.message_id == inbound.id
+        ).limit(1))
+        if prior_job and prior_job.status in {"PENDENTE", "PROCESSANDO"}:
+            counts["job_in_progress"] += 1
+            continue
+
+        if prior_job:
+            prior_job.agent_id = agent.id
+            prior_job.queue_id = queue.id
+            prior_job.status = "PENDENTE"
+            prior_job.available_at = utcnow()
+            prior_job.locked_at = None
+            prior_job.attempts = 0
+            prior_job.error = ORPHAN_FAILED_ACTION
+            job = prior_job
+        else:
+            job = enqueue_ai_job(
+                db, conversation=conversation, message=inbound, takeover=True,
+            )
+            if not job:
+                counts["enqueue_blocked"] += 1
+                continue
+            job.available_at = utcnow()
+        conversation.assigned_user_id = agent.user_id
+        conversation.status = "EM_ATENDIMENTO"
+        write_audit(
+            db, user=None, action=ORPHAN_FAILED_ACTION,
+            entity_type="message", entity_id=latest.id,
+            payload={
+                "conversation_id": cid, "inbound_id": inbound.id, "job_id": job.id,
+                "failed_outbound_id": latest.id,
+            },
+        )
+        counts["requeued" if prior_job else "enqueued"] += 1
+        LOG.warning(
+            "ai_orphan_failed_outbound_rescued conversation=%s failed=%s inbound=%s job=%s",
+            cid, latest.id, inbound.id, job.id,
+        )
+    LOG.warning("ai_orphan_failed_outbound_summary %s", dict(counts))
+    return dict(counts)
