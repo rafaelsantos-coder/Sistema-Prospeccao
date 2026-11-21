@@ -14,12 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AIAgentProfile, AIQueueBinding, AIReplyDelivery, Contact, Conversation,
+    AIAgentProfile, AIConversationState, AIQueueBinding, AIReplyDelivery, Contact, Conversation,
     ConversationQueueLink, Message, ServiceQueue, User,
 )
 from app.services.ai_queue_scope import (
     ai_allowed_for_conversation, ai_queue_enabled, is_general_commercial_queue,
 )
+from app.services import ai_sdr
 from app.services.ai_reply_delivery import queue_ai_reply
 from app.services.ai_sdr import binding_for_conversation, enqueue_ai_job, human_is_attending, queue_ai_binding
 from app.services.queue_routing import MANUAL_AI_ORIGIN, bind_conversation_queue, usable_ai_binding
@@ -109,6 +110,18 @@ def test_migration_autoriza_geral_e_preserva_fila_ia(monkeypatch):
             assert binding_for_conversation(db, conversation.id).agent_id == agent_id
             job = enqueue_ai_job(db, conversation=conversation, message=inbound)
             assert job is not None and job.status == "PENDENTE" and job.queue_id == general_id
+            # Garante AUTO real, sem cair em SHADOW por nao ser a Fila IA.
+            monkeypatch.setattr(ai_sdr, "build_ai_context", lambda *_a, **_kw: {})
+            monkeypatch.setattr(ai_sdr.dispatch_offer, "source_dispatch", lambda *_a, **_kw: None)
+            monkeypatch.setattr(ai_sdr, "_contextual_service_reply", lambda *_a, **_kw: None)
+            monkeypatch.setattr(ai_sdr, "_try_recall_path", lambda *_a, **_kw: None)
+            monkeypatch.setattr(ai_sdr, "_try_fast_purchase_path", lambda *_a, **_kw: "synthetic")
+            assert ai_sdr.process_ai_job(db, job) == "synthetic"
+            owner = db.scalar(select(AIConversationState).where(
+                AIConversationState.conversation_id == conversation.id,
+            ))
+            assert owner is not None and owner.state == "AI_ACTIVE"
+            assert owner.agent_id == agent_id
             response = queue_ai_reply(
                 db, conversation=conversation, agent=db.get(AIAgentProfile, agent_id),
                 inbound_id=inbound.id, text="Olá, vamos continuar a contratação?",
