@@ -275,3 +275,32 @@ def test_scope_repairs_preserve_only_explicit_manual_handoff(monkeypatch):
             assert link.queue_id == human.id
     finally:
         engine.dispose()
+
+
+def test_legacy_manual_transfer_to_fila_ia_keeps_saved_origin_number(monkeypatch):
+    """Conversas movidas antes da correcao nao voltam para ZAPI desconectada."""
+    monkeypatch.setenv("AI_QUEUE_MANUAL_CONTROL", "true")
+    engine = _database()
+    try:
+        with Session(engine) as db:
+            agent, dedicated, human, conv, inbound, origin = _make(db)
+            # Formato historico: link mudou para Fila IA, mas o numero
+            # original continuou registrado na conversa.
+            zapi_instances.bind_conversation_instance(db, conv.id, origin.id)
+            bind_conversation_queue(
+                db, conv.id, dedicated.id, origin=MANUAL_AI_ORIGIN,
+            )
+            monkeypatch.setattr(
+                zapi_instances, "service_for_instance",
+                lambda instance: SimpleNamespace(instance_id=instance.instance_id),
+            )
+            service = zapi_instances.service_for_conversation(db, conv.id)
+            assert service.instance_id == origin.instance_id
+            assert service.instance_id != "coverage-unique-test"
+            current = db.scalar(select(ConversationQueueLink).where(
+                ConversationQueueLink.conversation_id == conv.id,
+            ))
+            assert current.queue_id == dedicated.id
+            assert current.origin == MANUAL_AI_ORIGIN
+    finally:
+        engine.dispose()
