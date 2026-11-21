@@ -33,7 +33,7 @@ from app.services.ai_learning import run_learning_loop
 from app.services.ai_engineer import run_engineer_loop
 from app.services.ai_weekly_analyst import run_weekly_analyst_loop
 from app.services.ai_sdr_policy import followup_spec
-from app.services.ai_unanswered_rescue import recover_reported_unanswered
+from app.services.ai_unanswered_rescue import recover_reported_unanswered, recover_priority_stalled_jobs, retry_known_failed_priority_delivery
 from app.services.queue_routing import MANUAL_AI_ORIGIN, MANUAL_TRANSFER_ORIGIN, bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utc_naive, utcnow
@@ -1464,8 +1464,13 @@ def run() -> None:
     try:
         with SessionLocal() as rescue_db:
             rescue_result = recover_reported_unanswered(rescue_db)
+            delivery_result = retry_known_failed_priority_delivery(rescue_db)
+            stalled_result = recover_priority_stalled_jobs(rescue_db)
             rescue_db.commit()
-            LOG.warning("SulIA resgate de mensagens confirmadas=%s", rescue_result)
+            LOG.warning(
+                "SulIA resgate de mensagens confirmadas=%s failed_delivery=%s stalled_jobs=%s",
+                rescue_result, delivery_result, stalled_result,
+            )
     except Exception:
         LOG.exception("Falha no resgate imediato das mensagens sem resposta.")
     if settings.ai_sdr_enabled and settings.ai_autonomous_enabled:
