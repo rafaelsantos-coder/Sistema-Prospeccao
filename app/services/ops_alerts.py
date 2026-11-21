@@ -452,6 +452,9 @@ def unanswered_customers(db: Session) -> list[dict]:
             continue
         queue = queue_for_conversation(db, conversation_id)
         binding = usable_ai_binding(db, queue.id) if queue else None
+        from app.services.ai_queue_scope import manual_ai_handoff_authorized  # noqa: PLC0415
+
+        manually_delegated = manual_ai_handoff_authorized(db, conversation_id)
         # Filas somente humanas também precisam aparecer no diagnóstico:
         # são justamente as que ficaram sem atendente online.
         inbound_message = db.get(Message, message_id)
@@ -466,7 +469,7 @@ def unanswered_customers(db: Session) -> list[dict]:
                 "conversation_id": conversation_id,
                 "queue_id": queue.id if queue else None,
                 "queue_name": queue.name if queue else "",
-                "ai_bound": bool(binding and binding.active),
+                "ai_bound": bool((binding and binding.active) or manually_delegated),
                 "age_minutes": age_minutes,
                 "assigned_user_id": conversation.assigned_user_id,
                 "human_online": human_online_in_queue(db, queue.id) if queue else False,

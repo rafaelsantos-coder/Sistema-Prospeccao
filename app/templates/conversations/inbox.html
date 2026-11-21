@@ -674,7 +674,7 @@
       <form action="/conversations/{{ conversation.id }}/transfer-ai" method="post" class="stack-form compact">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="button button-primary full-width" type="submit">Passar para a IA</button>
-        <small class="transfer-help">A conversa vai para a fila {{ ai_transfer_queue.name }} e a SulIA responde a última mensagem do cliente na hora.</small>
+        <small class="transfer-help">A SulIA assume só esta conversa. Ela permanece na fila {{ selected_queue.name if selected_queue else 'de origem' }} e usa o mesmo WhatsApp para responder. Se não houver mensagem pendente, responderá ao próximo contato do cliente.</small>
       </form>
       {% endif %}
 

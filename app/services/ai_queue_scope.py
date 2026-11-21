@@ -85,7 +85,8 @@ def enforce_general_commercial_human_only(db: Session) -> dict[str, int]:
             bindings += 1
 
     linked = select(ConversationQueueLink.conversation_id).where(
-        ConversationQueueLink.queue_id.in_(target_ids)
+        ConversationQueueLink.queue_id.in_(target_ids),
+        ConversationQueueLink.origin != "MANUAL_AI",
     )
     jobs = 0
     for job in db.scalars(
@@ -193,6 +194,30 @@ def ai_queue_enabled(db: Session, queue_id: int | None) -> bool:
     return bool(agent and agent.active and agent.role_type == "SDR")
 
 
+def manual_ai_handoff_authorized(db: Session, conversation_id: int) -> bool:
+    """Autorizacao EXCLUSIVA da conversa que um humano passou a SulIA.
+
+    Nao habilita IA automatica na fila humana. Exige vinculo SDR ativo na
+    Fila IA, mas nao depende da sua instancia WhatsApp estar conectada.
+    """
+    if not hasattr(db, "scalar") or not hasattr(db, "get"):
+        return False
+    link = db.scalar(
+        select(ConversationQueueLink).where(
+            ConversationQueueLink.conversation_id == conversation_id
+        )
+    )
+    if not link or getattr(link, "origin", None) != "MANUAL_AI":
+        # Doubles de testes antigos podem retornar objetos simplificados.
+        return False
+    queue = db.get(ServiceQueue, link.queue_id)
+    if not queue or not queue.active:
+        return False
+    from app.services.queue_routing import ai_transfer_queue  # noqa: PLC0415
+
+    return ai_transfer_queue(db) is not None
+
+
 def ai_allowed_for_conversation(
     db: Session,
     conversation_id: int,
@@ -214,6 +239,8 @@ def ai_allowed_for_conversation(
     )
     queue_id = current if current is not None else fallback_queue_id
     queue = db.get(ServiceQueue, queue_id) if queue_id and hasattr(db, "get") else None
+    if manual_ai_handoff_authorized(db, conversation_id):
+        return True
     if is_general_commercial_queue(queue):
         return False
     if not manual_queue_control_enabled() and exclusive_ai_queue_id() is None:
@@ -304,6 +331,9 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
     not_target = or_(
         ConversationQueueLink.queue_id != target_id,
         ConversationQueueLink.queue_id.is_(None),
+    ) & or_(
+        ConversationQueueLink.origin != "MANUAL_AI",
+        ConversationQueueLink.origin.is_(None),
     )
     cancelled_jobs = 0
     jobs = list(

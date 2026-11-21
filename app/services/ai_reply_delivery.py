@@ -49,11 +49,16 @@ def queue_ai_reply(
     allow_resolved: bool = False,
 ) -> Message:
     from app.services.conversation_engine import register_message
-    from app.services.ai_queue_scope import is_general_commercial_queue
+    from app.services.ai_queue_scope import (
+        is_general_commercial_queue, manual_ai_handoff_authorized,
+    )
     from app.services.queue_routing import queue_for_conversation
 
-    if is_general_commercial_queue(queue_for_conversation(db, conversation.id)):
-        raise ValueError("Geral Comercial e humana: transfira manualmente para Fila IA.")
+    if (
+        is_general_commercial_queue(queue_for_conversation(db, conversation.id))
+        and not manual_ai_handoff_authorized(db, conversation.id)
+    ):
+        raise ValueError("Geral Comercial e humana: a IA requer delegacao manual desta conversa.")
     previous = db.scalar(
         select(Message)
         .join(AIReplyDelivery, AIReplyDelivery.outbound_message_id == Message.id)
