@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.access_control import has_permission
-from app.services.ai_queue_scope import ai_allowed_for_queue, exclusive_ai_queue_id, manual_queue_control_enabled, ai_queue_enabled
+from app.services.ai_queue_scope import ai_allowed_for_queue, exclusive_ai_queue_id, is_general_commercial_queue, manual_queue_control_enabled, ai_queue_enabled
 from app.services.ai_sdr import ai_metrics
 from app.services.audit import write_audit
 from app.services.zapi_instances import bind_queue_instance, list_zapi_instances, queue_instance
@@ -898,6 +898,9 @@ def bind_queue(
     if not queue or not queue.active:
         flash(request, "Fila inválida ou inativa.", "warning")
         return RedirectResponse("/ai", status_code=303)
+    if is_general_commercial_queue(queue):
+        flash(request, "Geral Comercial e exclusiva de humanos. Para solicitar IA, transfira a conversa para a Fila IA.", "warning")
+        return RedirectResponse("/ai", status_code=303)
     if not ai_allowed_for_queue(queue.id):
         flash(request, "Esta fila não está autorizada pela política de IA.", "warning")
         return RedirectResponse("/ai", status_code=303)
@@ -975,6 +978,9 @@ def toggle_queue_binding(
     agent = db.get(AIAgentProfile, binding.agent_id)
     if not queue or not queue.active:
         flash(request, "Fila inexistente ou inativa.", "warning")
+        return RedirectResponse("/ai", status_code=303)
+    if is_general_commercial_queue(queue):
+        flash(request, "Geral Comercial nao pode ativar IA automaticamente. Use a transferencia manual para a Fila IA.", "warning")
         return RedirectResponse("/ai", status_code=303)
     if manual_queue_control_enabled():
         enabled = bool(binding.active and binding.manual_authorized and binding.handling_mode != "HUMAN")

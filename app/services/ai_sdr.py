@@ -91,7 +91,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _show_corporate_differentials,
 )
 from app.services.ai_sdr_policy import MAX_AI_REPLIES_PER_HOUR, SULIA_SYSTEM_PROMPT, UNTRUSTED_INPUT_NOTICE
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, is_dedicated_ai_queue, manual_queue_control_enabled
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, is_dedicated_ai_queue, is_general_commercial_queue, manual_queue_control_enabled
 from app.services.audit import write_audit
 from app.services.queue_routing import (
     AI_WHEN_HUMAN_IDLE,
@@ -118,7 +118,11 @@ DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
 
 
 def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None:
-    if not queue_id or not ai_allowed_for_queue(queue_id):
+    if (
+        not queue_id
+        or not ai_allowed_for_queue(queue_id)
+        or is_general_commercial_queue(db.get(ServiceQueue, queue_id))
+    ):
         return None
     stmt = (
         select(AIQueueBinding)
@@ -179,7 +183,8 @@ def is_human_only_queue(queue: ServiceQueue | None) -> bool:
     """Natine é humana; com escopo exclusivo, só a Fila IA pode receber IA."""
     return bool(
         queue and (
-            (not manual_queue_control_enabled() and queue.name.strip().casefold() == "natine")
+            is_general_commercial_queue(queue)
+            or (not manual_queue_control_enabled() and queue.name.strip().casefold() == "natine")
             or not ai_allowed_for_queue(queue.id)
         )
     )
@@ -187,7 +192,7 @@ def is_human_only_queue(queue: ServiceQueue | None) -> bool:
 
 def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBinding | None:
     queue = queue_for_conversation(db, conversation_id)
-    if not queue or is_human_only_queue(queue):
+    if not queue or is_human_only_queue(queue) or not ai_allowed_for_conversation(db, conversation_id):
         return None
     binding = queue_ai_binding(db, queue.id)
     if manual_queue_control_enabled():
@@ -293,6 +298,8 @@ def reclaim_conversation_for_ai(
     """
     from app.models import AIClosingState  # noqa: PLC0415
 
+    if not ai_allowed_for_conversation(db, conversation.id):
+        return False
     if not ai_state or ai_state.state not in HUMAN_HANDOFF_STATES:
         return False
     if not is_ai_test_phone(getattr(conversation.contact, "phone", None)) and human_is_attending(db, conversation):
@@ -1334,6 +1341,8 @@ def _send_autonomous_reply(
     conversation = db.get(Conversation, job.conversation_id)
     if not conversation:
         raise AIConfigurationError("Conversa do job não existe.")
+    if not ai_allowed_for_conversation(db, conversation.id):
+        raise AIConfigurationError("Fila humana: IA nao autorizada a responder.")
     if conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
         return None
     if decision.intent == "DO_NOT_CONTACT":
