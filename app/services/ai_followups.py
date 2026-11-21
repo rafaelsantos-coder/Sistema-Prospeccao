@@ -645,10 +645,12 @@ def _followup_spacing_hold(
 ) -> datetime | None:
     """Espaçamento mínimo desde a última mensagem, inclusive à noite."""
     from app.services.ai_sdr import human_stepped_in  # noqa: PLC0415
+    from app.services.ai_queue_scope import manual_ai_handoff_authorized  # noqa: PLC0415
 
     conversation = db.get(Conversation, conversation_id)
     if (
         conversation is not None
+        and not manual_ai_handoff_authorized(db, conversation_id)
         and not is_dedicated_ai_queue(queue_for_conversation(db, conversation.id))
         and human_stepped_in(db, conversation)
     ):
@@ -722,8 +724,10 @@ def _followup_allowed(
             return False, "OWNER_SDR_AI"
     # O vendedor humano tem prioridade: não disputar a conversa com a IA.
     from app.services.ai_sdr import human_is_attending, human_stepped_in  # noqa: PLC0415
+    from app.services.ai_queue_scope import manual_ai_handoff_authorized  # noqa: PLC0415
     if human_is_attending(db, conversation) or (
-        not is_dedicated_ai_queue(queue_for_conversation(db, conversation.id))
+        not manual_ai_handoff_authorized(db, conversation.id)
+        and not is_dedicated_ai_queue(queue_for_conversation(db, conversation.id))
         and human_stepped_in(db, conversation)
     ):
         return False, "ATENDIMENTO_HUMANO_ATIVO"
