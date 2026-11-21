@@ -9,7 +9,6 @@ Revises: 0031_feasibility_map_access
 """
 from __future__ import annotations
 
-import re
 import sys
 
 import sqlalchemy as sa
@@ -22,8 +21,7 @@ depends_on = None
 
 
 def _normal(value: str | None) -> str:
-    return re.sub(r"\\s+", " ", str(value or "").casefold().replace("-", " ").replace("_", " ")).strip()
-
+    return " ".join(str(value or "").casefold().replace("-", " ").replace("_", " ").split())
 
 def _dedicated_queue(db):
     queues = list(db.execute(sa.text(
