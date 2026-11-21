@@ -3516,6 +3516,9 @@ def _assert_closer_owns_conversation(
     agent: AIAgentProfile,
     handoff_notice: bool = False,
 ) -> None:
+    from app.services.ai_queue_scope import ai_allowed_for_conversation
+    if not ai_allowed_for_conversation(db, conversation.id):
+        raise CRMIntegrationError("Geral Comercial: IA nao autorizada a enviar mensagem.")
     ai_state = db.scalar(
         select(AIConversationState).where(
             AIConversationState.conversation_id == conversation.id
@@ -3697,6 +3700,9 @@ def _send_fixed_step_prompt(
     from app.services.conversation_engine import register_message
     from app.services.zapi_instances import service_for_conversation
 
+    from app.services.ai_queue_scope import ai_allowed_for_conversation
+    if not ai_allowed_for_conversation(db, conversation.id):
+        raise CRMIntegrationError("Geral Comercial: IA nao autorizada a enviar mensagem.")
     phone = (conversation.contact.phone if conversation.contact else "").strip()
     if not phone or not text.strip():
         raise CRMIntegrationError("Contato sem telefone ou mensagem vazia.")
@@ -7082,6 +7088,9 @@ def resume_closer(db: Session, conversation: Conversation, actor: Any) -> bool:
     Retoma pelo playbook do CRM: o poller pergunta o próximo campo pendente ou
     mostra o resumo para um novo aceite. Nada do que o cliente já informou se perde.
     """
+    from app.services.ai_queue_scope import ai_allowed_for_conversation
+    if not ai_allowed_for_conversation(db, conversation.id):
+        return False
     state = db.scalar(
         select(AIClosingState).where(AIClosingState.conversation_id == conversation.id)
     )
