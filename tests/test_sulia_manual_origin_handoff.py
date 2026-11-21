@@ -123,6 +123,19 @@ def test_delegated_general_keeps_queue_and_uses_original_whatsapp(monkeypatch):
                 select(AIQueueBinding).where(AIQueueBinding.queue_id == human.id)
             ) is None
 
+            # Outra conversa da MESMA fila continua exclusivamente humana.
+            unrelated_contact = Contact(name="Outro cliente", phone="5555988811122")
+            db.add(unrelated_contact)
+            db.flush()
+            unrelated = Conversation(
+                contact_id=unrelated_contact.id, source="WHATSAPP",
+                team="DIGITAL", status="EM_FILA",
+            )
+            db.add(unrelated)
+            db.flush()
+            bind_conversation_queue(db, unrelated.id, human.id, origin="INBOUND")
+            assert not ai_allowed_for_conversation(db, unrelated.id)
+
             monkeypatch.setattr(ai_sdr, "build_ai_context", lambda *_a, **_kw: {})
             monkeypatch.setattr(
                 ai_sdr.dispatch_offer, "source_dispatch", lambda *_a, **_kw: None,
