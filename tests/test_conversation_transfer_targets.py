@@ -144,7 +144,9 @@ def test_offline_seller_of_queue_is_listed_and_can_receive_conversation():
             db.close()
 
 
-def test_pass_to_ai_keeps_original_queue_instance_and_answers_now():
+def test_pass_to_ai_keeps_original_queue_instance_and_answers_now(monkeypatch):
+    # Testar no modo real de controle individual, e nao no legado sem escopo.
+    monkeypatch.setenv("AI_QUEUE_MANUAL_CONTROL", "true")
     with TestClient(app) as client:
         db = SessionLocal()
         try:
