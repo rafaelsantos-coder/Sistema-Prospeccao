@@ -17,6 +17,26 @@
     {% endif %}
   </div>
 </div>
+  {% if campaign.status == 'PAUSADA' and campaign.started_at %}
+  <div class="voice-campaign-resume-options">
+    <div>
+      <span class="eyebrow">CONTINUAR CAMPANHA PAUSADA</span>
+      <strong>Retome exatamente de onde parou, sem reenviar para quem ja recebeu a ligacao.</strong>
+      {% if resume_pending %}
+      <p class="voice-help"><strong>{{ resume_pending }} contato(s)</strong> aguardam a primeira tentativa. O historico e os resultados anteriores permanecem intactos.</p>
+      {% else %}
+      <p class="voice-help">Nao ha contatos pendentes para continuar. Para executar outra rodada, use as opcoes de reenviar abaixo.</p>
+      {% endif %}
+      {% if report.stats.in_progress %}
+      <p class="voice-help">Aguarde o encerramento da ligacao em andamento para continuar com seguranca.</p>
+      {% endif %}
+    </div>
+    <form method="post" action="/voice/campaigns/{{ campaign.id }}/resume">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button button-primary" type="submit" {% if not resume_pending or report.stats.in_progress %}disabled{% endif %}>▶ Continuar de onde parou</button>
+    </form>
+  </div>
+  {% endif %}
   {% if campaign.status in ['PAUSADA', 'CONCLUIDA'] %}
   <div class="voice-campaign-resend-options">
     <div>
@@ -139,7 +159,7 @@
         </div>
       </div>
       <div class="voice-actions voice-review">
-        {% if campaign.status in ['RASCUNHO','PRONTA','EM_HOMOLOGACAO','PAUSADA'] %}
+        {% if campaign.status in ['RASCUNHO','PRONTA','EM_HOMOLOGACAO'] or (campaign.status == 'PAUSADA' and not campaign.started_at) %}
           <form action="/voice/campaigns/{{ campaign.id }}/start" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label><input type="checkbox" name="authorization" value="sim" required> Autorizo iniciar as ligações desta campanha.</label>
@@ -148,6 +168,8 @@
             <p class="voice-start-warning">Atenção: início bloqueado por {{ readiness|length }} pendência(s). Ao solicitar, o sistema registra a tentativa e informa o motivo.</p>
             {% endif %}
           </form>
+        {% elif campaign.status == 'PAUSADA' %}
+          <p class="voice-help">Campanha pausada: para continuar sem repetir contatos, use o botao Continuar de onde parou acima.</p>
         {% elif campaign.status == 'EM_EXECUCAO' %}
           <form action="/voice/campaigns/{{ campaign.id }}/pause" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

@@ -2673,6 +2673,31 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .voice-campaign-chevron { transition: none; }
 }
 
+/* Retomada verdadeira: mesma campanha, nenhum contato reprocessado. */
+.voice-campaign-resume-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 17px;
+  margin-bottom: 14px;
+  border: 1px solid #acdcbf;
+  border-radius: 11px;
+  background: #f2fbf5;
+}
+.voice-campaign-resume-options > div { flex: 1 1 300px; }
+.voice-campaign-resume-options strong { display: block; margin-top: 6px; font-size: 13px; }
+.voice-campaign-resume-options .voice-help { margin: 6px 0 0; max-width: 690px; }
+.voice-campaign-resume-options .voice-help strong { display: inline; font-size: inherit; }
+.voice-campaign-resume-options form { margin: 0; }
+.voice-campaign-resume-options .button { white-space: nowrap; }
+@media (max-width: 680px) {
+  .voice-campaign-resume-options { padding: 12px; }
+  .voice-campaign-resume-options form, .voice-campaign-resume-options .button { width: 100%; }
+  .voice-campaign-resume-options .button { white-space: normal; }
+}
+
 /* Reenvio de campanhas VOZ: duas ações claramente distintas. */
 .voice-campaign-resend-options {
   display: flex;
