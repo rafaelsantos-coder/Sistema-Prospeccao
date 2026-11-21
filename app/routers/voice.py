@@ -554,6 +554,11 @@ def voice_campaign_details(campaign_id: int, request: Request,
         raise HTTPException(status_code=404, detail="Campanha não encontrada.")
     readiness = check_campaign_ready(db, campaign)
     report = campaign_operational_report(db, campaign, readiness)
+    resume_pending = db.scalar(select(func.count(VoiceRecipient.id)).where(
+        VoiceRecipient.campaign_id == campaign.id,
+        VoiceRecipient.status == "PENDENTE",
+        VoiceRecipient.attempts == 0,
+    )) or 0
     count = db.scalar(select(func.count(VoiceRecipient.id)).where(
         VoiceRecipient.campaign_id == campaign.id,
     )) or 0
@@ -573,7 +578,7 @@ def voice_campaign_details(campaign_id: int, request: Request,
     response = render(
         request, "voice/_campaign_detail.html", user=actor, active_nav="voice",
         campaign=campaign, count=count, report=report, readiness=readiness,
-        sip_preview=sip_preview,
+        resume_pending=resume_pending, sip_preview=sip_preview,
     )
     response.headers["Cache-Control"] = "private, no-store"
     return response
