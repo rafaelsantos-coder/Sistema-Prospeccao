@@ -59,6 +59,7 @@ def test_review_recovers_ignored_job_from_disabled_fila_ia_once(monkeypatch):
             db.add(job)
             db.commit()
             job_id = job.id
+            inbound_id = inbound.id
 
         monkeypatch.setattr(ai_sdr_worker, "SessionLocal", factory)
         first = ai_sdr_worker._review_yesterday_and_today_fila_ia()
@@ -73,7 +74,7 @@ def test_review_recovers_ignored_job_from_disabled_fila_ia_once(monkeypatch):
         assert second.get("requeued_binding_error", 0) == 0
         with factory() as db:
             assert len(list(db.scalars(
-                select(AIJob).where(AIJob.message_id == inbound.id)
+                select(AIJob).where(AIJob.message_id == inbound_id)
             ))) == 1
     finally:
         engine.dispose()
