@@ -291,7 +291,7 @@
       </div>
     </header>
 
-    {% if 'crm.register' in current_user.permissions and crm_manual_seller and not crm_manual_status %}
+    {% if 'crm.register' in current_user.permissions and (crm_manual_seller or (crm_ai_owner and current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'])) and not crm_manual_status and not crm_ai_opportunity_id %}
     <dialog class="crm-manual-dialog" id="crm-manual-dialog" aria-labelledby="crm-manual-title">
       <form method="post" action="/conversations/{{ conversation.id }}/register-crm" class="crm-manual-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -303,12 +303,12 @@
         <label>Telefone</label>
         <div class="crm-manual-readonly">{{ conversation.contact.phone|phone_br }}</div>
         <label>Vendedor responsável</label>
-        <div class="crm-manual-readonly">{{ conversation.assigned_user.name }} ({{ crm_manual_seller.username }})</div>
+        <div class="crm-manual-readonly">{% if crm_ai_owner %}{{ conversation.assigned_user.name }} — atendimento automático{% else %}{{ conversation.assigned_user.name }} ({{ crm_manual_seller.username }}){% endif %}</div>
         <label>Funil comercial</label>
-        <div class="crm-manual-readonly">{{ crm_manual_seller.funnel_name }} — INÍCIO</div>
+        <div class="crm-manual-readonly">{% if crm_ai_owner %}SDR IA — INÍCIO{% else %}{{ crm_manual_seller.funnel_name }} — INÍCIO{% endif %}</div>
         <label>Origem</label>
         <div class="crm-manual-readonly">Sulnet Prospecta</div>
-        <p class="crm-manual-hint">O sistema busca uma oportunidade aberta deste vendedor pelo telefone antes de criar uma nova.</p>
+        <p class="crm-manual-hint">{% if crm_ai_owner %}A IA usa a oportunidade da conversa, sem gerar outra consulta de crédito ou contato pelo WhatsApp.{% else %}O sistema busca uma oportunidade aberta deste vendedor pelo telefone antes de criar uma nova.{% endif %}</p>
         <div class="crm-manual-dialog-actions">
           <button type="button" class="button button-secondary" data-crm-manual-close>Cancelar</button>
           <button type="submit" class="button button-primary" data-crm-manual-submit>Confirmar registro</button>
@@ -539,9 +539,17 @@
       </dl>
       <a href="/leads/{{ conversation.lead.id }}" class="button button-secondary full-width">Abrir CRM completo</a>
     </div>
+    {% elif crm_ai_opportunity_id %}
+    <div class="context-section">
+      <div class="context-title">CRM Comercial · SulIA</div>
+      <div class="info-box compact">
+        <strong>Oportunidade #{{ crm_ai_opportunity_id }} registrada</strong>
+        <p>Esta conversa está vinculada à oportunidade criada pela IA. O CPF e a análise de crédito seguem no mesmo registro. O cadastro interno do Prospecta é independente.</p>
+      </div>
+    </div>
     {% else %}
     <div class="context-section">
-      <div class="info-box compact"><strong>Contato espontâneo</strong><p>Este número ainda não está vinculado a um lead do CRM. O histórico já está preservado.</p></div>
+      <div class="info-box compact"><strong>Contato espontâneo</strong><p>Não há lead interno vinculado nem registro de oportunidade CRM confirmado para esta conversa.</p></div>
     </div>
     {% endif %}
 

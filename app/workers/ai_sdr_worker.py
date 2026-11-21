@@ -1511,6 +1511,21 @@ def run() -> None:
                         job.attempts,
                     )
                     process_next_ai_reply(db)
+                    # Registrar CRM logo no primeiro atendimento real da SulIA.
+                    # A integração não bloqueia a resposta ao cliente; se falhar,
+                    # a varredura periódica tenta recuperar sem duplicar.
+                    try:
+                        from app.services.crm_prospect_sync import sync_prospects
+
+                        with SessionLocal() as prospect_db:
+                            sync_prospects(
+                                prospect_db, conversation_id=job.conversation_id, limit=1,
+                            )
+                    except Exception:
+                        LOG.exception(
+                            "Falha na sincronização imediata do CRM conversation=%s",
+                            job.conversation_id,
+                        )
 
             # Follow-up tem cota própria em toda volta do worker. Assim ele não
             # fica eternamente atrás de novas mensagens inbound.
