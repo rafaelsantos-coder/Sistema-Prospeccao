@@ -1020,6 +1020,7 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
     retomada uma única vez, para não entrar em laço.
     """
     from app.services.ai_sdr import human_is_attending, human_stepped_in  # noqa: PLC0415
+    from app.services.ai_queue_scope import manual_ai_handoff_authorized  # noqa: PLC0415
 
     db = SessionLocal()
     answered = 0
@@ -1072,10 +1073,13 @@ def _answer_stalled_conversations(*, limit: int = 300) -> int:
                 continue
             current_queue = queue_for_conversation(db, conversation.id)
             if human_is_attending(db, conversation) or (
-                not is_dedicated_ai_queue(current_queue) and human_stepped_in(db, conversation)
+                not manual_ai_handoff_authorized(db, conversation.id)
+                and not is_dedicated_ai_queue(current_queue)
+                and human_stepped_in(db, conversation)
             ):
-                # Não sobrescrever o responsável humano. Os alertas operacionais
-                # continuam cobrando resposta, mesmo sem a IA intervir.
+                # A mensagem de um vendedor ANTES da delegação não impede
+                # recuperar um job falho da SulIA. Atendimento humano atual
+                # continua protegido por human_is_attending.
                 continue
             # Em fila de IA quando humano está online, "online" sozinho não
             # significa que alguém respondeu. Depois do prazo de retomada,
