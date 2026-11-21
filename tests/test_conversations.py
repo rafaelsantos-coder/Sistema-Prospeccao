@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from html.parser import HTMLParser
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -250,8 +252,22 @@ def test_send_image_from_inbox(monkeypatch):
         assert "message-media-preview" in page.text
 
 
-def test_send_audio_from_inbox(monkeypatch):
-    # Este teste legado cobre o fluxo de envio imediato em conversa ativa.
+@pytest.mark.parametrize(
+    ("file_name", "file_payload", "file_mime"),
+    [
+        ("audio.ogg", b"OggS" + b"x" * 32, "audio/ogg"),
+        ("audio.webm", b"\x1a\x45\xdf\xa3" + b"x" * 32, "audio/webm;codecs=opus"),
+    ],
+)
+def test_send_audio_from_inbox(monkeypatch, file_name, file_payload, file_mime):
+    # Ambos os formatos devem seguir ate a Z-API como mensagem de AUDIO.
+    if file_name.endswith(".webm"):
+        def fake_convert(data, *, filename, mime_type):
+            assert filename == file_name
+            assert mime_type == "audio/webm"
+            assert data == file_payload
+            return b"OggS" + b"x" * 32, "audio.ogg", "audio/ogg"
+        monkeypatch.setattr("app.routers.conversations.normalize_audio", fake_convert)
     monkeypatch.setattr("app.routers.conversations.needs_pacing", lambda *_: False)
     monkeypatch.setattr(
         MediaStorage,
@@ -286,7 +302,7 @@ def test_send_audio_from_inbox(monkeypatch):
         sent = client.post(
             f"{location}/media",
             data={"csrf_token": token, "caption": ""},
-            files={"media": ("audio.ogg", b"OggS" + b"x" * 32, "audio/ogg")},
+            files={"media": (file_name, file_payload, file_mime)},
         )
         assert sent.status_code == 200
         assert sent.json()["type"] == "AUDIO"
