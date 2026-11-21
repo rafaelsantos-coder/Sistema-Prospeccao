@@ -4,15 +4,14 @@ from datetime import datetime
 from types import SimpleNamespace
 
 
-def test_janela_do_fechamento_vale_todos_os_dias_das_8_as_21():
+def test_fechamento_funciona_24_horas_todos_os_dias():
     from app.services.ai_followups import closing_window_start
 
     # Domingo 18h43 (21h43 UTC) + 20 min continua no domingo, dentro da janela.
     assert closing_window_start(datetime(2026, 11, 15, 22, 3)) == datetime(2026, 11, 15, 22, 3)
-    # Domingo 21h30 local (00h30 UTC de segunda) vai para segunda 8h local (11h UTC).
-    assert closing_window_start(datetime(2026, 11, 16, 0, 30)) == datetime(2026, 11, 16, 11, 0)
-    # Segunda 6h local (9h UTC) espera até 8h local.
-    assert closing_window_start(datetime(2026, 11, 16, 9, 0)) == datetime(2026, 11, 16, 11, 0)
+    # A madrugada não adia nenhuma retomada do fechamento.
+    assert closing_window_start(datetime(2026, 11, 16, 0, 30)) == datetime(2026, 11, 16, 0, 30)
+    assert closing_window_start(datetime(2026, 11, 16, 9, 0)) == datetime(2026, 11, 16, 9, 0)
 
 
 def test_cadencia_do_fechamento_e_mais_curta_e_tem_tres_lembretes():
@@ -20,9 +19,11 @@ def test_cadencia_do_fechamento_e_mais_curta_e_tem_tres_lembretes():
 
     from app.services import ai_followups
 
-    assert ai_followups.CLOSING_CADENCE[0] == timedelta(minutes=20)
-    assert ai_followups.CLOSING_CADENCE[1] == timedelta(hours=2)
-    assert ai_followups.MAX_UNANSWERED_CLOSING_FOLLOWUPS == 3
+    assert ai_followups.CLOSING_CADENCE[0] == timedelta(minutes=10)
+    assert ai_followups.CLOSING_CADENCE[1] == timedelta(minutes=30)
+    assert ai_followups.CLOSING_CADENCE[2] == timedelta(hours=2)
+    assert ai_followups.CLOSING_CADENCE[3] == timedelta(hours=12)
+    assert ai_followups.MAX_UNANSWERED_CLOSING_FOLLOWUPS == 4
     assert ai_followups.MAX_UNANSWERED_FOLLOWUPS == 2
 
 
