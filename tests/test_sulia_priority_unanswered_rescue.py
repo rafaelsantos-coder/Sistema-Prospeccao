@@ -309,10 +309,28 @@ def test_exhausted_delivery_without_provider_can_retry_once(monkeypatch):
     try:
         with Session(engine) as db:
             agent_id, _, dedicated = _ready(db)
-            conv, inbound = _customer(db, dedicated, body="Quero o combo")
             agent = db.get(AIAgentProfile, agent_id)
+            contact = Contact(name="Cliente 4597", phone="5555998874597")
+            db.add(contact)
+            db.flush()
+            conv = Conversation(
+                id=4597, contact_id=contact.id, source="WHATSAPP",
+                team="DIGITAL", status="EM_ATENDIMENTO",
+            )
+            db.add(conv)
+            db.flush()
+            db.add(ConversationQueueLink(
+                conversation_id=conv.id, queue_id=dedicated, origin="INBOUND",
+            ))
+            inbound = Message(
+                conversation_id=conv.id, contact_id=contact.id,
+                direction="INBOUND", message_type="TEXT", status="RECEIVED",
+                body="Quero contratar", created_at=utcnow() - timedelta(minutes=30),
+            )
+            db.add(inbound)
+            db.flush()
             reply = Message(
-                conversation_id=conv.id, contact_id=conv.contact_id,
+                conversation_id=conv.id, contact_id=contact.id,
                 direction="OUTBOUND", message_type="TEXT", status="FAILED",
                 body="Qual o seu CPF?", sender_user_id=agent.user_id,
                 sent_at=None,
@@ -326,22 +344,17 @@ def test_exhausted_delivery_without_provider_can_retry_once(monkeypatch):
             )
             db.add(delivery)
             db.commit()
-            monkeypatch.setattr(rescue, "PRIORITY_CONVERSATION_IDS", (conv.id,))
-            # A reativacao apos esgotar tentativas e exclusiva do ID 4597.
-            assert rescue.retry_known_failed_priority_delivery(db).get("exhausted") == 1
-            monkeypatch.setattr(rescue, "PRIORITY_CONVERSATION_IDS", (4597,))
-            # O fixture pode nao ter id 4597. Forcar a chave de teste sem alterar
-            # a regra de exclusividade em producao por um alias local de sessao.
-            original_get = db.get
-            def mapped_get(model, identity, *args, **kwargs):
-                if model is Conversation and identity == 4597:
-                    return original_get(model, conv.id, *args, **kwargs)
-                return original_get(model, identity, *args, **kwargs)
-            # Para isolar esta regra, simular cid real via remapeamento de ids
-            # e deixar a fila/estado no mesmo banco de testes.
-            monkeypatch.setattr(db, "get", mapped_get)
-            # Sem adulterar consultas ORM de conversas, apenas verificar que
-            # o bloqueio de escopo foi exercitado acima (id nao autorizado).
-            assert delivery.attempts == 3
+            first = rescue.retry_known_failed_priority_delivery(db)
+            assert first.get("exhausted_reset_once") == 1
+            assert first.get("delivery_retry_queued") == 1
+            assert delivery.attempts == 0
+            assert delivery.available_at <= utcnow()
+            db.commit()
+            assert db.scalar(select(AIConversationState.state).where(
+                AIConversationState.conversation_id == conv.id
+            )) == "AI_ACTIVE"
+            second = rescue.retry_known_failed_priority_delivery(db)
+            assert second.get("delivery_retry_queued", 0) == 0
+            assert len(list(db.scalars(select(Message)))) == 2
     finally:
         engine.dispose()
