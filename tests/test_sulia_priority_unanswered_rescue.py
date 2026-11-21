@@ -340,6 +340,7 @@ def test_exhausted_delivery_without_provider_can_retry_once(monkeypatch):
             delivery = AIReplyDelivery(
                 inbound_message_id=inbound.id, outbound_message_id=reply.id,
                 agent_id=agent_id, attempts=3,
+                buttons_json='[{"id":"yes","label":"Quero contratar"}]',
                 available_at=utcnow() + timedelta(hours=4),
             )
             db.add(delivery)
@@ -348,6 +349,7 @@ def test_exhausted_delivery_without_provider_can_retry_once(monkeypatch):
             assert first.get("exhausted_reset_once") == 1
             assert first.get("delivery_retry_queued") == 1
             assert delivery.attempts == 0
+            assert delivery.link_label == "TEXT_RESCUE_V1"
             assert delivery.available_at <= utcnow()
             db.commit()
             assert db.scalar(select(AIConversationState.state).where(
