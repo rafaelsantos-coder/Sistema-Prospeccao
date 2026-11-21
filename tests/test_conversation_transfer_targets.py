@@ -218,8 +218,37 @@ def test_pass_to_ai_keeps_original_queue_instance_and_answers_now():
             assert reopened.id == conversation_id
             assert link.queue_id == target
             assert link.origin == MANUAL_AI_ORIGIN
+            seller = _consultant(
+                db, "transfer-back-to-human@sulnet.local", "Vendedor Retomada Humana"
+            )
+            db.add(ServiceQueueMember(
+                queue_id=source_queue_id, user_id=seller.id, active=True,
+            ))
+            db.commit()
+            seller_id = seller.id
         finally:
             db.close()
+
+        # Devolver a um humano encerra somente esta delegacao.
+        page = client.get(f"/conversations/{conversation_id}")
+        assigned = client.post(
+            f"/conversations/{conversation_id}/assign",
+            data={
+                "csrf_token": _csrf(page.text),
+                "assigned_user_id": str(seller_id),
+            },
+            follow_redirects=False,
+        )
+        assert assigned.status_code == 303
+        with SessionLocal() as db:
+            link = db.scalar(select(ConversationQueueLink).where(
+                ConversationQueueLink.conversation_id == conversation_id,
+            ))
+            assert link.queue_id == source_queue_id
+            assert link.origin == MANUAL_TRANSFER_ORIGIN
+            from app.services.ai_queue_scope import ai_allowed_for_conversation
+            assert not ai_allowed_for_conversation(db, conversation_id)
+            assert db.get(Conversation, conversation_id).assigned_user_id == seller_id
 
 
 def test_transfer_to_other_queue_without_ai_leaves_conversation_waiting():
