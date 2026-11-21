@@ -65,6 +65,8 @@ from app.services.crm_manual_credit import (
     consult_registered_cpf,
     credit_status as manual_credit_status,
 )
+from app.services import crm_prospect_sync
+from app.services.crm_sulnet import CRMIntegrationError
 from app.services.crm_manual_registration import (
     ACTION_REGISTERED,
     CRMManualError,
@@ -728,6 +730,18 @@ def _render_inbox(
         quick_queues[0][0].id if quick_queues else None,
     )
     crm_seller = seller_for_user(selected.assigned_user) if selected else None
+    crm_ai_owner = bool(
+        selected and selected.assigned_user_id and db.scalar(
+            select(AIAgentProfile.id).where(
+                AIAgentProfile.user_id == selected.assigned_user_id,
+                AIAgentProfile.active.is_(True),
+            ).limit(1)
+        )
+    )
+    crm_ai_opportunity_id = (
+        crm_prospect_sync.ai_crm_opportunity_id(db, selected.id)
+        if selected and crm_ai_owner else None
+    )
     crm_registration = (
         registration_status(db, selected.contact_id, crm_seller.username)
         if selected and crm_seller else None
@@ -782,6 +796,8 @@ def _render_inbox(
         globally_blacklisted=is_globally_blocked(db, selected.contact.phone) if selected else False,
         crm_manual_seller=crm_seller,
         crm_manual_status=crm_registration,
+        crm_ai_owner=crm_ai_owner,
+        crm_ai_opportunity_id=crm_ai_opportunity_id,
         crm_credit_enabled=settings.sulnet_crm_manual_credit_enabled,
         crm_credit_status=crm_credit,
         crm_contestation_enabled=settings.sulnet_crm_contestation_enabled,
@@ -1731,13 +1747,37 @@ def register_crm_manually(
     if conversation is None:
         return _conversation_unavailable(request)
     try:
-        result = register_conversation(
-            db,
-            conversation=conversation,
-            actor=user,
-            client_name=client_name,
-        )
-    except CRMManualError as exc:
+        ai_owner = bool(conversation.assigned_user_id and db.scalar(
+            select(AIAgentProfile.id).where(
+                AIAgentProfile.user_id == conversation.assigned_user_id,
+                AIAgentProfile.active.is_(True),
+            ).limit(1)
+        ))
+        if ai_owner:
+            if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
+                raise CRMManualError("A liberação manual da IA é exclusiva da supervisão.")
+            crm_prospect_sync.sync_prospects(
+                db, conversation_id=conversation.id, limit=1, force=True,
+            )
+            opportunity_id = crm_prospect_sync.ai_crm_opportunity_id(db, conversation.id)
+            if not opportunity_id:
+                raise CRMManualError(
+                    "O cadastro automático da IA ainda não foi confirmado pelo CRM. "
+                    "Confira a integração antes de repetir."
+                )
+            result = {
+                "already": True,
+                "opportunityId": opportunity_id,
+                "protocol": "",
+            }
+        else:
+            result = register_conversation(
+                db,
+                conversation=conversation,
+                actor=user,
+                client_name=client_name,
+            )
+    except (CRMManualError, CRMIntegrationError) as exc:
         db.rollback()
         flash(request, str(exc), "warning")
     except Exception:
