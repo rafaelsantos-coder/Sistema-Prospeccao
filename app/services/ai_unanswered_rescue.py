@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import unicodedata
 from collections import Counter
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,7 +27,7 @@ from app.services.auto_reply import is_automatic_inbound
 from app.services.audit import write_audit
 from app.services.ops_alerts import unanswered_customers
 from app.services.queue_routing import queue_for_conversation
-from app.timeutils import utcnow
+from app.timeutils import utc_naive, utcnow
 
 
 LOG = logging.getLogger("sulnet_ai_unanswered_rescue")
@@ -96,6 +97,14 @@ def recover_reported_unanswered(
         )
         if not latest or latest.direction != "INBOUND":
             counts["outbound_exists"] += 1
+            if latest:
+                LOG.warning(
+                    "ai_priority_rescue_outbound_state conversation=%s outbound=%s "
+                    "status=%s has_provider=%s has_sent_at=%s",
+                    cid, latest.id, latest.status,
+                    bool(latest.provider_message_id or latest.provider_zaap_id),
+                    bool(latest.sent_at),
+                )
             continue
         if latest.message_type not in AI_INBOUND_MESSAGE_TYPES or is_automatic_inbound(latest):
             counts["unsupported_or_automatic"] += 1
@@ -197,4 +206,165 @@ def recover_reported_unanswered(
             cid, latest.id, job.id, queue.id, former_owner,
         )
     LOG.warning("ai_priority_rescue_summary %s", dict(counts))
+    return dict(counts)
+
+
+
+RETRY_AUDIT_ACTION = "AI_PRIORITY_JOB_RETRY_20261121"
+DELIVERY_RETRY_ACTION = "AI_PRIORITY_DELIVERY_RETRY_20261121"
+
+
+def recover_priority_stalled_jobs(db: Session) -> dict[str, int]:
+    """Recupera UMA vez jobs dos quatro resgates que falharam ou ficaram travados.
+
+    Para PROCESSANDO exige lock parado por 5 min, porque um modelo de IA
+    ainda pode estar trabalhando. Nunca recria job ou mensagem existente.
+    """
+    counts: Counter[str] = Counter()
+    now = utcnow()
+    for cid in PRIORITY_CONVERSATION_IDS:
+        conversation = db.get(Conversation, cid)
+        queue = queue_for_conversation(db, cid)
+        if not conversation or not queue or queue.id not in {1, 2}:
+            continue
+        if conversation.status in {"ENCERRADO", "RESOLVIDO", "BLOQUEADO"}:
+            continue
+        if conversation.lead and (
+            conversation.lead.do_not_contact
+            or conversation.lead.stage in {"GANHO", "NAO_CONTATAR"}
+        ):
+            continue
+        if not ai_allowed_for_conversation(db, cid):
+            continue
+        state = db.scalar(select(AIConversationState).where(
+            AIConversationState.conversation_id == cid
+        ))
+        if state and state.state in TERMINAL_STATES:
+            continue
+
+        latest = db.scalar(select(Message).where(
+            Message.conversation_id == cid,
+            Message.direction.in_(["INBOUND", "OUTBOUND"]),
+        ).order_by(Message.id.desc()).limit(1))
+        if not latest or latest.direction != "INBOUND":
+            continue
+        if latest.message_type not in AI_INBOUND_MESSAGE_TYPES or is_automatic_inbound(latest):
+            continue
+        if _defers_or_declines(latest.body):
+            continue
+
+        job = db.scalar(select(AIJob).where(AIJob.message_id == latest.id).limit(1))
+        if not job:
+            continue
+        counts["seen_status_" + str(job.status).lower()] += 1
+        if job.status == "PROCESSANDO":
+            lock_at = utc_naive(job.locked_at)
+            if not lock_at or now - lock_at < timedelta(minutes=5):
+                continue
+        elif job.status not in {"FALHOU", "IGNORADO", "CANCELADO"}:
+            continue
+        if db.scalar(select(AIReplyDelivery.id).where(
+            AIReplyDelivery.inbound_message_id == latest.id
+        ).limit(1)):
+            counts["existing_delivery"] += 1
+            continue
+        if db.scalar(select(AuditLog.id).where(
+            AuditLog.action == RETRY_AUDIT_ACTION,
+            AuditLog.entity_type == "message",
+            AuditLog.entity_id == str(latest.id),
+        ).limit(1)):
+            counts["retry_already_requested"] += 1
+            continue
+
+        binding = binding_for_conversation(db, cid)
+        if not binding or not binding.agent or not binding.agent.active:
+            counts["binding_missing"] += 1
+            continue
+        agent = binding.agent
+        if state and state.state == "CLOSING":
+            agent = db.get(AIAgentProfile, state.agent_id)
+            if not agent or not agent.active or agent.role_type != "CLOSER":
+                counts["closer_missing"] += 1
+                continue
+
+        job.agent_id = agent.id
+        job.queue_id = queue.id
+        job.status = "PENDENTE"
+        job.available_at = now
+        job.locked_at = None
+        job.attempts = 0
+        job.error = RETRY_AUDIT_ACTION
+        conversation.assigned_user_id = agent.user_id
+        conversation.status = "EM_ATENDIMENTO"
+        write_audit(
+            db, user=None, action=RETRY_AUDIT_ACTION,
+            entity_type="message", entity_id=latest.id,
+            payload={"conversation_id": cid, "job_id": job.id},
+        )
+        counts["retried"] += 1
+        LOG.warning(
+            "ai_priority_job_retried conversation=%s inbound=%s job=%s",
+            cid, latest.id, job.id,
+        )
+    LOG.warning("ai_priority_stalled_summary %s", dict(counts))
+    return dict(counts)
+
+
+def retry_known_failed_priority_delivery(db: Session) -> dict[str, int]:
+    """Reativa a entrega original, nunca cria outro texto para o mesmo cliente.
+
+    Só falha CONFIRMADA sem protocolo do provedor pode ser reenviada. Uma
+    tentativa UNKNOWN jamais deve ser duplicada automaticamente.
+    """
+    from app.services.ai_reply_delivery import FAILED_STATUSES, MAX_ATTEMPTS
+
+    counts: Counter[str] = Counter()
+    for cid in PRIORITY_CONVERSATION_IDS:
+        conversation = db.get(Conversation, cid)
+        if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+            continue
+        if conversation.lead and (
+            conversation.lead.do_not_contact
+            or conversation.lead.stage in {"GANHO", "NAO_CONTATAR"}
+        ):
+            continue
+        if not ai_allowed_for_conversation(db, cid):
+            continue
+        latest = db.scalar(select(Message).where(
+            Message.conversation_id == cid,
+            Message.direction.in_(["INBOUND", "OUTBOUND"]),
+        ).order_by(Message.id.desc()).limit(1))
+        if not latest or latest.direction != "OUTBOUND":
+            continue
+        counts["seen_outbound_" + str(latest.status).lower()] += 1
+        if latest.status not in FAILED_STATUSES:
+            continue
+        if latest.provider_message_id or latest.provider_zaap_id or latest.sent_at or latest.delivered_at:
+            counts["provider_uncertain"] += 1
+            continue
+        delivery = db.scalar(select(AIReplyDelivery).where(
+            AIReplyDelivery.outbound_message_id == latest.id
+        ).limit(1))
+        if not delivery or delivery.attempts >= MAX_ATTEMPTS:
+            counts["no_retryable_delivery"] += 1
+            continue
+        if db.scalar(select(AuditLog.id).where(
+            AuditLog.action == DELIVERY_RETRY_ACTION,
+            AuditLog.entity_type == "message",
+            AuditLog.entity_id == str(latest.id),
+        ).limit(1)):
+            continue
+        delivery.available_at = utcnow()
+        delivery.locked_at = None
+        write_audit(
+            db, user=None, action=DELIVERY_RETRY_ACTION,
+            entity_type="message", entity_id=latest.id,
+            payload={"conversation_id": cid, "attempts_before": delivery.attempts},
+        )
+        counts["delivery_retry_queued"] += 1
+        LOG.warning(
+            "ai_priority_delivery_retried conversation=%s outbound=%s attempts=%s",
+            cid, latest.id, delivery.attempts,
+        )
+    LOG.warning("ai_priority_delivery_summary %s", dict(counts))
     return dict(counts)

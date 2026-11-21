@@ -497,6 +497,7 @@ def enqueue_ai_job(
         and not manual_ai_handoff_authorized(db, conversation.id)
         and not is_dedicated_ai_queue(queue_for_human_guard)
         and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
+        and not ai_owns_conversation(db, conversation.id)
         and human_stepped_in(db, conversation)
     ):
         LOG.info(
