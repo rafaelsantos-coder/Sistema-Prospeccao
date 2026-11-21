@@ -223,10 +223,17 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
     if manually_transferred_to_ai(db, conversation_id):
         # Delegar para a SulIA nao troca a fila/linha WhatsApp: a instancia
         # da fila original prevalece, mesmo que a Fila IA esteja desconectada.
+        from app.services.ai_queue_scope import is_dedicated_ai_queue  # noqa: PLC0415
+
         queue = queue_for_conversation(db, conversation_id)
-        instance = queue_instance(db, queue.id) if queue else None
-        if not instance:
-            instance = conversation_instance(db, conversation_id)
+        original_instance = conversation_instance(db, conversation_id)
+        if is_dedicated_ai_queue(queue):
+            # Compatibilidade com transferencias antigas: a conversa foi MOVIDA
+            # para Fila IA, mas o numero original esta gravado na conversa.
+            instance = original_instance or (queue_instance(db, queue.id) if queue else None)
+        else:
+            # Novo fluxo: a conversa nunca sai da fila de origem.
+            instance = (queue_instance(db, queue.id) if queue else None) or original_instance
         if not instance:
             raise ZApiNotConfigured("A conversa delegada à IA está sem a conexão WhatsApp de origem.")
         current = conversation_instance(db, conversation_id)
