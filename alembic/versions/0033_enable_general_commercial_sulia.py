@@ -3,7 +3,7 @@
 Preserva Fila IA e todas as outras filas; nao transfere conversas,
 nao repete mensagens antigas nem habilita outras filas automaticamente.
 
-Revision ID: 0033_enable_general_commercial_sulia
+Revision ID: 0033_geral_comercial_sulia
 Revises: 0032_repair_dedicated_ai_queue
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import unicodedata
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0033_enable_general_commercial_sulia"
+revision = "0033_geral_comercial_sulia"
 down_revision = "0032_repair_dedicated_ai_queue"
 branch_labels = None
 depends_on = None
