@@ -2291,29 +2291,41 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     # Autorização explícita: apenas a FILA-IA ativa pode responder em AUTO.
     # Não habilita o modo autônomo global nem SDR nas outras filas.
     current_queue = queue_for_conversation(db, job.conversation_id)
+    current_binding = binding_for_conversation(db, job.conversation_id)
     is_authorized_ai_queue = (
         agent.role_type == "SDR"
         and current_queue is not None
         and is_dedicated_ai_queue(current_queue)
-        and current_queue.id == job.queue_id
-        and binding_for_conversation(db, job.conversation_id) is not None
-        and ai_allowed_for_conversation(db, job.conversation_id, fallback_queue_id=job.queue_id)
+        and current_binding is not None
+        and current_binding.agent_id == agent.id
+        and ai_allowed_for_conversation(db, job.conversation_id)
     )
+    if is_authorized_ai_queue and current_queue.id != job.queue_id:
+        # Fila atual do banco prevalece; somente a FILA-IA autorizada permite reconciliação.
+        LOG.warning(
+            "ai_sdr_stale_job_queue_reconciled conversation=%s job=%s old_queue=%s new_queue=%s",
+            job.conversation_id, job.id, job.queue_id, current_queue.id,
+        )
+        job.queue_id = current_queue.id
     if is_authorized_ai_queue:
-        # _send_autonomous_reply requires an AI_ACTIVE owner. A recovered
-        # SHADOW_REVIEW/NEW state otherwise causes send_failed even though
-        # the job was authorized and the model generated a valid response.
-        # Never take over OPT_OUT, completed, closing, or assigned human work.
+        # Autorizar o job recuperado pela fila atual, nunca pelo queue_id antigo.
+        # Jobs enfileirados antes da migracao podem ter queue_id obsoleto e
+        # deixar o estado NEW mesmo com um vinculo SDR valido na FILA-IA.
         owner_conversation = db.get(Conversation, job.conversation_id)
-        if (
-            current_state is not None
-            and current_state.state in {"NEW", "SHADOW_REVIEW"}
-            and owner_conversation is not None
-            and not human_is_attending(db, owner_conversation)
-        ):
-            current_state.state = "AI_ACTIVE"
-            current_state.agent_id = agent.id
-            LOG.info("ai_sdr_owner_activated conversation=%s job=%s", job.conversation_id, job.id)
+        if owner_conversation is not None and not human_is_attending(db, owner_conversation):
+            if current_state is None:
+                current_state = AIConversationState(
+                    conversation_id=job.conversation_id,
+                    agent_id=agent.id,
+                    state="AI_ACTIVE",
+                )
+                db.add(current_state)
+                db.flush()
+                LOG.info("ai_sdr_owner_activated conversation=%s job=%s created=True", job.conversation_id, job.id)
+            elif current_state.state in {"NEW", "SHADOW_REVIEW"}:
+                current_state.state = "AI_ACTIVE"
+                current_state.agent_id = agent.id
+                LOG.info("ai_sdr_owner_activated conversation=%s job=%s", job.conversation_id, job.id)
         effective_mode = "AUTO"
     else:
         effective_mode = _effective_execution_mode(agent)
