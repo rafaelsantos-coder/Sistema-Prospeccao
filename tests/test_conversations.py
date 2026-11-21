@@ -283,8 +283,8 @@ def test_send_audio_from_inbox(monkeypatch, file_name, file_payload, file_mime):
         ZApiService,
         "send_audio",
         lambda self, *, phone, audio_url: {
-            "messageId": "TEST-AUDIO-1",
-            "zaapId": "TEST-ZAAP-AUDIO-1",
+            "messageId": "TEST-AUDIO-" + file_name,
+            "zaapId": "TEST-ZAAP-AUDIO-" + file_name,
         },
     )
     with TestClient(app) as client:
