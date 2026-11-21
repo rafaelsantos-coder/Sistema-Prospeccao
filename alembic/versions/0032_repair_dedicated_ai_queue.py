@@ -27,6 +27,8 @@ def _dedicated_queue(db):
     queues = list(db.execute(sa.text(
         "SELECT id, name, code, active FROM service_queues ORDER BY id"
     )).mappings())
+    if not queues:
+        return None  # Instalacao limpa: ainda nao ha filas nem agentes.
     by_name = [q for q in queues if q["active"] and _normal(q["name"]) == "fila ia"]
     # O nome exibido pela equipe prevalece sobre qualquer codigo legado.
     matches = by_name if by_name else [
@@ -44,6 +46,9 @@ def _dedicated_queue(db):
 def upgrade() -> None:
     db = op.get_bind()
     queue = _dedicated_queue(db)
+    if queue is None:
+        print("[0032] Banco sem filas: configuracao adiada ate o cadastro da Fila IA", file=sys.stderr)
+        return
     queue_id = int(queue["id"])
 
     agent = db.execute(sa.text(
@@ -132,6 +137,8 @@ def downgrade() -> None:
     # Downgrade nunca reativa autorizacoes legadas.
     db = op.get_bind()
     queue = _dedicated_queue(db)
+    if queue is None:
+        return
     db.execute(sa.text(
         "UPDATE ai_queue_bindings SET active = false, manual_authorized = false "
         "WHERE queue_id = :queue"
