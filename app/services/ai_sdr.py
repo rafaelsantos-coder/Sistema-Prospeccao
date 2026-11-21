@@ -91,7 +91,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _show_corporate_differentials,
 )
 from app.services.ai_sdr_policy import MAX_AI_REPLIES_PER_HOUR, SULIA_SYSTEM_PROMPT, UNTRUSTED_INPUT_NOTICE
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, is_dedicated_ai_queue, is_general_commercial_queue, manual_queue_control_enabled
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, is_dedicated_ai_queue, is_general_commercial_queue, manual_ai_handoff_authorized, manual_queue_control_enabled
 from app.services.audit import write_audit
 from app.services.queue_routing import (
     AI_WHEN_HUMAN_IDLE,
@@ -192,7 +192,15 @@ def is_human_only_queue(queue: ServiceQueue | None) -> bool:
 
 def binding_for_conversation(db: Session, conversation_id: int) -> AIQueueBinding | None:
     queue = queue_for_conversation(db, conversation_id)
-    if not queue or is_human_only_queue(queue) or not ai_allowed_for_conversation(db, conversation_id):
+    if not queue or not ai_allowed_for_conversation(db, conversation_id):
+        return None
+    if manual_ai_handoff_authorized(db, conversation_id):
+        # Agente autorizado da Fila IA; a fila/numero da conversa nao muda.
+        from app.services.queue_routing import ai_transfer_queue  # noqa: PLC0415
+
+        dedicated = ai_transfer_queue(db)
+        return queue_ai_binding(db, dedicated.id) if dedicated else None
+    if is_human_only_queue(queue):
         return None
     binding = queue_ai_binding(db, queue.id)
     if manual_queue_control_enabled():
@@ -379,7 +387,10 @@ def enqueue_ai_job(
     if not ai_allowed_for_conversation(db, conversation.id):
         LOG.info("ai_job_skipped conversation=%s reason=exclusive_ai_queue", conversation.id)
         return None
-    if is_human_only_queue(queue_for_conversation(db, conversation.id)):
+    if (
+        is_human_only_queue(queue_for_conversation(db, conversation.id))
+        and not manual_ai_handoff_authorized(db, conversation.id)
+    ):
         LOG.info("ai_job_skipped conversation=%s reason=human_only_queue", conversation.id)
         return None
     if not settings.ai_sdr_enabled and not settings.ai_seller_enabled:
@@ -488,6 +499,7 @@ def enqueue_ai_job(
     queue_for_human_guard = queue_for_conversation(db, conversation.id)
     if (
         not takeover
+        and not manual_ai_handoff_authorized(db, conversation.id)
         and not is_dedicated_ai_queue(queue_for_human_guard)
         and not is_ai_test_phone(getattr(conversation.contact, "phone", None))
         and human_stepped_in(db, conversation)
@@ -532,9 +544,16 @@ def enqueue_ai_job(
         pending.error = "AGRUPADA_COM_MENSAGEM_SEGUINTE"
 
     debounce_seconds = sdr_debounce_seconds_for_message(message.body or "")
+    # Tarefa permanece na fila de origem quando o humano delegou a conversa.
+    current_queue = queue_for_conversation(db, conversation.id)
+    job_queue_id = (
+        current_queue.id
+        if current_queue and manual_ai_handoff_authorized(db, conversation.id)
+        else binding.queue_id
+    )
     job = AIJob(
         agent_id=binding.agent_id,
-        queue_id=binding.queue_id,
+        queue_id=job_queue_id,
         conversation_id=conversation.id,
         message_id=message.id,
         status="PENDENTE",
@@ -547,7 +566,7 @@ def enqueue_ai_job(
         job.id,
         conversation.id,
         message.id,
-        binding.queue_id,
+        job_queue_id,
         binding.agent_id,
         debounce_seconds,
     )
@@ -2219,7 +2238,10 @@ def process_ai_job(db: Session, job: AIJob) -> str:
         job.error = "IA autorizada somente na Fila IA."
         LOG.info("ai_job_skipped conversation=%s reason=exclusive_ai_queue", job.conversation_id)
         return "skipped"
-    if is_human_only_queue(queue_for_conversation(db, job.conversation_id)):
+    if (
+        is_human_only_queue(queue_for_conversation(db, job.conversation_id))
+        and not manual_ai_handoff_authorized(db, job.conversation_id)
+    ):
         job.status = "IGNORADO"
         job.error = "Fila exclusiva de atendimento humano."
         LOG.info("ai_job_skipped conversation=%s reason=human_only_queue", job.conversation_id)
@@ -2295,13 +2317,16 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     is_authorized_ai_queue = (
         agent.role_type == "SDR"
         and current_queue is not None
-        and is_dedicated_ai_queue(current_queue)
+        and (
+            is_dedicated_ai_queue(current_queue)
+            or manual_ai_handoff_authorized(db, job.conversation_id)
+        )
         and current_binding is not None
         and current_binding.agent_id == agent.id
         and ai_allowed_for_conversation(db, job.conversation_id)
     )
     if is_authorized_ai_queue and current_queue.id != job.queue_id:
-        # Fila atual do banco prevalece; somente a FILA-IA autorizada permite reconciliação.
+        # Fila atual prevalece apenas quando IA dedicada ou delegacao manual.
         LOG.warning(
             "ai_sdr_stale_job_queue_reconciled conversation=%s job=%s old_queue=%s new_queue=%s",
             job.conversation_id, job.id, job.queue_id, current_queue.id,
