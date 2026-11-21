@@ -79,7 +79,7 @@ def test_migration_falha_fechado_se_houver_duas_filas_ia_ativas(monkeypatch):
     engine = _database()
     try:
         with Session(engine) as db:
-            agent_id, first_id, second_id, third_id = _setup(db)
+            _agent_id, first_id, second_id, _third_id = _setup(db)
             for queue_id in (first_id, second_id):
                 db.get(ServiceQueue, queue_id).name = "Fila IA"
             db.commit()
