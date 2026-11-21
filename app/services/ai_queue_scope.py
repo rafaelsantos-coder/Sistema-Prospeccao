@@ -202,12 +202,15 @@ def manual_ai_handoff_authorized(db: Session, conversation_id: int) -> bool:
     """
     if not hasattr(db, "scalar") or not hasattr(db, "get"):
         return False
-    origin = db.scalar(
-        select(ConversationQueueLink.origin).where(
+    link = db.scalar(
+        select(ConversationQueueLink).where(
             ConversationQueueLink.conversation_id == conversation_id
         )
     )
-    if origin != "MANUAL_AI":
+    if not link or link.origin != "MANUAL_AI":
+        return False
+    queue = db.get(ServiceQueue, link.queue_id)
+    if not queue or not queue.active:
         return False
     from app.services.queue_routing import ai_transfer_queue  # noqa: PLC0415
 
