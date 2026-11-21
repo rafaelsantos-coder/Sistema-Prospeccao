@@ -162,11 +162,16 @@
       <div class="topbar-actions">
         {% block topbar_actions %}{% endblock %}
         {% if 'crm.register' in current_user.permissions and page_title == "Conversas" and conversation is defined and conversation %}
-          {% if crm_manual_status is defined and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
+          {% if crm_ai_owner is defined and crm_ai_owner and crm_ai_opportunity_id is defined and crm_ai_opportunity_id %}
+          <span class="button button-secondary crm-manual-topbar-state" title="Oportunidade da SulIA confirmada no CRM Comercial">✓ Registrado no CRM #{{ crm_ai_opportunity_id }}</span>
+          {% elif crm_manual_status is defined and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
           <span class="button button-secondary crm-manual-topbar-state" title="Oportunidade já vinculada ao CRM">✓ Registrado no CRM</span>
           {% elif crm_manual_seller is defined and crm_manual_seller %}
           <button type="button" class="button button-primary crm-manual-topbar-button" data-crm-manual-open
              {% if crm_manual_status is defined and crm_manual_status %}disabled title="Registro pendente de conferência no CRM"{% endif %}>Registrar CRM</button>
+          {% elif crm_ai_owner is defined and crm_ai_owner and current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
+          <button type="button" class="button button-primary crm-manual-topbar-button" data-crm-manual-open
+             title="Confirmar registro da oportunidade da SulIA no CRM">Registrar CRM</button>
           {% else %}
           <button type="button" class="button button-secondary crm-manual-topbar-button" disabled title="Atribua a conversa a um vendedor cadastrado no CRM">Registrar CRM</button>
           {% endif %}
