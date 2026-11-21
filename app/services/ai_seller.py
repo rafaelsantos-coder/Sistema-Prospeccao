@@ -4532,8 +4532,35 @@ def _seller_followup_prompt(
     )
     playbook_question = str(collected.get("_playbook_question") or "").strip()
     playbook_step = str(collected.get("_playbook_step") or "").strip()
-    if playbook_question and playbook_step == state.step:
+    # Playbook é a pergunta inicial, nunca o texto de todas as retomadas.
+    if playbook_question and playbook_step == state.step and followup_step <= 1:
         return playbook_question
+
+    if state.step == "CPF":
+        if followup_step <= 1:
+            return (
+                f"Podemos seguir com a contratação do {plan} 🧡 "
+                "Preciso do CPF do titular para realizar a análise de crédito. Pode me enviar?"
+            )
+        if followup_step == 2:
+            return (
+                "Se ficou alguma dúvida sobre a consulta de crédito, posso explicar por aqui. "
+                "O CPF do titular é o próximo dado necessário para continuar."
+            )
+        if followup_step == 3:
+            return (
+                f"Seu pedido do {plan} continua na etapa de análise cadastral. "
+                "Assim que você informar o CPF do titular, seguimos com a consulta."
+            )
+        return (
+            "Posso continuar seu pedido de contratação quando for conveniente. "
+            "Se precisar de ajuda com os dados do titular, estou por aqui. 🧡"
+        )
+    if state.step == "CEP" and followup_step > 1:
+        return (
+            "A análise cadastral já avançou. Para verificar o endereço da instalação, "
+            "preciso do CEP do imóvel. Consegue me informar?"
+        )
 
     prompts = {
         "NAME": "me envie seu nome completo para eu iniciar o cadastro.",
