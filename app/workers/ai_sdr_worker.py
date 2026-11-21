@@ -1365,6 +1365,29 @@ def run() -> None:
             "sulia_reply_delivery_ready closer_ready=%s",
             active_closer(readiness_db) is not None,
         )
+        # Verificacao observavel da autorizacao efetiva em producao.
+        from app.models import ServiceQueue
+        from app.services.ai_queue_scope import is_general_commercial_queue
+
+        general_queues = [
+            queue for queue in readiness_db.scalars(
+                select(ServiceQueue).where(ServiceQueue.active.is_(True))
+            )
+            if is_general_commercial_queue(queue)
+        ]
+        for queue in general_queues:
+            binding = queue_ai_binding(readiness_db, queue.id)
+            enabled = ai_queue_enabled(readiness_db, queue.id)
+            level = LOG.info if enabled else LOG.error
+            level(
+                "sulia_general_commercial_ready queue=%s enabled=%s mode=%s "
+                "manual_control=%s",
+                queue.id, enabled,
+                binding.handling_mode if binding else "SEM_VINCULO",
+                manual_queue_control_enabled(),
+            )
+        if not general_queues:
+            LOG.error("sulia_general_commercial_missing_queue")
     if settings.ai_maintenance_enabled and settings.ai_supervisor_shadow_enabled:
         supervisor_thread = threading.Thread(
             target=run_shadow_supervisor_loop,
