@@ -711,8 +711,17 @@ def _render_inbox(
     if selected and selected.id not in visible_ids:
         visible_ids.append(selected.id)
     conversation_queue_labels = _conversation_queue_labels(db, visible_ids)
+    manual_ai_ids = set(db.scalars(
+        select(ConversationQueueLink.conversation_id).where(
+            ConversationQueueLink.conversation_id.in_(visible_ids),
+            ConversationQueueLink.origin == MANUAL_AI_ORIGIN,
+        )
+    ))
     ai_reply_statuses = reply_statuses(
-        db, [cid for cid, queue in conversation_queue_labels.items() if queue["code"] == "FILA-IA"],
+        db, [
+            cid for cid, queue in conversation_queue_labels.items()
+            if queue["code"] == "FILA-IA" or cid in manual_ai_ids
+        ],
     )
     commercial_tags = tag_map(db, visible_ids)
     commercial_insights = insight_map(db, visible_ids)
