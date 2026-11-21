@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -20,6 +20,8 @@ from app.timeutils import utcnow
 
 LOG = logging.getLogger("sulnet_crm_notes")
 NOTES_KEY = "_crm_notes"
+NOTES_RETRY_AFTER = "_crm_notes_retry_after"
+NOTES_RETRY_FAILURES = "_crm_notes_retry_failures"
 
 
 def _money(value: Any) -> str:
@@ -88,23 +90,44 @@ def record_milestones(db: Session, state: AIClosingState) -> int:
         return 0
     if not isinstance(collected, dict):
         return 0
+    retry_after_raw = str(collected.get(NOTES_RETRY_AFTER) or "")
+    if retry_after_raw:
+        try:
+            retry_after = datetime.fromisoformat(retry_after_raw)
+            if retry_after.tzinfo is not None:
+                retry_after = retry_after.astimezone().replace(tzinfo=None)
+            if utcnow() < retry_after:
+                return 0
+        except ValueError:
+            pass
+
     done = set(collected.get(NOTES_KEY) or [])
     todo = [note for note in pending_notes(state, collected) if note[0] not in done]
     if not todo:
         return 0
     client = SulnetCRMClient.from_settings()
     written = 0
+    failed = False
     for key, result, description in todo:
         try:
             client.add_opportunity_note(state.opportunity_id, result=result, description=description)
         except CRMIntegrationError as exc:
             LOG.warning("crm_note_failed opportunity=%s status=%s", state.opportunity_id, exc.status_code)
-            # Rota ausente ou CRM fora: tenta de novo no próximo ciclo, sem insistir agora.
+            # Evita martelar o CRM com HTTP 500 a cada iteracao do worker.
+            failed = True
+            attempts = min(6, int(collected.get(NOTES_RETRY_FAILURES) or 0) + 1)
+            delay_seconds = min(1800, 60 * (2 ** attempts))
+            collected[NOTES_RETRY_FAILURES] = attempts
+            collected[NOTES_RETRY_AFTER] = (utcnow() + timedelta(seconds=delay_seconds)).isoformat()
             break
         done.add(key)
         written += 1
-    if written:
-        collected[NOTES_KEY] = sorted(done)
+    if not failed:
+        collected.pop(NOTES_RETRY_AFTER, None)
+        collected.pop(NOTES_RETRY_FAILURES, None)
+    if written or failed:
+        if done:
+            collected[NOTES_KEY] = sorted(done)
         state.collected_json = json.dumps(collected, ensure_ascii=False, default=str)
         db.flush()
     return written

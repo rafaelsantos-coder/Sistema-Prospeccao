@@ -59,3 +59,30 @@ def test_falha_do_crm_nao_marca_como_feito(monkeypatch):
     state = _state()
     assert crm_notes.record_milestones(_DB(), state) == 0
     assert crm_notes.NOTES_KEY not in json.loads(state.collected_json)
+
+
+def test_erro_500_crm_entra_em_backoff_e_nao_trava_caixa(monkeypatch):
+    class FailingClient:
+        def __init__(self):
+            self.calls = 0
+
+        def add_opportunity_note(self, *args, **kwargs):
+            self.calls += 1
+            raise crm_notes.CRMIntegrationError("indisponivel", status_code=500)
+
+    client = FailingClient()
+    monkeypatch.setattr(crm_notes.SulnetCRMClient, "from_settings", staticmethod(lambda: client))
+    state = _state()
+    assert crm_notes.record_milestones(_DB(), state) == 0
+    saved = json.loads(state.collected_json)
+    assert saved[crm_notes.NOTES_RETRY_AFTER]
+    assert saved[crm_notes.NOTES_RETRY_FAILURES] == 1
+    assert client.calls == 1
+    for _ in range(10):
+        assert crm_notes.record_milestones(_DB(), state) == 0
+    assert client.calls == 1  # nenhuma nova chamada ao CRM durante o cooldown
+
+    saved[crm_notes.NOTES_RETRY_AFTER] = "2000-01-01T00:00:00"
+    state.collected_json = json.dumps(saved)
+    assert crm_notes.record_milestones(_DB(), state) == 0
+    assert client.calls == 2

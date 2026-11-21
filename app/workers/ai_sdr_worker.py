@@ -1265,6 +1265,37 @@ def _review_yesterday_and_today_fila_ia() -> dict[str, int]:
                         db.commit()
                         counts["requeued_owner_failure"] += 1
                         continue
+                    # A fila antes nao possuia autorizacao no banco: jobs
+                    # ignorados/fracassados por esse motivo ficaram sem resposta.
+                    # Recuperar uma unica vez somente quando o ultimo evento
+                    # continua sendo do cliente e a fila agora esta autorizada.
+                    previous_error = str(prior_job.error or "").casefold()
+                    queue_failure = any(reason in previous_error for reason in (
+                        "pausada na fila", "fila sem ia", "sem vínculo",
+                        "sem vinculo", "no_binding", "propriedade da conversa",
+                        "fila exclusiva de atendimento humano",
+                        "ia autorizada somente na fila ia",
+                        "agente inexistente ou inativo",
+                    ))
+                    if (
+                        prior_job.status in {"FALHOU", "IGNORADO", "CANCELADO"}
+                        and queue_failure
+                        and "REQUEUED_DEDICATED_AI_QUEUE_20261121" not in (prior_job.error or "")
+                        and not (state and state.state in {"OPT_OUT", "COMPLETED"})
+                    ):
+                        binding = queue_ai_binding(db, queue.id)
+                        if binding and binding.agent and binding.agent.active:
+                            prior_job.queue_id = queue.id
+                            if not (state and state.state == "CLOSING"):
+                                prior_job.agent_id = binding.agent_id
+                            prior_job.status = "PENDENTE"
+                            prior_job.available_at = utcnow()
+                            prior_job.locked_at = None
+                            prior_job.attempts = 0
+                            prior_job.error = "REQUEUED_DEDICATED_AI_QUEUE_20261121"
+                            db.commit()
+                            counts["requeued_binding_error"] += 1
+                            continue
                     counts["already_job_" + str(prior_job.status).lower()] += 1
                     continue
                 try:
