@@ -1,18 +1,11 @@
-"""Registra no CRM a prospecção feita pela IA assim que o cliente responde.
+"""Registra no CRM a oportunidade assim que a SulIA inicia o atendimento.
 
-Antes, só o Vendedor IA criava oportunidade no CRM, e apenas depois do handoff
-com nome completo. Conversas em que o cliente respondeu ao SDR (ex.: "Sim",
-"Agora não") nunca apareciam como prospecção.
-
-Agora, toda conversa de uma fila com IA em que o cliente respondeu de verdade
-gera (uma vez) uma oportunidade na etapa INÍCIO do funil "SDR IA". O CRM
-deduplica por externalId, e o Vendedor IA usa o mesmo externalId
-(prospecta-conversation-<id>): quando chegar ao fechamento, reaproveita a
-mesma oportunidade em vez de criar outra.
+Oportunidade única por conversa, reutilizada no fechamento e recuperada em falhas.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import unicodedata
@@ -22,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AIAgentProfile,
     AIClosingState,
     AIConversationState,
     AuditLog,
@@ -114,131 +108,227 @@ def _recent_failure(db: Session, conversation_id: int) -> bool:
     )
 
 
-def sync_prospects(db: Session, *, limit: int = BATCH_LIMIT) -> int:
-    """Cria no CRM as prospecções pendentes. Devolve quantas foram registradas."""
+def ai_crm_opportunity_id(db: Session, conversation_id: int) -> int | None:
+    """Identificador único que SDR e Vendedor IA devem reutilizar."""
+    closing_id = db.scalar(select(AIClosingState.opportunity_id).where(
+        AIClosingState.conversation_id == conversation_id,
+    ))
+    return int(closing_id) if closing_id else synced_opportunity_id(db, conversation_id)
+
+
+def _ai_authored_message(db: Session, conversation_id: int) -> Message | None:
+    """Disparos da campanha não são mensagens da SulIA."""
+    ai_users = select(AIAgentProfile.user_id)
+    return db.scalar(select(Message).where(
+        Message.conversation_id == conversation_id,
+        Message.direction == "OUTBOUND",
+        Message.sender_user_id.in_(ai_users),
+    ).order_by(Message.id.asc()).limit(1))
+
+
+def _assigned_to_ai(db: Session, conversation: Conversation) -> bool:
+    if not conversation.assigned_user_id:
+        return False
+    return db.scalar(select(AIAgentProfile.id).where(
+        AIAgentProfile.user_id == conversation.assigned_user_id,
+        AIAgentProfile.active.is_(True),
+    ).limit(1)) is not None
+
+
+def _previous_uncertain(db: Session, conversation_id: int) -> bool:
+    """Timeout anterior pode ter criado a oportunidade antes de falhar."""
+    rows = db.scalars(select(AuditLog.payload_json).where(
+        AuditLog.action == FAIL_ACTION,
+        AuditLog.entity_id == str(conversation_id),
+    ).order_by(AuditLog.id.desc()).limit(15))
+    for raw in rows:
+        try:
+            if json.loads(raw or "{}").get("uncertain"):
+                return True
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return False
+
+
+def _recover_uncertain_from_crm(
+    client: SulnetCRMClient, conversation_id: int, phone: str,
+) -> int | None:
+    """Reutiliza somente um resultado ligado explicitamente à conversa."""
+    from app.services.crm_manual_registration import (
+        CRMManualError, _phone_key, _record_id, _record_phone, _records,
+    )
+
+    if not client.bearer_token:
+        raise CRMIntegrationError("CRM sem consulta de reconciliação.")
+    try:
+        records = _records(client.find_opportunities_by_phone(phone))
+    except CRMManualError as exc:
+        raise CRMIntegrationError("CRM não confirmou pesquisa de registro incerto.") from exc
+
+    external_id = f"prospecta-conversation-{conversation_id}"
+    for record in records:
+        if _phone_key(_record_phone(record)) != _phone_key(phone):
+            continue
+        identity = record.get("externalId") or record.get("external_id")
+        origin_conversation = record.get("conversationId") or record.get("conversation_id")
+        if identity == external_id or str(origin_conversation or "") == str(conversation_id):
+            opportunity_id = _record_id(record)
+            if opportunity_id:
+                return opportunity_id
+    return None
+
+
+def sync_prospects(
+    db: Session, *, limit: int = BATCH_LIMIT,
+    conversation_id: int | None = None, force: bool = False,
+) -> int:
+    """Inicia cadastro no primeiro contato IA e não repete o POST confirmado.
+
+    O processamento da primeira mensagem chama a sincronização imediata. O
+    worker também reconcilia periodicamente. A opção force permite iniciar
+    pelo botão manual somente quando a conversa pertence à IA.
+    """
     from app.services.ai_sdr import binding_for_conversation
 
     since = utcnow() - LOOKBACK
-    synced_ids = select(AuditLog.entity_id).where(AuditLog.action == SYNC_ACTION)
-    candidates = db.scalars(
-        select(Conversation)
-        .where(
-            Conversation.id.in_(
-                select(Message.conversation_id).where(
-                    Message.direction == "INBOUND",
-                    Message.created_at >= since,
-                )
-            ),
-            Conversation.status.not_in(["BLOQUEADO"]),
+    if conversation_id is not None:
+        query = select(Conversation).where(Conversation.id == conversation_id)
+    else:
+        ai_users = select(AIAgentProfile.user_id)
+        ai_started = select(Message.conversation_id).where(
+            Message.direction == "OUTBOUND",
+            Message.sender_user_id.in_(ai_users),
+            Message.created_at >= since,
         )
-        .order_by(Conversation.id.desc())
-        .limit(limit * 10)
-    )
-    done = set(db.scalars(synced_ids))
-
+        query = (
+            select(Conversation)
+            .where(Conversation.id.in_(ai_started))
+            .order_by(Conversation.id.desc())
+            .limit(limit * 10)
+        )
+    candidates = list(db.scalars(query))
+    done = 0
     client: SulnetCRMClient | None = None
-    created = 0
-    for conversation in candidates:
-        if created >= limit:
+    for candidate in candidates:
+        if done >= limit:
             break
-        if str(conversation.id) in done or _recent_failure(db, conversation.id):
+        # Serializa o agendador, o worker e o botão manual, sem requisições duplicadas.
+        conversation = db.scalar(
+            select(Conversation).where(Conversation.id == candidate.id).with_for_update()
+        )
+        if not conversation or conversation.status == "BLOQUEADO":
             continue
         binding = binding_for_conversation(db, conversation.id)
         if not binding or not binding.active:
             continue
-        ai_state = db.scalar(
-            select(AIConversationState.state).where(
-                AIConversationState.conversation_id == conversation.id
-            )
-        )
+        ai_state = db.scalar(select(AIConversationState.state).where(
+            AIConversationState.conversation_id == conversation.id
+        ))
         if ai_state in _BLOCKED_AI_STATES:
             continue
         lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
         if lead and lead.do_not_contact:
             continue
-        existing = db.scalar(
-            select(AIClosingState.opportunity_id).where(
-                AIClosingState.conversation_id == conversation.id
-            )
-        )
+        started = _ai_authored_message(db, conversation.id)
+        if not started and not (force and _assigned_to_ai(db, conversation)):
+            continue
+
+        recorded = synced_opportunity_id(db, conversation.id)
+        if recorded:
+            continue
+        existing = db.scalar(select(AIClosingState.opportunity_id).where(
+            AIClosingState.conversation_id == conversation.id
+        ))
         if existing:
             _mark_done(db, conversation.id, existing, "VENDEDOR_JA_CRIOU")
+            done += 1
             continue
+        if _recent_failure(db, conversation.id):
+            continue
+
         contact = conversation.contact
         phone = _digits(contact.phone if contact else "")
         if len(phone) < 10:
             continue
         reply = _real_reply(db, conversation.id)
-        if not reply:
-            continue
-
         if client is None:
             client = SulnetCRMClient.from_settings()
+
+        # Não repetir um POST que pode ter sido efetivado durante um timeout.
+        if _previous_uncertain(db, conversation.id):
+            try:
+                recovered_id = _recover_uncertain_from_crm(client, conversation.id, phone)
+            except CRMIntegrationError as exc:
+                LOG.warning("crm_prospect_uncertain_lookup_failed conversation=%s status=%s",
+                            conversation.id, exc.status_code)
+                continue
+            if recovered_id:
+                _mark_done(db, conversation.id, recovered_id, "RECONCILIADO")
+                done += 1
+                continue
+            LOG.warning("crm_prospect_uncertain_requires_review conversation=%s", conversation.id)
+            continue
+
+        summary = (
+            f'Prospecção SulIA (WhatsApp). Cliente respondeu: "{(reply.body or "").strip()[:160]}".'
+            if reply else "Atendimento comercial iniciado pela SulIA no WhatsApp."
+        )
         payload = {
             "externalId": f"prospecta-conversation-{conversation.id}",
             "conversationId": conversation.id,
             "leadId": conversation.lead_id,
             "clientName": _client_name(conversation, contact, lead),
             "clientPhone": phone,
-            "sdrSummary": (
-                "Prospecção pelo SDR IA (WhatsApp). O cliente respondeu: "
-                f"\"{(reply.body or '').strip()[:160]}\"."
-            ),
+            "sdrSummary": summary,
             "runConsult": False,
         }
         payload = {key: value for key, value in payload.items() if value not in (None, "")}
         try:
             result = client.create_opportunity(payload)
+            opportunity_id = result.get("opportunityId")
+            if not opportunity_id:
+                raise CRMIntegrationError("CRM não confirmou a oportunidade.")
         except CRMIntegrationError as exc:
-            write_audit(
-                db,
-                user=None,
-                action=FAIL_ACTION,
-                entity_type="conversation",
-                entity_id=conversation.id,
-                payload={"status": exc.status_code, "error": str(exc)[:200]},
-            )
+            uncertain = exc.status_code is None or exc.status_code >= 500
+            write_audit(db, user=None, action=FAIL_ACTION, entity_type="conversation",
+                        entity_id=conversation.id, payload={
+                            "status": exc.status_code, "uncertain": uncertain,
+                            "error": str(exc)[:200],
+                        })
             db.commit()
-            LOG.warning(
-                "crm_prospect_failed conversation=%s status=%s", conversation.id, exc.status_code
-            )
-            # CRM fora do ar ou recusando: não insiste com o resto do lote.
-            if exc.status_code is None or exc.status_code >= 500:
+            LOG.warning("crm_prospect_failed conversation=%s status=%s uncertain=%s",
+                        conversation.id, exc.status_code, uncertain)
+            if uncertain:
                 break
             continue
-        opportunity_id = result.get("opportunityId")
-        if opportunity_id:
-            try:
-                client.add_opportunity_tag(int(opportunity_id), AI_ORIGIN_TAG)
-            except (CRMIntegrationError, TypeError, ValueError) as exc:
-                LOG.warning("crm_ai_tag_failed opportunity=%s error=%s", opportunity_id, type(exc).__name__)
-        if opportunity_id and result.get("created", True):
+
+        # Primeiro persistir o ID; falha ao adicionar tag ou nota não duplica.
+        _mark_done(
+            db, conversation.id, opportunity_id,
+            "CRIADA" if result.get("created", True) else "JA_EXISTIA",
+        )
+        done += 1
+        try:
+            client.add_opportunity_tag(int(opportunity_id), AI_ORIGIN_TAG)
+        except (CRMIntegrationError, TypeError, ValueError) as exc:
+            LOG.warning("crm_ai_tag_failed opportunity=%s error=%s",
+                        opportunity_id, type(exc).__name__)
+        if result.get("created", True):
             try:
                 client.add_opportunity_note(
-                    int(opportunity_id),
-                    result="Primeiro contato",
-                    description=(
-                        "SDR IA iniciou a conversa pelo WhatsApp. Primeira resposta do cliente: "
-                        f"\"{(reply.body or '').strip()[:160]}\"."
-                    ),
+                    int(opportunity_id), result="Primeiro contato",
+                    description=summary,
                 )
             except (CRMIntegrationError, TypeError, ValueError) as exc:
-                LOG.warning("crm_note_failed opportunity=%s error=%s", opportunity_id, type(exc).__name__)
-        _mark_done(db, conversation.id, opportunity_id, "CRIADA" if result.get("created", True) else "JA_EXISTIA")
-        created += 1
-        LOG.info(
-            "crm_prospect_synced conversation=%s opportunity=%s created=%s",
-            conversation.id,
-            opportunity_id,
-            result.get("created", True),
-        )
-    return created
+                LOG.warning("crm_note_failed opportunity=%s error=%s",
+                            opportunity_id, type(exc).__name__)
+        LOG.info("crm_prospect_synced conversation=%s opportunity=%s created=%s",
+                 conversation.id, opportunity_id, result.get("created", True))
+    return done
 
 
 def synced_opportunity_id(db: Session, conversation_id: int) -> int | None:
     """Oportunidade que o SDR já abriu no CRM para esta conversa, se houver."""
-    import json  # noqa: PLC0415
-
     if db is None:
         return None
     rows = db.scalars(
