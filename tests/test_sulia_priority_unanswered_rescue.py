@@ -271,3 +271,92 @@ def test_unknown_delivery_is_not_resent(monkeypatch):
             assert rescue.retry_known_failed_priority_delivery(db).get("delivery_retry_queued", 0) == 0
     finally:
         engine.dispose()
+
+
+
+def test_failed_outbound_without_delivery_is_rescued_once(monkeypatch):
+    monkeypatch.setenv("AI_QUEUE_MANUAL_CONTROL", "true")
+    engine = _database()
+    try:
+        with Session(engine) as db:
+            agent_id, _, dedicated = _ready(db)
+            conv, inbound = _customer(db, dedicated, body="Quero contratar a internet")
+            failed = Message(
+                conversation_id=conv.id, contact_id=conv.contact_id,
+                direction="OUTBOUND", message_type="TEXT", status="FAILED",
+                body="Mensagem rejeitada pelo provedor", sender_user_id=None,
+                sent_at=None,
+            )
+            db.add(failed)
+            db.commit()
+            first = rescue.rescue_orphan_failed_outbound(db, conversation_ids=(conv.id,))
+            assert first == {"enqueued": 1}
+            job = db.scalar(select(AIJob).where(AIJob.message_id == inbound.id))
+            assert job and job.status == "PENDENTE"
+            assert job.agent_id == agent_id
+            db.commit()
+            second = rescue.rescue_orphan_failed_outbound(db, conversation_ids=(conv.id,))
+            assert second.get("enqueued", 0) == 0
+            assert second.get("already_rescued") == 1
+            assert len(list(db.scalars(select(AIJob)))) == 1
+    finally:
+        engine.dispose()
+
+
+def test_exhausted_delivery_without_provider_can_retry_once(monkeypatch):
+    monkeypatch.setenv("AI_QUEUE_MANUAL_CONTROL", "true")
+    engine = _database()
+    try:
+        with Session(engine) as db:
+            agent_id, _, dedicated = _ready(db)
+            agent = db.get(AIAgentProfile, agent_id)
+            contact = Contact(name="Cliente 4597", phone="5555998874597")
+            db.add(contact)
+            db.flush()
+            conv = Conversation(
+                id=4597, contact_id=contact.id, source="WHATSAPP",
+                team="DIGITAL", status="EM_ATENDIMENTO",
+            )
+            db.add(conv)
+            db.flush()
+            db.add(ConversationQueueLink(
+                conversation_id=conv.id, queue_id=dedicated, origin="INBOUND",
+            ))
+            inbound = Message(
+                conversation_id=conv.id, contact_id=contact.id,
+                direction="INBOUND", message_type="TEXT", status="RECEIVED",
+                body="Quero contratar", created_at=utcnow() - timedelta(minutes=30),
+            )
+            db.add(inbound)
+            db.flush()
+            reply = Message(
+                conversation_id=conv.id, contact_id=contact.id,
+                direction="OUTBOUND", message_type="TEXT", status="FAILED",
+                body="Qual o seu CPF?", sender_user_id=agent.user_id,
+                sent_at=None,
+            )
+            db.add(reply)
+            db.flush()
+            delivery = AIReplyDelivery(
+                inbound_message_id=inbound.id, outbound_message_id=reply.id,
+                agent_id=agent_id, attempts=3,
+                buttons_json='[{"id":"yes","label":"Quero contratar"}]',
+                available_at=utcnow() + timedelta(hours=4),
+            )
+            db.add(delivery)
+            db.commit()
+            first = rescue.retry_known_failed_priority_delivery(db)
+            assert first.get("exhausted_reset_once") == 1
+            assert first.get("delivery_retry_queued") == 1
+            assert delivery.attempts == 0
+            assert delivery.link_label == "TEXT_RESCUE_V1"
+            assert delivery.available_at <= utcnow()
+            db.commit()
+            assert db.scalar(select(AIConversationState.state).where(
+                AIConversationState.conversation_id == conv.id
+            )) == "AI_ACTIVE"
+            second = rescue.retry_known_failed_priority_delivery(db)
+            assert second.get("delivery_retry_queued", 0) == 0
+            assert len(list(db.scalars(select(Message)))) == 2
+    finally:
+        engine.dispose()

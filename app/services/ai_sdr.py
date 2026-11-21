@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings
@@ -577,7 +577,13 @@ def claim_ai_job(db: Session) -> AIJob | None:
             AIJob.status == "PENDENTE",
             AIJob.available_at <= now,
         )
-        .order_by(AIJob.available_at.asc(), AIJob.created_at.asc(), AIJob.id.asc())
+        # Mutirao solicitado pela gestao: mensagens que ficaram sem resposta
+        # nas quatro conversas auditadas precedem jobs normais ja elegiveis.
+        # As travas de status, disponibilidade e idempotencia sao mantidas.
+        .order_by(
+            case((AIJob.conversation_id.in_((4701, 4018, 1846, 4597)), 0), else_=1),
+            AIJob.available_at.asc(), AIJob.created_at.asc(), AIJob.id.asc(),
+        )
         .with_for_update(skip_locked=True)
         .limit(1)
     )
