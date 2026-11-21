@@ -32,7 +32,7 @@ from app.services.ai_autocorrector import run_autocorrector_loop
 from app.services.ai_learning import run_learning_loop
 from app.services.ai_engineer import run_engineer_loop
 from app.services.ai_weekly_analyst import run_weekly_analyst_loop
-from app.services.ai_sdr_policy import followup_spec, next_business_time
+from app.services.ai_sdr_policy import followup_spec
 from app.services.queue_routing import MANUAL_AI_ORIGIN, MANUAL_TRANSFER_ORIGIN, bind_conversation_queue, queue_for_conversation
 from app.services.zapi_instances import conversation_instance, default_queue_for_instance
 from app.timeutils import utc_naive, utcnow
@@ -333,12 +333,14 @@ def _reschedule_initial_pending_followups() -> int:
                 job.locked_at = None
                 job.error = "Follow-up invalidado por mudança de ownership."
                 continue
-            delay, theme = followup_spec(int(job.step or 1))
-            job.theme = theme
-            job.due_at = next_business_time(
-                now + delay,
-                settings.default_timezone,
-            )
+            from app.services.ai_followups import followup_delay_for, hot_lead_awaits_customer
+            if hot_lead_awaits_customer(db, job.conversation_id):
+                # Preserva a pendência original em vez de substituir por tema genérico.
+                delay = followup_delay_for(db, job.conversation_id, int(job.step or 1))
+            else:
+                delay, theme = followup_spec(int(job.step or 1))
+                job.theme = theme
+            job.due_at = now + delay
             job.locked_at = None
             updated += 1
         db.commit()
@@ -572,13 +574,18 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
             # todas canceladas pelo processamento seguinte.
             from app.services.ai_followups import (
                 MAX_UNANSWERED_CLOSING_FOLLOWUPS,
+                MAX_UNANSWERED_HOT_FOLLOWUPS,
                 MAX_UNANSWERED_FOLLOWUPS,
                 closing_awaits_customer,
+                hot_lead_awaits_customer,
+                followup_delay_for,
                 _followup_allowed,
             )
             limit_unanswered = (
                 MAX_UNANSWERED_CLOSING_FOLLOWUPS
                 if closing_awaits_customer(db, conversation.id)
+                else MAX_UNANSWERED_HOT_FOLLOWUPS
+                if hot_lead_awaits_customer(db, conversation.id)
                 else MAX_UNANSWERED_FOLLOWUPS
             )
             sent_since_reply = select(AIFollowupJob.id).where(
@@ -626,26 +633,13 @@ def _backfill_missing_followups(*, limit: int = 250) -> int:
                 step=next_step,
             )
             if job:
-                delay, _theme = followup_spec(next_step)
-                last_outbound_at = latest.created_at or utcnow()
-                ideal_due = utc_naive(
-                    next_business_time(
-                        last_outbound_at + delay,
-                        settings.default_timezone,
-                    )
-                ) or utcnow()
-                # Conversas que já venceram a janela entram na próxima janela útil,
-                # sem esperar mais um ciclo inteiro da cadência. Normalizamos para
-                # UTC naive, padrão interno do app, porque o PostgreSQL pode devolver
-                # created_at com tzinfo mesmo quando utcnow() é naive.
+                delay = followup_delay_for(db, conversation.id, next_step)
+                last_outbound_at = utc_naive(latest.created_at) or utcnow()
+                ideal_due = last_outbound_at + delay
+                # Sem janela comercial: atrasados ficam elegíveis imediatamente,
+                # sem estender a espera por mais um ciclo inteiro.
                 now_utc = utcnow()
-                next_window = utc_naive(
-                    next_business_time(
-                        now_utc,
-                        settings.default_timezone,
-                    )
-                ) or now_utc
-                job.due_at = next_window if ideal_due <= now_utc else ideal_due
+                job.due_at = max(now_utc, ideal_due)
                 created += 1
 
         db.commit()
