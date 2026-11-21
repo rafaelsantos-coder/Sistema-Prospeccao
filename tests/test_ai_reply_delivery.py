@@ -499,3 +499,59 @@ def test_zapi_forbidden_buttons_does_not_try_fallback(chat, monkeypatch):
     assert process_next_ai_reply(db)
     assert pending.status == "FAILED"
     assert not sent_text
+
+
+def test_exhausted_rejected_buttons_are_rescued_once_as_text(chat, monkeypatch):
+    """Um envio rejeitado tres vezes volta apenas uma vez, sem provider ID."""
+    db, conversation, agent, _ = chat
+    inbound = _inbound(db, conversation, "Quero contratar agora")
+    pending = queue_ai_reply(
+        db, conversation=conversation, agent=agent,
+        inbound_id=inbound.id, text="Qual plano voce deseja?",
+        buttons=[{"id": "650", "label": "Fibra 650 Mega"}],
+    )
+    delivery = db.scalar(select(AIReplyDelivery))
+    pending.status = "FAILED"
+    delivery.attempts = 3
+    delivery.available_at = utcnow() - timedelta(seconds=10)
+    db.commit()
+    sent_text = []
+    def send_text(**kwargs):
+        sent_text.append(kwargs)
+        return {"messageId": "resgate-texto-456"}
+
+    monkeypatch.setattr(
+        "app.services.zapi_instances.service_for_conversation",
+        lambda *_: SimpleNamespace(
+            send_text=send_text,
+            send_button_list=lambda **_: pytest.fail("nao reenviar botoes rejeitados"),
+        ),
+    )
+    assert process_next_ai_reply(db)
+    assert pending.status == "SENT"
+    assert pending.message_type == "TEXT"
+    assert delivery.link_label == "TEXT_RESCUE_V1"
+    assert delivery.attempts == 4
+    assert "1. Fibra 650 Mega" in sent_text[0]["message"]
+    assert "\n" in sent_text[0]["message"]
+    assert not process_next_ai_reply(db)
+    assert len(sent_text) == 1
+
+
+def test_failed_buttons_with_provider_id_never_rescue(chat, monkeypatch):
+    """Com ID confirmado no provedor, reenvio pode duplicar: bloquear."""
+    db, conversation, agent, _ = chat
+    inbound = _inbound(db, conversation, "Quero contratar agora")
+    pending = queue_ai_reply(
+        db, conversation=conversation, agent=agent,
+        inbound_id=inbound.id, text="Escolha:",
+        buttons=[{"id": "650", "label": "Fibra 650 Mega"}],
+    )
+    delivery = db.scalar(select(AIReplyDelivery))
+    pending.status = "FAILED"
+    pending.provider_message_id = "id-previamente-aceito"
+    delivery.attempts = 3
+    delivery.available_at = utcnow() - timedelta(seconds=10)
+    db.commit()
+    assert not process_next_ai_reply(db)
+    assert delivery.link_label == ""
