@@ -22,6 +22,8 @@ from app.models import (
     Message,
 )
 from app.services import dispatch_offer
+from app.services.ai_queue_scope import is_dedicated_ai_queue
+from app.services.queue_routing import queue_for_conversation
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT, followup_spec
 from app.services.audit import write_audit
@@ -645,8 +647,12 @@ def _followup_spacing_hold(
     from app.services.ai_sdr import human_stepped_in  # noqa: PLC0415
 
     conversation = db.get(Conversation, conversation_id)
-    if conversation is not None and human_stepped_in(db, conversation):
-        # O gate de ownership cancela; aqui só preservamos a proteção a rajadas.
+    if (
+        conversation is not None
+        and not is_dedicated_ai_queue(queue_for_conversation(db, conversation.id))
+        and human_stepped_in(db, conversation)
+    ):
+        # Fora da fila dedicada, preservar o espaçamento após a atuação humana.
         return now + timedelta(minutes=30)
     last_outbound_at = db.scalar(
         select(Message.created_at)
@@ -716,7 +722,10 @@ def _followup_allowed(
             return False, "OWNER_SDR_AI"
     # O vendedor humano tem prioridade: não disputar a conversa com a IA.
     from app.services.ai_sdr import human_is_attending, human_stepped_in  # noqa: PLC0415
-    if human_is_attending(db, conversation) or human_stepped_in(db, conversation):
+    if human_is_attending(db, conversation) or (
+        not is_dedicated_ai_queue(queue_for_conversation(db, conversation.id))
+        and human_stepped_in(db, conversation)
+    ):
         return False, "ATENDIMENTO_HUMANO_ATIVO"
     # "Pausar IA" na fila: a IA não puxa conversa (nem SDR nem Vendedor IA).
     # O Vendedor IA ainda responde quem escrever e entrega contrato/assinatura.
