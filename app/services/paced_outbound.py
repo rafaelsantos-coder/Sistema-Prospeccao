@@ -31,6 +31,8 @@ from app.timeutils import utcnow, utc_naive
 LOG = logging.getLogger("sulnet_paced_outbound")
 PACING_SECONDS = max(30, int(os.getenv("ZAPI_FIRST_CONTACT_INTERVAL_SECONDS", "30")))
 PACING_REPLY_HOURS = 24
+# Evita bloquear para sempre uma instância após SIGKILL. Nunca reenfileira o item.
+STALE_PROCESSING_SECONDS = max(600, int(os.getenv("ZAPI_PACING_STALE_SECONDS", "900")))
 
 
 def is_live_conversation(db: Session, conversation: Conversation) -> bool:
@@ -115,10 +117,44 @@ def queue_manual_message(
     return message, item
 
 
+def expire_uncertain_processing(db: Session) -> int:
+    """Concilia PROCESSING órfãos sem tentar reenviar a mensagem."""
+    cutoff = utcnow() - timedelta(seconds=STALE_PROCESSING_SECONDS)
+    old = list(db.scalars(
+        select(PacedOutboundMessage)
+        .where(
+            PacedOutboundMessage.status == "PROCESSING",
+            func.coalesce(
+                PacedOutboundMessage.claimed_at,
+                PacedOutboundMessage.created_at,
+            ) <= cutoff,
+        )
+        .order_by(PacedOutboundMessage.id)
+        .with_for_update(skip_locked=True)
+        .limit(100)
+    ))
+    for row in old:
+        row.status = "UNKNOWN"
+        row.error = (
+            "Processo interrompido ou sem confirmação; conferir no WhatsApp "
+            "antes de qualquer novo contato."
+        )
+        message = db.get(Message, row.message_id)
+        if message is not None and message.status in {"PENDING", "PROCESSING"}:
+            message.status = "UNKNOWN"
+    if old:
+        # O SessionLocal usa autoflush=False: o SELECT de inflight abaixo
+        # precisa enxergar imediatamente os PROCESSING liberados.
+        db.flush()
+        LOG.warning("paced_outbound_stale_reconciled count=%s", len(old))
+    return len(old)
+
+
 def process_one_pending() -> str:
     """Processa uma entrada vencida; erro ambiguo nunca gera reenvio invisivel."""
     with SessionLocal() as db:
         with db.begin():
+            expire_uncertain_processing(db)
             candidates = list(db.scalars(
                 select(PacedOutboundMessage)
                 .where(
@@ -217,12 +253,30 @@ def process_one_pending() -> str:
                 else:
                     raise ZApiError("Tipo de mensagem nao suportado pelo agendador.")
         except Exception as exc:
-            LOG.warning("paced_outbound_failed item=%s type=%s", item_id, type(exc).__name__)
-            item.status = "BLOCKED" if isinstance(exc, ZApiBlacklistedRecipient) else "FAILED"
+            # Não confundir resposta externa ausente com recusa comprovada.
+            # Um timeout pode ocorrer após o aceite da Z-API; nunca devolver
+            # esse item à agenda nem exibir confirmação falsa ao vendedor.
+            code = getattr(exc, "status_code", None)
+            blocked = isinstance(exc, ZApiBlacklistedRecipient)
+            definite_refusal = isinstance(exc, ZApiError) and code in {
+                400, 401, 403, 404, 422,
+            }
+            if blocked:
+                item.status = "BLOCKED"
+                msg.status = "FAILED"
+            elif definite_refusal:
+                item.status = "FAILED"
+                msg.status = "FAILED"
+            else:
+                item.status = "UNKNOWN"
+                msg.status = "UNKNOWN"
             item.error = str(exc)[:300]
-            msg.status = "FAILED"
+            LOG.warning(
+                "paced_outbound_outcome item=%s status=%s error_type=%s",
+                item_id, item.status, type(exc).__name__,
+            )
             db.commit()
-            return "failed"
+            return "unknown" if item.status == "UNKNOWN" else "failed"
 
         provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
         zaap_id = str(result.get("zaapId") or "").strip() or None
