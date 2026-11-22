@@ -23,7 +23,6 @@ from app.services.voice_test import aware, validate_test_phone
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 ENGINE_HEARTBEAT_MAX = timedelta(seconds=65)
 SIP_VERIFICATION_MAX = timedelta(hours=1)
-MAX_CALLS_PER_DAY = 100
 MIN_SECONDS_BETWEEN_CALLS = 60
 MAX_ACTIVE_CALLS_PER_INSTANCE = 1
 
@@ -204,7 +203,7 @@ def next_attempt_allowed(db: Session, campaign: VoiceCampaign, at: datetime | No
     now = at or datetime.now(timezone.utc)
     if not within_call_window(campaign, now):
         return False
-    if campaign_daily_count(db, campaign, now) >= min(campaign.daily_limit, MAX_CALLS_PER_DAY):
+    if campaign_daily_count(db, campaign, now) >= campaign.daily_limit:
         return False
     seconds = max(MIN_SECONDS_BETWEEN_CALLS, campaign.interval_seconds)
     return bool(not campaign.last_call_at or (now - aware(campaign.last_call_at)).total_seconds() >= seconds)
