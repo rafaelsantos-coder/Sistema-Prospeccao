@@ -94,9 +94,10 @@ def send_ops_alert(
     text: str,
     exclude_instance_ids: set[int] | None = None,
     cooldown: timedelta | None = None,
+    recipient_phone: str | None = None,
 ) -> bool:
-    """Envia o aviso uma vez por chave. Devolve True quando enviou."""
-    phone = _digits(settings.ops_alert_phone)
+    """Envia o aviso uma vez por chave. Destinatario explicito so por chamada autorizada."""
+    phone = _digits(recipient_phone if recipient_phone is not None else settings.ops_alert_phone)
     if not phone:
         return False
     if _already_sent(db, key, cooldown):
