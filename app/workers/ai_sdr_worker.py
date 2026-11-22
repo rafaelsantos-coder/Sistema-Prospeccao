@@ -1389,6 +1389,18 @@ def run() -> None:
             )
         if not general_queues:
             LOG.error("sulia_general_commercial_missing_queue")
+    # Avisos individuais solicitados pelo gestor em 22/11/2026.
+    # Dados e status consultados diretamente no banco no momento do envio.
+    # Cada conversa tem chave de auditoria propria; reinicios nao duplicam.
+    try:
+        from app.services.manual_human_review_notices import notify_two_human_review_cases
+
+        with SessionLocal() as notice_db:
+            result = notify_two_human_review_cases(notice_db)
+            notice_db.commit()
+            LOG.warning("manual_human_review_notification_result=%s", result)
+    except Exception:
+        LOG.exception("Falha nos avisos pontuais de revisao humana.")
     if settings.ai_maintenance_enabled and settings.ai_supervisor_shadow_enabled:
         supervisor_thread = threading.Thread(
             target=run_shadow_supervisor_loop,
