@@ -13,7 +13,7 @@ def test_two_distinct_notifications_contain_contact_status_and_reason(monkeypatc
             _, general_id, _, _ = _setup(db)
             for conversation_id, name, phone, body in (
                 (4802, "Contato Exemplo A", "5555999004802",
-                 "Obrigado pelo contato. Responderemos em breve."),
+                 "Agradecemos pelo contato. Responderemos em breve."),
                 (4887, "Contato Exemplo B", "5555999004887",
                  "Mensagem automática: estamos fora do nosso horário de atendimento."),
             ):
