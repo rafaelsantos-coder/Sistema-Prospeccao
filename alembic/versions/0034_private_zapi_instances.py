@@ -13,14 +13,24 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("zapi_instances", sa.Column("exclusive_access", sa.Boolean(), nullable=False, server_default=sa.false()))
-    op.add_column("zapi_instances", sa.Column("exclusive_user_id", sa.Integer(), nullable=True))
-    op.create_index("ix_zapi_instances_exclusive_access", "zapi_instances", ["exclusive_access"])
-    op.create_index("ix_zapi_instances_exclusive_user_id", "zapi_instances", ["exclusive_user_id"])
-    with op.batch_alter_table("zapi_instances") as batch:
-        batch.create_foreign_key("fk_zapi_instances_exclusive_user_id", "users", ["exclusive_user_id"], ["id"])
-
     db = op.get_bind()
+    # Tests may create the current ORM schema before applying Alembic.
+    # Production databases normally have neither column yet.
+    columns = {c["name"] for c in sa.inspect(db).get_columns("zapi_instances")}
+    if "exclusive_access" not in columns:
+        op.add_column("zapi_instances", sa.Column("exclusive_access", sa.Boolean(), nullable=False, server_default=sa.false()))
+    if "exclusive_user_id" not in columns:
+        op.add_column("zapi_instances", sa.Column("exclusive_user_id", sa.Integer(), nullable=True))
+    indexes = {i["name"] for i in sa.inspect(db).get_indexes("zapi_instances")}
+    if "ix_zapi_instances_exclusive_access" not in indexes:
+        op.create_index("ix_zapi_instances_exclusive_access", "zapi_instances", ["exclusive_access"])
+    if "ix_zapi_instances_exclusive_user_id" not in indexes:
+        op.create_index("ix_zapi_instances_exclusive_user_id", "zapi_instances", ["exclusive_user_id"])
+    keys = sa.inspect(db).get_foreign_keys("zapi_instances")
+    if not any("exclusive_user_id" in fk.get("constrained_columns", []) for fk in keys):
+        with op.batch_alter_table("zapi_instances") as batch:
+            batch.create_foreign_key("fk_zapi_instances_exclusive_user_id", "users", ["exclusive_user_id"], ["id"])
+
     # The known instance is identified by its *full* provider ID using its
     # screenshot suffix AND its registered number/name. Never assign a guessed user.
     matches = db.execute(sa.text(
