@@ -51,9 +51,17 @@ def upgrade() -> None:
         "(lower(trim(name)) = 'maria gabriela' OR lower(trim(name)) = 'maria gabriela - sulnet')"
     )).mappings().all()
     if len(users) == 1:
+        owner = int(users[0]["id"])
         db.execute(sa.text(
             "UPDATE zapi_instances SET exclusive_user_id = :user_id WHERE id = :instance_id"
-        ), {"user_id": users[0]["id"], "instance_id": instance_db_id})
+        ), {"user_id": owner, "instance_id": instance_db_id})
+        # Existing threads must be available to Maria immediately, regardless
+        # of the previously assigned consultant or queue. Preserve history.
+        db.execute(sa.text(
+            "UPDATE conversations SET assigned_user_id = :user_id "
+            "WHERE id IN (SELECT conversation_id FROM conversation_zapi_instances "
+            "WHERE zapi_instance_id = :instance_id)"
+        ), {"user_id": owner, "instance_id": instance_db_id})
 
 
 def downgrade() -> None:
