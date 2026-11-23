@@ -133,7 +133,7 @@
           <th>Campanha</th>
           <th>Fila</th>
           <th>Intervalo</th>
-          <th>Progresso</th>
+          <th>Progresso / entrega</th>
           <th>Responderam</th>
           <th>Status</th>
           <th>Criado por</th>
@@ -153,10 +153,13 @@
           <td>{{ item.interval_seconds }}s<span class="table-subline">{{ item.daily_limit }}/dia{% if item.window_start %} · {{ item.window_start }}–{{ item.window_end }}{% endif %}</span></td>
           <td>
             <strong>{{ sent }}/{{ total }}</strong>
+            <span class="table-subline">Aceitos pela Z-API (entrega ainda não garantida)</span>
             <div class="dispatch-mini-progress"><i style="width: {{ '%.1f'|format(pct) }}%"></i></div>
-            <span class="table-subline">{{ dc.get('pending', 0) }} pendentes · {{ dc.get('failed', 0) }} falhas</span>
+            <span class="table-subline">{{ dc.get("delivered", 0) }} entregas confirmadas · {{ dc.get("read", 0) }} leituras</span>
+            <span class="table-subline">{{ dc.get("unconfirmed", 0) }} sem confirmação · {{ dc.get("provider_failed", 0) }} falhas de entrega</span>
+            <span class="table-subline">{{ dc.get('pending', 0) }} pendentes · {{ dc.get('failed', 0) }} falhas de envio</span>
           </td>
-          <td><strong>{{ dc.get("replied", 0) }}</strong><span class="table-subline">{{ "%.1f"|format(dc.get("replied", 0) / sent * 100 if sent else 0) }}% dos enviados</span></td>
+          <td><strong>{{ dc.get("replied", 0) }}</strong><span class="table-subline">{{ "%.1f"|format(dc.get("replied", 0) / sent * 100 if sent else 0) }}% dos aceitos pela Z-API</span></td>
           <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
           <td>{{ item.created_by.name if item.created_by else 'Sistema' }}</td>
           <td><a class="button button-ghost" href="/dispatches/{{ item.id }}">Abrir</a></td>
