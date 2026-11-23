@@ -59,6 +59,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .mvp-chat-heading { display: flex; flex-direction: column; min-width: 0; }
 .mvp-chat-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
 .mvp-chat-heading span { color: #7e8b92; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mvp-claim { margin-left: auto; padding: 8px 10px; border: 0; border-radius: 9px; font-size: 12px; font-weight: 700; color: #fff; background: var(--mvp-orange); white-space: nowrap; }
 .mvp-chat-status { margin-left: auto; color: #8b969d; font-size: 11px; white-space: nowrap; }
 .mvp-chat-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; gap: 8px; color: #68757d; padding: 24px; }
 .mvp-chat-placeholder strong { color: #31404a; font-size: 19px; }
