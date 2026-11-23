@@ -12,7 +12,6 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from fastapi import HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models import User
 from app.services.access_control import (
     effective_permissions, first_accessible_page, has_permission, permission_for_request,
@@ -132,22 +131,8 @@ def get_current_user(request: Request, db: Session) -> User | None:
             headers={"Location": "/change-password"},
         )
     if user.must_change_password:
-        # Primeiro a troca da senha temporária; o MFA vem depois. Aplicar as
-        # duas regras ao mesmo tempo mandava /change-password -> /mfa/setup ->
-        # /change-password em ciclo (ERR_TOO_MANY_REDIRECTS no 1º acesso).
+        # A troca de senha temporaria continua obrigatoria no primeiro acesso.
         return user
-    if (
-        user.role.upper() in settings.required_mfa_roles
-        and not user.mfa_enabled
-        and request.url.path not in {
-            "/mfa/setup",
-            "/logout",
-        }
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_303_SEE_OTHER,
-            headers={"Location": "/mfa/setup"},
-        )
     # O check acontece em TODA requisição autenticada; remover um menu
     # jamais deixa URL direta ou POST liberado.
     request_method = getattr(request, "method", "GET")

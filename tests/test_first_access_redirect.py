@@ -1,7 +1,7 @@
-"""Primeiro acesso de usuário com senha temporária num perfil que exige MFA.
+"""Primeiro acesso: senha temporária exige troca, sem segunda autenticação.
 
-Regressão: /change-password redirecionava para /mfa/setup, que redirecionava de
-volta para /change-password (ERR_TOO_MANY_REDIRECTS).
+Mesmo com a lista legada de perfis MFA configurada, o usuário não deve ser
+obrigado a configurar um aplicativo autenticador.
 """
 
 from __future__ import annotations
@@ -64,8 +64,8 @@ def test_mfa_setup_sends_back_to_password_first(mfa_for_gestor):
     assert _location("/mfa/setup", _user()) == "/change-password"
 
 
-def test_after_password_change_mfa_is_required(mfa_for_gestor):
+def test_after_password_change_mfa_is_not_required(mfa_for_gestor):
     user = _user(must_change_password=False)
 
-    assert _location("/dashboard", user) == "/mfa/setup"
+    assert _location("/dashboard", user) is None
     assert _location("/mfa/setup", user) is None
