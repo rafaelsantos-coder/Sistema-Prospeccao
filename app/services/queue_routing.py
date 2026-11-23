@@ -146,6 +146,43 @@ def set_lead_queue_preference(
     return preference
 
 
+
+def set_lead_queue_preferences_bulk(
+    db: Session,
+    lead_ids: list[int],
+    queue_id: int,
+    *,
+    source: str,
+) -> None:
+    """Atualiza preferências de importação em lotes, com UPSERT atômico.
+
+    A ordenação dos IDs evita inversões de locks entre importações concorrentes.
+    Uma única consulta por lote substitui milhares de consultas + flush individuais.
+    """
+    ids = sorted({int(item) for item in lead_ids if item})
+    if not ids:
+        return
+    dialect = db.get_bind().dialect.name
+    if dialect not in {"postgresql", "sqlite"}:
+        for lead_id in ids:
+            set_lead_queue_preference(db, lead_id, queue_id, source=source)
+        return
+
+    db.flush()
+    insert = pg_insert if dialect == "postgresql" else sqlite_insert
+    for start in range(0, len(ids), 100):
+        values = [
+            {"lead_id": lead_id, "queue_id": queue_id, "source": source}
+            for lead_id in ids[start : start + 100]
+        ]
+        statement = insert(LeadQueuePreference).values(values)
+        statement = statement.on_conflict_do_update(
+            index_elements=[LeadQueuePreference.lead_id],
+            set_={"queue_id": queue_id, "source": source, "updated_at": utcnow()},
+        )
+        db.execute(statement)
+
+
 def bind_campaign_queue(db: Session, campaign_id: int, queue_id: int) -> CampaignQueueLink:
     link = db.scalar(
         select(CampaignQueueLink).where(CampaignQueueLink.campaign_id == campaign_id)
