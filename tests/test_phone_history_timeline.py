@@ -39,9 +39,9 @@ def test_phone_history_unifies_legacy_contacts_and_transfer_events():
         db = SessionLocal()
         try:
             now = utcnow()
-            old = Contact(phone="559688877991", name="Cliente Antigo")
-            current = Contact(phone="55559688877991", name="Cliente Atual")
-            unrelated = Contact(phone="55559688877992", name="Outro Cliente")
+            old = Contact(phone="55988877991", name="Cliente Antigo")
+            current = Contact(phone="5555988877991", name="Cliente Atual")
+            unrelated = Contact(phone="5555988877992", name="Outro Cliente")
             db.add_all([old, current, unrelated])
             db.flush()
 
@@ -107,8 +107,8 @@ def test_phone_history_unifies_legacy_contacts_and_transfer_events():
 def test_history_phone_does_not_guess_ninth_digit():
     from app.services.scoring import normalize_phone
 
-    assert normalize_phone("55 55 96888-77991") == "55559688877991"
-    assert normalize_phone("55 55 6888-77991") == "5555688877991"
-    assert normalize_phone("55 55 96888-77991") != normalize_phone(
-        "55 55 6888-77991"
+    assert normalize_phone("55 55 98887-7991") == "5555988877991"
+    assert normalize_phone("55 55 8887-7991") == "555588877991"
+    assert normalize_phone("55 55 98887-7991") != normalize_phone(
+        "55 55 8887-7991"
     )
