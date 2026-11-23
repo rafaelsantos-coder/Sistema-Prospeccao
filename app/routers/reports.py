@@ -17,7 +17,7 @@ from app.models import (
     ServiceQueue,
     User,
 )
-from app.security import get_current_user
+from app.security import get_current_user, require_roles
 from app.services.audit import write_audit
 from app.services.chat_reports import (
     ChatReportFilters,
@@ -128,6 +128,8 @@ def whatsapp_reports(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    # LGPD: extratos historicos e conteudo de conversas somente para gestao.
+    require_roles(user, "ADMIN", "GESTOR")
 
     filters = _filters_from_request(request)
     snapshot = build_chat_report(db, user, filters)
@@ -154,6 +156,8 @@ def export_conversations_csv(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    # LGPD: extratos historicos e conteudo de conversas somente para gestao.
+    require_roles(user, "ADMIN", "GESTOR")
     filters = _filters_from_request(request)
     report = build_chat_report(db, user, filters)
 
@@ -222,6 +226,8 @@ def export_ai_journey_csv(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    # LGPD: extratos historicos e conteudo de conversas somente para gestao.
+    require_roles(user, "ADMIN", "GESTOR")
 
     filters = _filters_from_request(request)
     report = build_chat_report(db, user, filters)
@@ -355,6 +361,8 @@ def export_messages_csv(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    # LGPD: extratos historicos e conteudo de conversas somente para gestao.
+    require_roles(user, "ADMIN", "GESTOR")
     filters = _filters_from_request(request)
     report = build_chat_report(db, user, filters)
 
@@ -426,6 +434,8 @@ def export_audit_csv(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    # LGPD: extratos historicos e conteudo de conversas somente para gestao.
+    require_roles(user, "ADMIN", "GESTOR")
     filters = _filters_from_request(request)
     report = build_chat_report(db, user, filters)
 
@@ -456,6 +466,8 @@ def export_management_pdf(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    # LGPD: extratos historicos e conteudo de conversas somente para gestao.
+    require_roles(user, "ADMIN", "GESTOR")
     filters = _filters_from_request(request)
     report = build_chat_report(db, user, filters)
     payload = build_management_report_pdf(report, _period_label(filters))
@@ -485,6 +497,8 @@ def export_conversation_csv(
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    # LGPD: extratos historicos e conteudo de conversas somente para gestao.
+    require_roles(user, "ADMIN", "GESTOR")
     conversation = _conversation_for_user(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -546,6 +560,8 @@ def export_conversation_pdf(
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    # LGPD: extratos historicos e conteudo de conversas somente para gestao.
+    require_roles(user, "ADMIN", "GESTOR")
     conversation = _conversation_for_user(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
