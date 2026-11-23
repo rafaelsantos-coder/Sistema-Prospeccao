@@ -120,6 +120,30 @@ def home_wifi_answer(context: dict) -> str | None:
         prefix = "Você tem razão. Desculpe por não responder sua pergunta antes. "
         if re.search(r"\bnao (?:sou|moro|estou)\b", _fold(latest)):
             prefix = "Desculpe por presumir sua cidade e por não responder sua pergunta. "
+    floors_known = False
+    area = ""
+    previous_outbound = ""
+    for row in (context.get("history") or [])[-40:]:
+        body = str(row.get("body") or "")
+        if str(row.get("direction") or "").upper() == "OUTBOUND":
+            previous_outbound = _fold(body)
+            continue
+        if str(row.get("direction") or "").upper() != "INBOUND":
+            continue
+        folded = _fold(body)
+        match = re.search(r"\\b(\\d{2,4})\\s*(?:m2|metros quadrados)\\b", folded)
+        if match:
+            area = match.group(1)
+        if "mais de um" in folded and ("andares" in previous_outbound or "pisos" in previous_outbound):
+            floors_known = True
+    if area and floors_known:
+        return (
+            prefix
+            + f"Em uma casa de {area} m² com mais de um andar, "
+            "não dá para garantir que um único roteador cubra todos os cômodos: "
+            "paredes e distância afetam o Wi-Fi, independentemente dos 800 Mega. "
+            "Podemos avaliar a distribuição dos pontos de Wi-Fi antes de definir se precisa de outro roteador?"
+        )
     return (
         prefix
         + "Sobre a cobertura dentro da casa: o Wi-Fi pode alcançar todos os cômodos, "
