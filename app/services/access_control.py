@@ -292,6 +292,8 @@ def permission_for_request(path: str, method: str) -> str | None:
         return "conversations.reply"
     if path == "/conversations-intelligence":
         return "reports.view"
+    if path == "/conversas" or path.startswith("/conversas/"):
+        return "conversations.reply" if write else "conversations.view"
     if path.startswith("/api/conversations/"):
         return "conversations.view"
     if path == "/conversations" or path.startswith("/conversations/"):
