@@ -35,6 +35,7 @@ from app.services.conversation_engine import (
     update_message_statuses,
 )
 from app.services.followups import next_followup_after
+from app.services.instance_privacy import require_instance_access
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
 from app.services.queue_routing import (
@@ -310,6 +311,12 @@ def _process_zapi_payload(
         )
         return {"ok": True, "ignored": "unsupported_or_unmatched"}
 
+    # Exclusive instance overrides any round-robin / prior assignment.
+    if zapi_instance_id is not None:
+        inbound_instance = db.get(ZApiInstance, zapi_instance_id)
+        if inbound_instance and inbound_instance.exclusive_access:
+            # NULL owner: no human user may read the conversation (fail closed).
+            conversation.assigned_user_id = inbound_instance.exclusive_user_id
     opt_out = False
     if created and message.direction == "INBOUND":
         opt_out = _is_explicit_opt_out(message.body)
@@ -1058,6 +1065,7 @@ def send_lead_whatsapp(
         flash(request, "Digite uma mensagem antes de enviar.", "warning")
         return RedirectResponse(f"/leads/{lead.id}", status_code=303)
     instance = queue_instance(db, service_queue.id)
+    require_instance_access(user, instance)
     try:
         contact = ensure_contact(db, lead.phone, lead=lead)
     except ValueError:
