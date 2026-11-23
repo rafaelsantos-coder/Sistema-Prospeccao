@@ -76,6 +76,10 @@ from app.services.crm_manual_registration import (
     registration_status,
     seller_for_user,
 )
+from app.services.instance_privacy import (
+    require_instance_access, require_conversation_instance_access,
+    visible_message_clause, protected_conversation,
+)
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
 from app.services.metrics import apply_user_scope
@@ -153,11 +157,11 @@ def _get_conversation(db: Session, user: User, conversation_id: int) -> Conversa
     return db.scalar(_conversation_stmt(user).where(Conversation.id == conversation_id))
 
 
-def _contact_history_messages(db: Session, conversation: Conversation) -> list[Message]:
+def _contact_history_messages(db: Session, conversation: Conversation, user: User) -> list[Message]:
     return list(
         db.scalars(
             select(Message)
-            .where(Message.contact_id == conversation.contact_id)
+            .where(Message.contact_id == conversation.contact_id, visible_message_clause(user))
             .options(selectinload(Message.sender_user))
             .order_by(Message.created_at.asc(), Message.id.asc())
         )
@@ -171,6 +175,7 @@ def _message_visible_through_contact(
 ) -> bool:
     if not message.contact_id:
         return False
+    require_conversation_instance_access(db, user, message.conversation_id)
     visible_conversation = db.scalar(
         _conversation_stmt(user)
         .where(Conversation.contact_id == message.contact_id)
@@ -679,8 +684,8 @@ def _render_inbox(
         if selected.unread_count:
             mark_conversation_read(db, selected)
             db.commit()
-        messages = _contact_history_messages(db, selected)
-        users = _eligible_users(db, user, selected)
+        messages = _contact_history_messages(db, selected, user)
+        users = [] if protected_conversation(db, selected.id) else _eligible_users(db, user, selected)
         transfer_online_ids = set(online_user_ids(db))
         users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
         ai_queue = ai_transfer_queue(db)
@@ -893,6 +898,7 @@ def quick_start_whatsapp_conversation(
         flash(request, "Selecione uma fila WhatsApp autorizada para iniciar a conversa.", "warning")
         return RedirectResponse("/conversations", status_code=303)
     queue, instance = allowed[queue_id]
+    require_instance_access(user, instance)
 
     normalized = normalize_phone(phone)
     if not normalized:
@@ -1416,6 +1422,8 @@ def assign_conversation(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if protected_conversation(db, conversation.id):
+        raise HTTPException(status_code=403, detail="Instancia de atendimento exclusivo.")
     eligible = {item.id: item for item in _eligible_users(db, user, conversation)}
     target = eligible.get(assigned_user_id)
     if not target:
@@ -1727,6 +1735,7 @@ def conversation_messages_api(
         .where(
             Message.contact_id == conversation.contact_id,
             Message.id > max(after_id, 0),
+            visible_message_clause(user),
         )
         .options(selectinload(Message.sender_user))
         .order_by(Message.id.asc())
