@@ -98,7 +98,10 @@ def test_conversas_mvp_json_text_send_reuses_secure_inbox(monkeypatch):
         assert response.json()["ok"] is True
         assert response.json()["status"] == "SENT"
         assert isinstance(response.json()["message_id"], int)
-        assert client.get(target + "/messages").status_code in {200, 404}
+        conversation_id = target.rsplit("/", 1)[-1]
+        messages = client.get(f"/api/conversations/{conversation_id}/messages")
+        assert messages.status_code == 200
+        assert any(item["body"] == "Ola pelo MVP" for item in messages.json()["items"])
 
 
 def test_conversas_mvp_json_send_blocks_contact(monkeypatch):
