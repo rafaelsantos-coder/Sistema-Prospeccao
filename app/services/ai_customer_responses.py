@@ -6,6 +6,7 @@ Nunca acessa outros numeros, usuarios, instancias ou historicos.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from app.services.ai_customer_questions import (
     _fold, context_denies_city, home_wifi_answer,
@@ -37,6 +38,13 @@ _BUDGET = re.compile(
 _PRICE_OBJECTION = re.compile(r"\b(?:caro|cara|muito caro|acima do que pago|nao vale|fora do orcamento)\b")
 _CITY_CORRECTION = re.compile(r"\b(?:nao sou de|nao moro em|nao e em|nao estou em)\b")
 _PLAN_SPEED = re.compile(r"\b(250|500|650|800)\s*(?:mega|mb|mbps)\b")
+
+
+def _money_text(value: str | None) -> str:
+    # Mantem virgula e ponto decimal, que _fold remove por ser para busca textual.
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"r\s*\$\s*", "", text.casefold())
 
 
 def _result(
@@ -142,6 +150,7 @@ def _current_plan_from_history(context: dict) -> tuple[int | None, float | None,
     last_out = ""
     for row in (context.get("history") or [])[-80:]:
         body = _fold(row.get("body"))
+        money_body = _money_text(str(row.get("body") or ""))
         if str(row.get("direction") or "").upper() == "OUTBOUND":
             last_out = body
             continue
@@ -152,10 +161,10 @@ def _current_plan_from_history(context: dict) -> tuple[int | None, float | None,
             if match:
                 speed = int(match.group(1))
         if ("paga" in last_out or "quanto voce paga" in last_out) and "hoje" in last_out:
-            match = re.fullmatch(r"(?:r )?(\d{2,4}(?:[.,]\d{1,2})?)", body)
+            match = re.fullmatch(r"\s*(?:r\s*)?(\d{2,4}(?:[.,]\d{1,2})?)\s*", money_body)
             if match:
                 price = float(match.group(1).replace(",", "."))
-        match = re.search(r"\b(?:eu pago|pago hoje|pago atualmente)\s*(?:r )?(\d{2,4}(?:[.,]\d{1,2})?)\b", body)
+        match = re.search(r"\b(?:eu pago|pago hoje|pago atualmente)\s*(?:r )?(\d{2,4}(?:[.,]\d{1,2})?)\b", money_body)
         if match:
             price = float(match.group(1).replace(",", "."))
         match = re.search(r"\b(?:tenho|uso|minha internet e de)\s*(\d{2,4})\s*(?:mega|mb|mbps)\b", body)
@@ -168,7 +177,7 @@ def _current_plan_from_history(context: dict) -> tuple[int | None, float | None,
 
 def _price_target(context: dict) -> AIDecision | None:
     latest = _fold(context.get("latest_customer_message"))
-    match = _BUDGET.search(latest)
+    match = _BUDGET.search(_money_text(str(context.get("latest_customer_message") or "")))
     if not match:
         return None
     target = float(next(p for p in match.groups() if p).replace(",", "."))
@@ -242,10 +251,24 @@ def _city_correction(context: dict) -> AIDecision | None:
 
 def priority_reply(context: dict) -> AIDecision | None:
     """Prioridades fixas e restritas: suporte, pergunta objetiva, custo e correcao."""
-    return (
+    result = (
         _invoice(context)
         or _home(context)
         or _router_price(context)
         or _price_target(context)
         or _city_correction(context)
     )
+    if result is None or result.service_redirect:
+        return result
+    # Nao apaga o produto/plano da jornada quando a resposta e apenas tecnica.
+    if not result.offer_plan_code:
+        plan = _plan_from_sales_context(result, context)
+        if plan:
+            result.offer_plan_code = str(plan["code"])
+            result.offer_price = float(plan["price_fidelity"])
+    facts = context.get("confirmed_facts") or {}
+    journey = (context.get("lead") or {}).get("journey") or {}
+    result.qualification.desired_product = (
+        str(facts.get("desired_product") or journey.get("desired_product") or "") or None
+    )
+    return result
