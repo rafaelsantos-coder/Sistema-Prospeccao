@@ -929,3 +929,26 @@ def test_dispatch_details_and_csv_show_actual_provider_delivery_proof():
         assert "ID-COMPROVANTE-RECEIVED" in csv_response.text
         assert "Enviado" in csv_response.text
         assert "Status Z-API" in csv_response.text
+
+
+
+def test_dispatch_detail_shows_read_messages_in_separate_live_kpi():
+    """As leituras devem ter seu próprio cartão, sem duplicar o ID no HTML."""
+    with TestClient(app) as client:
+        _login_admin(client)
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "READ-KPI")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id, status="ATIVO"
+            )
+            db.add(dispatch)
+            db.commit()
+            dispatch_id = dispatch.id
+
+        detail = client.get(f"/dispatches/{dispatch_id}")
+        assert detail.status_code == 200
+        assert "<span>Mensagens lidas</span>" in detail.text
+        assert detail.text.count('id="dispatch-read-count"') == 1
+        assert '<strong id="dispatch-read-count">0</strong>' in detail.text
+        assert 'text("dispatch-read-count", totals.read || 0);' in detail.text
+        assert "já incluídas nas entregas" in detail.text
