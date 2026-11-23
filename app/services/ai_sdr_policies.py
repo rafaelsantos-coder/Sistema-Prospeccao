@@ -10,6 +10,13 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from app.models import Message
+from app.services.ai_customer_questions import (
+    context_denies_city,
+    denies_city,
+    is_home_wifi_question,
+    pending_home_wifi_question,
+    wants_prior_answer,
+)
 from app.services import ai_campaign_black as black
 from app.services.ai_quick_replies import QuickReply
 from app.services.ai_sdr_models import AIDecision, QualificationData
@@ -176,6 +183,11 @@ def _confirmed_facts_from_history(rows: list[Message] | list[dict]) -> dict:
             facts["city"] = city
             facts["sources"]["city"] = source
             answered.add("CITY")
+        elif facts["city"] and denies_city(body, str(facts["city"])):
+            # A retificacao explicita do cliente anula a cidade anterior.
+            facts["city"] = ""
+            facts["sources"].pop("city", None)
+            answered.discard("CITY")
 
     facts["answered_questions"] = sorted(answered)
     return facts
@@ -209,7 +221,7 @@ def _confirmed_city_from_text(value: str, previous_outbound: str = "") -> str:
         return ""
     city = matches[0]
     name = _fold_sales_text(city)
-    if re.search(rf"\bnao (?:e )?(?:em |de |para )?{name}\b", folded):
+    if denies_city(value, city) or re.search(rf"\bnao (?:e )?(?:em |de |para )?{name}\b", folded):
         return ""
     if asks_city or re.search(rf"\b(?:em|de|para|pra|cidade) {name}\b", folded):
         return city
@@ -469,6 +481,8 @@ def _sanitize_unconfirmed_customer_facts(
 ) -> AIDecision:
     inbound = _customer_inbound_text(context)
     qualification = decision.qualification
+    if qualification.city and context_denies_city(context, qualification.city):
+        qualification.city = None
     confirmed_customer_type = _customer_type_from_context(context)
     qualification.customer_type = (
         confirmed_customer_type if confirmed_customer_type else "NAO_INFORMADO"
@@ -567,22 +581,22 @@ def _normalized_city(value: str | None) -> str:
 
 
 def _city_from_sales_context(decision: AIDecision, context: dict) -> str:
-    fact_city = str((context.get("confirmed_facts") or {}).get("city") or "").strip()
-    if fact_city:
-        return fact_city
-
-    lead_city = str((context.get("lead") or {}).get("city") or "").strip()
-    if lead_city:
-        return lead_city
-
-    qualification_city = str(decision.qualification.city or "").strip()
-    if qualification_city:
-        return qualification_city
+    for candidate in (
+        (context.get("confirmed_facts") or {}).get("city"),
+        (context.get("lead") or {}).get("city"),
+        getattr(getattr(decision, "qualification", None), "city", None),
+    ):
+        city = str(candidate or "").strip()
+        if city and not context_denies_city(context, city):
+            return city
 
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
     for service_city in SERVICE_CITIES:
         city_key = _normalized_city(service_city)
-        if latest == city_key or city_key in latest:
+        if (
+            latest == city_key
+            or re.search(rf"\b{re.escape(city_key)}\b", latest)
+        ) and not context_denies_city(context, service_city):
             return service_city
     return ""
 
@@ -1787,6 +1801,9 @@ def _apply_router_information_policy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
+    # "O Wi-Fi pega na casa toda?" pergunta alcance, nao quantidade de aparelhos.
+    if is_home_wifi_question(str(context.get("latest_customer_message") or "")):
+        return decision
     if _customer_type_from_context(context) == "EMPRESA":
         return decision
 
@@ -2247,7 +2264,17 @@ _DIRECT_QUESTION_START = re.compile(
 
 def _customer_asked_direct_question(context: dict) -> bool:
     raw = str(context.get("latest_customer_message") or "")
-    return "?" in raw or bool(_DIRECT_QUESTION_START.match(_fold_sales_text(raw)))
+    folded = _fold_sales_text(raw)
+    return (
+        "?" in raw
+        or bool(_DIRECT_QUESTION_START.match(folded))
+        or bool(re.search(
+            r"\b(?:quero|queria|gostaria|preciso) saber (?:se|como|qual|quanto|onde)\b"
+            r"|\b(?:responda|responde) (?:o que|a pergunta)\b",
+            folded,
+        ))
+        or pending_home_wifi_question(context)
+    )
 
 
 def _sdr_reply_nearly_identical(decision: AIDecision, context: dict) -> bool:
@@ -2460,13 +2487,15 @@ def _service_city_in_text(value: str | None) -> str:
 
 
 def _known_city_for_fast_path(context: dict) -> str:
-    facts_city = str((context.get("confirmed_facts") or {}).get("city") or "").strip()
-    if facts_city:
-        return facts_city
-    lead_city = str((context.get("lead") or {}).get("city") or "").strip()
-    if lead_city:
-        return lead_city
-    return _service_city_in_text(str(context.get("latest_customer_message") or ""))
+    for value in (
+        (context.get("confirmed_facts") or {}).get("city"),
+        (context.get("lead") or {}).get("city"),
+    ):
+        city = str(value or "").strip()
+        if city and not context_denies_city(context, city):
+            return city
+    latest = _service_city_in_text(str(context.get("latest_customer_message") or ""))
+    return "" if context_denies_city(context, latest) else latest
 
 
 def _ad_style_plan_interest(value: str | None) -> bool:
@@ -2737,6 +2766,13 @@ def _apply_stagnation_strategy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
+    # Pergunta sobre produto ja em conversa nao e estagnacao. No primeiro
+    # contato, sem produto definido, ainda vale o filtro de identificacao.
+    if (
+        (_customer_asked_direct_question(context) and _product_already_in_talk(context))
+        or wants_prior_answer(context.get("latest_customer_message"))
+    ):
+        return decision
     if black.is_offer_question(decision.reply_text) or black.is_options_question(decision.reply_text):
         return decision  # etapa da campanha Black: não troca pela pergunta padrão
 
@@ -2897,7 +2933,11 @@ def _apply_journey_orchestration_policy(
         "CHOOSE_SEGMENT",
         "CONFIRM_CITY",
     }
-    if state in mandatory_gate_states:
+    active_product_question = (
+        _customer_asked_direct_question(context)
+        and _product_already_in_talk(context) in {"INTERNET", "MOBILE"}
+    )
+    if state in mandatory_gate_states and not active_product_question:
         decision = _apply_stagnation_strategy(decision, context)
         decision.journey_state = state
         decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS[state]
@@ -2917,7 +2957,7 @@ def _apply_journey_orchestration_policy(
     decision.stagnation_count = min(20, previous_count + 1) if same_position else 0
 
     repetitive = _sdr_reply_is_stale_repetition(decision, context)
-    if repetitive or decision.stagnation_count >= 3:
+    if (repetitive or decision.stagnation_count >= 3) and not _customer_asked_direct_question(context):
         decision = _apply_stagnation_strategy(decision, context)
         decision.journey_state = state
         decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS.get(

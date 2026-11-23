@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from app.services import ai_campaign_black as black
+from app.services.ai_customer_questions import context_denies_city
 from app.services.ai_quick_replies import QuickReply
 from app.services.ai_sdr_models import AIDecision, QualificationData
 from app.services.ai_sdr_policies import (
@@ -64,10 +65,11 @@ def _remembered_plan_number(context: dict, pattern: str, folded: str) -> int | N
 
 def _context_city(context: dict, latest: str, previous: str) -> str:
     facts = context.get("confirmed_facts") or {}
-    return (
+    candidate = (
         _confirmed_city_from_text(latest, previous)
         or str(facts.get("city") or "").strip()
     )
+    return candidate if candidate and not context_denies_city(context, candidate) else ""
 
 
 def _quote_decision(
@@ -222,6 +224,11 @@ def _quote_preference(context: dict) -> tuple[str, str, str, bool, bool] | None:
     latest = str(context.get("latest_customer_message") or "")
     folded = _fold_sales_text(latest)
     if not folded or _CONTRACT_QUESTION.search(folded) or _explicit_human_request(context):
+        return None
+    # 'Quanto fica com dois roteadores?' nao e pedido de tabela de planos.
+    if "roteador" in folded and re.search(
+        r"\b(?:quanto|preco|valor|fica|custa|sai)\b", folded
+    ):
         return None
     if any(cue in folded for cue in _EXPLICIT_CONTACT_STOP_CUES) or re.search(
         r"\b(?:nao (?:quero|tenho) (?:mais|interesse)|desisti|dispenso)\b", folded,
