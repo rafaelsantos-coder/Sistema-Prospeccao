@@ -75,7 +75,7 @@
         {% for instance in zapi_instances %}
           {% set zi = zapi_instance_info.get(instance.id, {}) %}
           <tr>
-            <td><strong>{{ instance.name }}</strong>{% if zi.get('device_name') %}<span class="table-subline">{{ zi.get('device_name') }}</span>{% endif %}</td>
+            <td><strong>{{ instance.name }}</strong>{% if zi.get('device_name') %}<span class="table-subline">{{ zi.get('device_name') }}</span>{% endif %}{% if instance.exclusive_access %}<span class="table-subline">🔒 Acesso exclusivo · {{ instance.exclusive_user.name if instance.exclusive_user else 'Aguardando vincular consultora' }}</span>{% endif %}</td>
             <td>
               <strong>{{ zi.get('phone_label') or instance.phone_label or 'Não identificado' }}</strong>
               {% if zi.get('duplicate_phone') %}<span class="table-subline" style="color:#b45309;font-weight:800;">Mesmo número em outra instância</span>{% elif zi.get('error') %}<span class="table-subline">Não foi possível consultar agora</span>{% else %}<span class="table-subline">Obtido automaticamente da Z-API</span>{% endif %}
