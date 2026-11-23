@@ -5,7 +5,7 @@ import secrets
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
@@ -14,11 +14,13 @@ from app.database import SessionLocal, get_db
 from app.models import (
     Activity,
     ConversationAssignment,
+    Conversation,
     ConversationZApiInstance,
     Lead,
     Message,
     ServiceQueue,
     ServiceQueueZApiInstance,
+    User,
     ZApiInstance,
 )
 from app.security import get_current_user, require_roles, validate_csrf
@@ -656,6 +658,7 @@ def edit_zapi_instance_page(
         settings_section="whatsapp",
         page_title="Editar instância WhatsApp",
         instance=instance,
+        consultants=list(db.scalars(select(User).where(User.active.is_(True), User.role == "CONSULTOR").order_by(User.name))),
     )
 
 
@@ -668,6 +671,8 @@ def update_zapi_instance_route(
     instance_token: str = Form(""),
     client_token_mode: str = Form("keep"),
     client_token: str = Form(""),
+    exclusive_access: bool = Form(False),
+    exclusive_user_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ):
     user, redirect = _current_user_or_redirect(request, db)
@@ -686,7 +691,15 @@ def update_zapi_instance_route(
             f"/settings/zapi/instances/{instance_db_id}/edit", status_code=303
         )
 
+    if exclusive_access:
+        target = db.get(User, exclusive_user_id) if exclusive_user_id else None
+        if not target or not target.active or target.role != "CONSULTOR":
+            raise HTTPException(status_code=400, detail="Selecione uma consultora ativa para o acesso exclusivo.")
+    else:
+        target = None
     instance.name = name.strip()
+    instance.exclusive_access = exclusive_access
+    instance.exclusive_user_id = target.id if target else None
     if instance_token.strip():
         instance.instance_token_encrypted = encrypt_secret(instance_token)
     if client_token_mode == "replace":
@@ -726,6 +739,17 @@ def update_zapi_instance_route(
     else:
         webhook_error = "URL pública da aplicação não configurada"
 
+    if target:
+        # Historical threads follow the dedicated owner without deleting history.
+        db.execute(
+            update(Conversation)
+            .where(Conversation.id.in_(
+                select(ConversationZApiInstance.conversation_id).where(
+                    ConversationZApiInstance.zapi_instance_id == instance.id
+                )
+            ))
+            .values(assigned_user_id=target.id)
+        )
     write_audit(
         db,
         user=user,
@@ -737,6 +761,8 @@ def update_zapi_instance_route(
             "connected": connected,
             "credentials_changed": bool(instance_token.strip() or client_token_mode != "keep"),
             "webhook_configured": webhook_error is None,
+            "exclusive_access": instance.exclusive_access,
+            "exclusive_user_id": instance.exclusive_user_id,
         },
     )
     db.commit()
