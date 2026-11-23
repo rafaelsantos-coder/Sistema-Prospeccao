@@ -159,6 +159,18 @@
         <span class="topbar-context">OPERAÇÃO COMERCIAL SULNET</span>
         <h1>{{ page_title }}</h1>
       </div>
+      {% if active_nav == 'conversations' and current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] %}
+      <section class="topbar-online-sellers" data-online-sellers aria-label="Vendedores online no WhatsApp">
+        <div class="topbar-online-sellers-heading">
+          <span class="topbar-online-sellers-status-dot" aria-hidden="true"></span>
+          <strong>Vendedores online</strong>
+          <span class="topbar-online-sellers-count" data-online-sellers-count aria-label="Total online">—</span>
+        </div>
+        <div class="topbar-online-sellers-list" data-online-sellers-list role="status" aria-live="polite">
+          <span class="topbar-online-sellers-empty">Consultando presença...</span>
+        </div>
+      </section>
+      {% endif %}
       <div class="topbar-actions">
         {% block topbar_actions %}{% endblock %}
         {% if 'crm.register' in current_user.permissions and page_title == "Conversas" and conversation is defined and conversation %}
