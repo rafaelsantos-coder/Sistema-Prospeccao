@@ -104,7 +104,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             )
 
         if request.url.path.startswith(
-            ("/login", "/change-password", "/settings", "/conversations", "/feasibility-map")
+            ("/login", "/change-password", "/settings", "/conversations", "/conversas", "/feasibility-map")
         ):
             response.headers.setdefault("Cache-Control", "no-store")
 
