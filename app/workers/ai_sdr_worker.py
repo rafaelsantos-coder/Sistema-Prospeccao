@@ -1401,6 +1401,19 @@ def run() -> None:
             LOG.warning("manual_human_review_notification_result=%s", result)
     except Exception:
         LOG.exception("Falha nos avisos pontuais de revisao humana.")
+    # Solicitação do gestor em 23/11: uma mensagem por contato elegível,
+    # somente casos com entrada humana após 18h e sem resposta confirmada.
+    # O canal Z-API é auditado e cada conversa tem chave única, sem duplicar
+    # em reinícios do worker. Não altera nenhuma conversa nem seus donos.
+    try:
+        from app.services.manual_evening_sales_notices import notify_evening_sales_review
+
+        with SessionLocal() as evening_db:
+            review = notify_evening_sales_review(evening_db)
+            evening_db.commit()
+            LOG.warning("sulia_evening_sales_review_result=%s", review)
+    except Exception:
+        LOG.exception("Falha no envio dos resumos de revisão comercial das 18h.")
     if settings.ai_maintenance_enabled and settings.ai_supervisor_shadow_enabled:
         supervisor_thread = threading.Thread(
             target=run_shadow_supervisor_loop,
