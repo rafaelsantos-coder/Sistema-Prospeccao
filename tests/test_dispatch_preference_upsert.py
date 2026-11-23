@@ -4,8 +4,8 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import LeadQueuePreference, ServiceQueue
-from app.services.queue_routing import set_lead_queue_preference
 from app.services.dispatch_queue import ensure_dispatch_lead
+from app.services.queue_routing import set_lead_queue_preference
 
 
 def test_dispatch_preference_upsert_keeps_one_row_after_repeated_imports():
