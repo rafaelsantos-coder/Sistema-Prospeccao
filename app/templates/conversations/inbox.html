@@ -324,8 +324,18 @@
     {% endif %}
 
     <div class="chat-stream" id="chat-stream">
-      <div class="chat-day-separator"><span>Histórico permanente</span></div>
-      {% for item in messages %}
+      <div class="chat-day-separator"><span>Histórico permanente por telefone · {{ conversation.contact.phone|phone_br }}</span></div>
+      {% for entry in history_timeline %}
+        {% if entry.kind == 'transfer' %}
+        <div class="message-note history-transfer-event" data-transfer-id="{{ entry.transfer.id }}">
+          <div>
+            <strong>↔ Transferência de atendimento</strong>
+            <p>{{ entry.transfer.assigned_by.name if entry.transfer.assigned_by else 'Sistema' }} → {{ entry.transfer.user.name if entry.transfer.user else 'Fila / sem responsável' }}</p>
+          </div>
+          <time>{{ entry.transfer.created_at|datetime_br }}</time>
+        </div>
+        {% else %}
+        {% set item = entry.message %}
         {% if item.direction == 'INTERNAL' %}
         <div class="message-note" data-message-id="{{ item.id }}">
           <div><strong>Nota interna · {{ item.sender_user.name if item.sender_user else 'Sistema' }}</strong><p>{{ item.body }}</p></div>
@@ -365,6 +375,7 @@
             </div>
           </div>
         </div>
+        {% endif %}
         {% endif %}
       {% else %}
       <div class="chat-zero" id="chat-zero">
