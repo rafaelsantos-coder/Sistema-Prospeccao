@@ -1,4 +1,4 @@
-"""Historico por telefone independente de contato legado, atendimento ou vendedor."""
+"""Privacidade: cada atendimento e isolado; histórico integral só na gestão."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def _login_admin(client: TestClient) -> None:
     assert response.status_code == 303
 
 
-def test_phone_history_unifies_legacy_contacts_and_transfer_events():
+def test_conversation_does_not_merge_legacy_phone_history_or_transfers():
     with TestClient(app) as client:
         _login_admin(client)
         db = SessionLocal()
@@ -83,25 +83,28 @@ def test_phone_history_unifies_legacy_contacts_and_transfer_events():
             ])
             db.commit()
             active_id = active.id
+            previous_id = previous.id
         finally:
             db.close()
 
         page = client.get(f"/conversations/{active_id}")
         assert page.status_code == 200
-        assert "Promessa comercial de 400 dias atras" in page.text
+        assert "Promessa comercial de 400 dias atras" not in page.text
         assert "Quero retomar a proposta" in page.text
         assert "Segredo de outro numero" not in page.text
-        assert "Transferência de atendimento" in page.text
-        assert page.text.index("Promessa comercial de 400 dias atras") < page.text.index(
-            "Transferência de atendimento"
-        ) < page.text.index("Quero retomar a proposta")
+        assert "Transferência de atendimento" not in page.text
 
         api = client.get(f"/api/conversations/{active_id}/messages?after_id=0")
         assert api.status_code == 200
         bodies = [item["body"] for item in api.json()["items"]]
-        assert "Promessa comercial de 400 dias atras" in bodies
+        assert "Promessa comercial de 400 dias atras" not in bodies
         assert "Quero retomar a proposta" in bodies
         assert "Segredo de outro numero" not in bodies
+
+        # O gestor continua podendo auditar a conversa antiga no relatorio.
+        report = client.get(f"/reports/whatsapp/conversations/{previous_id}.csv")
+        assert report.status_code == 200
+        assert "Promessa comercial de 400 dias atras" in report.content.decode("utf-8-sig")
 
 
 def test_history_phone_does_not_guess_ninth_digit():
