@@ -18,7 +18,6 @@ from app.models import (
     Message,
     ServiceQueue,
 )
-from app.timeutils import utcnow
 from app.services.dispatch_monitor import daily_capacity
 from app.services.dispatch_queue import (
     claim_next_dispatch_recipient,
@@ -30,6 +29,7 @@ from app.services.dispatch_queue import (
 from app.services.media_storage import MediaStorage
 from app.services.zapi import ZApiService, ZApiError
 from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
+from app.timeutils import utcnow
 
 
 def _csrf(html: str) -> str:
