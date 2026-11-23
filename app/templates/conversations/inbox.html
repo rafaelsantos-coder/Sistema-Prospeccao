@@ -198,7 +198,7 @@
             <strong>{{ item.contact.business_name or item.contact.name or item.contact.phone|phone_br }}</strong>
             <time>{{ item.last_message_at|datetime_br }}</time>
           </div>
-          <div class="conversation-preview">{{ item.last_message_preview or 'Conversa iniciada' }}</div>
+          <div class="conversation-preview">{{ conversation_previews.get(item.id, 'Conversa iniciada') }}</div>
           {% set item_queue = conversation_queue_labels.get(item.id) %}
           <div class="conversation-queue-row">
             {% if item_queue %}
@@ -324,7 +324,7 @@
     {% endif %}
 
     <div class="chat-stream" id="chat-stream">
-      <div class="chat-day-separator"><span>Histórico permanente por telefone · {{ conversation.contact.phone|phone_br }}</span></div>
+      <div class="chat-day-separator"><span>Mensagens deste atendimento · acesso restrito</span></div>
       {% for entry in history_timeline %}
         {% if entry.kind == 'transfer' %}
         <div class="message-note history-transfer-event" data-transfer-id="{{ entry.transfer.id }}">

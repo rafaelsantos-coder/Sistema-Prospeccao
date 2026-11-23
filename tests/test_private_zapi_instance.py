@@ -12,7 +12,7 @@ from app.services.conversation_engine import apply_conversation_scope
 from app.services.instance_privacy import (
     require_conversation_instance_access, visible_message_clause,
 )
-from app.routers.conversations import _contact_history_messages, _message_visible_through_contact
+from app.routers.conversations import _conversation_messages, _message_visible_in_conversation
 from app.database import SessionLocal
 from app.main import app
 from fastapi.testclient import TestClient
@@ -60,19 +60,16 @@ def test_private_instance_denies_everyone_except_owner():
                     select(Conversation.id).where(Conversation.id.in_((private.id, public.id))), actor
                 )
                 assert private.id not in set(db.scalars(scoped))
-                assert [m.body for m in _contact_history_messages(db, public, user=actor)] == ["mensagem aberta"]
+                assert [m.body for m in _conversation_messages(db, public)] == ["mensagem aberta"]
                 with pytest.raises(HTTPException) as error:
                     require_conversation_instance_access(db, actor, private.id)
                 assert error.value.status_code == 404
                 priv_msg = db.scalar(select(Message).where(Message.conversation_id == private.id))
-                with pytest.raises(HTTPException):
-                    _message_visible_through_contact(db, actor, priv_msg)
+                assert _message_visible_in_conversation(db, actor, priv_msg) is False
             assert private.id in set(db.scalars(apply_conversation_scope(
                 select(Conversation.id).where(Conversation.id == private.id), maria
             )))
-            assert {m.body for m in _contact_history_messages(db, private, user=maria)} == {
-                "mensagem privada", "mensagem aberta"
-            }
+            assert [m.body for m in _conversation_messages(db, private)] == ["mensagem privada"]
             instance.exclusive_user_id = None
             db.flush()
             assert private.id not in set(db.scalars(apply_conversation_scope(
