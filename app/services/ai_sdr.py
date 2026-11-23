@@ -28,6 +28,8 @@ from app.models import (
     ServiceQueue,
 )
 from app.services import dispatch_offer
+from app.services.ai_customer_questions import context_denies_city
+from app.services.ai_customer_responses import priority_reply
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_catalog_reply import (
     accepted_black_quote,
@@ -936,6 +938,25 @@ def build_ai_context(
                     | set(previous_facts.get("answered_questions") or [])
                 )
 
+    # A negativa mais recente do cliente nunca pode ser anulada pelo ultimo
+    # snapshot do SDR nem pela cidade importada no CRM.
+    city_evidence_context = {
+        "latest_customer_message": message.body or "",
+        "history": [
+            {"direction": item.direction, "body": item.body or ""}
+            for item in fact_history
+        ],
+    }
+    if confirmed_facts.get("city") and context_denies_city(
+        city_evidence_context, str(confirmed_facts["city"])
+    ):
+        confirmed_facts["city"] = ""
+        confirmed_facts.setdefault("sources", {}).pop("city", None)
+        confirmed_facts["answered_questions"] = [
+            value for value in (confirmed_facts.get("answered_questions") or [])
+            if value != "CITY"
+        ]
+
     lead_existing = _confirmed_existing_customer_from_lead(lead, conversation_id=conversation.id)
     if (
         not confirmed_facts.get("existing_customer")
@@ -993,7 +1014,10 @@ def build_ai_context(
         "lead": {
             "id": lead.id if lead else None,
             "contact_name": lead.contact_name if lead else "",
-            "city": lead.city if lead else "",
+            "city": (
+                lead.city if lead and not context_denies_city(city_evidence_context, lead.city)
+                else ""
+            ),
             "stage": lead.stage if lead else "",
             "score": lead.score if lead else 0,
             "temperature": lead.temperature if lead else "FRIO",
@@ -1074,7 +1098,14 @@ def _official_catalog_for_context(context: dict) -> dict | None:
 
     facts = context.get("confirmed_facts") or {}
     product = str(facts.get("product_kind") or "").upper()
-    city = str(facts.get("city") or (context.get("lead") or {}).get("city") or "").strip()
+    candidate_cities = (
+        facts.get("city"), (context.get("lead") or {}).get("city")
+    )
+    city = next(
+        (str(value).strip() for value in candidate_cities
+         if value and not context_denies_city(context, str(value))),
+        "",
+    )
     customer_type = str(facts.get("customer_type") or "").upper()
     if product == "MOBILE":
         return catalog_for("", "MOVEL")
@@ -1122,7 +1153,11 @@ def _contextual_service_reply(context: dict) -> AIDecision | None:
 
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     if not (context.get("guardian_feedback") or context.get("integrity_guard")):
-        direct_answer = _contextual_service_reply(context) or (None if context.get("dispatch_offer_id") else contextual_catalog_reply(context))
+        direct_answer = (
+            _contextual_service_reply(context)
+            or priority_reply(context)
+            or (None if context.get("dispatch_offer_id") else contextual_catalog_reply(context))
+        )
         if direct_answer:
             _sanitize_unconfirmed_customer_facts(direct_answer, context)
             direct_answer._timing = {
@@ -1143,6 +1178,12 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     effective_mode = _effective_execution_mode(agent)
     prompt = (
         "Quando houver oferta_do_disparo, use essa promoção para responder à dúvida do cliente. Preserve plano e meses grátis. Só mude a oferta a pedido do cliente. "
+        "PRIORIDADE DE ENTENDIMENTO: responda primeiro a duvida concreta que o cliente acabou de trazer. "
+        "Nao troque a pergunta dele por catalogo, sondagem ou fechamento; nao reinicie filtros ja respondidos. "
+        "Se o cliente corrigiu uma cidade, a versao mais recente dele prevalece sobre a base de leads e mensagens OUTBOUND. "
+        "Se pedir boleto ou fatura para pagar, direcione ao canal financeiro e nao pergunte cidade de instalacao. "
+        "Diferencie velocidade contratada de cobertura Wi-Fi e roteador adicional; nao garanta sinal em todos os comodos. "
+        "Quando informar o preco atual e o orcamento maximo, compare a oferta de maneira verdadeira sem inventar descontos. "
         "Analise esta interação comercial do WhatsApp da Sulnet. "
         "Use o histórico e a base de conhecimento abaixo, respeitando rigorosamente a origem de cada dado. "
         "REGRA DE EVIDÊNCIA: mensagens INBOUND são falas do cliente; mensagens OUTBOUND são falas do próprio SulIA. "
@@ -1725,10 +1766,17 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
     silêncio), a IA responde o cumprimento e puxa a próxima informação que
     ainda falta para vender, sem repetir a última mensagem enviada.
     """
+    priority = priority_reply(context)
+    if priority is not None:
+        return priority.reply_text, priority.quick_replies
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
     facts = context.get("confirmed_facts") or {}
     lead = context.get("lead") or {}
-    city = str(facts.get("city") or lead.get("city") or "").strip()
+    city_candidates = (facts.get("city"), lead.get("city"))
+    city = next(
+        (str(value).strip() for value in city_candidates
+         if value and not context_denies_city(context, str(value))), ""
+    )
     segment = str(facts.get("customer_type") or lead.get("confirmed_customer_type") or "").strip()
     previous = set(_recent_outbound_messages_for_repetition(context))
     greeting_only = bool(_GREETING_ONLY.match(latest))
@@ -1818,11 +1866,13 @@ def _send_ai_recovery(
     nunca fica sem resposta e a conversa continua com a IA (AI_ACTIVE). O
     motivo vai para a auditoria, que alimenta a supervisão e o analista.
     """
-    recovery = decision.model_copy(deep=True)
-    recovery.reply_text, recovery.quick_replies = _ai_recovery_reply(context)
+    priority = priority_reply(context)
+    recovery = priority if priority is not None else decision.model_copy(deep=True)
+    if priority is None:
+        recovery.reply_text, recovery.quick_replies = _ai_recovery_reply(context)
     _keep_decision_with_ai(recovery)
     recovery.customer_commitment = False
-    recovery.followup_needed = True
+    recovery.followup_needed = not recovery.service_redirect
 
     state = db.scalar(
         select(AIConversationState).where(
@@ -1839,7 +1889,7 @@ def _send_ai_recovery(
 
     _apply_crm_decision(db, agent=agent, job=job, decision=recovery)
     message = _send_autonomous_reply(db, agent=agent, job=job, decision=recovery)
-    if message is not None:
+    if message is not None and recovery.followup_needed:
         from app.services.ai_followups import schedule_followup
 
         schedule_followup(
