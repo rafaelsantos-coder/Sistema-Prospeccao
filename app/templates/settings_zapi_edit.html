@@ -23,6 +23,19 @@
     <form action="/settings/zapi/instances/{{ instance.id }}/edit" method="post" class="stack-form top-space">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-grid">
+        <label class="field field-span-2">
+          <span><input type="checkbox" name="exclusive_access" value="true" {% if instance.exclusive_access %}checked{% endif %}> Conversas privadas: acesso exclusivo a uma consultora</span>
+          <small>Nem gestores nem administradores conseguem abrir conversas, histórico ou mídias desta instância quando a restrição está ativa.</small>
+        </label>
+        <label class="field field-span-2"><span>Consultora com acesso exclusivo</span>
+          <select name="exclusive_user_id">
+            <option value="">Selecione a consultora</option>
+            {% for consultant in consultants %}
+              <option value="{{ consultant.id }}" {% if consultant.id == instance.exclusive_user_id %}selected{% endif %}>{{ consultant.name }} · {{ consultant.email }}</option>
+            {% endfor %}
+          </select>
+          <small>Obrigatório quando o acesso exclusivo estiver marcado. As conversas existentes serão atribuídas à conta selecionada.</small>
+        </label>
         <label class="field field-span-2"><span>Nome de identificação</span><input name="name" value="{{ instance.name }}" maxlength="120" required></label>
         <label class="field field-span-2"><span>Novo Token da Instância (opcional)</span><input name="instance_token" type="password" autocomplete="new-password" placeholder="Deixe em branco para manter o token atual"><small>Não informe aqui o Client-Token da conta.</small></label>
         <label class="field field-span-2"><span>Client-Token da conta</span>
