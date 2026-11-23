@@ -1,5 +1,5 @@
 sqlalchemy==2.1.8
 psycopg[binary]==3.3.6
 cryptography==50.0.2
-boto3==1.43.125
+boto3==1.44.7
 pjsua2-python==2.15.1.post1
