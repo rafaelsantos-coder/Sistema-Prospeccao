@@ -170,7 +170,7 @@ def _current_plan_from_history(context: dict) -> tuple[int | None, float | None,
         match = re.search(r"\b(?:tenho|uso|minha internet e de)\s*(\d{2,4})\s*(?:mega|mb|mbps)\b", body)
         if match:
             speed = int(match.group(1))
-        if body in {"sim", "sim pega", "pega"} and "wifi" in last_out and "todos os comodos" in last_out:
+        if body in {"sim", "sim pega", "pega"} and ("wifi" in last_out or "wi fi" in last_out) and "todos os comodos" in last_out:
             good_wifi = True
     return speed, price, good_wifi
 
