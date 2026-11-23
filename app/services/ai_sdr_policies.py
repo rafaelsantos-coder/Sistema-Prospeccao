@@ -584,7 +584,7 @@ def _city_from_sales_context(decision: AIDecision, context: dict) -> str:
     for candidate in (
         (context.get("confirmed_facts") or {}).get("city"),
         (context.get("lead") or {}).get("city"),
-        decision.qualification.city,
+        getattr(getattr(decision, "qualification", None), "city", None),
     ):
         city = str(candidate or "").strip()
         if city and not context_denies_city(context, city):
@@ -2929,7 +2929,11 @@ def _apply_journey_orchestration_policy(
         "CHOOSE_SEGMENT",
         "CONFIRM_CITY",
     }
-    if state in mandatory_gate_states and not _customer_asked_direct_question(context):
+    active_product_question = (
+        _customer_asked_direct_question(context)
+        and _product_already_in_talk(context) in {"INTERNET", "MOBILE"}
+    )
+    if state in mandatory_gate_states and not active_product_question:
         decision = _apply_stagnation_strategy(decision, context)
         decision.journey_state = state
         decision.journey_pending_action = _JOURNEY_PENDING_ACTIONS[state]
