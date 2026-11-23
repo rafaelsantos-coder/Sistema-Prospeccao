@@ -115,3 +115,45 @@ def test_history_phone_does_not_guess_ninth_digit():
     assert normalize_phone("55 55 97482-6139") != normalize_phone(
         "55 55 7482-6139"
     )
+
+
+def test_chat_history_reports_are_management_only():
+    from app.models import User
+    from app.security import hash_password
+
+    seller_email = "lgpd-historico-consultor@sulnet.local"
+    seller_password = "LgpdHistorico@2026"
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            db.add(User(
+                name="Consultor sem acesso ao historico",
+                email=seller_email,
+                password_hash=hash_password(seller_password),
+                role="CONSULTOR", team="DIGITAL", active=True,
+                must_change_password=False,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        page = client.get("/login")
+        login = client.post("/login", data={
+            "email": seller_email,
+            "password": seller_password,
+            "csrf_token": _csrf(page.text),
+        }, follow_redirects=False)
+        assert login.status_code == 303
+
+        for path in (
+            "/reports/whatsapp",
+            "/reports/whatsapp/export/messages.csv",
+            "/reports/whatsapp/export/audit.csv",
+            "/reports/whatsapp/export/conversations.csv",
+            "/reports/whatsapp/export/ai-journey.csv",
+            "/reports/whatsapp/export/report.pdf",
+            "/reports/whatsapp/conversations/1.csv",
+            "/reports/whatsapp/conversations/1.pdf",
+        ):
+            response = client.get(path, follow_redirects=False)
+            assert response.status_code == 403, (path, response.status_code)
