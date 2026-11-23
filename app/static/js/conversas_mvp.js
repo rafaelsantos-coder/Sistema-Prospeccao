@@ -234,6 +234,7 @@
   function clearChat(message = "") {
     state.selectedId = 0;
     state.signature = "";
+    resetFile();
     ui.messages.replaceChildren();
     ui.messages.hidden = true;
     ui.placeholder.hidden = false;
@@ -259,6 +260,7 @@
     document.body.classList.add("mvp-chat-open");
     window.history.replaceState({}, "", "/conversas/" + id);
     feedback("");
+    resetFile();
     renderList();
     renderChatHeader();
     refreshMessages();
@@ -380,6 +382,10 @@
   async function sendFile() {
     const file = ui.file.files && ui.file.files[0];
     if (!file || !state.selectedId || state.fileSending || !state.canReply) return;
+    if (state.role === "CONSULTOR" && selectedItem()?.owner === "Sem responsável") {
+      feedback("Assuma o atendimento antes de enviar anexos.");
+      return;
+    }
     state.fileSending = true;
     ui.fileSend.disabled = true;
     feedback("");
