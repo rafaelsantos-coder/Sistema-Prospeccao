@@ -416,17 +416,20 @@ def download_dispatch_report(
         .where(CampaignDispatchRecipient.dispatch_id == dispatch.id)
         .order_by(CampaignDispatchRecipient.id)
     )
+    # Mantém as cinco colunas legadas, apenas acrescentando comprovantes.
+    # O valor "Enviado" histórico corresponde ao aceite da Z-API, não entrega.
     rows = [[
-        "Telefone", "Resultado", "Status interno", "Solicitado em",
+        "Telefone", "Resultado", "Status", "Enviado em", "Motivo",
         "Prova da entrega", "ID WhatsApp", "Status Z-API",
-        "Entrega confirmada em", "Leitura confirmada em", "Motivo",
+        "Entrega confirmada em", "Leitura confirmada em",
     ]]
     for phone, recipient_status, sent_at, error, provider_id, provider_status, delivered_at, read_at in recipients:
         rows.append([
             _spreadsheet_text(phone),
-            "Aceito pela Z-API" if recipient_status == "ENVIADO" else "Não enviado",
+            "Enviado" if recipient_status == "ENVIADO" else "Não enviado",
             recipient_status,
             datetime_br(sent_at, fallback=""),
+            _spreadsheet_text(error),
             dispatch_delivery_proof(
                 recipient_status, provider_id, provider_status,
                 delivered_at=delivered_at, read_at=read_at,
@@ -435,7 +438,6 @@ def download_dispatch_report(
             _spreadsheet_text(provider_status),
             datetime_br(delivered_at, fallback=""),
             datetime_br(read_at, fallback=""),
-            _spreadsheet_text(error),
         ])
 
     response = csv_attachment(rows, f"disparo-{dispatch.id}-relatorio.csv")
