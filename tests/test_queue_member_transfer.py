@@ -126,7 +126,7 @@ def test_queue_member_can_be_added_and_removed_individually():
             db.close()
 
 
-def test_transferred_consultant_sees_full_contact_history(monkeypatch):
+def test_transferred_consultant_cannot_read_previous_seller_history(monkeypatch):
     password = "SenhaFila@2026"
     monkeypatch.setattr(
         MediaStorage,
@@ -273,26 +273,46 @@ def test_transferred_consultant_sees_full_contact_history(monkeypatch):
         )
         history_page = target_client.get(f"/conversations/{conversation_id}")
         assert history_page.status_code == 200
-        assert "Mensagem antiga antes da transferência" in history_page.text
-        assert "Nota interna antiga importante" in history_page.text
-        assert "Mensagem atual do cliente" in history_page.text
-        assert "Foto antiga" in history_page.text
+        assert "Mensagem antiga antes da transferência" not in history_page.text
+        assert "Nota interna antiga importante" not in history_page.text
+        assert "Mensagem atual do cliente" not in history_page.text
+        assert "Foto antiga" not in history_page.text
+        assert "Mensagens deste atendimento" in history_page.text
 
         api = target_client.get(
             f"/api/conversations/{conversation_id}/messages?after_id=0"
         )
         assert api.status_code == 200
         bodies = [item["body"] for item in api.json()["items"]]
-        assert "Mensagem antiga antes da transferência" in bodies
-        assert "Nota interna antiga importante" in bodies
-        assert "Mensagem atual do cliente" in bodies
+        assert "Mensagem antiga antes da transferência" not in bodies
+        assert "Nota interna antiga importante" not in bodies
+        assert "Mensagem atual do cliente" not in bodies
 
         media = target_client.get(
             f"/conversations/messages/{old_media_id}/media",
             follow_redirects=False,
         )
-        assert media.status_code == 307
-        assert media.headers["location"] == "https://signed.example/historico.jpg"
+        assert media.status_code == 404
+
+        # Novas mensagens da etapa recebida pelo vendedor continuam visiveis.
+        db = SessionLocal()
+        try:
+            db.add(Message(
+                conversation_id=conversation_id,
+                contact_id=contact.id,
+                direction="INBOUND",
+                message_type="TEXT",
+                body="Nova mensagem destinada ao vendedor atual",
+                status="RECEIVED",
+                created_at=utcnow(),
+            ))
+            db.commit()
+        finally:
+            db.close()
+        page_after = target_client.get(f"/conversations/{conversation_id}")
+        assert page_after.status_code == 200
+        assert "Nova mensagem destinada ao vendedor atual" in page_after.text
+        assert "Mensagem atual do cliente" not in page_after.text
 
 
 def test_consultant_can_transfer_conversation_to_online_member_of_same_queue():
