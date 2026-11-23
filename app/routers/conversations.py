@@ -153,13 +153,55 @@ def _get_conversation(db: Session, user: User, conversation_id: int) -> Conversa
     return db.scalar(_conversation_stmt(user).where(Conversation.id == conversation_id))
 
 
-def _contact_history_messages(db: Session, conversation: Conversation) -> list[Message]:
+def _history_contact_ids(db: Session, contact: Contact) -> list[int]:
+    """Resolve o mesmo telefone em registros legados sem mesclar contatos.
+
+    Mantem a identidade exata do numero (DDI + DDD + numero). Nao adiciona
+    nem remove o nono digito: isso poderia juntar pessoas diferentes.
+    """
+    canonical = normalize_phone(contact.phone)
+    aliases = {contact.phone}
+    if canonical:
+        aliases.update({canonical, canonical[2:], f"+{canonical}", f"00{canonical}"})
+    return list(
+        db.scalars(
+            select(Contact.id)
+            .where(Contact.phone.in_(aliases))
+            .order_by(Contact.id.asc())
+        )
+    )
+
+
+def _contact_history_messages(
+    db: Session,
+    conversation: Conversation,
+    contact_ids: list[int] | None = None,
+) -> list[Message]:
+    ids = contact_ids if contact_ids is not None else _history_contact_ids(db, conversation.contact)
     return list(
         db.scalars(
             select(Message)
-            .where(Message.contact_id == conversation.contact_id)
+            .where(Message.contact_id.in_(ids))
             .options(selectinload(Message.sender_user))
             .order_by(Message.created_at.asc(), Message.id.asc())
+        )
+    )
+
+
+def _contact_history_assignments(
+    db: Session,
+    contact_ids: list[int],
+) -> list[ConversationAssignment]:
+    return list(
+        db.scalars(
+            select(ConversationAssignment)
+            .join(Conversation, Conversation.id == ConversationAssignment.conversation_id)
+            .where(Conversation.contact_id.in_(contact_ids))
+            .options(
+                selectinload(ConversationAssignment.user),
+                selectinload(ConversationAssignment.assigned_by),
+            )
+            .order_by(ConversationAssignment.created_at.asc(), ConversationAssignment.id.asc())
         )
     )
 
@@ -171,9 +213,12 @@ def _message_visible_through_contact(
 ) -> bool:
     if not message.contact_id:
         return False
+    contact = db.get(Contact, message.contact_id)
+    if contact is None:
+        return False
     visible_conversation = db.scalar(
         _conversation_stmt(user)
-        .where(Conversation.contact_id == message.contact_id)
+        .where(Conversation.contact_id.in_(_history_contact_ids(db, contact)))
         .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
         .limit(1)
     )
@@ -670,6 +715,8 @@ def _render_inbox(
         selected = conversations[0]
 
     messages: list[Message] = []
+    transfer_history: list[ConversationAssignment] = []
+    history_timeline: list[dict] = []
     users: list[User] = []
     selected_queue = None
     latest_ai_run = None
@@ -679,7 +726,19 @@ def _render_inbox(
         if selected.unread_count:
             mark_conversation_read(db, selected)
             db.commit()
-        messages = _contact_history_messages(db, selected)
+        history_contact_ids = _history_contact_ids(db, selected.contact)
+        messages = _contact_history_messages(db, selected, history_contact_ids)
+        transfer_history = _contact_history_assignments(db, history_contact_ids)
+        history_timeline = [
+            {"kind": "message", "at": msg.created_at, "id": msg.id, "message": msg}
+            for msg in messages
+        ] + [
+            {"kind": "transfer", "at": assignment.created_at, "id": assignment.id,
+             "transfer": assignment}
+            for assignment in transfer_history
+            if assignment.event == "TRANSFERRED"
+        ]
+        history_timeline.sort(key=lambda item: (item["at"], item["kind"], item["id"]))
         users = _eligible_users(db, user, selected)
         transfer_online_ids = set(online_user_ids(db))
         users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
@@ -775,6 +834,8 @@ def _render_inbox(
         conversations=conversations,
         conversation=selected,
         messages=messages,
+        transfer_history=transfer_history,
+        history_timeline=history_timeline,
         location_urls=location_urls_for(db, messages),
         users=users,
         transfer_online_ids=transfer_online_ids,
@@ -1725,7 +1786,7 @@ def conversation_messages_api(
     stmt = (
         select(Message)
         .where(
-            Message.contact_id == conversation.contact_id,
+            Message.contact_id.in_(_history_contact_ids(db, conversation.contact)),
             Message.id > max(after_id, 0),
         )
         .options(selectinload(Message.sender_user))
