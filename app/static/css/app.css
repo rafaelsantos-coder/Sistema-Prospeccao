@@ -97,6 +97,54 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .topbar-actions { display: flex; gap: 10px; align-items: center; }
 .topbar-actions:has(.chat-feasibility-link) { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
 .chat-feasibility-link { white-space: nowrap; }
+
+/* Presença dos vendedores no cabeçalho das conversas, visível só para gestão. */
+.topbar:has(.topbar-online-sellers) { gap: 12px; }
+.topbar:has(.topbar-online-sellers) > div:first-of-type { flex: 0 0 auto; }
+.topbar-online-sellers {
+  flex: 1 1 320px; min-width: 130px; max-width: 580px;
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 7px 10px; border: 1px solid #dbe9e2;
+  border-radius: 11px; background: #f8fcfa;
+}
+.topbar-online-sellers-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.topbar-online-sellers-heading strong {
+  color: #275645; font-size: 10px; font-weight: 800; white-space: nowrap;
+}
+.topbar-online-sellers-status-dot, .topbar-online-seller-dot {
+  display: inline-block; flex: 0 0 auto;
+  width: 7px; height: 7px; border-radius: 50%; background: #1ea56c;
+  box-shadow: 0 0 0 2px #dbf5e9;
+}
+.topbar-online-sellers-count {
+  padding: 1px 6px; border-radius: 10px; background: #def4e8;
+  color: #1d704c; font-size: 10px; font-weight: 800; font-variant-numeric: tabular-nums;
+}
+.topbar-online-sellers-list {
+  display: flex; flex-wrap: nowrap; gap: 5px; overflow-x: auto;
+  max-width: 100%; scrollbar-width: thin; padding-bottom: 1px;
+}
+.topbar-online-seller {
+  display: inline-flex; align-items: center; gap: 5px;
+  flex: 0 0 auto; max-width: 150px; padding: 3px 7px;
+  border-radius: 20px; border: 1px solid #d5e8df; background: #fff;
+  color: #31483d; font-size: 10px; font-weight: 650;
+}
+.topbar-online-seller > span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.topbar-online-seller-dot { width: 6px; height: 6px; }
+.topbar-online-sellers-empty { color: #6b8075; font-size: 10px; white-space: nowrap; }
+@media (max-width: 1300px) {
+  .topbar:has(.topbar-online-sellers) { height: auto; min-height: 86px; flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; }
+  .topbar-online-sellers { order: 3; flex-basis: 100%; max-width: none; }
+  .topbar:has(.topbar-online-sellers) .topbar-actions { margin-left: auto; }
+  .page-content.conversation-page-content:has(.inbox-shell) { height: calc(100dvh - 151px); }
+}
+@media (max-width: 620px) {
+  .topbar-online-sellers { min-width: 0; }
+  .topbar-online-seller { max-width: 115px; }
+  .page-content.conversation-page-content:has(.inbox-shell) { height: auto; }
+}
+
 .mobile-menu { display: none; border: 0; background: var(--surface-3); width: 38px; height: 38px; border-radius: 10px; cursor: pointer; }
 .page-content { padding: 30px 34px 48px; max-width: 1680px; margin: 0 auto; }
 
