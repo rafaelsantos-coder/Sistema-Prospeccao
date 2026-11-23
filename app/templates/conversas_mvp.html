@@ -15,6 +15,8 @@
       data-user-name="{{ current_user.name }}"
       data-role="{{ current_user.role }}"
       data-can-reply="{{ 'true' if can_reply else 'false' }}"
+      data-can-transfer="{{ 'true' if can_transfer else 'false' }}"
+      data-user-id="{{ user_id }}"
       data-initial-id="{{ selected_conversation_id or '' }}">
   <aside class="mvp-inbox" aria-label="Lista de conversas">
     <header class="mvp-inbox-header">
@@ -59,6 +61,7 @@
         <strong id="mvp-chat-name">Selecione uma conversa</strong>
         <span id="mvp-chat-meta">Atendimentos em tempo real</span>
       </div>
+      <button type="button" id="mvp-claim" class="mvp-claim" hidden>Assumir atendimento</button>
       <span class="mvp-chat-status" id="mvp-chat-status"></span>
     </header>
 
