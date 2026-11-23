@@ -60,7 +60,7 @@ def test_private_instance_denies_everyone_except_owner():
                     select(Conversation.id).where(Conversation.id.in_((private.id, public.id))), actor
                 )
                 assert private.id not in set(db.scalars(scoped))
-                assert [m.body for m in _contact_history_messages(db, public, actor)] == ["mensagem aberta"]
+                assert [m.body for m in _contact_history_messages(db, public, user=actor)] == ["mensagem aberta"]
                 with pytest.raises(HTTPException) as error:
                     require_conversation_instance_access(db, actor, private.id)
                 assert error.value.status_code == 404
@@ -70,7 +70,7 @@ def test_private_instance_denies_everyone_except_owner():
             assert private.id in set(db.scalars(apply_conversation_scope(
                 select(Conversation.id).where(Conversation.id == private.id), maria
             )))
-            assert {m.body for m in _contact_history_messages(db, private, maria)} == {
+            assert {m.body for m in _contact_history_messages(db, private, user=maria)} == {
                 "mensagem privada", "mensagem aberta"
             }
             instance.exclusive_user_id = None
