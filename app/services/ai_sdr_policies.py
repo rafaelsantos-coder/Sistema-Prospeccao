@@ -2766,8 +2766,12 @@ def _apply_stagnation_strategy(
     decision: AIDecision,
     context: dict,
 ) -> AIDecision:
-    # Pergunta/cobranca direta nao e estagnacao comercial.
-    if _customer_asked_direct_question(context) or wants_prior_answer(context.get("latest_customer_message")):
+    # Pergunta sobre produto ja em conversa nao e estagnacao. No primeiro
+    # contato, sem produto definido, ainda vale o filtro de identificacao.
+    if (
+        (_customer_asked_direct_question(context) and _product_already_in_talk(context))
+        or wants_prior_answer(context.get("latest_customer_message"))
+    ):
         return decision
     if black.is_offer_question(decision.reply_text) or black.is_options_question(decision.reply_text):
         return decision  # etapa da campanha Black: não troca pela pergunta padrão
