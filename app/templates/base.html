@@ -93,7 +93,7 @@
       </div>
       {% endif %}
       {% endif %}
-      {% if 'reports.view' in current_user.permissions %}
+      {% if current_user.role in ['ADMIN', 'GESTOR'] and 'reports.view' in current_user.permissions %}
       <a href="/reports/whatsapp" class="nav-item {% if active_nav == 'reports' %}active{% endif %}">
         <span class="nav-icon">▥</span><span>Relatórios</span>
       </a>
