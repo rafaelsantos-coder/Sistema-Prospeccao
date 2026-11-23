@@ -927,4 +927,5 @@ def test_dispatch_details_and_csv_show_actual_provider_delivery_proof():
         assert "Prova da entrega" in csv_response.text
         assert "ENTREGUE" in csv_response.text
         assert "ID-COMPROVANTE-RECEIVED" in csv_response.text
-        assert "Aceito pela Z-API" in csv_response.text
+        assert "Enviado" in csv_response.text
+        assert "Status Z-API" in csv_response.text
