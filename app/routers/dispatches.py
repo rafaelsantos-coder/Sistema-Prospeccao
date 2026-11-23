@@ -14,6 +14,7 @@ from app.models import (
     CampaignDispatch,
     CampaignDispatchRecipient,
     Lead,
+    Message,
     ServiceQueue,
     User,
 )
@@ -26,6 +27,7 @@ from app.services.global_blacklist import is_globally_blocked
 from app.services.dispatch_queue import (
     dispatch_counts,
     dispatch_counts_many,
+    dispatch_delivery_proof,
     prepare_dispatch_leads_bulk,
     estimated_duration_seconds,
     parse_dispatch_csv,
@@ -309,6 +311,24 @@ def dispatch_detail(
     recipients = list(db.scalars(
         recipients_query.order_by(CampaignDispatchRecipient.id.asc()).limit(500)
     ))
+    provider_ids = sorted({
+        item.provider_message_id for item in recipients if item.provider_message_id
+    })
+    provider_messages = {
+        message.provider_message_id: message
+        for message in db.scalars(
+            select(Message).where(Message.provider_message_id.in_(provider_ids))
+        )
+    } if provider_ids else {}
+    delivery_proofs = {}
+    for recipient in recipients:
+        evidence = provider_messages.get(recipient.provider_message_id)
+        delivery_proofs[recipient.id] = dispatch_delivery_proof(
+            recipient.status, recipient.provider_message_id,
+            evidence.status if evidence else None,
+            delivered_at=evidence.delivered_at if evidence else None,
+            read_at=evidence.read_at if evidence else None,
+        )
     recoverable_count = db.scalar(select(func.count(CampaignDispatchRecipient.id)).where(
         CampaignDispatchRecipient.dispatch_id == dispatch.id,
         CampaignDispatchRecipient.status == "FALHOU",
@@ -347,6 +367,7 @@ def dispatch_detail(
         page_title=f"Disparo #{dispatch.id}",
         dispatch=dispatch,
         recipients=recipients,
+        delivery_proofs=delivery_proofs,
         failures_only=failures_only,
         failure_reasons=failure_reasons,
         recoverable_count=recoverable_count,
@@ -384,17 +405,36 @@ def download_dispatch_report(
             CampaignDispatchRecipient.status,
             CampaignDispatchRecipient.sent_at,
             CampaignDispatchRecipient.error,
+            CampaignDispatchRecipient.provider_message_id,
+            Message.status,
+            Message.delivered_at,
+            Message.read_at,
+        )
+        .outerjoin(
+            Message, Message.provider_message_id == CampaignDispatchRecipient.provider_message_id,
         )
         .where(CampaignDispatchRecipient.dispatch_id == dispatch.id)
         .order_by(CampaignDispatchRecipient.id)
     )
-    rows = [["Telefone", "Resultado", "Status", "Enviado em", "Motivo"]]
-    for phone, recipient_status, sent_at, error in recipients:
+    rows = [[
+        "Telefone", "Resultado", "Status interno", "Solicitado em",
+        "Prova da entrega", "ID WhatsApp", "Status Z-API",
+        "Entrega confirmada em", "Leitura confirmada em", "Motivo",
+    ]]
+    for phone, recipient_status, sent_at, error, provider_id, provider_status, delivered_at, read_at in recipients:
         rows.append([
             _spreadsheet_text(phone),
-            "Enviado" if recipient_status == "ENVIADO" else "Não enviado",
+            "Aceito pela Z-API" if recipient_status == "ENVIADO" else "Não enviado",
             recipient_status,
             datetime_br(sent_at, fallback=""),
+            dispatch_delivery_proof(
+                recipient_status, provider_id, provider_status,
+                delivered_at=delivered_at, read_at=read_at,
+            ),
+            _spreadsheet_text(provider_id),
+            _spreadsheet_text(provider_status),
+            datetime_br(delivered_at, fallback=""),
+            datetime_br(read_at, fallback=""),
             _spreadsheet_text(error),
         ])
 
