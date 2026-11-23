@@ -7,14 +7,15 @@ import re
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.models import (
     Activity,
     Campaign,
     CampaignDispatch,
     CampaignDispatchRecipient,
+    Contact,
     Lead,
     Message,
     ServiceQueue,
@@ -288,15 +289,38 @@ def dispatch_counts_many(db: Session, dispatch_ids: list[int]) -> dict[int, dict
     for dispatch_id, status, count in rows:
         per_dispatch[int(dispatch_id)][str(status)] = int(count)
 
-    # EXISTS impede contar duas vezes quem respondeu mais de uma vez.
-    # O horário do recebimento deve ser posterior ao envio desta campanha:
-    # conversas pré-existentes e mensagens enviadas pelo vendedor não contam.
+    # Uma resposta pode chegar em outra conversa do mesmo contato: reabertura,
+    # transferência de fila ou mudança de instância Z-API alteram conversation_id.
+    # A identidade do destinatário é o telefone normalizado do contato.
+    # Em disparos sucessivos para o mesmo número, atribuímos cada resposta ao
+    # disparo mais recente anterior a ela, nunca a duas campanhas ao mesmo tempo.
+    later = aliased(CampaignDispatchRecipient)
+    superseded_before_reply = (
+        select(later.id)
+        .where(
+            later.phone == CampaignDispatchRecipient.phone,
+            later.status == "ENVIADO",
+            later.sent_at.is_not(None),
+            later.sent_at <= Message.created_at,
+            or_(
+                later.sent_at > CampaignDispatchRecipient.sent_at,
+                and_(
+                    later.sent_at == CampaignDispatchRecipient.sent_at,
+                    later.id > CampaignDispatchRecipient.id,
+                ),
+            ),
+        )
+        .correlate(CampaignDispatchRecipient, Message)
+        .exists()
+    )
     inbound_after_send = (
         select(Message.id)
+        .join(Contact, Contact.id == Message.contact_id)
         .where(
-            Message.conversation_id == CampaignDispatchRecipient.conversation_id,
+            Contact.phone == CampaignDispatchRecipient.phone,
             Message.direction == "INBOUND",
             Message.created_at > CampaignDispatchRecipient.sent_at,
+            ~superseded_before_reply,
         )
         .correlate(CampaignDispatchRecipient)
         .exists()
@@ -310,24 +334,65 @@ def dispatch_counts_many(db: Session, dispatch_ids: list[int]) -> dict[int, dict
             CampaignDispatchRecipient.dispatch_id.in_(ids),
             CampaignDispatchRecipient.status == "ENVIADO",
             CampaignDispatchRecipient.sent_at.is_not(None),
-            CampaignDispatchRecipient.conversation_id.is_not(None),
             inbound_after_send,
         )
         .group_by(CampaignDispatchRecipient.dispatch_id)
     ).all()
     responses = {int(dispatch_id): int(count) for dispatch_id, count in response_rows}
 
+    # HTTP 200 no send-* significa solicitação aceita, NÃO entrega ao cliente.
+    # A confirmação real depende dos callbacks de status (RECEIVED/READ/PLAYED).
+    delivery_rows = db.execute(
+        select(
+            CampaignDispatchRecipient.dispatch_id,
+            func.count(CampaignDispatchRecipient.id).filter(
+                or_(
+                    Message.delivered_at.is_not(None),
+                    Message.status.in_({"DELIVERED", "RECEIVED", "READ", "PLAYED"}),
+                )
+            ),
+            func.count(CampaignDispatchRecipient.id).filter(
+                or_(
+                    Message.read_at.is_not(None),
+                    Message.status.in_({"READ", "PLAYED"}),
+                )
+            ),
+            func.count(CampaignDispatchRecipient.id).filter(
+                Message.status.in_({"FAILED", "ERROR", "NOT_SENT", "UNDELIVERED"})
+            ),
+        )
+        .outerjoin(
+            Message,
+            Message.provider_message_id == CampaignDispatchRecipient.provider_message_id,
+        )
+        .where(
+            CampaignDispatchRecipient.dispatch_id.in_(ids),
+            CampaignDispatchRecipient.status == "ENVIADO",
+        )
+        .group_by(CampaignDispatchRecipient.dispatch_id)
+    ).all()
+    delivery = {
+        int(dispatch_id): (int(delivered), int(read), int(provider_failed))
+        for dispatch_id, delivered, read, provider_failed in delivery_rows
+    }
+
     results: dict[int, dict[str, int]] = {}
     for dispatch_id in ids:
         values = per_dispatch[dispatch_id]
+        sent = values.get("ENVIADO", 0)
+        delivered, read, provider_failed = delivery.get(dispatch_id, (0, 0, 0))
         results[dispatch_id] = {
             "pending": values.get("PENDENTE", 0),
             "sending": values.get("ENVIANDO", 0),
-            "sent": values.get("ENVIADO", 0),
+            "sent": sent,
             "failed": values.get("FALHOU", 0),
             "skipped": values.get("IGNORADO", 0),
             "total": sum(values.values()),
             "replied": responses.get(dispatch_id, 0),
+            "delivered": delivered,
+            "read": read,
+            "provider_failed": provider_failed,
+            "unconfirmed": max(0, sent - delivered - provider_failed),
         }
     return results
 
@@ -739,6 +804,9 @@ def process_dispatch_recipient(
             )
         return "failed"
 
+    # O marco do envio é o aceite da mensagem principal pela Z-API.
+    # Não esperar anexos: o cliente pode responder enquanto a imagem é enviada.
+    accepted_at = utcnow()
     contact = ensure_contact(db, lead.phone, lead=lead)
     conversation = ensure_open_conversation(
         db,
@@ -822,7 +890,7 @@ def process_dispatch_recipient(
             except (MediaStorageError, ZApiError) as exc:
                 media_errors.append(f"{file_name}: {exc}")
 
-    now = utcnow()
+    now = accepted_at
     recipient.status = "ENVIADO"
     recipient.sent_at = now
     recipient.provider_message_id = provider_id

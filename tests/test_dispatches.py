@@ -343,6 +343,9 @@ def test_dispatch_inherits_campaign_buttons_and_image(monkeypatch):
             )
             assert [item.message_type for item in messages] == ["BUTTONS", "IMAGE"]
             assert messages[1].media_url == "s3://campaignmedia/oferta.jpg"
+            # O horário aceito da mensagem principal precede o envio do anexo.
+            # Caso contrário, uma resposta rápida entre botão e imagem ficaria fora do relatório.
+            assert recipient.sent_at <= messages[1].sent_at
         finally:
             db.close()
 

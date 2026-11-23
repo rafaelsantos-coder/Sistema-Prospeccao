@@ -181,11 +181,57 @@ def prepare_recall_dispatch() -> None:
         db.close()
 
 
+
+def log_recent_dispatch_metrics() -> None:
+    """Auditoria agregada, somente leitura, dos disparos recentes após o deploy.
+
+    Nunca imprime nomes, telefones, conteúdos ou dados pessoais nos logs.
+    Permite reconciliar envios aceitos, entrega confirmada e respostas após
+    atualizações no cálculo, sem reenviar mensagens aos clientes.
+    """
+    from sqlalchemy import select
+
+    from app.models import CampaignDispatch
+    from app.services.dispatch_queue import dispatch_counts_many
+
+    db = SessionLocal()
+    try:
+        ids = list(
+            db.scalars(
+                select(CampaignDispatch.id)
+                .where(CampaignDispatch.status.in_({"ATIVO", "PAUSADO", "CONCLUIDO"}))
+                .order_by(CampaignDispatch.created_at.desc(), CampaignDispatch.id.desc())
+                .limit(8)
+            )
+        )
+        counts = dispatch_counts_many(db, ids)
+        for dispatch_id in ids:
+            values = counts.get(dispatch_id, {})
+            LOG.info(
+                "dispatch_reconciliation dispatch=%s accepted=%s delivered=%s read=%s "
+                "unconfirmed=%s provider_failed=%s replies=%s pending=%s send_failures=%s",
+                dispatch_id,
+                values.get("sent", 0),
+                values.get("delivered", 0),
+                values.get("read", 0),
+                values.get("unconfirmed", 0),
+                values.get("provider_failed", 0),
+                values.get("replied", 0),
+                values.get("pending", 0),
+                values.get("failed", 0),
+            )
+    except Exception:
+        LOG.warning("dispatch_reconciliation_failed", exc_info=True)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_production_settings()
     await initialize_database()
     log_recent_prospecting_jobs()
+    log_recent_dispatch_metrics()
     log_ai_history()
     log_closing_state()
     prepare_recall_dispatch()
