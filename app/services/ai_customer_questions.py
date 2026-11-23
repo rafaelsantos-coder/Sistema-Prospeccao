@@ -72,8 +72,8 @@ _SIGNAL_CUES = re.compile(
     r"cobre|cobrir|sinal|wifi|wi fi|roteador|internet|cobertura)\b"
 )
 _ANSWER_REMINDER = re.compile(
-    r"\b(?:quero (?:que (?:voce )?)?(?:responda|responder)|"
-    r"responda o que pedi|nao respondeu|sem responder|"
+    r"\b(?:quero (?:que )?(?:voce |me )?(?:responda|responder)|"
+    r"(?:me )?responda o que pedi|nao respondeu|sem responder|"
     r"minha pergunta|o que perguntei|o que pedi)\b"
 )
 
@@ -117,12 +117,12 @@ def home_wifi_answer(context: dict) -> str | None:
     latest = str(context.get("latest_customer_message") or "")
     prefix = ""
     if wants_prior_answer(latest):
-        prefix = "Voce tem razao. Desculpe por nao responder sua pergunta antes. "
+        prefix = "Você tem razão. Desculpe por não responder sua pergunta antes. "
         if re.search(r"\bnao (?:sou|moro|estou)\b", _fold(latest)):
-            prefix = "Desculpe por presumir sua cidade e por nao responder sua pergunta. "
+            prefix = "Desculpe por presumir sua cidade e por não responder sua pergunta. "
     return (
         prefix
-        + "Sobre a cobertura dentro da casa: o Wi-Fi pode alcancar todos os comodos, "
-        "mas isso depende do tamanho da residencia, das paredes e da posicao do roteador; "
-        "nao da para garantir sem avaliar. Sua casa tem um ou mais pisos?"
+        + "Sobre a cobertura dentro da casa: o Wi-Fi pode alcançar todos os cômodos, "
+        "mas isso depende do tamanho da residência, das paredes e da posição do roteador; "
+        "não dá para garantir sem avaliar. Sua casa tem um ou mais pisos?"
     )
