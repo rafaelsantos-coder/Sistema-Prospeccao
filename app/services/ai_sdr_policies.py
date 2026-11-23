@@ -221,7 +221,7 @@ def _confirmed_city_from_text(value: str, previous_outbound: str = "") -> str:
         return ""
     city = matches[0]
     name = _fold_sales_text(city)
-    if re.search(rf"\bnao (?:e )?(?:em |de |para )?{name}\b", folded):
+    if denies_city(value, city) or re.search(rf"\bnao (?:e )?(?:em |de |para )?{name}\b", folded):
         return ""
     if asks_city or re.search(rf"\b(?:em|de|para|pra|cidade) {name}\b", folded):
         return city
