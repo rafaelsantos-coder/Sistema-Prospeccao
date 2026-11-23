@@ -17,7 +17,8 @@ def upgrade() -> None:
     op.add_column("zapi_instances", sa.Column("exclusive_user_id", sa.Integer(), nullable=True))
     op.create_index("ix_zapi_instances_exclusive_access", "zapi_instances", ["exclusive_access"])
     op.create_index("ix_zapi_instances_exclusive_user_id", "zapi_instances", ["exclusive_user_id"])
-    op.create_foreign_key("fk_zapi_instances_exclusive_user_id", "zapi_instances", "users", ["exclusive_user_id"], ["id"])
+    with op.batch_alter_table("zapi_instances") as batch:
+        batch.create_foreign_key("fk_zapi_instances_exclusive_user_id", "users", ["exclusive_user_id"], ["id"])
 
     db = op.get_bind()
     # The known instance is identified by its *full* provider ID using its
@@ -65,7 +66,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_zapi_instances_exclusive_user_id", "zapi_instances", type_="foreignkey")
+    with op.batch_alter_table("zapi_instances") as batch:
+        batch.drop_constraint("fk_zapi_instances_exclusive_user_id", type_="foreignkey")
     op.drop_index("ix_zapi_instances_exclusive_user_id", table_name="zapi_instances")
     op.drop_index("ix_zapi_instances_exclusive_access", table_name="zapi_instances")
     op.drop_column("zapi_instances", "exclusive_user_id")
