@@ -32,7 +32,7 @@ from app.services.conversation_engine import (
     register_message,
 )
 from app.services.media_storage import MediaStorage, MediaStorageError
-from app.services.queue_routing import set_lead_queue_preference
+from app.services.queue_routing import set_lead_queue_preference, set_lead_queue_preferences_bulk
 from app.services.scoring import normalize_phone
 from app.services.telegram import TelegramService, active_link_for_lead, invite_url_for_lead
 from app.services.zapi import ZApiError, ZApiBlacklistedRecipient
@@ -196,6 +196,73 @@ def ensure_dispatch_lead(
         source="CSV_DISPATCH",
     )
     return lead
+
+
+
+def prepare_dispatch_leads_bulk(
+    db: Session,
+    *,
+    rows: list[dict[str, str]],
+    queue: ServiceQueue,
+    created_by_id: int | None,
+) -> list[Lead]:
+    """Vincula contatos do CSV com poucas consultas, sem alterar o cadastro existente.
+
+    Busca o lead mais recente por telefone, como ensure_dispatch_lead, e preserva
+    nomes, bloqueios e demais campos. Não inicia o envio da campanha.
+    """
+    existing: dict[str, Lead] = {}
+    phones = [row["phone"] for row in rows]
+    for start in range(0, len(phones), 250):
+        batch = phones[start : start + 250]
+        matches = db.scalars(
+            select(Lead)
+            .where(Lead.phone.in_(batch))
+            .order_by(Lead.updated_at.desc(), Lead.id.desc())
+        )
+        for lead in matches:
+            if lead.phone:
+                existing.setdefault(lead.phone, lead)
+
+    city = queue.branch.city if queue.branch else "Não informado"
+    leads: list[Lead] = []
+    for row in rows:
+        phone = row["phone"]
+        name = row["name"]
+        lead = existing.get(phone)
+        if lead is None:
+            lead = Lead(
+                business_name=name or phone,
+                contact_name=name or "",
+                phone=phone,
+                segment="Importação CSV",
+                city=city,
+                source="IMPORTACAO",
+                origin_channel="WHATSAPP",
+                team=queue.team,
+                stage="NOVO",
+                score=0,
+                temperature="FRIO",
+                priority="NORMAL",
+                branch_id=queue.branch_id,
+                created_by_id=created_by_id,
+                notes="Lead criada automaticamente a partir de CSV de disparo.",
+                raw_data=json.dumps({"import_source": "campaign_dispatch_csv"}, ensure_ascii=False),
+            )
+            db.add(lead)
+            existing[phone] = lead
+        else:
+            if name and (not lead.business_name or lead.business_name == lead.phone):
+                lead.business_name = name
+            if name and not lead.contact_name:
+                lead.contact_name = name
+        leads.append(lead)
+
+    db.flush()
+    set_lead_queue_preferences_bulk(
+        db, [lead.id for lead in leads], queue.id, source="CSV_DISPATCH"
+    )
+    return leads
 
 
 def dispatch_counts_many(db: Session, dispatch_ids: list[int]) -> dict[int, dict[str, int]]:
