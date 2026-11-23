@@ -26,7 +26,7 @@ from app.services.global_blacklist import is_globally_blocked
 from app.services.dispatch_queue import (
     dispatch_counts,
     dispatch_counts_many,
-    ensure_dispatch_lead,
+    prepare_dispatch_leads_bulk,
     estimated_duration_seconds,
     parse_dispatch_csv,
     parse_window,
@@ -135,7 +135,7 @@ def dispatch_sample_csv(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("")
-async def create_dispatch(
+def create_dispatch(
     request: Request,
     csrf_token: str = Form(...),
     campaign_id: int = Form(...),
@@ -195,7 +195,7 @@ async def create_dispatch(
         flash(request, "Envie um arquivo no formato CSV.", "warning")
         return RedirectResponse("/dispatches", status_code=303)
 
-    raw = await csv_file.read()
+    raw = csv_file.file.read()
     if len(raw) > 8 * 1024 * 1024:
         flash(request, "O CSV excede o limite de 8 MB.", "warning")
         return RedirectResponse("/dispatches", status_code=303)
@@ -220,16 +220,14 @@ async def create_dispatch(
     db.add(dispatch)
     db.flush()
 
+    # Uma consulta em lotes e UPSERT atômico por bloco: evita N consultas,
+    # bloqueio do loop assíncrono e transações longas para CSVs grandes.
+    prepared_leads = prepare_dispatch_leads_bulk(
+        db, rows=rows, queue=queue, created_by_id=actor.id,
+    )
     created = 0
     skipped_blocked = 0
-    for row in rows:
-        lead = ensure_dispatch_lead(
-            db,
-            name=row["name"],
-            phone=row["phone"],
-            queue=queue,
-            created_by_id=actor.id,
-        )
+    for row, lead in zip(rows, prepared_leads, strict=True):
         if lead.do_not_contact or lead.stage in {"NAO_CONTATAR", "PERDIDO", "GANHO"}:
             skipped_blocked += 1
             continue
