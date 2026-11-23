@@ -804,6 +804,9 @@ def process_dispatch_recipient(
             )
         return "failed"
 
+    # O marco do envio é o aceite da mensagem principal pela Z-API.
+    # Não esperar anexos: o cliente pode responder enquanto a imagem é enviada.
+    accepted_at = utcnow()
     contact = ensure_contact(db, lead.phone, lead=lead)
     conversation = ensure_open_conversation(
         db,
@@ -887,7 +890,7 @@ def process_dispatch_recipient(
             except (MediaStorageError, ZApiError) as exc:
                 media_errors.append(f"{file_name}: {exc}")
 
-    now = utcnow()
+    now = accepted_at
     recipient.status = "ENVIADO"
     recipient.sent_at = now
     recipient.provider_message_id = provider_id
