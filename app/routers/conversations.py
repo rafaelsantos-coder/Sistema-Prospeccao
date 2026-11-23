@@ -49,6 +49,7 @@ from app.services.conversation_engine import (
     CLOSED_CONVERSATION_STATUSES,
     OPEN_CONVERSATION_STATUSES,
     apply_conversation_scope,
+    exclusive_conversation_access_clause,
     location_urls_for,
     outbound_without_reply_clause,
     conversation_visible_to_user,
@@ -75,6 +76,9 @@ from app.services.crm_manual_registration import (
     register_conversation,
     registration_status,
     seller_for_user,
+)
+from app.services.instance_privacy import (
+    require_instance_access, protected_conversation, may_access_instance,
 )
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
@@ -639,7 +643,7 @@ def _seller_panel(db: Session, user: User, *, queue_id: int | None = None) -> li
             ConversationQueueLink,
             ConversationQueueLink.conversation_id == Conversation.id,
         ).where(ConversationQueueLink.queue_id == queue_id)
-    for assigned_id in db.scalars(stmt):
+    for assigned_id in db.scalars(apply_conversation_scope(stmt, user)):
         open_counts[assigned_id] = open_counts.get(assigned_id, 0) + 1
     return [
         {
@@ -673,6 +677,7 @@ def _queue_panel(db: Session, user: User) -> list[dict]:
         )
         .join(Conversation, Conversation.id == ConversationQueueLink.conversation_id)
         .where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES), ~outbound_without_reply_clause())
+        .where(exclusive_conversation_access_clause(user))
     ):
         open_counts[queue_id] = open_counts.get(queue_id, 0) + 1
         if _needs_attention(conversation_status, unread_count, assigned_user_id):
@@ -707,6 +712,7 @@ def _manual_outbound_queues(db: Session, user: User) -> list[tuple[ServiceQueue,
         (queue, instance)
         for queue in available_queues_for_user(db, user)
         if (instance := queue_instance(db, queue.id)) is not None
+        and may_access_instance(user, instance)
     ]
 
 
@@ -763,7 +769,7 @@ def _render_inbox(
             if assignment.event == "TRANSFERRED"
         ]
         history_timeline.sort(key=lambda item: (item["at"], item["kind"], item["id"]))
-        users = _eligible_users(db, user, selected)
+        users = [] if protected_conversation(db, selected.id) else _eligible_users(db, user, selected)
         transfer_online_ids = set(online_user_ids(db))
         users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
         ai_queue = ai_transfer_queue(db)
@@ -992,6 +998,7 @@ def quick_start_whatsapp_conversation(
         flash(request, "Selecione uma fila WhatsApp autorizada para iniciar a conversa.", "warning")
         return RedirectResponse("/conversations", status_code=303)
     queue, instance = allowed[queue_id]
+    require_instance_access(user, instance)
 
     normalized = normalize_phone(phone)
     if not normalized:
@@ -1515,6 +1522,8 @@ def assign_conversation(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if protected_conversation(db, conversation.id):
+        raise HTTPException(status_code=403, detail="Instancia de atendimento exclusivo.")
     eligible = {item.id: item for item in _eligible_users(db, user, conversation)}
     target = eligible.get(assigned_user_id)
     if not target:
@@ -1592,6 +1601,8 @@ def transfer_conversation_queue(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if protected_conversation(db, conversation.id):
+        raise HTTPException(status_code=403, detail="Instancia de atendimento exclusivo.")
     current = queue_for_conversation(db, conversation.id)
     allowed = {item["id"] for item in _transfer_queues(db, user, current)}
     queue = get_queue(db, queue_id)

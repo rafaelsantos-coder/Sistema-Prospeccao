@@ -17,6 +17,7 @@ from app.models import (
     ConversationAssignment,
     ConversationQueueLink,
     ConversationZApiInstance,
+    ZApiInstance,
     Lead,
     Message,
     MessageEvent,
@@ -648,6 +649,26 @@ def outbound_without_reply_clause():
     return started_by_dispatch & ~customer_replied
 
 
+def exclusive_conversation_access_clause(user: User):
+    """Never disclose a conversation from an exclusive Z-API instance to another account.
+
+    This is an object-level ACL, enforced before the ordinary role/queue scope.
+    Disabled instances retain their protection. NULL owner fails closed.
+    """
+    restricted = (
+        select(ConversationZApiInstance.conversation_id)
+        .join(ZApiInstance, ZApiInstance.id == ConversationZApiInstance.zapi_instance_id)
+        .where(
+            ZApiInstance.exclusive_access.is_(True),
+            or_(
+                ZApiInstance.exclusive_user_id.is_(None),
+                ZApiInstance.exclusive_user_id != user.id,
+            ),
+        )
+    )
+    return Conversation.id.not_in(restricted)
+
+
 def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
     """Restringe as conversas que cada perfil enxerga.
 
@@ -657,6 +678,7 @@ def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
     - CONSULTOR: somente as conversas atribuídas a ele. A exceção são filas
       MANUAL, em que ele vê o que pediu atendimento humano para poder pegar.
     """
+    stmt = stmt.where(exclusive_conversation_access_clause(user))
     if inbox:
         stmt = stmt.where(~outbound_without_reply_clause())
     if user.role in {"ADMIN", "GESTOR"}:
