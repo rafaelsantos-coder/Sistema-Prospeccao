@@ -324,7 +324,7 @@
     {% endif %}
 
     <div class="chat-stream" id="chat-stream">
-      <div class="chat-day-separator"><span>Histórico permanente por telefone · {{ conversation.contact.phone|phone_br }}</span></div>
+      <div class="chat-day-separator"><span>Mensagens deste atendimento · acesso restrito</span></div>
       {% for entry in history_timeline %}
         {% if entry.kind == 'transfer' %}
         <div class="message-note history-transfer-event" data-transfer-id="{{ entry.transfer.id }}">
