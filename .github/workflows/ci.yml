@@ -68,6 +68,7 @@ jobs:
           node --check app/static/js/credit_map.js
           node --check app/static/js/credit_map_heat.js
           node --check app/static/js/voice_campaign_status.js
+          node --check app/static/js/conversas_mvp.js
           node --test tests/js/credit_map_heat.test.cjs
 
       - name: Lint crítico
