@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -102,6 +104,31 @@ def set_lead_queue_preference(
     *,
     source: str,
 ) -> LeadQueuePreference:
+    # A consulta seguida de INSERT causa UniqueViolation quando duas importações
+    # ou webhooks tentam cadastrar a preferência do mesmo lead simultaneamente.
+    # O UPSERT no banco mantém o vínculo único mesmo sob concorrência.
+    dialect = db.get_bind().dialect.name
+    if dialect in {"postgresql", "sqlite"}:
+        db.flush()  # preserva a gravação de objetos pendentes, inclusive o lead novo
+        insert = pg_insert if dialect == "postgresql" else sqlite_insert
+        statement = insert(LeadQueuePreference).values(
+            lead_id=lead_id,
+            queue_id=queue_id,
+            source=source,
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[LeadQueuePreference.lead_id],
+            set_={
+                "queue_id": queue_id,
+                "source": source,
+                "updated_at": utcnow(),
+            },
+        ).returning(LeadQueuePreference)
+        return db.scalars(
+            statement, execution_options={"populate_existing": True}
+        ).one()
+
+    # Fallback para outros dialetos, usados apenas fora do ambiente padrão.
     preference = db.scalar(
         select(LeadQueuePreference).where(LeadQueuePreference.lead_id == lead_id)
     )
