@@ -198,7 +198,7 @@
             <strong>{{ item.contact.business_name or item.contact.name or item.contact.phone|phone_br }}</strong>
             <time>{{ item.last_message_at|datetime_br }}</time>
           </div>
-          <div class="conversation-preview">{{ item.last_message_preview or 'Conversa iniciada' }}</div>
+          <div class="conversation-preview">{{ conversation_previews.get(item.id, 'Conversa iniciada') }}</div>
           {% set item_queue = conversation_queue_labels.get(item.id) %}
           <div class="conversation-queue-row">
             {% if item_queue %}
