@@ -1148,18 +1148,40 @@ def send_message(
     message: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    wants_json = "application/json" in request.headers.get("accept", "")
     user, redirect = _user_or_redirect(request, db)
     if redirect:
+        if wants_json:
+            code = 401 if redirect.headers.get("location") == "/login" else 403
+            return JSONResponse(
+                {"ok": False, "error": "Entre no atendimento para responder."},
+                status_code=code,
+            )
         return redirect
     validate_csrf(request, csrf_token)
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
+        if wants_json:
+            return JSONResponse(
+                {"ok": False, "error": "Conversa não disponível para esta conta."},
+                status_code=404,
+            )
         return _conversation_unavailable(request)
     if is_globally_blocked(db, conversation.contact.phone) or (conversation.lead and (conversation.lead.do_not_contact or conversation.lead.stage == "NAO_CONTATAR")):
+        if wants_json:
+            return JSONResponse(
+                {"ok": False, "error": "Este contato está bloqueado para novas mensagens."},
+                status_code=403,
+            )
         flash(request, "Este contato esta bloqueado para novas mensagens.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     clean_message = message.strip()
     if not clean_message:
+        if wants_json:
+            return JSONResponse(
+                {"ok": False, "error": "Digite uma mensagem antes de enviar."},
+                status_code=400,
+            )
         flash(request, "Digite uma mensagem antes de enviar.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     if conversation.source != "TELEGRAM" and needs_pacing(db, conversation):
@@ -1171,7 +1193,12 @@ def send_message(
             db.commit()
         except (ZApiError, ValueError) as exc:
             db.rollback()
+            if wants_json:
+                return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
             flash(request, str(exc), "error")
+        else:
+            if wants_json:
+                return JSONResponse({"ok": True, "status": "PENDING"})
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     try:
         result = service_for_conversation(db, conversation.id).send_text(
@@ -1179,6 +1206,8 @@ def send_message(
             message=clean_message,
         )
     except ZApiError as exc:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
         flash(request, str(exc), "error")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
@@ -1221,6 +1250,8 @@ def send_message(
         payload={"message_id": sent.id, "provider_message_id": provider_id},
     )
     db.commit()
+    if wants_json:
+        return JSONResponse({"ok": True, "status": "SENT", "message_id": sent.id})
     return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
 

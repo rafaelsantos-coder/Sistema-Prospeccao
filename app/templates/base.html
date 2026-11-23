@@ -39,6 +39,9 @@
       <a href="/conversations" class="nav-item {% if active_nav == 'conversations' %}active{% endif %}">
         <span class="nav-icon">◌</span><span>Conversas</span>
       </a>
+      <a href="/conversas" class="nav-item" title="Atendimento web simplificado">
+        <span class="nav-icon">▢</span><span>Conversas (MVP)</span>
+      </a>
       {% endif %}
       {% if 'blacklist.view' in current_user.permissions %}
       <a href="/blacklist" class="nav-item {% if active_nav == 'blacklist' %}active{% endif %}">
