@@ -76,6 +76,68 @@
   });
 
 
+  // O painel gerencial reutiliza o heartbeat já persistido pelo WhatsApp.
+  // Não interpreta login ou instância Z-API conectada como presença do vendedor.
+  const onlineSellersRoot = document.querySelector('[data-online-sellers]');
+  if (onlineSellersRoot) {
+    const count = onlineSellersRoot.querySelector('[data-online-sellers-count]');
+    const list = onlineSellersRoot.querySelector('[data-online-sellers-list]');
+    let latestRequest = 0;
+
+    const refreshOnlineSellers = async () => {
+      const requestId = ++latestRequest;
+      try {
+        const response = await fetch('/api/whatsapp-presence/online-sellers', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!response.ok) throw new Error('presença indisponível');
+        const data = await response.json();
+        if (requestId !== latestRequest) return;
+        const sellers = Array.isArray(data.sellers) ? data.sellers : [];
+        count.textContent = String(sellers.length);
+        list.replaceChildren();
+        if (!sellers.length) {
+          const empty = document.createElement('span');
+          empty.className = 'topbar-online-sellers-empty';
+          empty.textContent = 'Nenhum vendedor online';
+          list.appendChild(empty);
+          return;
+        }
+        for (const seller of sellers) {
+          const chip = document.createElement('span');
+          chip.className = 'topbar-online-seller';
+          chip.title = seller.name + ' · online no WhatsApp';
+          const dot = document.createElement('span');
+          dot.className = 'topbar-online-seller-dot';
+          dot.setAttribute('aria-hidden', 'true');
+          const name = document.createElement('span');
+          name.textContent = String(seller.name || 'Vendedor');
+          chip.append(dot, name);
+          list.appendChild(chip);
+        }
+      } catch (_) {
+        if (requestId !== latestRequest) return;
+        count.textContent = '—';
+        list.replaceChildren();
+        const message = document.createElement('span');
+        message.className = 'topbar-online-sellers-empty';
+        message.textContent = 'Presença indisponível';
+        list.appendChild(message);
+      }
+    };
+
+    refreshOnlineSellers();
+    window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshOnlineSellers();
+    }, 20000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refreshOnlineSellers();
+    });
+    window.addEventListener('online', refreshOnlineSellers);
+  }
+
   const presenceRoot = document.querySelector('[data-whatsapp-presence]');
   if (presenceRoot) {
     const csrf = presenceRoot.dataset.csrf || '';
