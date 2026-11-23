@@ -170,11 +170,11 @@
 <section class="panel top-space">
   <div class="panel-header">
     <div><span class="eyebrow">DESTINATÁRIOS</span><h3>{{ 'Contatos com falha' if failures_only else 'Sequência do disparo' }}</h3></div>
-    <span class="panel-note">Exibindo até 500 registros. {% if failures_only %}<a href="/dispatches/{{ dispatch.id }}">Ver sequência completa</a>{% endif %}</span>
+    <span class="panel-note">Comprovação pelo ID da mensagem e retorno da Z-API. Exibindo até 500 registros. {% if failures_only %}<a href="/dispatches/{{ dispatch.id }}">Ver sequência completa</a>{% endif %}</span>
   </div>
   <div class="data-table-wrap">
     <table class="data-table dispatch-recipient-table">
-      <thead><tr><th>#</th><th>Nome</th><th>Telefone</th><th>Status</th><th>Mensagem</th><th>Enviado em</th><th>Erro</th></tr></thead>
+      <thead><tr><th>#</th><th>Nome</th><th>Telefone</th><th>Status</th><th>Comprovante de entrega</th><th>Mensagem</th><th>Solicitado em</th><th>Erro</th></tr></thead>
       <tbody>
         {% for item in recipients %}
         <tr>
@@ -182,12 +182,13 @@
           <td><strong>{{ item.name }}</strong>{% if item.lead_id %}<span class="table-subline">Lead #{{ item.lead_id }}</span>{% endif %}</td>
           <td>{{ item.phone|phone_br }}</td>
           <td><span class="dispatch-status status-{{ item.status|lower }}">{{ item.status|replace('_',' ') }}</span></td>
+          <td><strong>{{ delivery_proofs.get(item.id, "NÃO CONFIRMADO") }}</strong><span class="table-subline" title="{{ item.provider_message_id or 'ID não retornado pelo provedor' }}">ID: {{ (item.provider_message_id[:20] ~ '…') if item.provider_message_id and item.provider_message_id|length > 20 else (item.provider_message_id or 'ausente') }}</span></td>
           <td><span class="dispatch-message-preview">{{ item.message_body }}</span></td>
           <td>{{ item.sent_at|datetime_br if item.sent_at else '—' }}</td>
           <td>{% if item.error %}<span class="text-danger">{{ item.error }}</span>{% else %}—{% endif %}</td>
         </tr>
         {% else %}
-        <tr><td colspan="7"><div class="empty-state">Nenhum destinatário.</div></td></tr>
+        <tr><td colspan="8"><div class="empty-state">Nenhum destinatário.</div></td></tr>
         {% endfor %}
       </tbody>
     </table>

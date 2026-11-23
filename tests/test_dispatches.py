@@ -12,6 +12,8 @@ from app.models import (
     Campaign,
     CampaignDispatch,
     CampaignDispatchRecipient,
+    Contact,
+    Conversation,
     ConversationQueueLink,
     Message,
     ServiceQueue,
@@ -20,12 +22,14 @@ from app.services.dispatch_monitor import daily_capacity
 from app.services.dispatch_queue import (
     claim_next_dispatch_recipient,
     dispatch_counts,
+    dispatch_delivery_proof,
     parse_dispatch_csv,
     process_dispatch_recipient,
 )
 from app.services.media_storage import MediaStorage
 from app.services.zapi import ZApiService, ZApiError
 from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
+from app.timeutils import utcnow
 
 
 def _csrf(html: str) -> str:
@@ -869,3 +873,59 @@ def test_admin_can_review_and_prepare_only_rejected_undelivered_contacts():
             ))
             assert sent.status == "ENVIADO"
             assert sent.provider_message_id == "MSG-JA-ENVIADA"
+
+
+def test_delivery_proof_never_equates_api_acknowledgement_with_receipt():
+    assert dispatch_delivery_proof("ENVIADO", "MSG-1", "READ") == "LIDO"
+    assert dispatch_delivery_proof("ENVIADO", "MSG-1", "RECEIVED") == "ENTREGUE"
+    assert dispatch_delivery_proof("ENVIADO", "MSG-1", "FAILED") == "FALHA DE ENTREGA"
+    assert dispatch_delivery_proof("ENVIADO", "MSG-1", "SENT") == "ACEITO — SEM CONFIRMAÇÃO"
+    assert dispatch_delivery_proof("ENVIADO", None, "SENT") == "ACEITO SEM ID — NÃO CONFIRMADO"
+    assert dispatch_delivery_proof("PENDENTE", None) == "NÃO ENVIADO"
+
+
+def test_dispatch_details_and_csv_show_actual_provider_delivery_proof():
+    with TestClient(app) as client:
+        _login_admin(client)
+        with SessionLocal() as db:
+            campaign, queue = _campaign_and_queue(db, "PROOF")
+            dispatch = CampaignDispatch(
+                campaign_id=campaign.id, queue_id=queue.id, status="ATIVO",
+            )
+            db.add(dispatch)
+            db.flush()
+            contact = Contact(phone="5555999976501", name="Cliente Comprovante")
+            db.add(contact)
+            db.flush()
+            conversation = Conversation(contact_id=contact.id, source="WHATSAPP")
+            db.add(conversation)
+            db.flush()
+            db.add_all([
+                CampaignDispatchRecipient(
+                    dispatch_id=dispatch.id, phone=contact.phone, name=contact.name,
+                    status="ENVIADO", sent_at=utcnow(),
+                    conversation_id=conversation.id,
+                    provider_message_id="ID-COMPROVANTE-RECEIVED",
+                ),
+                Message(
+                    conversation_id=conversation.id, contact_id=contact.id,
+                    direction="OUTBOUND", body="Mensagem de campanha",
+                    provider_message_id="ID-COMPROVANTE-RECEIVED",
+                    status="RECEIVED", delivered_at=utcnow(),
+                ),
+            ])
+            db.commit()
+            dispatch_id = dispatch.id
+
+        detail = client.get(f"/dispatches/{dispatch_id}")
+        assert detail.status_code == 200
+        assert "ENTREGUE" in detail.text
+        assert "ID-COMPROVANTE-RECEIVED" in detail.text
+
+        csv_response = client.get(f"/dispatches/{dispatch_id}/report.csv")
+        assert csv_response.status_code == 200
+        assert "Prova da entrega" in csv_response.text
+        assert "ENTREGUE" in csv_response.text
+        assert "ID-COMPROVANTE-RECEIVED" in csv_response.text
+        assert "Enviado" in csv_response.text
+        assert "Status Z-API" in csv_response.text

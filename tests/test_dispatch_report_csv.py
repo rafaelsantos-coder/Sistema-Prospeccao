@@ -84,13 +84,17 @@ def test_dispatch_report_csv_has_all_recipients_and_their_send_results():
         rows = list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig")), delimiter=";"))
 
         assert len(rows) == 501
-        assert rows[0] == {
+        # Colunas originais continuam estáveis para relatórios existentes.
+        assert {key: rows[0][key] for key in ("Telefone", "Resultado", "Status", "Enviado em", "Motivo")} == {
             "Telefone": "5555900800001",
             "Resultado": "Enviado",
             "Status": "ENVIADO",
             "Enviado em": "20/11/2026 12:00",
             "Motivo": "",
         }
+        assert rows[0]["Prova da entrega"] == "ACEITO SEM ID — NÃO CONFIRMADO"
+        assert rows[0]["ID WhatsApp"] == ""
+        assert rows[1]["Prova da entrega"] == "NÃO ENVIADO"
         assert [(row["Resultado"], row["Status"]) for row in rows[1:5]] == [
             ("Não enviado", "PENDENTE"),
             ("Não enviado", "FALHOU"),
