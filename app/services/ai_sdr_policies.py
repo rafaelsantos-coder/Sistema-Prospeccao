@@ -481,6 +481,8 @@ def _sanitize_unconfirmed_customer_facts(
 ) -> AIDecision:
     inbound = _customer_inbound_text(context)
     qualification = decision.qualification
+    if qualification.city and context_denies_city(context, qualification.city):
+        qualification.city = None
     confirmed_customer_type = _customer_type_from_context(context)
     qualification.customer_type = (
         confirmed_customer_type if confirmed_customer_type else "NAO_INFORMADO"
@@ -2485,13 +2487,15 @@ def _service_city_in_text(value: str | None) -> str:
 
 
 def _known_city_for_fast_path(context: dict) -> str:
-    facts_city = str((context.get("confirmed_facts") or {}).get("city") or "").strip()
-    if facts_city:
-        return facts_city
-    lead_city = str((context.get("lead") or {}).get("city") or "").strip()
-    if lead_city:
-        return lead_city
-    return _service_city_in_text(str(context.get("latest_customer_message") or ""))
+    for value in (
+        (context.get("confirmed_facts") or {}).get("city"),
+        (context.get("lead") or {}).get("city"),
+    ):
+        city = str(value or "").strip()
+        if city and not context_denies_city(context, city):
+            return city
+    latest = _service_city_in_text(str(context.get("latest_customer_message") or ""))
+    return "" if context_denies_city(context, latest) else latest
 
 
 def _ad_style_plan_interest(value: str | None) -> bool:
