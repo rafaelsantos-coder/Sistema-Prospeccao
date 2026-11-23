@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f47621">
+  <meta name="color-scheme" content="light">
+  <title>Prospecta Conversas · Sulnet</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/conversas_mvp.css') }}">
+  <script src="{{ url_for('static', path='/js/conversas_mvp.js') }}" defer></script>
+</head>
+<body>
+<main id="mvp-app" class="mvp-app"
+      data-csrf="{{ csrf_token }}"
+      data-user-name="{{ current_user.name }}"
+      data-role="{{ current_user.role }}"
+      data-can-reply="{{ 'true' if can_reply else 'false' }}"
+      data-initial-id="{{ selected_conversation_id or '' }}">
+  <aside class="mvp-inbox" aria-label="Lista de conversas">
+    <header class="mvp-inbox-header">
+      <div class="mvp-brand">
+        <div class="mvp-logo" aria-hidden="true">S</div>
+        <div><strong>Prospecta</strong><span>CONVERSAS</span></div>
+      </div>
+      <form method="post" action="/logout" class="mvp-logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" title="Sair do sistema" aria-label="Sair do sistema">Sair</button>
+      </form>
+    </header>
+
+    <div class="mvp-controls">
+      <div class="mvp-presence" role="status" aria-live="polite">
+        <span class="mvp-presence-dot" id="mvp-presence-dot"></span>
+        <span id="mvp-presence-label">Verificando atendimento...</span>
+        <button type="button" id="mvp-join" class="mvp-join" hidden>Entrar no atendimento</button>
+      </div>
+      <label class="mvp-search" for="mvp-search">
+        <span aria-hidden="true">⌕</span>
+        <input id="mvp-search" type="search" placeholder="Buscar contato ou telefone" autocomplete="off">
+      </label>
+      <div class="mvp-filters" role="group" aria-label="Filtrar conversas">
+        <button type="button" data-view="active" aria-pressed="true" class="selected">Ativas</button>
+        <button type="button" data-view="unread" aria-pressed="false">Não lidas <span id="mvp-unread-count"></span></button>
+        <button type="button" data-view="pending" aria-pressed="false">Pendentes</button>
+        <button type="button" data-view="queue" aria-pressed="false">Na fila</button>
+      </div>
+    </div>
+
+    <div id="mvp-inbox-state" class="mvp-inbox-state" role="status" aria-live="polite">Carregando conversas...</div>
+    <div class="mvp-conversation-list" id="mvp-conversation-list" aria-label="Atendimentos"></div>
+    <footer class="mvp-inbox-footer"><span>Atualização automática</span><span>Atendimentos autorizados</span></footer>
+  </aside>
+
+  <section class="mvp-chat" aria-label="Conversa selecionada">
+    <header class="mvp-chat-header">
+      <button type="button" id="mvp-back" class="mvp-back" aria-label="Voltar à lista">‹</button>
+      <div class="mvp-chat-avatar" id="mvp-chat-avatar" aria-hidden="true">•</div>
+      <div class="mvp-chat-heading">
+        <strong id="mvp-chat-name">Selecione uma conversa</strong>
+        <span id="mvp-chat-meta">Atendimentos em tempo real</span>
+      </div>
+      <span class="mvp-chat-status" id="mvp-chat-status"></span>
+    </header>
+
+    <div id="mvp-chat-placeholder" class="mvp-chat-placeholder">
+      <div class="mvp-empty-icon" aria-hidden="true">◉</div>
+      <strong>Suas conversas, em qualquer lugar.</strong>
+      <p>Selecione um atendimento para continuar a conversa com o cliente.</p>
+    </div>
+
+    <div class="mvp-messages" id="mvp-messages" role="log" aria-live="polite" aria-relevant="additions" hidden></div>
+
+    <div id="mvp-chat-feedback" class="mvp-chat-feedback" role="alert" hidden></div>
+    <div id="mvp-file-preview" class="mvp-file-preview" hidden>
+      <span id="mvp-file-name"></span>
+      <button type="button" id="mvp-file-cancel" aria-label="Cancelar anexo">×</button>
+      <button type="button" id="mvp-file-send">Enviar anexo</button>
+    </div>
+    <form id="mvp-compose" class="mvp-compose" autocomplete="off" hidden>
+      <input id="mvp-attachment" type="file" hidden accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip">
+      <label for="mvp-attachment" class="mvp-attach" title="Anexar arquivo" aria-label="Anexar arquivo">＋</label>
+      <textarea id="mvp-message" rows="1" maxlength="4096" placeholder="Digite sua mensagem..." aria-label="Mensagem para o cliente" required></textarea>
+      <button type="submit" id="mvp-send" class="mvp-send" aria-label="Enviar mensagem">➤</button>
+    </form>
+    <p class="mvp-compose-hint" id="mvp-compose-hint" hidden>Você pode consultar este atendimento, mas não possui permissão para responder.</p>
+  </section>
+</main>
+</body>
+</html>
