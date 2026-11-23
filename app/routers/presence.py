@@ -61,6 +61,44 @@ def whatsapp_presence_state(
     return _state(db, user)
 
 
+@router.get("/api/whatsapp-presence/online-sellers")
+def manager_online_sellers(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Vendedores humanos disponíveis no WhatsApp; nunca inclui presença expirada."""
+    user = _current_user_or_401(request, db)
+    if user.role not in {"ADMIN", "GESTOR", "SUPERVISOR"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso restrito à gestão comercial.",
+        )
+
+    stmt = (
+        select(User.id, User.name)
+        .join(WhatsAppPresence, WhatsAppPresence.user_id == User.id)
+        .where(
+            User.active.is_(True),
+            User.role == "CONSULTOR",
+            WhatsAppPresence.status == "ONLINE",
+            WhatsAppPresence.last_heartbeat_at.is_not(None),
+            WhatsAppPresence.last_heartbeat_at >= presence_cutoff(),
+        )
+        .order_by(User.name, User.id)
+    )
+    if user.role == "SUPERVISOR":
+        if user.branch_id:
+            stmt = stmt.where(User.branch_id == user.branch_id)
+        else:
+            stmt = stmt.where(User.team == user.team)
+
+    sellers = [{"id": seller_id, "name": name} for seller_id, name in db.execute(stmt)]
+    return JSONResponse(
+        {"count": len(sellers), "sellers": sellers},
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 @router.post("/api/whatsapp-presence/join")
 def whatsapp_presence_join(
     request: Request,
