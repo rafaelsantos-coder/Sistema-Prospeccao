@@ -510,11 +510,16 @@ class ZApiInstance(Base):
     webhook_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     source_type: Mapped[str] = mapped_column(String(20), default="DB", index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Quando restrita, apenas esta conta pode ler conversas da instancia.
+    # Sem titular definido, negar acesso a todos (fail closed).
+    exclusive_access: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    exclusive_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+    exclusive_user: Mapped[User | None] = relationship(foreign_keys=[exclusive_user_id])
 
 
 class ServiceQueueZApiInstance(Base):
