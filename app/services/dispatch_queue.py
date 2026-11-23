@@ -397,6 +397,34 @@ def dispatch_counts_many(db: Session, dispatch_ids: list[int]) -> dict[int, dict
     return results
 
 
+
+def dispatch_delivery_proof(
+    recipient_status: str,
+    provider_message_id: str | None,
+    provider_status: str | None = None,
+    *,
+    delivered_at: datetime | None = None,
+    read_at: datetime | None = None,
+) -> str:
+    """Classifica apenas a entrega comprovada pelo provedor, nunca somente HTTP 200.
+
+    Mensagens sem comprovante continuam não confirmadas, mesmo que o disparo
+    original esteja marcado como ENVIADO. Não altera envios nem filas.
+    """
+    if recipient_status != "ENVIADO":
+        return "NÃO ENVIADO"
+    if not provider_message_id:
+        return "ACEITO SEM ID — NÃO CONFIRMADO"
+    current = (provider_status or "").upper().strip()
+    if read_at or current in {"READ", "PLAYED"}:
+        return "LIDO"
+    if delivered_at or current in {"DELIVERED", "RECEIVED"}:
+        return "ENTREGUE"
+    if current in {"FAILED", "ERROR", "NOT_SENT", "UNDELIVERED"}:
+        return "FALHA DE ENTREGA"
+    return "ACEITO — SEM CONFIRMAÇÃO"
+
+
 def dispatch_counts(db: Session, dispatch_id: int) -> dict[str, int]:
     return dispatch_counts_many(db, [dispatch_id])[dispatch_id]
 
