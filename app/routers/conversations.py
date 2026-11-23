@@ -716,6 +716,7 @@ def _render_inbox(
 
     messages: list[Message] = []
     transfer_history: list[ConversationAssignment] = []
+    history_timeline: list[dict] = []
     users: list[User] = []
     selected_queue = None
     latest_ai_run = None
@@ -728,6 +729,16 @@ def _render_inbox(
         history_contact_ids = _history_contact_ids(db, selected.contact)
         messages = _contact_history_messages(db, selected, history_contact_ids)
         transfer_history = _contact_history_assignments(db, history_contact_ids)
+        history_timeline = [
+            {"kind": "message", "at": msg.created_at, "id": msg.id, "message": msg}
+            for msg in messages
+        ] + [
+            {"kind": "transfer", "at": assignment.created_at, "id": assignment.id,
+             "transfer": assignment}
+            for assignment in transfer_history
+            if assignment.event == "TRANSFERRED"
+        ]
+        history_timeline.sort(key=lambda item: (item["at"], item["kind"], item["id"]))
         users = _eligible_users(db, user, selected)
         transfer_online_ids = set(online_user_ids(db))
         users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
@@ -824,6 +835,7 @@ def _render_inbox(
         conversation=selected,
         messages=messages,
         transfer_history=transfer_history,
+        history_timeline=history_timeline,
         location_urls=location_urls_for(db, messages),
         users=users,
         transfer_online_ids=transfer_online_ids,
