@@ -131,7 +131,7 @@ def home_wifi_answer(context: dict) -> str | None:
         if str(row.get("direction") or "").upper() != "INBOUND":
             continue
         folded = _fold(body)
-        match = re.search(r"\\b(\\d{2,4})\\s*(?:m2|metros quadrados)\\b", folded)
+        match = re.search(r"\b(\d{2,4})\s*(?:m2|metros quadrados)\b", folded)
         if match:
             area = match.group(1)
         if "mais de um" in folded and ("andares" in previous_outbound or "pisos" in previous_outbound):
