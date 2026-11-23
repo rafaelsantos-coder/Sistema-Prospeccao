@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import JSONResponse, RedirectResponse
 
@@ -173,6 +173,36 @@ def _history_since(db: Session, user: User, conversation: Conversation):
         )
         .limit(1)
     )
+
+
+def _inbox_privacy_cutoffs(
+    db: Session, user: User, conversations: list[Conversation],
+) -> dict[int, object]:
+    """Uma consulta para mascarar previews antigos de conversas transferidas."""
+    if user.role in {"ADMIN", "GESTOR"} or not conversations:
+        return {}
+    ids = [item.id for item in conversations]
+    rows = db.execute(
+        select(
+            ConversationAssignment.conversation_id,
+            func.max(ConversationAssignment.created_at),
+        )
+        .where(
+            ConversationAssignment.conversation_id.in_(ids),
+            ConversationAssignment.event == "TRANSFERRED",
+        )
+        .group_by(ConversationAssignment.conversation_id)
+    )
+    return {conversation_id: cutoff for conversation_id, cutoff in rows}
+
+
+def _private_preview(conversation: Conversation, cutoff=None) -> str:
+    if cutoff is not None and (
+        conversation.last_message_at is None
+        or utc_naive(conversation.last_message_at) < utc_naive(cutoff)
+    ):
+        return "Atendimento transferido; historico anterior restrito"
+    return conversation.last_message_preview or "Conversa iniciada"
 
 
 def _conversation_messages(db: Session, conversation: Conversation, since=None) -> list[Message]:
@@ -778,6 +808,16 @@ def _render_inbox(
     )
     commercial_tags = tag_map(db, visible_ids)
     commercial_insights = insight_map(db, visible_ids)
+    privacy_cutoffs = _inbox_privacy_cutoffs(
+        db, user, conversations + ([selected] if selected and selected.id not in
+                                    {item.id for item in conversations} else []),
+    )
+    # Classificacoes/resumos anteriores a transferencia nao sao contexto do novo vendedor.
+    for private_id in privacy_cutoffs:
+        commercial_tags.pop(private_id, None)
+        commercial_insights.pop(private_id, None)
+    if selected and selected.id in privacy_cutoffs:
+        latest_ai_run = None
     quick_queues = (
         _manual_outbound_queues(db, user)
         if has_permission(user, "conversations.reply") else []
@@ -826,6 +866,10 @@ def _render_inbox(
         active_nav="conversations",
         page_title="Conversas",
         conversations=conversations,
+        conversation_previews={
+            item.id: _private_preview(item, privacy_cutoffs.get(item.id))
+            for item in conversations
+        },
         conversation=selected,
         messages=messages,
         transfer_history=transfer_history,
@@ -1724,6 +1768,10 @@ def conversation_inbox_api(
     )
     tags = tag_map(db, ids)
     insights = insight_map(db, ids)
+    privacy_cutoffs = _inbox_privacy_cutoffs(db, user, conversations)
+    for private_id in privacy_cutoffs:
+        tags.pop(private_id, None)
+        insights.pop(private_id, None)
     return {
         "counts": _inbox_counts(
             db, user, queue_id=queue, assignee_id=assignee,
@@ -1738,7 +1786,7 @@ def conversation_inbox_api(
                     or item.contact.phone
                 ),
                 "phone": item.contact.phone,
-                "preview": item.last_message_preview or "Conversa iniciada",
+                "preview": _private_preview(item, privacy_cutoffs.get(item.id)),
                 "queue_id": queue_labels.get(item.id, {}).get("id"),
                 "queue_name": queue_labels.get(item.id, {}).get("name"),
                 "ai_reply_status": ai_reply_statuses.get(item.id),
