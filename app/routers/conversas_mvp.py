@@ -36,4 +36,6 @@ def conversas_mvp(
         page_title="Prospecta Conversas",
         selected_conversation_id=conversation_id,
         can_reply=has_permission(user, "conversations.reply"),
+        can_transfer=has_permission(user, "conversations.transfer"),
+        user_id=user.id,
     )
