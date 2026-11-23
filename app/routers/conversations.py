@@ -104,7 +104,7 @@ from app.services.zapi_instances import (
     queue_instance,
     service_for_conversation,
 )
-from app.timeutils import utcnow
+from app.timeutils import utc_naive, utcnow
 from app.web import flash, render
 
 
@@ -153,51 +153,52 @@ def _get_conversation(db: Session, user: User, conversation_id: int) -> Conversa
     return db.scalar(_conversation_stmt(user).where(Conversation.id == conversation_id))
 
 
-def _history_contact_ids(db: Session, contact: Contact) -> list[int]:
-    """Resolve o mesmo telefone em registros legados sem mesclar contatos.
+def _history_since(db: Session, user: User, conversation: Conversation):
+    """Apos transferencia, vendedor ve so a etapa atual do atendimento.
 
-    Mantem a identidade exata do numero (DDI + DDD + numero). Nao adiciona
-    nem remove o nono digito: isso poderia juntar pessoas diferentes.
+    O historico integral fica reservado ao gestor/administrador nos relatorios.
+    Nao utilizar contact_id ou telefone para ampliar o escopo do inbox.
     """
-    canonical = normalize_phone(contact.phone)
-    aliases = {contact.phone}
-    if canonical:
-        aliases.update({canonical, canonical[2:], f"+{canonical}", f"00{canonical}"})
-    return list(
-        db.scalars(
-            select(Contact.id)
-            .where(Contact.phone.in_(aliases))
-            .order_by(Contact.id.asc())
+    if user.role in {"ADMIN", "GESTOR"}:
+        return None
+    return db.scalar(
+        select(ConversationAssignment.created_at)
+        .where(
+            ConversationAssignment.conversation_id == conversation.id,
+            ConversationAssignment.event == "TRANSFERRED",
         )
+        .order_by(
+            ConversationAssignment.created_at.desc(),
+            ConversationAssignment.id.desc(),
+        )
+        .limit(1)
     )
 
 
-def _contact_history_messages(
-    db: Session,
-    conversation: Conversation,
-    contact_ids: list[int] | None = None,
-) -> list[Message]:
-    ids = contact_ids if contact_ids is not None else _history_contact_ids(db, conversation.contact)
+def _conversation_messages(db: Session, conversation: Conversation, since=None) -> list[Message]:
+    stmt = select(Message).where(Message.conversation_id == conversation.id)
+    if since is not None:
+        stmt = stmt.where(Message.created_at >= since)
     return list(
         db.scalars(
-            select(Message)
-            .where(Message.contact_id.in_(ids))
-            .options(selectinload(Message.sender_user))
+            stmt.options(selectinload(Message.sender_user))
             .order_by(Message.created_at.asc(), Message.id.asc())
         )
     )
 
 
-def _contact_history_assignments(
-    db: Session,
-    contact_ids: list[int],
+def _conversation_transfer_events(
+    db: Session, conversation: Conversation, since=None,
 ) -> list[ConversationAssignment]:
+    stmt = select(ConversationAssignment).where(
+        ConversationAssignment.conversation_id == conversation.id,
+        ConversationAssignment.event == "TRANSFERRED",
+    )
+    if since is not None:
+        stmt = stmt.where(ConversationAssignment.created_at >= since)
     return list(
         db.scalars(
-            select(ConversationAssignment)
-            .join(Conversation, Conversation.id == ConversationAssignment.conversation_id)
-            .where(Conversation.contact_id.in_(contact_ids))
-            .options(
+            stmt.options(
                 selectinload(ConversationAssignment.user),
                 selectinload(ConversationAssignment.assigned_by),
             )
@@ -206,23 +207,16 @@ def _contact_history_assignments(
     )
 
 
-def _message_visible_through_contact(
-    db: Session,
-    user: User,
-    message: Message,
+def _message_visible_in_conversation(
+    db: Session, user: User, message: Message,
 ) -> bool:
-    if not message.contact_id:
+    conversation = _get_conversation(db, user, message.conversation_id)
+    if conversation is None:
         return False
-    contact = db.get(Contact, message.contact_id)
-    if contact is None:
-        return False
-    visible_conversation = db.scalar(
-        _conversation_stmt(user)
-        .where(Conversation.contact_id.in_(_history_contact_ids(db, contact)))
-        .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
-        .limit(1)
-    )
-    return visible_conversation is not None
+    since = _history_since(db, user, conversation)
+    if since is None:
+        return True
+    return utc_naive(message.created_at) >= utc_naive(since)
 
 
 def _eligible_users(db: Session, user: User, conversation: Conversation | None = None) -> list[User]:
@@ -726,9 +720,9 @@ def _render_inbox(
         if selected.unread_count:
             mark_conversation_read(db, selected)
             db.commit()
-        history_contact_ids = _history_contact_ids(db, selected.contact)
-        messages = _contact_history_messages(db, selected, history_contact_ids)
-        transfer_history = _contact_history_assignments(db, history_contact_ids)
+        since = _history_since(db, user, selected)
+        messages = _conversation_messages(db, selected, since)
+        transfer_history = _conversation_transfer_events(db, selected, since)
         history_timeline = [
             {"kind": "message", "at": msg.created_at, "id": msg.id, "message": msg}
             for msg in messages
@@ -1408,7 +1402,7 @@ def conversation_media(
     message = db.get(Message, message_id)
     if not message or not message.media_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    if not _message_visible_through_contact(db, user, message):
+    if not _message_visible_in_conversation(db, user, message):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     try:
         url = MediaStorage().presigned_download_url(
@@ -1783,15 +1777,14 @@ def conversation_messages_api(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    stmt = (
-        select(Message)
-        .where(
-            Message.contact_id.in_(_history_contact_ids(db, conversation.contact)),
-            Message.id > max(after_id, 0),
-        )
-        .options(selectinload(Message.sender_user))
-        .order_by(Message.id.asc())
+    stmt = select(Message).where(
+        Message.conversation_id == conversation.id,
+        Message.id > max(after_id, 0),
     )
+    since = _history_since(db, user, conversation)
+    if since is not None:
+        stmt = stmt.where(Message.created_at >= since)
+    stmt = stmt.options(selectinload(Message.sender_user)).order_by(Message.id.asc())
     items = list(db.scalars(stmt))
     if conversation.unread_count:
         mark_conversation_read(db, conversation)
