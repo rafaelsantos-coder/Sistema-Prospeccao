@@ -49,6 +49,7 @@ from app.services.conversation_engine import (
     CLOSED_CONVERSATION_STATUSES,
     OPEN_CONVERSATION_STATUSES,
     apply_conversation_scope,
+    exclusive_conversation_access_clause,
     location_urls_for,
     outbound_without_reply_clause,
     conversation_visible_to_user,
@@ -75,6 +76,10 @@ from app.services.crm_manual_registration import (
     register_conversation,
     registration_status,
     seller_for_user,
+)
+from app.services.instance_privacy import (
+    require_instance_access, require_conversation_instance_access,
+    visible_message_clause, protected_conversation, may_access_instance,
 )
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
@@ -176,12 +181,14 @@ def _contact_history_messages(
     db: Session,
     conversation: Conversation,
     contact_ids: list[int] | None = None,
+    *,
+    user: User,
 ) -> list[Message]:
     ids = contact_ids if contact_ids is not None else _history_contact_ids(db, conversation.contact)
     return list(
         db.scalars(
             select(Message)
-            .where(Message.contact_id.in_(ids))
+            .where(Message.contact_id.in_(ids), visible_message_clause(user))
             .options(selectinload(Message.sender_user))
             .order_by(Message.created_at.asc(), Message.id.asc())
         )
@@ -191,12 +198,14 @@ def _contact_history_messages(
 def _contact_history_assignments(
     db: Session,
     contact_ids: list[int],
+    *,
+    user: User,
 ) -> list[ConversationAssignment]:
     return list(
         db.scalars(
             select(ConversationAssignment)
             .join(Conversation, Conversation.id == ConversationAssignment.conversation_id)
-            .where(Conversation.contact_id.in_(contact_ids))
+            .where(Conversation.contact_id.in_(contact_ids), exclusive_conversation_access_clause(user))
             .options(
                 selectinload(ConversationAssignment.user),
                 selectinload(ConversationAssignment.assigned_by),
@@ -213,6 +222,7 @@ def _message_visible_through_contact(
 ) -> bool:
     if not message.contact_id:
         return False
+    require_conversation_instance_access(db, user, message.conversation_id)
     contact = db.get(Contact, message.contact_id)
     if contact is None:
         return False
@@ -615,7 +625,7 @@ def _seller_panel(db: Session, user: User, *, queue_id: int | None = None) -> li
             ConversationQueueLink,
             ConversationQueueLink.conversation_id == Conversation.id,
         ).where(ConversationQueueLink.queue_id == queue_id)
-    for assigned_id in db.scalars(stmt):
+    for assigned_id in db.scalars(apply_conversation_scope(stmt, user)):
         open_counts[assigned_id] = open_counts.get(assigned_id, 0) + 1
     return [
         {
@@ -649,6 +659,7 @@ def _queue_panel(db: Session, user: User) -> list[dict]:
         )
         .join(Conversation, Conversation.id == ConversationQueueLink.conversation_id)
         .where(Conversation.status.in_(OPEN_CONVERSATION_STATUSES), ~outbound_without_reply_clause())
+        .where(exclusive_conversation_access_clause(user))
     ):
         open_counts[queue_id] = open_counts.get(queue_id, 0) + 1
         if _needs_attention(conversation_status, unread_count, assigned_user_id):
@@ -683,6 +694,7 @@ def _manual_outbound_queues(db: Session, user: User) -> list[tuple[ServiceQueue,
         (queue, instance)
         for queue in available_queues_for_user(db, user)
         if (instance := queue_instance(db, queue.id)) is not None
+        and may_access_instance(user, instance)
     ]
 
 
@@ -727,8 +739,8 @@ def _render_inbox(
             mark_conversation_read(db, selected)
             db.commit()
         history_contact_ids = _history_contact_ids(db, selected.contact)
-        messages = _contact_history_messages(db, selected, history_contact_ids)
-        transfer_history = _contact_history_assignments(db, history_contact_ids)
+        messages = _contact_history_messages(db, selected, history_contact_ids, user=user)
+        transfer_history = _contact_history_assignments(db, history_contact_ids, user=user)
         history_timeline = [
             {"kind": "message", "at": msg.created_at, "id": msg.id, "message": msg}
             for msg in messages
@@ -739,7 +751,7 @@ def _render_inbox(
             if assignment.event == "TRANSFERRED"
         ]
         history_timeline.sort(key=lambda item: (item["at"], item["kind"], item["id"]))
-        users = _eligible_users(db, user, selected)
+        users = [] if protected_conversation(db, selected.id) else _eligible_users(db, user, selected)
         transfer_online_ids = set(online_user_ids(db))
         users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
         ai_queue = ai_transfer_queue(db)
@@ -954,6 +966,7 @@ def quick_start_whatsapp_conversation(
         flash(request, "Selecione uma fila WhatsApp autorizada para iniciar a conversa.", "warning")
         return RedirectResponse("/conversations", status_code=303)
     queue, instance = allowed[queue_id]
+    require_instance_access(user, instance)
 
     normalized = normalize_phone(phone)
     if not normalized:
@@ -1477,6 +1490,8 @@ def assign_conversation(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if protected_conversation(db, conversation.id):
+        raise HTTPException(status_code=403, detail="Instancia de atendimento exclusivo.")
     eligible = {item.id: item for item in _eligible_users(db, user, conversation)}
     target = eligible.get(assigned_user_id)
     if not target:
@@ -1554,6 +1569,8 @@ def transfer_conversation_queue(
     conversation = _get_conversation(db, user, conversation_id)
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if protected_conversation(db, conversation.id):
+        raise HTTPException(status_code=403, detail="Instancia de atendimento exclusivo.")
     current = queue_for_conversation(db, conversation.id)
     allowed = {item["id"] for item in _transfer_queues(db, user, current)}
     queue = get_queue(db, queue_id)
@@ -1788,6 +1805,7 @@ def conversation_messages_api(
         .where(
             Message.contact_id.in_(_history_contact_ids(db, conversation.contact)),
             Message.id > max(after_id, 0),
+            visible_message_clause(user),
         )
         .options(selectinload(Message.sender_user))
         .order_by(Message.id.asc())
