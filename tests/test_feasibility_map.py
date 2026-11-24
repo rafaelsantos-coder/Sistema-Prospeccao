@@ -78,14 +78,18 @@ def test_seller_uses_nap_snapshot_without_access_to_credit(monkeypatch):
             seller_id = _login_consultant(client)
             inbox = _get_seller_inbox(client, seller_id)
             assert inbox.status_code == 200
-            assert inbox.text.count('href="/feasibility-map"') == 1
+            assert inbox.text.count('href="/feasibility-map"') == 2
+            assert re.search(
+                r'<nav class="main-nav"[^>]*>.*?<a\b[^>]*href="/feasibility-map"[^>]*>.*Mapa de Viabilidade',
+                inbox.text, re.S,
+            )
             header = inbox.text.split('<header class="topbar">', 1)[1].split('</header>', 1)[0]
             link = re.search(r'<a\b[^>]*href="/feasibility-map"[^>]*>.*?</a>', header, re.S)
             assert link and 'target="_blank"' in link[0] and 'rel="noopener"' in link[0]
             assert '>Consultar viabilidade' in link[0]
             page = client.get('/feasibility-map')
             assert page.status_code == 200
-            assert 'href="/feasibility-map"' not in page.text
+            assert re.search(r'<a\b[^>]*href="/feasibility-map"[^>]*aria-current="page"', page.text)
             assert 'Mapa de Viabilidade' in page.text
             assert 'id="vm-address"' in page.text
             assert 'id="vm-coordinate"' in page.text
@@ -97,7 +101,7 @@ def test_seller_uses_nap_snapshot_without_access_to_credit(monkeypatch):
             assert 'data-google-maps-key="maps-test-fixture"' in page.text
             assert any(urlsplit(source).hostname == 'maps.googleapis.com' for source in _script_sources(page))
             dashboard = client.get('/dashboard')
-            assert 'href="/feasibility-map"' not in dashboard.text
+            assert re.search(r'<a\b[^>]*href="/feasibility-map"[^>]*>.*Mapa de Viabilidade', dashboard.text, re.S)
             assert all(urlsplit(source).hostname != 'maps.googleapis.com' for source in _script_sources(dashboard))
 
             response = client.get('/api/feasibility-map')
@@ -137,7 +141,11 @@ def test_feasibility_routes_require_login_and_respect_custom_permissions():
 
     with TestClient(app) as client:
         _login_consultant(client, ['feasibility_map.view'])
-        assert client.get('/feasibility-map').status_code == 200
+        dashboard = client.get('/dashboard')
+        assert re.search(r'<a\b[^>]*href="/feasibility-map"[^>]*>.*Mapa de Viabilidade', dashboard.text, re.S)
+        page = client.get('/feasibility-map')
+        assert page.status_code == 200
+        assert re.search(r'<a\b[^>]*href="/feasibility-map"[^>]*aria-current="page"', page.text)
         assert client.get('/api/feasibility-map').status_code == 200
 
 
