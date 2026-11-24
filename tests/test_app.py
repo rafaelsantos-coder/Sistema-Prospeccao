@@ -33,7 +33,7 @@ def test_login_and_dashboard():
         assert response.headers["location"] == "/dashboard"
         dashboard = client.get("/dashboard")
         assert dashboard.status_code == 200
-        assert "O que precisa avançar hoje" in dashboard.text
+        assert "Foco do dia" in dashboard.text
         assert "Clínica Horizonte" in dashboard.text
 
 
