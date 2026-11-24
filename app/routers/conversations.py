@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import func, or_, select
@@ -783,6 +784,7 @@ def _render_inbox(
     queue_id: int | None = None,
     tag_code: str = "",
     temperature: str = "",
+    template_id: str = "",
 ):
     queues = _queue_panel(db, user)
     _validate_queue_filter(user, queue_id, queues)
@@ -899,6 +901,12 @@ def _render_inbox(
         if has_permission(user, "conversations.reply") else []
     )
     compose_draft = str(request.session.pop("quick_compose_draft", "") or "")
+    # Fallback: resolve template_id da URL caso a sessão não tenha guardado o rascunho.
+    if not compose_draft and template_id and selected:
+        compose_draft = _quick_compose_draft(
+            db, user, template_id=template_id,
+            lead=selected.lead, contact=selected.contact,
+        )
     crm_seller = seller_for_user(selected.assigned_user) if selected else None
     crm_ai_owner = bool(
         selected and selected.assigned_user_id and db.scalar(
@@ -1014,6 +1022,7 @@ def conversation_detail(
     queue: int | None = None,
     tag: str = "",
     temperature: str = "",
+    template_id: str = "",
     db: Session = Depends(get_db),
 ):
     user, redirect = _user_or_redirect(request, db)
@@ -1030,6 +1039,7 @@ def conversation_detail(
         view=view,
         tag_code=tag,
         temperature=temperature,
+        template_id=template_id,
     )
 
 
@@ -1041,7 +1051,7 @@ def _quick_compose_draft(
     lead: Lead | None,
     contact: Contact | None,
 ) -> str:
-    """Monta o rascunho opcional do compositor a partir do template escolhido."""
+    """Monta o texto do template escolhido (vazio = NENHUM)."""
     raw = resolve_quick_chat_template(db, user, template_id)
     if not raw:
         return ""
@@ -1051,6 +1061,89 @@ def _quick_compose_draft(
         contact_name=(contact.name if contact else "") or "",
         business_name=(contact.business_name if contact else "") or "",
     )
+
+
+def _send_quick_template_message(
+    db: Session,
+    *,
+    conversation: Conversation,
+    user: User,
+    body: str,
+) -> tuple[str, str | None]:
+    """Envia (ou enfileira com pacing) a mensagem do template escolhido.
+
+    Retorna (status, erro). status: SENT | PENDING | "".
+    """
+    clean = (body or "").strip()
+    if not clean:
+        return "", None
+    if is_globally_blocked(db, conversation.contact.phone):
+        return "", "Contato na blacklist."
+    if conversation.lead and (
+        conversation.lead.do_not_contact or conversation.lead.stage == "NAO_CONTATAR"
+    ):
+        return "", "Cliente não autoriza contato."
+    if conversation.source != "TELEGRAM" and needs_pacing(db, conversation):
+        try:
+            queue_manual_message(
+                db, conversation, message_type="TEXT", body=clean,
+                sender_user_id=user.id,
+            )
+        except (ZApiError, ValueError) as exc:
+            return "", str(exc)
+        write_audit(
+            db, user=user, action="CONVERSATION_MESSAGE_QUEUED",
+            entity_type="conversation", entity_id=conversation.id,
+            payload={"source": "quick_template", "status": "PENDING"},
+        )
+        return "PENDING", None
+    try:
+        result = service_for_conversation(db, conversation.id).send_text(
+            phone=conversation.contact.phone,
+            message=clean,
+        )
+    except ZApiError as exc:
+        return "", str(exc)
+    provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
+    zaap_id = str(result.get("zaapId") or "").strip() or None
+    sent = register_message(
+        db,
+        conversation,
+        direction="OUTBOUND",
+        message_type="TEXT",
+        body=clean,
+        sender_user_id=user.id,
+        provider_message_id=provider_id,
+        provider_zaap_id=zaap_id,
+        status="SENT",
+    )
+    if conversation.lead:
+        conversation.lead.last_contact_at = utcnow()
+        db.add(
+            Activity(
+                lead_id=conversation.lead.id,
+                user_id=user.id,
+                kind="WHATSAPP",
+                status="CONCLUIDA",
+                channel="WHATSAPP",
+                outcome=f"CHAT_ZAPI:{provider_id or zaap_id or sent.id}"[:120],
+                description=(
+                    "Mensagem de template na Nova conversa: "
+                    + redact_pii_text(clean)[:500]
+                ),
+                completed_at=utcnow(),
+            )
+        )
+    write_audit(
+        db, user=user, action="CONVERSATION_MESSAGE_SENT",
+        entity_type="conversation", entity_id=conversation.id,
+        payload={
+            "message_id": sent.id,
+            "provider_message_id": provider_id,
+            "source": "quick_template",
+        },
+    )
+    return "SENT", None
 
 
 @router.post("/conversations/start")
@@ -1066,8 +1159,8 @@ def quick_start_whatsapp_conversation(
 
     Formulario tradicional continua redirecionando ao inbox. A interface
     Prospecta Conversas solicita JSON e abre apenas o chat autorizado.
-    Nenhuma mensagem e enviada automaticamente ao criar a conversa.
-    Template e opcional (NENHUM): so preenche o compositor, sem disparo.
+    Template e opcional (NENHUM): sem mensagem. Com campanha selecionada,
+    a mensagem da abordagem/regua e enviada (ou enfileirada com pacing).
     """
     wants_json = "application/json" in request.headers.get("accept", "").lower()
 
@@ -1149,6 +1242,11 @@ def quick_start_whatsapp_conversation(
             # Mesma vendedora: mantém a fila original, mas reforça titularidade e
             # tira do limbo de disparo sem resposta para a conversa continuar na caixa dela.
             _assign_quick_start_owner(db, existing, user)
+            send_status, send_error = ("", None)
+            if compose_draft:
+                send_status, send_error = _send_quick_template_message(
+                    db, conversation=existing, user=user, body=compose_draft,
+                )
             write_audit(
                 db, user=user, action="CONVERSATION_QUICK_STARTED",
                 entity_type="conversation", entity_id=existing.id,
@@ -1156,13 +1254,22 @@ def quick_start_whatsapp_conversation(
                     "queue_id": existing_queue.id,
                     "zapi_instance_id": instance.id,
                     "reused": True,
-                    "message_sent": False,
+                    "message_sent": send_status in {"SENT", "PENDING"},
+                    "send_status": send_status or None,
                     "kept_original_queue": True,
                     "template_id": (template_id or "").strip() or None,
-                    "draft_prepared": bool(compose_draft),
+                    "draft_prepared": bool(compose_draft) and not send_status,
                 },
             )
             db.commit()
+            draft_for_client = "" if send_status else compose_draft
+            notice = "Conversa localizada na fila original e mantida com você."
+            if send_status == "SENT":
+                notice = "Conversa reaberta e mensagem da campanha enviada."
+            elif send_status == "PENDING":
+                notice = "Conversa reaberta; mensagem da campanha enfileirada (pacing)."
+            elif send_error:
+                notice = f"{notice} Template não enviado: {send_error}"
             if wants_json:
                 return JSONResponse(
                     {
@@ -1174,14 +1281,19 @@ def quick_start_whatsapp_conversation(
                         "queue_name": existing_queue.name,
                         "owner": user.name,
                         "status": existing.status,
-                        "draft": compose_draft,
-                        "notice": "Conversa localizada na fila original e mantida com você.",
+                        "draft": draft_for_client,
+                        "message_sent": send_status in {"SENT", "PENDING"},
+                        "send_status": send_status or None,
+                        "notice": notice,
                     }
                 )
-            if compose_draft:
-                request.session["quick_compose_draft"] = compose_draft
-            flash(request, "Conversa existente localizada na fila original e mantida com você.", "warning")
-            return RedirectResponse(f"/conversations/{existing.id}?quick=1", status_code=303)
+            if draft_for_client:
+                request.session["quick_compose_draft"] = draft_for_client
+            flash(request, notice, "warning" if send_error or not send_status else "success")
+            redirect_url = f"/conversations/{existing.id}?quick=1"
+            if draft_for_client and (template_id or "").strip():
+                redirect_url += f"&template_id={quote((template_id or '').strip(), safe='')}"
+            return RedirectResponse(redirect_url, status_code=303)
         db.rollback()
         return fail(
             "Este número já possui conversa ativa em outra fila. "
@@ -1204,36 +1316,58 @@ def quick_start_whatsapp_conversation(
         )
 
     _assign_quick_start_owner(db, conversation, user)
+    send_status, send_error = ("", None)
+    if compose_draft:
+        send_status, send_error = _send_quick_template_message(
+            db, conversation=conversation, user=user, body=compose_draft,
+        )
     write_audit(
         db, user=user, action="CONVERSATION_QUICK_STARTED",
         entity_type="conversation", entity_id=conversation.id,
         payload={"queue_id": queue_for_conversation(db, conversation.id).id,
                  "zapi_instance_id": instance.id,
-                 "reused": bool(existing), "message_sent": False,
+                 "reused": bool(existing),
+                 "message_sent": send_status in {"SENT", "PENDING"},
+                 "send_status": send_status or None,
                  "owner_user_id": user.id,
                  "template_id": (template_id or "").strip() or None,
-                 "draft_prepared": bool(compose_draft)},
+                 "draft_prepared": bool(compose_draft) and not send_status},
     )
     db.commit()
+    draft_for_client = "" if send_status else compose_draft
     if wants_json:
-        return JSONResponse(
-            {
-                "ok": True,
-                "conversation_id": conversation.id,
-                "reused": bool(existing),
-                "phone": normalized,
-                "name": contact.business_name or contact.name or normalized,
-                "queue_name": (existing_queue or queue).name,
-                "owner": user.name,
-                "status": conversation.status,
-                "draft": compose_draft,
-            }
-        )
-    if compose_draft:
-        request.session["quick_compose_draft"] = compose_draft
-    return RedirectResponse(
-        f"/conversations/{conversation.id}?quick=1", status_code=303,
-    )
+        payload = {
+            "ok": True,
+            "conversation_id": conversation.id,
+            "reused": bool(existing),
+            "phone": normalized,
+            "name": contact.business_name or contact.name or normalized,
+            "queue_name": (existing_queue or queue).name,
+            "owner": user.name,
+            "status": conversation.status,
+            "draft": draft_for_client,
+            "message_sent": send_status in {"SENT", "PENDING"},
+            "send_status": send_status or None,
+        }
+        if send_error:
+            payload["notice"] = f"Template não enviado: {send_error}"
+        elif send_status == "SENT":
+            payload["notice"] = "Mensagem da campanha enviada."
+        elif send_status == "PENDING":
+            payload["notice"] = "Mensagem da campanha enfileirada (pacing)."
+        return JSONResponse(payload)
+    if draft_for_client:
+        request.session["quick_compose_draft"] = draft_for_client
+    if send_status == "SENT":
+        flash(request, "Mensagem da campanha enviada.", "success")
+    elif send_status == "PENDING":
+        flash(request, "Mensagem da campanha enfileirada (pacing de 30s).", "success")
+    elif send_error:
+        flash(request, f"Conversa aberta, mas o template não foi enviado: {send_error}", "warning")
+    redirect_url = f"/conversations/{conversation.id}?quick=1"
+    if draft_for_client and (template_id or "").strip():
+        redirect_url += f"&template_id={quote((template_id or '').strip(), safe='')}"
+    return RedirectResponse(redirect_url, status_code=303)
 
 
 @router.post("/leads/{lead_id}/conversation")

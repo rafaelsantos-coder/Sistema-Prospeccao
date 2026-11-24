@@ -50,6 +50,46 @@ def test_campaign_sequence_messages_keeps_follow_ups():
     assert steps[1]["day"] == 3
 
 
+def test_quick_chat_templates_include_telefonia_fixa_alternate_keys():
+    """Campanhas como Telefonia Fixa - Empresas entram mesmo com chave alternativa."""
+    from fastapi.testclient import TestClient
+
+    from app.database import SessionLocal
+    from app.main import app
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            db.add(
+                Campaign(
+                    name="Telefonia Fixa - Empresas",
+                    channel="EMAIL",
+                    status="ATIVA",
+                    sequence_json='[{"day":1,"text":"Olá! Oferta de telefonia fixa para empresas."}]',
+                )
+            )
+            db.add(
+                Campaign(
+                    name="Legado steps",
+                    channel="whatsapp",
+                    status="ATIVA",
+                    sequence_json='{"steps":[{"day":1,"body":"Mensagem em steps aninhados"}]}',
+                )
+            )
+            db.commit()
+            user = SimpleNamespace(role="ADMIN", branch_id=None)
+            templates = list_quick_chat_templates(db, user)
+            labels = [item["label"] for item in templates]
+            assert any(label.startswith("Telefonia Fixa - Empresas") for label in labels)
+            assert any("Legado steps" in label for label in labels)
+            telefonia = next(
+                item for item in templates
+                if item["label"].startswith("Telefonia Fixa - Empresas")
+                and item["group"] == "Campanhas"
+            )
+            assert "telefonia fixa" in telefonia["message"].lower()
+            assert "[EMAIL]" in telefonia["label"]
+
+
 def test_quick_chat_templates_list_campaigns_and_standardized_steps():
     from fastapi.testclient import TestClient
 
@@ -83,10 +123,10 @@ def test_quick_chat_templates_list_campaigns_and_standardized_steps():
             labels = [item["label"] for item in templates]
             groups = {item["label"]: item["group"] for item in templates}
             assert "650Mb 3 meses - Maria" in labels
-            assert "650Mb 3 meses - Maria · dia 3" in labels
+            assert any(label.startswith("650Mb 3 meses - Maria · dia 3") for label in labels)
+            assert any(label.startswith("650Mb 3 meses - Maria · abordagem") for label in labels)
             assert groups["650Mb 3 meses - Maria"] == "Campanhas"
-            assert groups["650Mb 3 meses - Maria · dia 3"] == "Mensagens padronizadas"
-            assert "Rascunho ignorado" not in labels
+            assert "Rascunho ignorado [RASCUNHO]" in labels
             assert resolve_quick_chat_template(db, user, "") == ""
             assert resolve_quick_chat_template(db, user, "NENHUM") == ""
             campaign_id = next(
