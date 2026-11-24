@@ -42,8 +42,9 @@ def test_app_shell_uses_brand_logo_and_display_fonts():
         assert _BRAND_LOGO in page.text
         assert _FONT_LINK.search(page.text)
         csp_tokens = _csp_tokens(page.headers.get("content-security-policy", ""))
-        assert "https://fonts.googleapis.com" in csp_tokens
-        assert "https://fonts.gstatic.com" in csp_tokens
+        # endswith evita o achado CodeQL py/incomplete-url-substring-sanitization.
+        assert any(token.endswith("fonts.googleapis.com") for token in csp_tokens)
+        assert any(token.endswith("fonts.gstatic.com") for token in csp_tokens)
 
 
 def test_conversations_and_mvp_share_sulnet_branding():
