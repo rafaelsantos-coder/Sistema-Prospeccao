@@ -447,20 +447,25 @@
     ui.newError.textContent = message || "";
     ui.newError.hidden = !message;
   }
+  function normalizeSearch(value) {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase("pt-BR");
+  }
   function filterNewTemplates() {
     if (!ui.newTemplate) return;
-    const query = (ui.newTemplateSearch?.value || "").trim().toLocaleLowerCase("pt-BR");
+    const query = normalizeSearch(ui.newTemplateSearch?.value || "").trim();
+    const selectedValue = ui.newTemplate.value;
     ui.newTemplate.querySelectorAll("option[data-label]").forEach(option => {
-      const label = (option.dataset.label || option.textContent || "").toLocaleLowerCase("pt-BR");
-      const group = (option.dataset.group || "").toLocaleLowerCase("pt-BR");
+      const label = normalizeSearch(option.dataset.label || option.textContent || "");
+      const group = normalizeSearch(option.dataset.group || "");
       const match = !query || label.includes(query) || group.includes(query);
-      option.hidden = !match;
-      option.disabled = !match;
+      option.hidden = !match && option.value !== selectedValue;
     });
     ui.newTemplate.querySelectorAll("optgroup[data-template-group]").forEach(group => {
       const visible = Array.from(group.querySelectorAll("option")).some(option => !option.hidden);
       group.hidden = !visible;
-      group.disabled = !visible;
     });
   }
   function closeNewConversation() {
@@ -539,6 +544,7 @@
     }
   });
   ui.newTemplateSearch?.addEventListener("input", filterNewTemplates);
+  ui.newTemplate?.addEventListener("change", filterNewTemplates);
   ui.newClose?.addEventListener("click", closeNewConversation);
   ui.newForm?.addEventListener("submit", createNewConversation);
   ui.join.addEventListener("click", joinPresence);

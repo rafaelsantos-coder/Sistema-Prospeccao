@@ -29,19 +29,46 @@ def campaign_message_template(campaign: Campaign) -> str:
     return ""
 
 
+def _step_message_text(step: dict) -> str:
+    """Aceita message/text/body/content — campanhas antigas variam a chave."""
+    for key in ("message", "text", "body", "content", "copy"):
+        value = step.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
 def campaign_sequence_messages(campaign: Campaign) -> list[dict[str, str | int]]:
     """Extrai todas as mensagens da régua (abordagem + follow-ups)."""
     try:
         sequence = json.loads(campaign.sequence_json or "[]")
     except (TypeError, json.JSONDecodeError):
         return []
+    if isinstance(sequence, dict):
+        # Formatos legados: {"steps":[...]} ou {"messages":[...]}
+        for key in ("steps", "messages", "sequence"):
+            nested = sequence.get(key)
+            if isinstance(nested, list):
+                sequence = nested
+                break
+        else:
+            return []
     if not isinstance(sequence, list):
         return []
     items: list[dict[str, str | int]] = []
     for index, step in enumerate(sequence, start=1):
+        if isinstance(step, str):
+            message = step.strip()
+            if not message:
+                continue
+            items.append({"index": index, "day": index, "message": message})
+            continue
         if not isinstance(step, dict):
             continue
-        message = str(step.get("message") or "").strip()
+        message = _step_message_text(step)
         if not message:
             continue
         day = step.get("day")
@@ -56,18 +83,12 @@ def campaign_sequence_messages(campaign: Campaign) -> list[dict[str, str | int]]
 
 
 def list_quick_chat_templates(db: Session, user) -> list[dict]:
-    """Templates opcionais para Nova conversa: todas as campanhas com mensagem.
+    """Templates opcionais para Nova conversa: mesma lista da tela Campanhas.
 
-    Inclui qualquer status (como a tela Campanhas) e todos os passos da régua.
+    Inclui qualquer status/canal com texto na régua (ex.: Telefonia Fixa - Empresas).
     Ids estáveis: `campaign:{id}` (abordagem) ou `campaign:{id}:step:{n}`.
     """
-    from sqlalchemy import or_
-
-    stmt = (
-        select(Campaign)
-        .where(Campaign.channel == "WHATSAPP")
-        .order_by(Campaign.name.asc(), Campaign.id.asc())
-    )
+    stmt = select(Campaign).order_by(Campaign.name.asc(), Campaign.id.asc())
     # Mesmo recorte da listagem de campanhas: supervisor vê a unidade.
     if getattr(user, "role", None) == "SUPERVISOR":
         stmt = stmt.where(Campaign.branch_id == user.branch_id)
@@ -77,12 +98,18 @@ def list_quick_chat_templates(db: Session, user) -> list[dict]:
         if not messages:
             continue
         status = str(campaign.status or "").strip().upper()
-        status_suffix = f" [{status}]" if status and status not in {"ATIVA", "APROVADA"} else ""
+        channel = str(campaign.channel or "").strip().upper()
+        extras: list[str] = []
+        if status and status not in {"ATIVA", "APROVADA"}:
+            extras.append(status)
+        if channel and channel != "WHATSAPP":
+            extras.append(channel)
+        suffix = f" [{' · '.join(extras)}]" if extras else ""
         first = messages[0]
         templates.append(
             {
                 "id": f"campaign:{campaign.id}",
-                "label": f"{campaign.name}{status_suffix}",
+                "label": f"{campaign.name}{suffix}",
                 "group": "Campanhas",
                 "message": first["message"],
                 "campaign_id": campaign.id,
@@ -98,7 +125,7 @@ def list_quick_chat_templates(db: Session, user) -> list[dict]:
             templates.append(
                 {
                     "id": f"campaign:{campaign.id}:step:{step['index']}",
-                    "label": f"{step_label}{status_suffix}",
+                    "label": f"{step_label}{suffix}",
                     "group": "Mensagens padronizadas",
                     "message": step["message"],
                     "campaign_id": campaign.id,
