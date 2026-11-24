@@ -65,10 +65,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                     "form-action 'self'",
                     "object-src 'none'",
                     f"script-src 'self' 'nonce-{nonce}'",
-                    "style-src 'self' 'unsafe-inline'",
+                    # Tipografia Manrope/Space Grotesk do layout Sulnet Prospecta.
+                    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
                     "img-src 'self' data: blob: https:",
                     "media-src 'self' blob: https:",
-                    "font-src 'self' data:",
+                    "font-src 'self' data: https://fonts.gstatic.com",
                     "connect-src 'self' https:",
                 ]
             ),
@@ -80,7 +81,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             external = "https://unpkg.com https://cdnjs.cloudflare.com"
             policy = policy.replace(
                 f"script-src 'self' 'nonce-{nonce}'", f"script-src 'self' 'nonce-{nonce}' {external}"
-            ).replace("style-src 'self' 'unsafe-inline'", f"style-src 'self' 'unsafe-inline' {external}")
+            ).replace(
+                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+                f"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com {external}",
+            )
             if settings.google_maps_browser_key and (
                 map_path == "/feasibility-map" or settings.credit_map_provider == "google"
             ):
@@ -92,10 +96,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                     "https://mapsresources-pa.googleapis.com 'unsafe-eval' blob:",
                 )
                 policy += "; frame-src https://*.google.com; worker-src blob:"
-                if map_path == "/feasibility-map":
-                    policy = policy.replace("font-src 'self'", "font-src 'self' https://fonts.gstatic.com")
-                    policy = policy.replace(f"style-src 'self' 'unsafe-inline' {external}",
-                                            f"style-src 'self' 'unsafe-inline' {external} https://fonts.googleapis.com")
             response.headers["Content-Security-Policy"] = policy
         if settings.is_production:
             response.headers.setdefault(
