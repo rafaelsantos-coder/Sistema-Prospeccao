@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from uuid import uuid4
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -144,10 +145,11 @@ def test_conversas_mvp_javascript_parses():
 
 
 def _create_outbound_test_queue() -> int:
+    suffix = uuid4().hex[:12]
     with SessionLocal() as db:
         queue = ServiceQueue(
             name="Fila do MVP - Teste",
-            code="MVP-QUICK-OUTBOUND-2026",
+            code="MVP-QUICK-" + suffix,
             team="LOJA",
             routing_strategy="MANUAL",
             active=True,
@@ -157,7 +159,7 @@ def _create_outbound_test_queue() -> int:
         instance = create_zapi_instance(
             db, name="Z-API MVP Teste", phone_label="Teste",
             base_url="https://api.z-api.io",
-            instance_id="test-mvp-quick-2026",
+            instance_id="test-mvp-quick-" + suffix,
             instance_token="test-mvp-quick-token",
             client_token="test-mvp-quick-client-token",
             created_by_id=None,
