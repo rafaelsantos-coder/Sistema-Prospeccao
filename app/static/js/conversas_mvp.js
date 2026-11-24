@@ -455,8 +455,8 @@
     if (!ui.newForm || !ui.newPhone || !ui.newQueue || !state.canReply) return;
     newConversationError("");
     const rawPhone = ui.newPhone.value.trim();
-    const digits = rawPhone.replace(/\\D/g, "");
-    const validLength = digits.startsWith("55") ? [12, 13].includes(digits.length) : [10, 11].includes(digits.length);
+    const digits = rawPhone.replace(/\D/g, "");
+    const validLength = [10, 11].includes(digits.length) || (digits.startsWith("55") && [12, 13].includes(digits.length));
     if (!validLength) {
       newConversationError("Informe um número de WhatsApp válido com DDD.");
       return;
