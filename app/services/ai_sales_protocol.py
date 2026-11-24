@@ -91,7 +91,7 @@ _SIGNAL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("FIDELITY", re.compile(
         r"\b(?:fidelidade|multa|cancelamento antecipado|"
         r"vou ficar (?:so |apenas )?\d+ meses|"
-        r"tenho (?:so |apenas )?\d+ meses (?:no|nesse) imovel)\b"
+        r"tenho (?:so |apenas )?(?:\d+|um|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze) meses (?:no|nesse) imovel)\b"
     )),
     ("DECISION_MAKER", re.compile(
         r"\b(?:meu esposo|minha esposa|meu marido|minha mulher|"
