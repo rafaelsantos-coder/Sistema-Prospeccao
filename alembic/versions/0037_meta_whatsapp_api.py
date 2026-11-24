@@ -1,13 +1,13 @@
 """WhatsApp Cloud API oficial Meta: contas e vínculo com filas.
 
-Revision ID: 0036_meta_whatsapp
-Revises: 0035_lead_prospecting_job
+Revision ID: 0037_meta_whatsapp
+Revises: 0036_origin_campaigns
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0036_meta_whatsapp"
-down_revision = "0035_lead_prospecting_job"
+revision = "0037_meta_whatsapp"
+down_revision = "0036_origin_campaigns"
 branch_labels = None
 depends_on = None
 

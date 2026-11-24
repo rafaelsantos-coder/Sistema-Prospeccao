@@ -169,11 +169,7 @@ async def meta_webhook_receive(
             metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
             phone_number_id = str(metadata.get("phone_number_id") or "").strip()
             if phone_number_id and phone_number_id != account.phone_number_id:
-                LOG.info(
-                    "meta_webhook ignored=phone_mismatch expected=%s got=%s",
-                    account.phone_number_id,
-                    phone_number_id,
-                )
+                LOG.info("meta_webhook ignored=phone_mismatch")
                 continue
             result = _process_meta_value(
                 value,
