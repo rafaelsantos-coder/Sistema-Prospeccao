@@ -32,6 +32,7 @@ from app.services.dispatch_queue import (
     estimated_duration_seconds,
     parse_dispatch_csv,
     parse_window,
+    recipient_reply_flags,
 )
 from app.services.dispatch_monitor import dispatch_live_snapshot
 from app.services.queue_routing import available_queues_for_user, get_queue
@@ -341,6 +342,7 @@ def dispatch_detail(
             delivered_at=evidence.delivered_at if evidence else None,
             read_at=evidence.read_at if evidence else None,
         )
+    reply_flags = recipient_reply_flags(db, recipients)
     recoverable_count = db.scalar(select(func.count(CampaignDispatchRecipient.id)).where(
         CampaignDispatchRecipient.dispatch_id == dispatch.id,
         CampaignDispatchRecipient.status == "FALHOU",
@@ -380,6 +382,7 @@ def dispatch_detail(
         dispatch=dispatch,
         recipients=recipients,
         delivery_proofs=delivery_proofs,
+        reply_flags=reply_flags,
         failures_only=failures_only,
         failure_reasons=failure_reasons,
         recoverable_count=recoverable_count,

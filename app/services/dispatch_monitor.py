@@ -89,6 +89,13 @@ def dispatch_live_snapshot(db: Session, dispatch: CampaignDispatch) -> dict[str,
 
     capacity = daily_capacity(dispatch)
     remaining = counts["pending"] + counts["sending"]
+    sent = int(counts.get("sent") or 0)
+    delivered = int(counts.get("delivered") or 0)
+    delivery_rate = (delivered / sent) if sent else None
+    # Alerta visual: muitos aceites da API com pouca confirmação no celular.
+    delivery_warning = bool(
+        sent >= 20 and delivery_rate is not None and delivery_rate < 0.4
+    )
     return {
         "status": dispatch.status,
         "status_label": label,
@@ -101,5 +108,7 @@ def dispatch_live_snapshot(db: Session, dispatch: CampaignDispatch) -> dict[str,
         "daily_capacity": capacity,
         "estimated_days_remaining": ceil(remaining / capacity),
         "counts": counts,
+        "delivery_rate": delivery_rate,
+        "delivery_warning": delivery_warning,
         "checked_at": _display_datetime(now),
     }
