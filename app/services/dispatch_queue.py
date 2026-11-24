@@ -464,6 +464,56 @@ def dispatch_counts(db: Session, dispatch_id: int) -> dict[str, int]:
     return dispatch_counts_many(db, [dispatch_id])[dispatch_id]
 
 
+def recipient_reply_flags(
+    db: Session,
+    recipients: list[CampaignDispatchRecipient],
+) -> dict[int, bool]:
+    """Indica, por destinatário da página, se o telefone respondeu após o envio."""
+    from app.services.scoring import phone_match_keys
+
+    flags = {int(item.id): False for item in recipients}
+    enviados = [
+        item
+        for item in recipients
+        if item.status == "ENVIADO" and item.sent_at and item.phone
+    ]
+    if not enviados:
+        return flags
+
+    phone_keys: set[str] = set()
+    for item in enviados:
+        phone_keys |= phone_match_keys(item.phone)
+    if not phone_keys:
+        return flags
+
+    contacts = list(db.scalars(select(Contact).where(Contact.phone.in_(phone_keys))))
+    contact_ids_by_key: dict[str, set[int]] = {}
+    for contact in contacts:
+        for key in phone_match_keys(contact.phone):
+            contact_ids_by_key.setdefault(key, set()).add(int(contact.id))
+    contact_ids = {int(contact.id) for contact in contacts}
+    if not contact_ids:
+        return flags
+
+    inbound_rows = db.execute(
+        select(Message.contact_id, Message.created_at).where(
+            Message.contact_id.in_(contact_ids),
+            Message.direction == "INBOUND",
+        )
+    ).all()
+    for item in enviados:
+        keys = phone_match_keys(item.phone)
+        matching_ids = set()
+        for key in keys:
+            matching_ids |= contact_ids_by_key.get(key, set())
+        if any(
+            int(contact_id) in matching_ids and created_at > item.sent_at
+            for contact_id, created_at in inbound_rows
+        ):
+            flags[int(item.id)] = True
+    return flags
+
+
 def _sql_brazilian_mobile_alternate(phone_col: ColumnElement[Any]) -> ColumnElement[Any]:
     """Expressão SQL da forma alternativa 12↔13 dígitos (9º dígito após DDD)."""
     return case(
