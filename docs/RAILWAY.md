@@ -91,3 +91,27 @@ BOOTSTRAP_ADMIN_EMAIL=usuario@sulnet.com.br \
 
 A senha temporária e a URL criada são mostradas apenas ao final da execução. Não
 versione a saída do terminal nem arquivos `.env`.
+
+## Redeploy automático (sem abrir o painel)
+
+Após cada push na `main` com CI verde, o job `deploy-production` do workflow
+`Testes e Segurança do Sulnet Prospecta` chama o **Deploy Hook** do serviço web.
+
+Configuração **única**:
+
+1. Railway → serviço **web** → Settings → Deploy → **Deploy Hooks** → criar hook
+   no ambiente `production`.
+2. Copiar a URL do hook para o secret do repositório GitHub
+   `RAILWAY_DEPLOY_HOOK_URL` (Settings → Secrets and variables → Actions).
+3. Cadastrar o mesmo secret no ambiente Cloud Agent do Cursor, para os agentes
+   poderem republicar sem intervenção manual.
+
+Redeploy manual pela CLI / agente (nunca cole o hook no chat):
+
+```bash
+export RAILWAY_DEPLOY_HOOK_URL='…'   # só no ambiente / secret store
+./scripts/railway_redeploy.sh
+./scripts/railway_redeploy.sh --wait  # opcional: espera /api/health
+```
+
+Opcional: token de conta em `RAILWAY_TOKEN` para diagnóstico com a Railway CLI.
