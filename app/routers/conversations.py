@@ -214,6 +214,39 @@ def _assign_quick_start_owner(db: Session, conversation: Conversation, user: Use
     return claimed
 
 
+def _claim_on_human_reply(
+    db: Session,
+    conversation: Conversation,
+    user: User,
+    *,
+    event: str = "CLAIMED_REPLY",
+) -> bool:
+    """Se o vendedor abre/responde uma conversa sem dono, ela fica gravada com ele.
+
+    Evita o caso em que a Claudia escreve, a resposta do cliente cai na fila e
+    outro vendedor (ex.: Maria) aparece como responsável.
+    """
+    if conversation.assigned_user_id is not None:
+        return False
+    conversation.assigned_user_id = user.id
+    if conversation.status in {"EM_FILA", "NOVO", "AGUARDANDO_CLIENTE", "EM_ATENDIMENTO"}:
+        conversation.status = "ATRIBUIDO"
+    lead = conversation.lead
+    if lead is None and conversation.lead_id:
+        lead = db.get(Lead, conversation.lead_id)
+    if lead is not None and lead.assigned_user_id != user.id:
+        lead.assigned_user_id = user.id
+    db.add(
+        ConversationAssignment(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            assigned_by_id=user.id,
+            event=event,
+        )
+    )
+    return True
+
+
 def _history_since(db: Session, user: User, conversation: Conversation):
     """Apos transferencia, vendedor ve so a etapa atual do atendimento.
 
@@ -811,6 +844,12 @@ def _render_inbox(
     if selected:
         selected_queue = queue_for_conversation(db, selected.id)
         latest_ai_run = latest_run_for_conversation(db, selected.id)
+        # Abrir conversa sem dono na fila MANUAL assume o atendimento.
+        # Sem isso, marcar como lida zera o unread e a conversa some da lista
+        # antes do vendedor conseguir responder.
+        if selected.assigned_user_id is None and user.role == "CONSULTOR":
+            _claim_on_human_reply(db, selected, user, event="CLAIMED_OPEN")
+            db.commit()
         if selected.unread_count:
             mark_conversation_read(db, selected)
             db.commit()
@@ -1468,6 +1507,7 @@ def send_message(
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     if conversation.source != "TELEGRAM" and needs_pacing(db, conversation):
         try:
+            _claim_on_human_reply(db, conversation, user)
             queue_manual_message(
                 db, conversation, message_type="TEXT", body=clean_message,
                 sender_user_id=user.id,
@@ -1493,6 +1533,7 @@ def send_message(
         flash(request, str(exc), "error")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
+    _claim_on_human_reply(db, conversation, user)
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
     sent = register_message(
@@ -1627,6 +1668,7 @@ async def send_media(
             "[Audio]" if kind == "AUDIO" else safe_name
         )
         try:
+            _claim_on_human_reply(db, conversation, user)
             queued, _slot = queue_manual_message(
                 db, conversation, message_type=kind, body=body,
                 sender_user_id=user.id,
@@ -1698,6 +1740,7 @@ async def send_media(
         db.commit()
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
 
+    _claim_on_human_reply(db, conversation, user)
     provider_id = str(result.get("messageId") or result.get("id") or "").strip() or None
     zaap_id = str(result.get("zaapId") or "").strip() or None
     sent = register_message(

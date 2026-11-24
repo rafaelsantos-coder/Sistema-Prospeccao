@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import exists, func, or_, select
+from datetime import timedelta
+
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -649,20 +651,56 @@ def outbound_without_reply_clause():
     return started_by_dispatch & ~customer_replied
 
 
+def recent_manual_outbound_user_id(
+    db: Session,
+    conversation: Conversation,
+    *,
+    within_hours: int = 24,
+) -> int | None:
+    """Quem escreveu manualmente por último nesta conversa (não conta IA)."""
+    ai_user_ids = {
+        user_id
+        for user_id in db.scalars(select(AIAgentProfile.user_id).where(AIAgentProfile.user_id.is_not(None)))
+    }
+    sender_id = db.scalar(
+        select(Message.sender_user_id)
+        .where(
+            Message.conversation_id == conversation.id,
+            Message.direction == "OUTBOUND",
+            Message.sender_user_id.is_not(None),
+            Message.message_type.in_(("TEXT", "BUTTONS", "IMAGE", "AUDIO", "VIDEO", "DOCUMENT")),
+            Message.created_at >= utcnow() - timedelta(hours=max(1, within_hours)),
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    if sender_id is None or sender_id in ai_user_ids:
+        return None
+    return int(sender_id)
+
+
 def exclusive_conversation_access_clause(user: User):
     """Never disclose a conversation from an exclusive Z-API instance to another account.
 
     This is an object-level ACL, enforced before the ordinary role/queue scope.
-    Disabled instances retain their protection. NULL owner fails closed.
+    Disabled instances retain their protection. NULL exclusive owner fails closed.
+    O responsável já atribuído continua enxergando o próprio atendimento.
     """
     restricted = (
         select(ConversationZApiInstance.conversation_id)
         .join(ZApiInstance, ZApiInstance.id == ConversationZApiInstance.zapi_instance_id)
+        .join(Conversation, Conversation.id == ConversationZApiInstance.conversation_id)
         .where(
             ZApiInstance.exclusive_access.is_(True),
             or_(
                 ZApiInstance.exclusive_user_id.is_(None),
-                ZApiInstance.exclusive_user_id != user.id,
+                and_(
+                    ZApiInstance.exclusive_user_id != user.id,
+                    or_(
+                        Conversation.assigned_user_id.is_(None),
+                        Conversation.assigned_user_id != user.id,
+                    ),
+                ),
             ),
         )
     )
