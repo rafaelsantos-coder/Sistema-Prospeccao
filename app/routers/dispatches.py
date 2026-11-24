@@ -351,6 +351,11 @@ def dispatch_detail(
         CampaignDispatchRecipient.status == "PENDENTE",
         CampaignDispatchRecipient.error.like("Z-API recusou envio (HTTP %"),
     ).limit(1))
+    offline_alert = db.scalar(select(CampaignDispatchRecipient.error).where(
+        CampaignDispatchRecipient.dispatch_id == dispatch.id,
+        CampaignDispatchRecipient.status == "PENDENTE",
+        CampaignDispatchRecipient.error.like("WhatsApp da fila está offline%"),
+    ).limit(1))
     counts = dispatch_counts(db, dispatch.id)
     try:
         import_summary = json.loads(dispatch.import_summary_json or "{}")
@@ -372,6 +377,7 @@ def dispatch_detail(
         failure_reasons=failure_reasons,
         recoverable_count=recoverable_count,
         auth_alert=auth_alert,
+        offline_alert=offline_alert,
         counts=counts,
         import_summary=import_summary,
         live_status=live_status,
