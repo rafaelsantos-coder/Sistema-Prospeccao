@@ -13,6 +13,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.database import SessionLocal
+from app.models import Conversation, ConversationQueueLink, ConversationZApiInstance, Message, ServiceQueue
+from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
+from sqlalchemy import func, select
 from app.services.access_control import permission_for_request
 from app.services.zapi import ZApiService
 
@@ -137,3 +141,110 @@ def test_conversas_mvp_javascript_parses():
         ["node", "--check", str(source)], capture_output=True, text=True, check=False, timeout=15
     )
     assert result.returncode == 0, result.stderr
+
+
+def _create_outbound_test_queue() -> int:
+    with SessionLocal() as db:
+        queue = ServiceQueue(
+            name="Fila do MVP - Teste",
+            code="MVP-QUICK-OUTBOUND-2026",
+            team="LOJA",
+            routing_strategy="MANUAL",
+            active=True,
+        )
+        db.add(queue)
+        db.flush()
+        instance = create_zapi_instance(
+            db, name="Z-API MVP Teste", phone_label="Teste",
+            base_url="https://api.z-api.io",
+            instance_id="test-mvp-quick-2026",
+            instance_token="test-mvp-quick-token",
+            client_token="test-mvp-quick-client-token",
+            created_by_id=None,
+        )
+        bind_queue_instance(db, queue.id, instance.id)
+        queue_id = queue.id
+        db.commit()
+        return queue_id
+
+
+def test_conversas_mvp_new_chat_json_creates_owner_without_sending():
+    with TestClient(app) as client:
+        _login(client)
+        queue_id = _create_outbound_test_queue()
+        page = client.get("/conversas")
+        assert page.status_code == 200
+        assert 'id="mvp-new-open"' in page.text
+        assert 'id="mvp-new-dialog"' in page.text
+        assert f'<option value="{queue_id}">' in page.text
+        token = _csrf(page.text)
+        response = client.post(
+            "/conversations/start",
+            data={"csrf_token": token, "phone": "(55) 99991-2037", "queue_id": queue_id},
+            headers={"Accept": "application/json"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["ok"] is True
+        assert payload["reused"] is False
+        conversation_id = payload["conversation_id"]
+        assert payload["owner"]
+        assert payload["queue_name"] == "Fila do MVP - Teste"
+        with SessionLocal() as db:
+            conv = db.get(Conversation, conversation_id)
+            assert conv and conv.status == "ATRIBUIDO"
+            assert conv.assigned_user_id is not None
+            link = db.scalar(select(ConversationQueueLink).where(
+                ConversationQueueLink.conversation_id == conversation_id
+            ))
+            assert link and link.queue_id == queue_id
+            instance = db.scalar(select(ConversationZApiInstance).where(
+                ConversationZApiInstance.conversation_id == conversation_id
+            ))
+            assert instance is not None
+            assert db.scalar(select(func.count(Message.id)).where(
+                Message.conversation_id == conversation_id
+            )) == 0
+        inbox = client.get("/api/conversations/inbox?view=active").json()["items"]
+        assert any(x["id"] == conversation_id and x["owner"] == payload["owner"] for x in inbox)
+        again = client.post(
+            "/conversations/start",
+            data={"csrf_token": token, "phone": "5555999912037", "queue_id": queue_id},
+            headers={"Accept": "application/json"},
+            follow_redirects=False,
+        )
+        assert again.status_code == 200
+        assert again.json()["conversation_id"] == conversation_id
+        assert again.json()["reused"] is True
+
+
+def test_conversas_mvp_new_chat_json_rejects_invalid_queue_and_phone():
+    with TestClient(app) as client:
+        _login(client)
+        queue_id = _create_outbound_test_queue()
+        token = _csrf(client.get("/conversas").text)
+        missing_queue = client.post(
+            "/conversations/start",
+            data={"csrf_token": token, "phone": "(55) 99991-2055", "queue_id": 999999},
+            headers={"Accept": "application/json"}, follow_redirects=False,
+        )
+        assert missing_queue.status_code == 403
+        assert missing_queue.json()["ok"] is False
+        invalid_phone = client.post(
+            "/conversations/start",
+            data={"csrf_token": token, "phone": "123", "queue_id": queue_id},
+            headers={"Accept": "application/json"}, follow_redirects=False,
+        )
+        assert invalid_phone.status_code == 400
+        assert invalid_phone.json()["ok"] is False
+
+
+def test_conversas_mvp_manager_owner_visible_only_with_management_role():
+    source = (Path(__file__).parents[1] / "app/static/js/conversas_mvp.js").read_text(
+        encoding="utf-8"
+    )
+    assert '["ADMIN", "GESTOR", "SUPERVISOR"].includes(root.dataset.role)' in source
+    assert '"Responsável: "' in source
+    assert 'ui.meta.textContent = details.filter(Boolean).join(" · ")' in source
+    assert 'info.append(responsible)' in source
