@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Conversation, ConversationZApiInstance, Message, User, ZApiInstance
@@ -30,7 +30,14 @@ def instance_for_conversation(db: Session, conversation_id: int) -> ZApiInstance
 
 
 def require_conversation_instance_access(db: Session, user: User, conversation_id: int) -> None:
-    require_instance_access(user, instance_for_conversation(db, conversation_id))
+    instance = instance_for_conversation(db, conversation_id)
+    if may_access_instance(user, instance):
+        return
+    conversation = db.get(Conversation, conversation_id)
+    # Quem já é responsável pelo atendimento mantém acesso à própria conversa.
+    if conversation is not None and conversation.assigned_user_id == user.id:
+        return
+    raise HTTPException(status_code=404, detail="Conversa indisponivel.")
 
 
 def visible_message_clause(user: User):
@@ -38,9 +45,19 @@ def visible_message_clause(user: User):
     restricted_conversation_ids = (
         select(ConversationZApiInstance.conversation_id)
         .join(ZApiInstance, ConversationZApiInstance.zapi_instance_id == ZApiInstance.id)
+        .join(Conversation, Conversation.id == ConversationZApiInstance.conversation_id)
         .where(
             ZApiInstance.exclusive_access.is_(True),
-            or_(ZApiInstance.exclusive_user_id.is_(None), ZApiInstance.exclusive_user_id != user.id),
+            or_(
+                ZApiInstance.exclusive_user_id.is_(None),
+                and_(
+                    ZApiInstance.exclusive_user_id != user.id,
+                    or_(
+                        Conversation.assigned_user_id.is_(None),
+                        Conversation.assigned_user_id != user.id,
+                    ),
+                ),
+            ),
         )
     )
     return Message.conversation_id.not_in(restricted_conversation_ids)

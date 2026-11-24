@@ -32,6 +32,7 @@ from app.services.conversation_engine import (
     payload_from_me,
     payload_counterparty_phone,
     payload_message_content,
+    recent_manual_outbound_user_id,
     register_message,
     store_received_payload,
     update_message_statuses,
@@ -313,12 +314,22 @@ def _process_zapi_payload(
         )
         return {"ok": True, "ignored": "unsupported_or_unmatched"}
 
-    # Exclusive instance overrides any round-robin / prior assignment.
-    if zapi_instance_id is not None:
+    # Instância exclusiva só preenche responsável vazio. Nunca rouba atendimento
+    # de outro vendedor que já assumiu ou já escreveu no thread.
+    if zapi_instance_id is not None and conversation.assigned_user_id is None:
         inbound_instance = db.get(ZApiInstance, zapi_instance_id)
         if inbound_instance and inbound_instance.exclusive_access:
-            # NULL owner: no human user may read the conversation (fail closed).
-            conversation.assigned_user_id = inbound_instance.exclusive_user_id
+            recent_owner = recent_manual_outbound_user_id(db, conversation)
+            if recent_owner is not None:
+                conversation.assigned_user_id = recent_owner
+            else:
+                # Sem dono e sem mensagem humana: fica com a dona da instância.
+                conversation.assigned_user_id = inbound_instance.exclusive_user_id
+            if (
+                conversation.assigned_user_id is not None
+                and conversation.status in {"EM_FILA", "NOVO", "AGUARDANDO_CLIENTE"}
+            ):
+                conversation.status = "ATRIBUIDO"
     opt_out = False
     if created and message.direction == "INBOUND":
         opt_out = _is_explicit_opt_out(message.body)
