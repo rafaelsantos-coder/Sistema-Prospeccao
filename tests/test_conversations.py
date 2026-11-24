@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.models import (
+    Campaign,
     Contact, Conversation, ConversationAssignment, ConversationQueueLink,
     ConversationZApiInstance, Message, ServiceQueue, ServiceQueueMember, User,
 )
@@ -341,11 +342,14 @@ def test_quick_start_from_phone_opens_chat_without_template_or_message():
         assert inbox.status_code == 200
         assert "Nova conversa por telefone" in inbox.text
         assert 'action="/conversations/start"' in inbox.text
+        assert 'id="inbox-quick-chat-template"' in inbox.text
+        assert ">NENHUM<" in inbox.text
+        assert 'name="template_id"' in inbox.text
         token = _csrf(inbox.text)
         created = client.post(
             "/conversations/start",
             data={"csrf_token": token, "queue_id": queue_id,
-                  "phone": "(88) 99992-1143"},
+                  "phone": "(88) 99992-1143", "template_id": ""},
             follow_redirects=False,
         )
         assert created.status_code == 303
@@ -553,3 +557,102 @@ def test_consultant_quick_start_keeps_owner_and_stays_in_her_inbox():
             item["id"] == orphan_id and item.get("owner") == "Natine Teste"
             for item in active
         )
+
+
+def test_quick_start_with_campaign_template_prefills_composer_without_sending():
+    """Template opcional preenche o compositor; NENHUM e ausência não disparam envio."""
+    with TestClient(app) as client:
+        _login(client)
+        with SessionLocal() as db:
+            queue = ServiceQueue(
+                name="Fila Template Quick",
+                code="QUICK-CHAT-TEMPLATE-01",
+                team="LOJA",
+                routing_strategy="MANUAL",
+                active=True,
+            )
+            db.add(queue)
+            db.flush()
+            instance = create_zapi_instance(
+                db, name="Z-API Template Quick",
+                phone_label="Template", base_url="https://api.z-api.io",
+                instance_id="test-quick-chat-template-zapi",
+                instance_token="test-quick-chat-template-token",
+                client_token="test-quick-chat-template-client",
+                created_by_id=None,
+            )
+            bind_queue_instance(db, queue.id, instance.id)
+            campaign = Campaign(
+                name="650Mb 3 meses - Template Teste",
+                channel="WHATSAPP",
+                status="ATIVA",
+                sequence_json=(
+                    '[{"day":1,"message":"Olá {{nome}}! Oferta 650Mb da Sulnet."},'
+                    '{"day":3,"message":"Posso te ajudar com a oferta de 650Mb?"}]'
+                ),
+            )
+            db.add(campaign)
+            db.flush()
+            queue_id, campaign_id = queue.id, campaign.id
+            db.commit()
+
+        inbox = client.get("/conversations")
+        assert inbox.status_code == 200
+        assert "650Mb 3 meses - Template Teste" in inbox.text
+        assert "Mensagens padronizadas" in inbox.text
+        assert "650Mb 3 meses - Template Teste · dia 3" in inbox.text
+        token = _csrf(inbox.text)
+
+        none_option = client.post(
+            "/conversations/start",
+            data={
+                "csrf_token": token,
+                "queue_id": queue_id,
+                "phone": "(88) 99992-2201",
+                "template_id": "",
+            },
+            follow_redirects=False,
+        )
+        assert none_option.status_code == 303
+        empty_page = client.get(none_option.headers["location"])
+        assert empty_page.status_code == 200
+        assert "Oferta 650Mb da Sulnet" not in empty_page.text
+
+        with_template = client.post(
+            "/conversations/start",
+            data={
+                "csrf_token": token,
+                "queue_id": queue_id,
+                "phone": "(88) 99992-2202",
+                "template_id": f"campaign:{campaign_id}",
+            },
+            follow_redirects=False,
+        )
+        assert with_template.status_code == 303
+        page = client.get(with_template.headers["location"])
+        assert page.status_code == 200
+        assert "Oferta 650Mb da Sulnet" in page.text
+        conversation_id = int(with_template.headers["location"].split("/")[2].split("?")[0])
+        with SessionLocal() as db:
+            assert db.scalar(select(func.count(Message.id)).where(
+                Message.conversation_id == conversation_id
+            )) == 0
+
+        json_start = client.post(
+            "/conversations/start",
+            data={
+                "csrf_token": token,
+                "queue_id": queue_id,
+                "phone": "(88) 99992-2203",
+                "template_id": f"campaign:{campaign_id}:step:2",
+            },
+            headers={"Accept": "application/json"},
+        )
+        assert json_start.status_code == 200
+        payload = json_start.json()
+        assert payload["ok"] is True
+        assert "oferta de 650Mb" in payload["draft"]
+        with SessionLocal() as db:
+            assert db.scalar(select(func.count(Message.id)).where(
+                Message.conversation_id == payload["conversation_id"]
+            )) == 0
