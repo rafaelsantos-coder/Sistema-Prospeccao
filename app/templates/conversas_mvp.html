@@ -36,6 +36,11 @@
         <span id="mvp-presence-label">Verificando atendimento...</span>
         <button type="button" id="mvp-join" class="mvp-join" hidden>Entrar no atendimento</button>
       </div>
+      {% if can_reply %}
+      <button type="button" id="mvp-new-open" class="mvp-new-open" {% if not new_conversation_queues %}disabled title="Nenhuma fila de saída WhatsApp disponível"{% endif %}>
+        <span aria-hidden="true">＋</span> Nova conversa
+      </button>
+      {% endif %}
       <label class="mvp-search" for="mvp-search">
         <span aria-hidden="true">⌕</span>
         <input id="mvp-search" type="search" placeholder="Buscar contato ou telefone" autocomplete="off">
@@ -87,6 +92,34 @@
     </form>
     <p class="mvp-compose-hint" id="mvp-compose-hint" hidden>Você pode consultar este atendimento, mas não possui permissão para responder.</p>
   </section>
+  {% if can_reply %}
+  <dialog id="mvp-new-dialog" class="mvp-new-dialog" aria-labelledby="mvp-new-title">
+    <form id="mvp-new-form" class="mvp-new-form">
+      <div class="mvp-new-head">
+        <div>
+          <h2 id="mvp-new-title">Nova conversa</h2>
+          <p>Inicie um atendimento informando o número do cliente.</p>
+        </div>
+        <button type="button" id="mvp-new-close" class="mvp-new-close" aria-label="Fechar janela">×</button>
+      </div>
+      <label for="mvp-new-phone">WhatsApp com DDD</label>
+      <input id="mvp-new-phone" name="phone" type="tel" inputmode="tel" autocomplete="off"
+             placeholder="(55) 99999-9999" minlength="10" maxlength="24" required>
+      <label for="mvp-new-queue">Fila / número de saída</label>
+      <select id="mvp-new-queue" name="queue_id" required>
+        {% if new_conversation_queues|length > 1 %}
+        <option value="">Selecione a fila de atendimento</option>
+        {% endif %}
+        {% for queue in new_conversation_queues %}
+        <option value="{{ queue.id }}">{{ queue.name }}</option>
+        {% endfor %}
+      </select>
+      <p id="mvp-new-error" class="mvp-new-error" role="alert" hidden></p>
+      <p class="mvp-new-note">A conversa será atribuída a você. Nenhuma mensagem será enviada automaticamente.</p>
+      <button type="submit" id="mvp-new-submit" class="mvp-new-submit">Abrir conversa</button>
+    </form>
+  </dialog>
+  {% endif %}
 </main>
 </body>
 </html>
