@@ -6,6 +6,9 @@
   <meta name="theme-color" content="#f47621">
   <meta name="color-scheme" content="light">
   <title>Prospecta Conversas · Sulnet</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', path='/css/conversas_mvp.css') }}">
   <script src="{{ url_for('static', path='/js/conversas_mvp.js') }}" defer></script>
 </head>
@@ -21,7 +24,7 @@
   <aside class="mvp-inbox" aria-label="Lista de conversas">
     <header class="mvp-inbox-header">
       <div class="mvp-brand">
-        <div class="mvp-logo" aria-hidden="true">S</div>
+        <img class="mvp-logo" src="{{ url_for('static', path='/brand/sulnet-logo.png') }}" alt="sulnet" width="120" height="28">
         <div><strong>Prospecta</strong><span>CONVERSAS</span></div>
       </div>
       <form method="post" action="/logout" class="mvp-logout">
