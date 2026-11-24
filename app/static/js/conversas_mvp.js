@@ -28,6 +28,7 @@
     csrf: root.dataset.csrf,
     userId: Number(root.dataset.userId || 0),
     role: root.dataset.role,
+    showOwner: ["ADMIN", "GESTOR", "SUPERVISOR"].includes(root.dataset.role),
     canReply: root.dataset.canReply === "true",
     canTransfer: root.dataset.canTransfer === "true",
     selectedId: Number(root.dataset.initialId || 0),
@@ -178,6 +179,12 @@
         bottom.append(el("span", "mvp-unread-bubble", item.unread_count > 99 ? "99+" : item.unread_count));
       }
       info.append(top, bottom, el("span", "mvp-contact-sub", item.queue_name || item.status || ""));
+      if (state.showOwner) {
+        const responsible = el("span", "mvp-contact-owner");
+        responsible.append(el("strong", "", "Responsável: "));
+        responsible.append(el("span", "", item.owner || "Sem responsável"));
+        info.append(responsible);
+      }
       row.append(avatar, info);
       row.setAttribute("aria-label", (item.name || item.phone || "Contato") +
         (item.unread_count ? ", " + item.unread_count + " não lidas" : ""));
@@ -224,7 +231,9 @@
     if (!item) return;
     ui.name.textContent = item.name || item.phone || "Contato";
     ui.avatar.textContent = initials(item.name || item.phone);
-    ui.meta.textContent = [item.phone, item.queue_name].filter(Boolean).join(" · ");
+    const details = [item.phone, item.queue_name];
+    if (state.showOwner) details.push("Responsável: " + (item.owner || "Sem responsável"));
+    ui.meta.textContent = details.filter(Boolean).join(" · ");
     ui.chatStatus.textContent = item.status ? item.status.replaceAll("_", " ").toLowerCase() : "";
     const unassignedSeller = state.role === "CONSULTOR" && item.owner === "Sem responsável";
     if (ui.claim) ui.claim.hidden = !(unassignedSeller && state.canTransfer);
