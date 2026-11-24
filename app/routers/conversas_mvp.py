@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
 from app.database import get_db
+from app.routers.conversations import _manual_outbound_queues
 from app.security import get_current_user
 from app.services.access_control import has_permission
 from app.web import render
@@ -38,4 +39,8 @@ def conversas_mvp(
         can_reply=has_permission(user, "conversations.reply"),
         can_transfer=has_permission(user, "conversations.transfer"),
         user_id=user.id,
+        new_conversation_queues=[
+            {"id": queue.id, "name": queue.name}
+            for queue, _instance in _manual_outbound_queues(db, user)
+        ] if has_permission(user, "conversations.reply") else [],
     )
