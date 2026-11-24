@@ -108,7 +108,7 @@
     {% endif %}
   </article>
 </div>
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
   function syncProvider(form) {
     var select = form.querySelector('[data-provider-select]');
