@@ -6,7 +6,12 @@
     <h2>Encontre empresas por segmento e cidade</h2>
     <p>O Apify pesquisa no Google Maps; a Sulnet qualifica, organiza e — se você quiser — já prepara o disparo.</p>
   </div>
-  <span class="integration-banner {% if apify_configured %}connected{% else %}disconnected{% endif %}"><i></i>{% if apify_configured %}Apify conectado{% else %}Apify não configurado{% endif %}</span>
+  <div class="page-actions">
+    {% if can_export %}
+    <a class="button button-secondary" href="/prospecting/export.csv" title="Baixa todos os leads das buscas com telefone completo">↓ Exportar CSV</a>
+    {% endif %}
+    <span class="integration-banner {% if apify_configured %}connected{% else %}disconnected{% endif %}"><i></i>{% if apify_configured %}Apify conectado{% else %}Apify não configurado{% endif %}</span>
+  </div>
 </div>
 
 <div class="prospecting-layout">
@@ -107,10 +112,15 @@
 </div>
 
 <div class="panel table-panel top-space">
-  <div class="panel-header table-title"><div><span class="eyebrow">HISTÓRICO</span><h3>Buscas recentes</h3></div></div>
+  <div class="panel-header table-title">
+    <div><span class="eyebrow">HISTÓRICO</span><h3>Buscas recentes</h3></div>
+    {% if can_export %}
+    <a class="button button-secondary" href="/prospecting/export.csv">↓ CSV de todos os contatos</a>
+    {% endif %}
+  </div>
   <div class="data-table-wrap">
     <table class="data-table">
-      <thead><tr><th>Busca</th><th>Unidade / Equipe</th><th>Execução</th><th>Fila de retorno</th><th>Solicitada por</th><th>Encontrados</th><th>Importados</th><th>Status</th><th>Data</th></tr></thead>
+      <thead><tr><th>Busca</th><th>Unidade / Equipe</th><th>Execução</th><th>Fila de retorno</th><th>Solicitada por</th><th>Encontrados</th><th>Importados</th><th>Status</th><th>Data</th>{% if can_export %}<th>Exportar</th>{% endif %}</tr></thead>
       <tbody>
       {% for job in jobs %}
         {% set plan = job_plans.get(job.id) or {} %}
@@ -141,8 +151,17 @@
           <td>{{ job.found_count }}</td><td>{{ job.imported_count }}</td>
           <td><span class="job-status job-{{ job.status|lower }}">{{ job.status|replace('_',' ')|title }}</span>{% if job.error %}<span class="table-subline text-danger" title="{{ job.error }}">{{ job.error[:60] }}{% if job.error|length > 60 %}…{% endif %}</span>{% endif %}</td>
           <td>{{ job.created_at|datetime_br }}</td>
+          {% if can_export %}
+          <td>
+            {% if job.imported_count and job.imported_count > 0 %}
+            <a class="button button-secondary" href="/prospecting/{{ job.id }}/export.csv" title="Exportar contatos desta busca">CSV</a>
+            {% else %}
+            <span class="muted-text">—</span>
+            {% endif %}
+          </td>
+          {% endif %}
         </tr>
-      {% else %}<tr><td colspan="9"><div class="empty-state"><strong>Nenhuma busca executada</strong><span>Crie a primeira busca segmentada acima.</span></div></td></tr>{% endfor %}
+      {% else %}<tr><td colspan="{{ 10 if can_export else 9 }}"><div class="empty-state"><strong>Nenhuma busca executada</strong><span>Crie a primeira busca segmentada acima.</span></div></td></tr>{% endfor %}
       </tbody>
     </table>
   </div>

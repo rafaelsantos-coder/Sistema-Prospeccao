@@ -52,6 +52,62 @@ def test_prospecting_page_shows_execution_modes():
         assert "Buscar e disparar" in page.text
         assert "Campanha do disparo" in page.text
         assert "Intervalo entre mensagens" in page.text
+        assert 'href="/prospecting/export.csv"' in page.text
+        assert "Exportar CSV" in page.text
+
+
+def test_prospecting_export_csv_includes_complete_phone():
+    with TestClient(app) as client:
+        _login_admin(client)
+        db = SessionLocal()
+        try:
+            job = ProspectingJob(
+                segment="clínicas",
+                city="Santa Rosa",
+                limit=10,
+                team="B2B",
+                status="CONCLUIDO",
+                found_count=1,
+                imported_count=1,
+            )
+            db.add(job)
+            db.flush()
+            lead = Lead(
+                business_name="Clínica Export CSV",
+                contact_name="Ana Silva",
+                phone="5555999112233",
+                email="ana@clinica.example",
+                website="https://clinica.example",
+                address="Rua das Flores 100",
+                neighborhood="Centro",
+                segment="clínicas",
+                city="Santa Rosa",
+                source="APIFY",
+                team="B2B",
+                stage="NOVO",
+                score=8.5,
+                temperature="QUENTE",
+                prospecting_job_id=job.id,
+            )
+            db.add(lead)
+            db.commit()
+            job_id = job.id
+        finally:
+            db.close()
+
+        response = client.get("/prospecting/export.csv")
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+        body = response.text
+        assert "Telefone completo" in body
+        assert "5555999112233" in body
+        assert "Clínica Export CSV" in body
+        assert "ana@clinica.example" in body
+
+        job_csv = client.get(f"/prospecting/{job_id}/export.csv")
+        assert job_csv.status_code == 200
+        assert "Clínica Export CSV" in job_csv.text
+        assert "5555999112233" in job_csv.text
 
 
 def test_create_dispatch_from_prospecting_leads_auto_starts():
@@ -217,6 +273,11 @@ def test_prospecting_job_search_and_dispatch_creates_dispatch(monkeypatch):
             assert dispatch is not None
             assert dispatch.status == "ATIVO"
             assert dispatch.interval_seconds == 15
+            imported = db.scalar(
+                select(Lead).where(Lead.business_name == "Mercado Central")
+            )
+            assert imported is not None
+            assert imported.prospecting_job_id == job_id
         finally:
             db.close()
 
