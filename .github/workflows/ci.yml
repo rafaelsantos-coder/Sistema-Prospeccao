@@ -139,3 +139,22 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           severity: CRITICAL
+
+  # Dispara redeploy de produção após a suíte passar na main.
+  # Exige o secret RAILWAY_DEPLOY_HOOK_URL (Deploy Hook do serviço web).
+  deploy-production:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, container-security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Redeploy Railway (produção)
+        env:
+          HOOK_URL: ${{ secrets.RAILWAY_DEPLOY_HOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOOK_URL:-}" ]; then
+            echo "::warning::RAILWAY_DEPLOY_HOOK_URL ausente. Configure o Deploy Hook do serviço web como secret do repositório."
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK_URL"
+          echo "Redeploy de produção disparado via Deploy Hook."
