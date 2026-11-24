@@ -154,7 +154,57 @@ def _conversation_unavailable(request: Request) -> RedirectResponse:
 
 
 def _get_conversation(db: Session, user: User, conversation_id: int) -> Conversation | None:
-    return db.scalar(_conversation_stmt(user).where(Conversation.id == conversation_id))
+    conversation = db.scalar(_conversation_stmt(user).where(Conversation.id == conversation_id))
+    if conversation:
+        return conversation
+    # Dono direto ainda enxerga a conversa que iniciou/assumiu, mesmo quando o
+    # filtro de inbox esconde disparos sem resposta do cliente.
+    return db.scalar(
+        apply_conversation_scope(
+            select(Conversation)
+            .options(
+                selectinload(Conversation.contact),
+                selectinload(Conversation.lead),
+                selectinload(Conversation.assigned_user),
+                selectinload(Conversation.branch),
+            )
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.assigned_user_id == user.id,
+            ),
+            user,
+            inbox=False,
+        )
+    )
+
+
+def _assign_quick_start_owner(db: Session, conversation: Conversation, user: User) -> bool:
+    """Garante que quem abriu Nova conversa fica gravado como responsável.
+
+    Retorna True quando houve claim (conversa estava sem dono).
+    """
+    claimed = conversation.assigned_user_id is None
+    conversation.assigned_user_id = user.id
+    if claimed or conversation.status in {"EM_FILA", "NOVO", "AGUARDANDO_CLIENTE"}:
+        conversation.status = "ATRIBUIDO"
+    if conversation.source.startswith(("DISPARO:", "CAMPANHA:")):
+        # Abertura humana explícita devolve a conversa à caixa do vendedor.
+        conversation.source = "MANUAL"
+    lead = conversation.lead
+    if lead is None and conversation.lead_id:
+        lead = db.get(Lead, conversation.lead_id)
+    if lead is not None and lead.assigned_user_id != user.id:
+        lead.assigned_user_id = user.id
+    if claimed:
+        db.add(
+            ConversationAssignment(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                assigned_by_id=user.id,
+                event="CLAIMED",
+            )
+        )
+    return claimed
 
 
 def _history_since(db: Session, user: User, conversation: Conversation):
@@ -1058,8 +1108,22 @@ def quick_start_whatsapp_conversation(
 
     existing_queue = queue_for_conversation(db, existing.id) if existing else None
     if existing and existing_queue and existing_queue.id != queue.id:
-        db.rollback()
         if existing.assigned_user_id == user.id:
+            # Mesma vendedora: mantém a fila original, mas reforça titularidade e
+            # tira do limbo de disparo sem resposta para a conversa continuar na caixa dela.
+            _assign_quick_start_owner(db, existing, user)
+            write_audit(
+                db, user=user, action="CONVERSATION_QUICK_STARTED",
+                entity_type="conversation", entity_id=existing.id,
+                payload={
+                    "queue_id": existing_queue.id,
+                    "zapi_instance_id": instance.id,
+                    "reused": True,
+                    "message_sent": False,
+                    "kept_original_queue": True,
+                },
+            )
+            db.commit()
             if wants_json:
                 return JSONResponse(
                     {
@@ -1071,11 +1135,12 @@ def quick_start_whatsapp_conversation(
                         "queue_name": existing_queue.name,
                         "owner": user.name,
                         "status": existing.status,
-                        "notice": "Conversa localizada na fila original.",
+                        "notice": "Conversa localizada na fila original e mantida com você.",
                     }
                 )
-            flash(request, "Conversa existente localizada na fila original.", "warning")
+            flash(request, "Conversa existente localizada na fila original e mantida com você.", "warning")
             return RedirectResponse(f"/conversations/{existing.id}?quick=1", status_code=303)
+        db.rollback()
         return fail(
             "Este número já possui conversa ativa em outra fila. "
             "Use a fila correta ou solicite transferência.",
@@ -1089,9 +1154,6 @@ def quick_start_whatsapp_conversation(
         if not existing_queue:
             bind_conversation_queue(db, conversation.id, queue.id, origin="MANUAL_OUTBOUND")
             conversation.team = queue.team
-        if conversation.source.startswith(("DISPARO:", "CAMPANHA:")):
-            # Abertura humana explicita faz a conversa voltar ao inbox.
-            conversation.source = "MANUAL"
     else:
         conversation = ensure_open_conversation(
             db, contact, lead=lead, source="MANUAL",
@@ -1099,19 +1161,14 @@ def quick_start_whatsapp_conversation(
             assign_if_unowned=False, zapi_instance_id=instance.id,
         )
 
-    if conversation.assigned_user_id is None:
-        conversation.assigned_user_id = user.id
-        conversation.status = "ATRIBUIDO"
-        db.add(ConversationAssignment(
-            conversation_id=conversation.id,
-            user_id=user.id, assigned_by_id=user.id, event="CLAIMED",
-        ))
+    _assign_quick_start_owner(db, conversation, user)
     write_audit(
         db, user=user, action="CONVERSATION_QUICK_STARTED",
         entity_type="conversation", entity_id=conversation.id,
         payload={"queue_id": queue_for_conversation(db, conversation.id).id,
                  "zapi_instance_id": instance.id,
-                 "reused": bool(existing), "message_sent": False},
+                 "reused": bool(existing), "message_sent": False,
+                 "owner_user_id": user.id},
     )
     db.commit()
     if wants_json:
