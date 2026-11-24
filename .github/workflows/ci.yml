@@ -140,8 +140,10 @@ jobs:
           ignore-unfixed: true
           severity: CRITICAL
 
-  # Dispara redeploy de produção após a suíte passar na main.
-  # Exige o secret RAILWAY_DEPLOY_HOOK_URL (Deploy Hook do serviço web).
+  # Redeploy do serviço web em produção após a suíte passar na main.
+  # Preferência: RAILWAY_TOKEN (project token) → railway redeploy.
+  # Fallback: RAILWAY_DEPLOY_HOOK_URL (Deploy Hook do serviço web).
+  # Nota: secrets não podem ser usados em if: do Actions; a escolha fica no shell.
   deploy-production:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [test, container-security]
@@ -149,12 +151,27 @@ jobs:
     steps:
       - name: Redeploy Railway (produção)
         env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           HOOK_URL: ${{ secrets.RAILWAY_DEPLOY_HOOK_URL }}
+          RAILWAY_NO_TELEMETRY: "1"
         run: |
           set -euo pipefail
-          if [ -z "${HOOK_URL:-}" ]; then
-            echo "::warning::RAILWAY_DEPLOY_HOOK_URL ausente. Configure o Deploy Hook do serviço web como secret do repositório."
+          if [ -n "${RAILWAY_TOKEN:-}" ]; then
+            curl -fsSL https://railway.com/install.sh | sh
+            export PATH="$HOME/.railway/bin:$PATH"
+            railway redeploy \
+              --project b6e0d26b-bc6b-4879-bddd-4a0d58aba0f0 \
+              --environment production \
+              --service web \
+              --commit "${GITHUB_SHA}" \
+              --yes
+            echo "Redeploy de produção disparado via Railway CLI (commit ${GITHUB_SHA})."
             exit 0
           fi
-          curl -fsS -X POST "$HOOK_URL"
-          echo "Redeploy de produção disparado via Deploy Hook."
+          if [ -n "${HOOK_URL:-}" ]; then
+            curl -fsS -X POST "$HOOK_URL"
+            echo "Redeploy de produção disparado via Deploy Hook."
+            exit 0
+          fi
+          echo "::error::Configure o secret RAILWAY_TOKEN (project token) ou RAILWAY_DEPLOY_HOOK_URL no repositório."
+          exit 1
