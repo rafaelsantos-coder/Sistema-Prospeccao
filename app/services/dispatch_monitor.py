@@ -68,7 +68,18 @@ def dispatch_live_snapshot(db: Session, dispatch: CampaignDispatch) -> dict[str,
     if scheduled_window is not None:
         next_send = max(next_send, scheduled_window)
 
-    if dispatch.status == "PAUSADO":
+    offline_pause = bool(
+        db.scalar(
+            select(CampaignDispatchRecipient.id).where(
+                CampaignDispatchRecipient.dispatch_id == dispatch.id,
+                CampaignDispatchRecipient.status == "PENDENTE",
+                CampaignDispatchRecipient.error.like("WhatsApp da fila está offline%"),
+            ).limit(1)
+        )
+    )
+    if dispatch.status == "PAUSADO" and offline_pause:
+        label = "Pausado: WhatsApp da fila offline"
+    elif dispatch.status == "PAUSADO":
         label = "Pausado manualmente"
     elif dispatch.status == "CANCELADO":
         label = "Cancelado"
@@ -89,6 +100,10 @@ def dispatch_live_snapshot(db: Session, dispatch: CampaignDispatch) -> dict[str,
 
     capacity = daily_capacity(dispatch)
     remaining = counts["pending"] + counts["sending"]
+    sent = int(counts.get("sent") or 0)
+    delivered = int(counts.get("delivered") or 0)
+    delivery_rate = (delivered / sent) if sent else None
+    delivery_warning = bool(sent >= 20 and delivery_rate is not None and delivery_rate < 0.4)
     return {
         "status": dispatch.status,
         "status_label": label,
@@ -101,5 +116,8 @@ def dispatch_live_snapshot(db: Session, dispatch: CampaignDispatch) -> dict[str,
         "daily_capacity": capacity,
         "estimated_days_remaining": ceil(remaining / capacity),
         "counts": counts,
+        "delivery_rate": delivery_rate,
+        "delivery_warning": delivery_warning,
+        "offline_pause": offline_pause,
         "checked_at": _display_datetime(now),
     }

@@ -18,6 +18,7 @@ from app.models import (
     Contact,
     Lead,
     Message,
+    MessageEvent,
     ServiceQueue,
 )
 from app.services.audit import write_audit
@@ -28,6 +29,7 @@ from app.services.campaign_queue import (
     personalize_message,
 )
 from app.services.conversation_engine import (
+    apply_provider_message_status,
     ensure_contact,
     ensure_open_conversation,
     register_message,
@@ -665,6 +667,49 @@ def _claim_once(db: Session) -> CampaignDispatchRecipient | None | str:
     return recipient
 
 
+def _whatsapp_session_ready(connection: dict[str, Any]) -> bool:
+    """Sessão pronta só com connected + smartphoneConnected da Z-API."""
+    return bool(connection.get("connected")) and bool(
+        connection.get("smartphone_connected")
+    )
+
+
+def _whatsapp_connection_or_none(zapi: Any) -> dict[str, Any] | None:
+    """Consulta status; None se a API falhar (não pausa por falha transitória)."""
+    status_fn = getattr(zapi, "status", None)
+    if not callable(status_fn):
+        return None
+    try:
+        payload = status_fn()
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _reconcile_dispatch_message_status(db: Session, message: Message) -> None:
+    """Aplica STATUS_UNMATCHED que chegaram antes do registro do disparo."""
+    ids = [
+        value
+        for value in (message.provider_message_id, message.provider_zaap_id)
+        if value
+    ]
+    if not ids:
+        return
+    if message.id is None:
+        db.flush()
+    for event in db.scalars(
+        select(MessageEvent)
+        .where(
+            MessageEvent.provider_message_id.in_(ids),
+            MessageEvent.event_type == "STATUS_UNMATCHED",
+        )
+        .order_by(MessageEvent.id)
+    ):
+        apply_provider_message_status(message, event.status or "", event.created_at)
+        event.message_id = message.id
+        event.event_type = "STATUS"
+
+
 def _finish_if_done(db: Session, dispatch: CampaignDispatch) -> None:
     remaining = int(
         db.scalar(
@@ -771,6 +816,37 @@ def process_dispatch_recipient(
     quick_replies = campaign_quick_replies(campaign)
     zapi_instance = None if telegram else queue_instance(db, queue.id)
     zapi = TelegramService(telegram_link.chat_id) if telegram_link else service_for_queue(db, queue.id)
+    if not telegram:
+        # Aceite HTTP da Z-API ≠ celular online. Sem sessão WhatsApp ativa o
+        # provedor pode devolver messageId e o painel infla "Aceitos" sem
+        # entrega real. Pausamos o disparo até reconectar o aparelho.
+        connection = _whatsapp_connection_or_none(zapi)
+        if connection is not None and not _whatsapp_session_ready(connection):
+            recipient.status = "PENDENTE"
+            recipient.attempts = max(0, int(recipient.attempts or 0) - 1)
+            recipient.error = (
+                "WhatsApp da fila está offline (sessão/celular desconectado). "
+                "Disparo pausado para não gastar a lista sem entrega real."
+            )
+            dispatch.status = "PAUSADO"
+            dispatch.paused_at = utcnow()
+            dispatch.next_send_at = None
+            write_audit(
+                db,
+                user=None,
+                action="DISPATCH_WHATSAPP_OFFLINE_PAUSED",
+                entity_type="campaign_dispatch",
+                entity_id=dispatch.id,
+                payload={
+                    "recipient_id": recipient.id,
+                    "queue_id": dispatch.queue_id,
+                    "zapi_instance_id": zapi_instance.id if zapi_instance else None,
+                    "connected": bool(connection.get("connected")),
+                    "smartphone_connected": bool(connection.get("smartphone_connected")),
+                    "provider_error": connection.get("error"),
+                },
+            )
+            return "whatsapp_offline_paused"
     try:
         if quick_replies:
             result = zapi.send_button_list(
@@ -862,6 +938,8 @@ def process_dispatch_recipient(
         provider_zaap_id=zaap_id,
         status="SENT",
     )
+    # Status RECEIVED/READ pode chegar no webhook antes do commit do disparo.
+    _reconcile_dispatch_message_status(db, message)
 
     media_sent = 0
     media_errors: list[str] = []
@@ -901,7 +979,7 @@ def process_dispatch_recipient(
                     media_result.get("messageId") or media_result.get("id") or ""
                 ).strip() or None
                 media_zaap_id = str(media_result.get("zaapId") or "").strip() or None
-                register_message(
+                media_message = register_message(
                     db,
                     conversation,
                     direction="OUTBOUND",
@@ -914,6 +992,7 @@ def process_dispatch_recipient(
                     provider_zaap_id=media_zaap_id,
                     status="SENT",
                 )
+                _reconcile_dispatch_message_status(db, media_message)
                 media_sent += 1
             except (MediaStorageError, ZApiError) as exc:
                 media_errors.append(f"{file_name}: {exc}")
