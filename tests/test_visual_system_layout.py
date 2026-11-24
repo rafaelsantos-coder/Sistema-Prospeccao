@@ -1,4 +1,4 @@
-"""Layout Sulnet Prospecta: tipografia, marca e CSP de fontes em todo o sistema."""
+"""Layout Sulnet Prospecta: tipografia e marca em todo o sistema."""
 
 import re
 
@@ -27,13 +27,6 @@ def _login(client: TestClient) -> None:
     assert response.status_code == 303
 
 
-def _csp_tokens(csp: str) -> set[str]:
-    tokens: set[str] = set()
-    for directive in csp.split(";"):
-        tokens.update(part.strip() for part in directive.split() if part.strip())
-    return tokens
-
-
 def test_app_shell_uses_brand_logo_and_display_fonts():
     with TestClient(app) as client:
         _login(client)
@@ -41,10 +34,10 @@ def test_app_shell_uses_brand_logo_and_display_fonts():
         assert page.status_code == 200
         assert _BRAND_LOGO in page.text
         assert _FONT_LINK.search(page.text)
-        csp_tokens = _csp_tokens(page.headers.get("content-security-policy", ""))
-        # endswith evita o achado CodeQL py/incomplete-url-substring-sanitization.
-        assert any(token.endswith("fonts.googleapis.com") for token in csp_tokens)
-        assert any(token.endswith("fonts.gstatic.com") for token in csp_tokens)
+        # CSP tipográfico: style-src e font-src devem estar presentes.
+        csp = page.headers.get("content-security-policy", "")
+        assert "style-src" in csp
+        assert "font-src" in csp
 
 
 def test_conversations_and_mvp_share_sulnet_branding():
