@@ -5,19 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f36f21">
   <title>{{ page_title or 'Sulnet Prospecta' }} · Sulnet Prospecta</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
 </head>
 <body class="{% if not current_user %}auth-body{% endif %}">
 {% if current_user %}
 <div class="app-shell">
   <aside class="sidebar" id="sidebar">
-    <div class="brand">
-      <span class="brand-mark">S</span>
-      <div>
-        <strong>SULNET</strong>
-        <span>PROSPECTA</span>
-      </div>
-    </div>
+    <a class="brand" href="/dashboard" aria-label="Sulnet Prospecta">
+      <span class="brand-logo-text">sulnet<sup>®</sup></span>
+      <span class="brand-product">Prospecta</span>
+    </a>
 
     <nav class="main-nav" aria-label="Navegação principal">
       {% if 'dashboard.view' in current_user.permissions %}
@@ -134,12 +134,6 @@
       {% endif %}
       {% endif %}
     </nav>
-
-    <div class="sidebar-insight">
-      <span class="eyebrow">FOCO DO DIA</span>
-      <strong>Prospectar. Registrar. Avançar.</strong>
-      <p>Toda oportunidade deve ter responsável e próxima ação.</p>
-    </div>
 
     <div class="sidebar-user">
       <div class="avatar">{{ current_user.name[:1]|upper }}</div>

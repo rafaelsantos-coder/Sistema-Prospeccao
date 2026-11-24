@@ -47,7 +47,8 @@ def test_pagina_nao_depende_de_chave_do_google():
     with TestClient(app) as client:
         _login(client)
         page = client.get("/reports/credit-map")
-        assert "data-maps-key" not in page.text and "googleapis" not in page.text
+        assert "data-maps-key" not in page.text
+        assert "maps.googleapis.com" not in page.text
 
 
 def test_geo_localiza_bairro_e_guarda_no_banco(monkeypatch):
