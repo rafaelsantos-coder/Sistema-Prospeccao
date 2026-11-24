@@ -15,9 +15,10 @@ from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.models import (
-    Contact, Conversation, ConversationQueueLink, ConversationZApiInstance,
-    Message, ServiceQueue, User,
+    Contact, Conversation, ConversationAssignment, ConversationQueueLink,
+    ConversationZApiInstance, Message, ServiceQueue, ServiceQueueMember, User,
 )
+from app.security import hash_password
 from app.services.zapi_instances import bind_queue_instance, create_zapi_instance
 from app.services.conversation_engine import conversation_visible_to_user, payload_message_content
 from app.services.media_storage import MediaStorage
@@ -431,3 +432,124 @@ def test_quick_start_rejects_unavailable_queue_and_bad_phone():
         )
         assert invalid.status_code == 303
         assert invalid.headers["location"] == "/conversations"
+
+
+def test_consultant_quick_start_keeps_owner_and_stays_in_her_inbox():
+    """Se a vendedora inicia Nova conversa, fica gravada com ela e permanece na caixa."""
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            seller = User(
+                name="Natine Teste",
+                email="natine.quickstart@sulnet.local",
+                password_hash=hash_password("SenhaNatine@2026"),
+                role="CONSULTOR",
+                team="DIGITAL",
+                active=True,
+                must_change_password=False,
+            )
+            db.add(seller)
+            db.flush()
+            queue = ServiceQueue(
+                name="Fila Natine Quick",
+                code="NATINE-QUICK-OWNER-01",
+                team="DIGITAL",
+                routing_strategy="MANUAL",
+                active=True,
+            )
+            db.add(queue)
+            db.flush()
+            db.add(ServiceQueueMember(queue_id=queue.id, user_id=seller.id, active=True))
+            instance = create_zapi_instance(
+                db,
+                name="Z-API Natine Quick",
+                phone_label="Natine",
+                base_url="https://api.z-api.io",
+                instance_id="test-natine-quick-owner-zapi",
+                instance_token="test-natine-quick-token",
+                client_token="test-natine-quick-client",
+                created_by_id=None,
+            )
+            bind_queue_instance(db, queue.id, instance.id)
+            # Disparo antigo sem resposta: limbo que sumia da caixa após reabrir.
+            contact = Contact(phone="5555984428413", name="Cliente Natine")
+            db.add(contact)
+            db.flush()
+            orphan = Conversation(
+                contact_id=contact.id,
+                assigned_user_id=None,
+                team="DIGITAL",
+                source="DISPARO:99",
+                status="AGUARDANDO_CLIENTE",
+            )
+            db.add(orphan)
+            db.flush()
+            db.add(ConversationQueueLink(
+                conversation_id=orphan.id, queue_id=queue.id, origin="DISPATCH",
+            ))
+            db.add(ConversationZApiInstance(
+                conversation_id=orphan.id, zapi_instance_id=instance.id,
+            ))
+            db.add(Message(
+                conversation_id=orphan.id, contact_id=contact.id,
+                direction="OUTBOUND", message_type="TEXT",
+                body="Disparo antigo", status="SENT",
+            ))
+            seller_id, queue_id, orphan_id = seller.id, queue.id, orphan.id
+            db.commit()
+
+        login_page = client.get("/login")
+        token = _csrf(login_page.text)
+        assert client.post(
+            "/login",
+            data={
+                "email": "natine.quickstart@sulnet.local",
+                "password": "SenhaNatine@2026",
+                "csrf_token": token,
+            },
+            follow_redirects=False,
+        ).status_code == 303
+        # Login inicia offline; consultora precisa entrar no WhatsApp para o inbox.
+        dash = client.get("/dashboard")
+        token = _csrf(dash.text)
+        assert client.post(
+            "/api/whatsapp-presence/join",
+            data={"csrf_token": token},
+        ).status_code == 200
+        inbox = client.get("/conversations")
+        assert inbox.status_code == 200
+        token = _csrf(inbox.text)
+        started = client.post(
+            "/conversations/start",
+            data={
+                "csrf_token": token,
+                "queue_id": queue_id,
+                "phone": "55984428413",
+            },
+            follow_redirects=False,
+        )
+        assert started.status_code == 303
+        assert started.headers["location"].startswith(f"/conversations/{orphan_id}")
+        opened = client.get(started.headers["location"])
+        assert opened.status_code == 200
+        assert "Cliente Natine" in opened.text or "5555984428413" in opened.text
+
+        with SessionLocal() as db:
+            conversation = db.get(Conversation, orphan_id)
+            assert conversation is not None
+            assert conversation.assigned_user_id == seller_id
+            assert conversation.status == "ATRIBUIDO"
+            assert conversation.source == "MANUAL"
+            claim = db.scalar(
+                select(ConversationAssignment).where(
+                    ConversationAssignment.conversation_id == orphan_id,
+                    ConversationAssignment.event == "CLAIMED",
+                    ConversationAssignment.user_id == seller_id,
+                )
+            )
+            assert claim is not None
+
+        active = client.get("/api/conversations/inbox?view=active").json()["items"]
+        assert any(
+            item["id"] == orphan_id and item.get("owner") == "Natine Teste"
+            for item in active
+        )
