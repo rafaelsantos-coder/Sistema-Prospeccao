@@ -65,6 +65,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .mvp-contact-time { font-size: 11px; color: var(--mvp-muted); white-space: nowrap; }
 .mvp-contact-preview { color: #68757e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; min-width: 0; max-width: 100%; }
 .mvp-contact-bottom { margin-top: 5px; }
+.mvp-contact-owner { display: block; margin-top: 3px; font-size: 11px; line-height: 1.4; color: #546575; }
+.mvp-contact-owner strong { font-weight: 750; color: #475865; }
 .mvp-contact-sub { font-size: 11px; color: #a16b49; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mvp-unread-bubble { background: #f47721; border-radius: 99px; color: #fff; padding: 2px 7px; font-size: 11px; font-weight: 750; }
 .mvp-inbox-footer { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 14px; font-size: 10px; color: #87939a; border-top: 1px solid var(--mvp-border); }
