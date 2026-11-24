@@ -14,12 +14,13 @@ from starlette.responses import RedirectResponse
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.models import Branch, Campaign, Lead, ProspectingJob, User
-from app.security import get_current_user, validate_csrf
+from app.security import get_current_user, has_permission, validate_csrf
 from app.services.apify import ApifyService
 from app.services.audit import write_audit
 from app.services.campaign_queue import campaign_message_template
 from app.services.dispatch_queue import create_dispatch_from_leads
 from app.services.followups import initial_next_action
+from app.services.metrics import apply_user_scope
 from app.services.queue_routing import (
     available_queues_for_user,
     bind_prospecting_queue,
@@ -27,8 +28,9 @@ from app.services.queue_routing import (
     queue_for_prospecting_job,
     set_lead_queue_preference,
 )
+from app.services.scoring import normalize_phone
 from app.timeutils import utcnow
-from app.web import flash, render
+from app.web import csv_attachment, datetime_br, flash, render
 
 
 LOG = logging.getLogger("sulnet_prospecting")
@@ -143,6 +145,7 @@ def _run_job(job_id: int) -> None:
                     branch_id=job.branch_id,
                     assigned_user_id=None if service_queue else job.created_by_id,
                     created_by_id=job.created_by_id,
+                    prospecting_job_id=job.id,
                     next_action_at=initial_next_action(job.team),
                 )
                 db.add(lead)
@@ -219,6 +222,100 @@ def _run_job(job_id: int) -> None:
         db.close()
 
 
+CSV_HEADERS = [
+    "ID",
+    "Empresa",
+    "Contato",
+    "Telefone completo",
+    "E-mail",
+    "Website",
+    "Endereço",
+    "Bairro",
+    "Cidade",
+    "Segmento",
+    "CNPJ",
+    "Equipe",
+    "Etapa",
+    "Score",
+    "Temperatura",
+    "Origem",
+    "Unidade",
+    "Busca ID",
+    "Busca segmento",
+    "Busca cidade",
+    "Capturado em",
+]
+
+
+def _jobs_visible_to(user: User):
+    stmt = select(ProspectingJob)
+    if user.role == "SUPERVISOR":
+        stmt = stmt.where(ProspectingJob.branch_id == user.branch_id)
+    elif user.role == "CONSULTOR":
+        stmt = stmt.where(ProspectingJob.created_by_id == user.id)
+    return stmt
+
+
+def _job_for_user(db: Session, user: User, job_id: int) -> ProspectingJob | None:
+    return db.scalar(_jobs_visible_to(user).where(ProspectingJob.id == job_id))
+
+
+def _complete_phone(raw: str | None) -> str:
+    return normalize_phone(raw) or (raw or "").strip()
+
+
+def _lead_csv_row(lead: Lead, job: ProspectingJob | None = None) -> list[str]:
+    linked = job or lead.prospecting_job
+    return [
+        str(lead.id),
+        lead.business_name or "",
+        lead.contact_name or "",
+        _complete_phone(lead.phone),
+        lead.email or "",
+        lead.website or "",
+        lead.address or "",
+        lead.neighborhood or "",
+        lead.city or "",
+        lead.segment or "",
+        lead.cnpj or "",
+        lead.team or "",
+        lead.stage or "",
+        str(lead.score if lead.score is not None else ""),
+        lead.temperature or "",
+        lead.source or "",
+        lead.branch.city if lead.branch else "",
+        str(linked.id) if linked else "",
+        linked.segment if linked else (lead.segment or ""),
+        linked.city if linked else (lead.city or ""),
+        datetime_br(lead.created_at, fallback=""),
+    ]
+
+
+def _export_leads_csv(
+    *,
+    request: Request,
+    db: Session,
+    user: User,
+    leads: list[Lead],
+    filename: str,
+    audit_entity_id: str,
+) -> Any:
+    rows: list[list[str]] = [CSV_HEADERS]
+    rows.extend(_lead_csv_row(lead) for lead in leads)
+    write_audit(
+        db,
+        user=user,
+        action="PROSPECTING_LEADS_EXPORTED",
+        entity_type="prospecting",
+        entity_id=audit_entity_id,
+        payload={"rows": len(leads), "filename": filename},
+    )
+    db.commit()
+    response = csv_attachment(rows, filename)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @router.get("")
 def prospecting_page(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
@@ -226,15 +323,11 @@ def prospecting_page(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse("/login", status_code=303)
     fail_stale_jobs(db)
     stmt = (
-        select(ProspectingJob)
+        _jobs_visible_to(user)
         .options(selectinload(ProspectingJob.branch), selectinload(ProspectingJob.created_by))
         .order_by(ProspectingJob.created_at.desc())
         .limit(20)
     )
-    if user.role == "SUPERVISOR":
-        stmt = stmt.where(ProspectingJob.branch_id == user.branch_id)
-    elif user.role == "CONSULTOR":
-        stmt = stmt.where(ProspectingJob.created_by_id == user.id)
     jobs = list(db.scalars(stmt))
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
     service_queues = available_queues_for_user(db, user)
@@ -245,6 +338,7 @@ def prospecting_page(request: Request, db: Session = Depends(get_db)):
     job_plans = {job.id: _execution_plan(job) for job in jobs}
     can_dispatch = _can_schedule_dispatch(user)
     campaigns = _whatsapp_campaigns(db) if can_dispatch else []
+    can_export = has_permission(user, "leads.export")
     return render(
         request,
         "prospecting/index.html",
@@ -258,7 +352,83 @@ def prospecting_page(request: Request, db: Session = Depends(get_db)):
         job_plans=job_plans,
         campaigns=campaigns,
         can_schedule_dispatch=can_dispatch,
+        can_export=can_export,
         apify_configured=settings.integrations["apify"],
+    )
+
+
+@router.get("/export.csv")
+def export_all_prospecting_leads(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not has_permission(user, "leads.export"):
+        flash(request, "Você não possui permissão para exportar leads.", "warning")
+        return RedirectResponse("/prospecting", status_code=303)
+
+    stmt = (
+        apply_user_scope(
+            select(Lead)
+            .options(selectinload(Lead.branch), selectinload(Lead.prospecting_job))
+            .where(
+                or_(
+                    Lead.source == "APIFY",
+                    Lead.prospecting_job_id.is_not(None),
+                )
+            )
+            .order_by(Lead.created_at.desc()),
+            user,
+        )
+    )
+    leads = list(db.scalars(stmt))
+    return _export_leads_csv(
+        request=request,
+        db=db,
+        user=user,
+        leads=leads,
+        filename="prospeccao-leads-contato-completo.csv",
+        audit_entity_id="all",
+    )
+
+
+@router.get("/{job_id}/export.csv")
+def export_job_prospecting_leads(
+    job_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not has_permission(user, "leads.export"):
+        flash(request, "Você não possui permissão para exportar leads.", "warning")
+        return RedirectResponse("/prospecting", status_code=303)
+
+    job = _job_for_user(db, user, job_id)
+    if not job:
+        flash(request, "Busca não encontrada.", "warning")
+        return RedirectResponse("/prospecting", status_code=303)
+
+    stmt = apply_user_scope(
+        select(Lead)
+        .options(selectinload(Lead.branch), selectinload(Lead.prospecting_job))
+        .where(Lead.prospecting_job_id == job.id)
+        .order_by(Lead.created_at.desc()),
+        user,
+    )
+    leads = list(db.scalars(stmt))
+    safe_segment = "".join(
+        ch if ("a" <= ch.lower() <= "z") or ch.isdigit() or ch in {"-", "_"} else "-"
+        for ch in (job.segment or "busca")
+    )
+    filename = f"prospeccao-busca-{job.id}-{safe_segment[:40].strip('-') or 'leads'}.csv"
+    return _export_leads_csv(
+        request=request,
+        db=db,
+        user=user,
+        leads=leads,
+        filename=filename,
+        audit_entity_id=str(job.id),
     )
 
 

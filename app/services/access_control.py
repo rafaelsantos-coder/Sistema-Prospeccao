@@ -333,6 +333,8 @@ def permission_for_request(path: str, method: str) -> str | None:
     if path == "/dispatches" or path.startswith("/dispatches/"):
         return "dispatches.manage" if write or path.endswith("/sample.csv") else "dispatches.view"
     if path == "/prospecting" or path.startswith("/prospecting/"):
+        if path.endswith("/export.csv"):
+            return "leads.export"
         return "prospecting.manage" if write else "prospecting.view"
     if path == "/voice" or path.startswith("/voice/"):
         if path.startswith(("/voice/accounts", "/voice/groups")):

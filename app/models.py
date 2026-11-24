@@ -109,6 +109,11 @@ class Lead(Base):
     branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True, index=True)
     assigned_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    prospecting_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("prospecting_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     raw_data: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -118,6 +123,7 @@ class Lead(Base):
         foreign_keys=[assigned_user_id], back_populates="assigned_leads"
     )
     created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+    prospecting_job: Mapped["ProspectingJob | None"] = relationship(foreign_keys=[prospecting_job_id])
     activities: Mapped[list["Activity"]] = relationship(
         back_populates="lead", cascade="all, delete-orphan", order_by="desc(Activity.created_at)"
     )
