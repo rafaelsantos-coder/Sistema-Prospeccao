@@ -80,8 +80,10 @@ _SIGNAL_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"medo (?:de|do) golpe|link suspeito|e seguro (?:esse|o) link)\b"
     )),
     ("CREDIT_REJECTED", re.compile(
-        r"\b(?:credito (?:reprovado|negado)|cpf (?:reprovado|negado)|"
-        r"analise (?:reprovada|negada)|contestacao do credito)\b"
+        r"\b(?:credito (?:foi |esta |ficou )?(?:reprovado|negado)|"
+        r"cpf (?:foi |esta |ficou )?(?:reprovado|negado)|"
+        r"analise (?:foi |esta |ficou )?(?:reprovada|negada)|"
+        r"contestacao do credito)\b"
     )),
     ("URGENCY_INSTALL", re.compile(
         r"\b(?:instalar amanha|instalacao amanha|instala amanha|"
