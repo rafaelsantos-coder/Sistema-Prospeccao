@@ -75,6 +75,7 @@ from app.services.crm_manual_credit import (
 )
 from app.services import crm_prospect_sync
 from app.services.crm_sulnet import CRMIntegrationError
+from app.services.origin_campaigns import resolve_conversation_origin
 from app.services.crm_manual_registration import (
     ACTION_REGISTERED,
     CRMManualError,
@@ -932,6 +933,10 @@ def _render_inbox(
         manual_credit_status(db, selected.contact_id, crm_seller.username, crm_opportunity_id)
         if selected and crm_seller and crm_opportunity_id else None
     )
+    crm_origin_label = "Sulnet Prospecta"
+    crm_origin_match = None
+    if selected and crm_seller and not crm_registration and not crm_ai_opportunity_id:
+        crm_origin_label, crm_origin_match = resolve_conversation_origin(db, selected.id)
     return render(
         request,
         "conversations/inbox.html",
@@ -984,6 +989,8 @@ def _render_inbox(
         crm_manual_status=crm_registration,
         crm_ai_owner=crm_ai_owner,
         crm_ai_opportunity_id=crm_ai_opportunity_id,
+        crm_origin_label=crm_origin_label,
+        crm_origin_match=crm_origin_match,
         crm_credit_enabled=settings.sulnet_crm_manual_credit_enabled,
         crm_credit_status=crm_credit,
         crm_contestation_enabled=settings.sulnet_crm_contestation_enabled,

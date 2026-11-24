@@ -42,6 +42,14 @@
   </a>
 
   {% endif %}
+  {% if 'settings.origin_campaigns.view' in current_user.permissions %}
+  <a class="settings-hub-card" href="/settings/origin-campaigns">
+    <span class="settings-hub-icon">C</span>
+    <div><span class="eyebrow">RASTREIO</span><h3>Campanhas de origem</h3><p>Cadastre o texto padrão do anúncio e a origem do CRM para identificar de onde veio cada lead.</p></div>
+    <div class="settings-hub-meta"><strong>{{ settings_stats.origin_campaigns }}</strong><span>campanhas</span><b>→</b></div>
+  </a>
+
+  {% endif %}
   {% if 'settings.integrations.view' in current_user.permissions %}
   <a class="settings-hub-card" href="/settings/integrations">
     <span class="settings-hub-icon">I</span>

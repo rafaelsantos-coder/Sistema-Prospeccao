@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_settings_nav.html" %}
+
+<div class="page-lead split settings-section-lead">
+  <div>
+    <span class="eyebrow">CONFIGURAÇÕES · RASTREIO DE LEADS</span>
+    <h2>Campanhas de origem</h2>
+    <p>Cadastre o texto padrão do anúncio e a origem correspondente no CRM. Ao registrar a lead, o sistema identifica a campanha pela mensagem inicial do cliente.</p>
+  </div>
+  <a class="button button-secondary" href="/settings">← Configurações</a>
+</div>
+
+<div class="settings-grid origin-campaigns-layout">
+  {% if can_manage_origin_campaigns %}
+  <article class="panel panel-span-5">
+    <div class="panel-header">
+      <div>
+        <span class="eyebrow">NOVA CAMPANHA</span>
+        <h3>Cadastrar mapeamento</h3>
+      </div>
+    </div>
+    <form method="post" action="/settings/origin-campaigns" class="origin-campaign-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="oc-name">Nome da campanha *</label>
+      <input id="oc-name" name="name" required maxlength="180" placeholder="Ex.: Black November 2026">
+      <label for="oc-match">Texto padrão da mensagem *</label>
+      <textarea id="oc-match" name="match_text" required rows="3" maxlength="2000" placeholder="Ex.: Olá, vim do anúncio de BLACK NOVEMBER e quero assinar Sulnet"></textarea>
+      <p class="origin-campaign-tip">Use o texto (ou o trecho distintivo) que o cliente envia ao clicar no anúncio. A comparação ignora acentos e maiúsculas.</p>
+      <label for="oc-origin">Origem no CRM *</label>
+      <input id="oc-origin" name="crm_origin" required maxlength="180" placeholder="Ex.: Facebook Ads · Black November">
+      <p class="origin-campaign-tip">Mesmo valor de origem/canal que deve aparecer na oportunidade do CRM Comercial.</p>
+      <label for="oc-link">Link do anúncio (opcional)</label>
+      <input id="oc-link" name="link" type="url" maxlength="500" placeholder="https://…">
+      <button class="button button-primary" type="submit">Salvar campanha</button>
+    </form>
+  </article>
+  {% endif %}
+
+  <article class="panel {% if can_manage_origin_campaigns %}panel-span-7{% else %}panel-span-12{% endif %}">
+    <div class="panel-header">
+      <div>
+        <span class="eyebrow">CADASTROS</span>
+        <h3>Campanhas ativas e históricas</h3>
+      </div>
+      <span class="count-badge">{{ campaigns|length }}</span>
+    </div>
+    <div class="origin-campaign-table-wrap">
+      <table class="origin-campaign-table">
+        <thead>
+          <tr>
+            <th>Campanha</th>
+            <th>Texto padrão</th>
+            <th>Origem CRM</th>
+            <th>Status</th>
+            {% if can_manage_origin_campaigns %}<th>Ação</th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in campaigns %}
+          <tr class="{% if not item.active %}is-inactive{% endif %}">
+            <td>
+              <strong>{{ item.name }}</strong>
+              {% if item.link %}<small><a href="{{ item.link }}" target="_blank" rel="noopener">Abrir link</a></small>{% endif %}
+            </td>
+            <td><span class="origin-campaign-match">{{ item.match_text }}</span></td>
+            <td><em>{{ item.crm_origin }}</em></td>
+            <td>{% if item.active %}<span class="origin-campaign-pill active">Ativa</span>{% else %}<span class="origin-campaign-pill inactive">Inativa</span>{% endif %}</td>
+            {% if can_manage_origin_campaigns %}
+            <td>
+              <form method="post" action="/settings/origin-campaigns/{{ item.id }}/toggle">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="button button-secondary" type="submit">{% if item.active %}Desativar{% else %}Reativar{% endif %}</button>
+              </form>
+            </td>
+            {% endif %}
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="{{ 5 if can_manage_origin_campaigns else 4 }}" class="origin-campaign-empty">
+              Nenhuma campanha cadastrada. Sem match, o registro no CRM continua com a origem padrão «Sulnet Prospecta».
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</div>
+
+<style>
+.origin-campaigns-layout { align-items: start; }
+.origin-campaign-form { display: grid; gap: 8px; }
+.origin-campaign-form label { font-size: 11px; font-weight: 800; margin-top: 4px; }
+.origin-campaign-form input,
+.origin-campaign-form textarea {
+  width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; font: inherit; font-size: 13px;
+}
+.origin-campaign-tip { margin: 0 0 4px; font-size: 11px; color: var(--muted); line-height: 1.45; }
+.origin-campaign-table-wrap { overflow-x: auto; }
+.origin-campaign-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.origin-campaign-table th,
+.origin-campaign-table td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #edf0f2; vertical-align: top; }
+.origin-campaign-table th { font-size: 10px; letter-spacing: .04em; color: var(--muted); text-transform: uppercase; }
+.origin-campaign-table td strong { display: block; font-size: 13px; }
+.origin-campaign-table td small { display: block; margin-top: 4px; }
+.origin-campaign-table td em { font-style: normal; color: var(--orange); font-weight: 750; }
+.origin-campaign-match { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: #475569; line-height: 1.45; }
+.origin-campaign-pill { display: inline-block; border-radius: 999px; padding: 3px 9px; font-size: 10px; font-weight: 800; }
+.origin-campaign-pill.active { background: #ecfdf5; color: #166534; }
+.origin-campaign-pill.inactive { background: #f1f5f9; color: #64748b; }
+.origin-campaign-table tr.is-inactive td { opacity: .72; }
+.origin-campaign-empty { color: var(--muted); padding: 18px 8px !important; }
+@media (max-width: 960px) {
+  .origin-campaigns-layout .panel-span-5,
+  .origin-campaigns-layout .panel-span-7 { grid-column: span 12; }
+}
+</style>
+{% endblock %}

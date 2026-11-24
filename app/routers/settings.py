@@ -5,14 +5,14 @@ import secrets
 from datetime import timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import RedirectResponse
 
 from app.config import settings
 from app.database import get_db
 from app.constants import ROLES, TEAMS
-from app.models import AuditLog, Branch, ServiceQueue, ServiceQueueMember, Target, User
+from app.models import AuditLog, Branch, OriginCampaign, ServiceQueue, ServiceQueueMember, Target, User
 from app.security import get_current_user, hash_password, require_permission, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.access_control import (
@@ -22,6 +22,7 @@ from app.services.access_control import (
     role_default_permissions,
     validate_selection,
 )
+from app.services.origin_campaigns import list_campaigns, validate_campaign_fields
 from app.services.legacy_adapter import legacy_modules_available, rate_status
 from app.services.queue_routing import queue_summary
 from app.services.zapi import ZApiError
@@ -194,6 +195,12 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             )
         )
     )
+    origin_campaigns_count = (
+        db.scalar(
+            select(func.count(OriginCampaign.id)).where(OriginCampaign.active.is_(True))
+        )
+        or 0
+    )
 
     return render(
         request,
@@ -208,6 +215,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             "targets": len(targets),
             "branches": len(branches),
             "audit": audit_count,
+            "origin_campaigns": origin_campaigns_count,
         },
         environment=settings.app_env,
     )
@@ -798,3 +806,109 @@ def toggle_user(
     )
     db.commit()
     return RedirectResponse("/settings/users", status_code=303)
+
+
+@router.get("/origin-campaigns")
+def settings_origin_campaigns_page(request: Request, db: Session = Depends(get_db)):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+    require_permission(user, "settings.origin_campaigns.view")
+    campaigns = list_campaigns(db, include_inactive=True)
+    return render(
+        request,
+        "settings_origin_campaigns.html",
+        user=user,
+        active_nav="settings",
+        settings_section="origin_campaigns",
+        page_title="Campanhas de origem",
+        campaigns=campaigns,
+        can_manage_origin_campaigns=has_permission(user, "settings.origin_campaigns.manage"),
+        settings_stats={"origin_campaigns": len(campaigns)},
+    )
+
+
+@router.post("/origin-campaigns")
+def create_origin_campaign(
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(...),
+    match_text: str = Form(...),
+    crm_origin: str = Form(...),
+    link: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_permission(user, "settings.origin_campaigns.manage")
+    try:
+        clean_name, clean_match, clean_origin, clean_link = validate_campaign_fields(
+            name=name,
+            match_text=match_text,
+            crm_origin=crm_origin,
+            link=link,
+        )
+    except ValueError as exc:
+        flash(request, str(exc), "warning")
+        return RedirectResponse("/settings/origin-campaigns", status_code=303)
+
+    now = utcnow()
+    campaign = OriginCampaign(
+        name=clean_name,
+        match_text=clean_match,
+        link=clean_link,
+        crm_origin=clean_origin,
+        active=True,
+        created_by_id=user.id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(campaign)
+    db.flush()
+    write_audit(
+        db,
+        user=user,
+        action="ORIGIN_CAMPAIGN_CREATED",
+        entity_type="origin_campaign",
+        entity_id=campaign.id,
+        payload={"name": clean_name, "crmOrigin": clean_origin},
+    )
+    db.commit()
+    flash(request, "Campanha de origem cadastrada.", "success")
+    return RedirectResponse("/settings/origin-campaigns", status_code=303)
+
+
+@router.post("/origin-campaigns/{campaign_id}/toggle")
+def toggle_origin_campaign(
+    campaign_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_permission(user, "settings.origin_campaigns.manage")
+    campaign = db.get(OriginCampaign, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    campaign.active = not campaign.active
+    campaign.updated_at = utcnow()
+    write_audit(
+        db,
+        user=user,
+        action="ORIGIN_CAMPAIGN_ACTIVATED" if campaign.active else "ORIGIN_CAMPAIGN_DEACTIVATED",
+        entity_type="origin_campaign",
+        entity_id=campaign.id,
+        payload={"name": campaign.name, "active": campaign.active},
+    )
+    db.commit()
+    flash(
+        request,
+        "Campanha reativada." if campaign.active else "Campanha desativada.",
+        "success",
+    )
+    return RedirectResponse("/settings/origin-campaigns", status_code=303)

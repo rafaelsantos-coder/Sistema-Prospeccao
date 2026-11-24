@@ -124,6 +124,9 @@
         {% if 'settings.operations.view' in current_user.permissions %}
         <a href="/settings/operations" class="{% if settings_section == 'operations' %}active{% endif %}">Metas e unidades</a>
         {% endif %}
+        {% if 'settings.origin_campaigns.view' in current_user.permissions %}
+        <a href="/settings/origin-campaigns" class="{% if settings_section == 'origin_campaigns' %}active{% endif %}">Campanhas de origem</a>
+        {% endif %}
         {% if 'settings.integrations.view' in current_user.permissions %}
         <a href="/settings/integrations" class="{% if settings_section == 'integrations' %}active{% endif %}">Integrações</a>
         {% endif %}

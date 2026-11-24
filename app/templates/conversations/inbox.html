@@ -307,7 +307,10 @@
         <label>Funil comercial</label>
         <div class="crm-manual-readonly">{% if crm_ai_owner %}SDR IA — INÍCIO{% else %}{{ crm_manual_seller.funnel_name }} — INÍCIO{% endif %}</div>
         <label>Origem</label>
-        <div class="crm-manual-readonly">Sulnet Prospecta</div>
+        <div class="crm-manual-readonly">{{ crm_origin_label }}</div>
+        {% if crm_origin_match %}
+        <p class="crm-manual-hint">Identificada pela campanha <strong>{{ crm_origin_match.campaign_name }}</strong> (texto padrão da mensagem inicial).</p>
+        {% endif %}
         <p class="crm-manual-hint">{% if crm_ai_owner %}A IA usa a oportunidade da conversa, sem gerar outra consulta de crédito ou contato pelo WhatsApp.{% else %}O sistema busca uma oportunidade aberta deste vendedor pelo telefone antes de criar uma nova.{% endif %}</p>
         <div class="crm-manual-dialog-actions">
           <button type="button" class="button button-secondary" data-crm-manual-close>Cancelar</button>
