@@ -133,6 +133,10 @@ def bind_queue_instance(
     queue_id: int,
     zapi_instance_id: int,
 ) -> ServiceQueueZApiInstance:
+    # Uma fila tem um único canal WhatsApp: Meta e Z-API são mutuamente exclusivos.
+    from app.services.meta_whatsapp import clear_queue_meta_binding
+
+    clear_queue_meta_binding(db, queue_id)
     link = db.scalar(
         select(ServiceQueueZApiInstance).where(
             ServiceQueueZApiInstance.queue_id == queue_id
@@ -191,14 +195,24 @@ def bind_conversation_instance(
     return link
 
 
+def _service_for_queue_connection(db: Session, queue_id: int):
+    """Resolve Z-API ou Meta a partir do vínculo atual da fila."""
+    from app.services.meta_whatsapp import queue_meta_account, service_for_meta_account
+
+    instance = queue_instance(db, queue_id)
+    if instance:
+        return service_for_instance(instance)
+    meta = queue_meta_account(db, queue_id)
+    if meta:
+        return service_for_meta_account(meta)
+    raise ZApiNotConfigured(
+        "A fila selecionada não possui uma conexão WhatsApp ativa configurada."
+    )
+
+
 def service_for_queue(db: Session, queue_id: int | None) -> ZApiService:
     if queue_id:
-        instance = queue_instance(db, queue_id)
-        if not instance:
-            raise ZApiNotConfigured(
-                "A fila selecionada não possui uma instância WhatsApp ativa configurada."
-            )
-        return service_for_instance(instance)
+        return _service_for_queue_connection(db, queue_id)  # type: ignore[return-value]
     return ZApiService()
 
 
@@ -211,6 +225,12 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
     ele é autocorrigido antes do envio.
     """
     from app.models import Conversation
+    from app.services.meta_whatsapp import (
+        bind_conversation_meta_account,
+        conversation_meta_account,
+        queue_meta_account,
+        service_for_meta_account,
+    )
     from app.services.queue_routing import manually_transferred_to_ai, queue_for_conversation
 
     conversation = db.get(Conversation, conversation_id)
@@ -227,35 +247,52 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
 
         queue = queue_for_conversation(db, conversation_id)
         original_instance = conversation_instance(db, conversation_id)
+        original_meta = conversation_meta_account(db, conversation_id)
         if is_dedicated_ai_queue(queue):
             # Compatibilidade com transferencias antigas: a conversa foi MOVIDA
             # para Fila IA, mas o numero original esta gravado na conversa.
             instance = original_instance or (queue_instance(db, queue.id) if queue else None)
+            meta = original_meta or (queue_meta_account(db, queue.id) if queue else None)
         else:
             # Novo fluxo: a conversa nunca sai da fila de origem.
             instance = (queue_instance(db, queue.id) if queue else None) or original_instance
-        if not instance:
-            raise ZApiNotConfigured("A conversa delegada à IA está sem a conexão WhatsApp de origem.")
-        current = conversation_instance(db, conversation_id)
-        if not current or current.id != instance.id:
-            bind_conversation_instance(db, conversation_id, instance.id)
-        return service_for_instance(instance)
+            meta = (queue_meta_account(db, queue.id) if queue else None) or original_meta
+        if instance:
+            current = conversation_instance(db, conversation_id)
+            if not current or current.id != instance.id:
+                bind_conversation_instance(db, conversation_id, instance.id)
+            return service_for_instance(instance)
+        if meta:
+            current_meta = conversation_meta_account(db, conversation_id)
+            if not current_meta or current_meta.id != meta.id:
+                bind_conversation_meta_account(db, conversation_id, meta.id)
+            return service_for_meta_account(meta)  # type: ignore[return-value]
+        raise ZApiNotConfigured("A conversa delegada à IA está sem a conexão WhatsApp de origem.")
 
     queue = queue_for_conversation(db, conversation_id)
     if queue:
         instance = queue_instance(db, queue.id)
-        if not instance:
-            raise ZApiNotConfigured(
-                f"A fila {queue.name} não possui uma instância WhatsApp ativa configurada."
-            )
-        current = conversation_instance(db, conversation_id)
-        if not current or current.id != instance.id:
-            bind_conversation_instance(db, conversation_id, instance.id)
-        return service_for_instance(instance)
+        if instance:
+            current = conversation_instance(db, conversation_id)
+            if not current or current.id != instance.id:
+                bind_conversation_instance(db, conversation_id, instance.id)
+            return service_for_instance(instance)
+        meta = queue_meta_account(db, queue.id)
+        if meta:
+            current_meta = conversation_meta_account(db, conversation_id)
+            if not current_meta or current_meta.id != meta.id:
+                bind_conversation_meta_account(db, conversation_id, meta.id)
+            return service_for_meta_account(meta)  # type: ignore[return-value]
+        raise ZApiNotConfigured(
+            f"A fila {queue.name} não possui uma conexão WhatsApp ativa configurada."
+        )
 
     instance = conversation_instance(db, conversation_id)
     if instance:
         return service_for_instance(instance)
+    meta = conversation_meta_account(db, conversation_id)
+    if meta:
+        return service_for_meta_account(meta)  # type: ignore[return-value]
     return ZApiService()
 
 

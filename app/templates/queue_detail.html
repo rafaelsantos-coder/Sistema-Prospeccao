@@ -27,7 +27,32 @@
         <label class="field"><span>Código</span><input value="{{ queue.code }}" disabled><small>O código é permanente para preservar histórico e integrações.</small></label>
         <label class="field"><span>Equipe</span><select name="team" {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}>{% for key, label in constants.teams.items() %}<option value="{{ key }}" {% if queue.team == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
         <label class="field"><span>Unidade</span><select name="branch_id" {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}><option value="">Corporativo / todas</option>{% for branch in branches %}<option value="{{ branch.id }}" {% if queue.branch_id == branch.id %}selected{% endif %}>{{ branch.city }}</option>{% endfor %}</select></label>
-        <label class="field"><span>Instância WhatsApp</span><select name="zapi_instance_id" required {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}>{% for instance in zapi_instances %}<option value="{{ instance.id }}" {% if selected_zapi_instance and selected_zapi_instance.id == instance.id %}selected{% endif %}>{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>{% endfor %}</select><small>Este é o número usado nos envios e respostas desta fila.</small></label>
+        <label class="field"><span>Tipo de conexão WhatsApp</span>
+          <select name="whatsapp_provider" data-provider-select {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}>
+            {% for key, label in whatsapp_providers.items() %}
+            <option value="{{ key }}" {% if selected_whatsapp_provider == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <small>Z-API ou Cloud API oficial da Meta.</small>
+        </label>
+        <label class="field" data-provider-panel="ZAPI" {% if selected_whatsapp_provider == 'META' %}hidden{% endif %}><span>Instância Z-API</span>
+          <select name="zapi_instance_id" data-zapi-select {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %} {% if selected_whatsapp_provider != 'META' %}required{% endif %}>
+            <option value="">Selecione a instância</option>
+            {% for instance in zapi_instances %}
+            <option value="{{ instance.id }}" {% if selected_zapi_instance and selected_zapi_instance.id == instance.id %}selected{% endif %}>{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>
+            {% endfor %}
+          </select>
+          <small>Número usado nos envios e respostas desta fila.</small>
+        </label>
+        <label class="field" data-provider-panel="META" {% if selected_whatsapp_provider != 'META' %}hidden{% endif %}><span>Número Meta (API oficial)</span>
+          <select name="meta_account_id" data-meta-select {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %} {% if selected_whatsapp_provider == 'META' %}required{% endif %}>
+            <option value="">Selecione o número Meta</option>
+            {% for account in meta_accounts %}
+            <option value="{{ account.id }}" {% if selected_meta_account and selected_meta_account.id == account.id %}selected{% endif %}>{{ account.name }}{% if account.phone_label %} · {{ account.phone_label }}{% endif %}</option>
+            {% endfor %}
+          </select>
+          <small>Número da Cloud API oficial usado nesta fila.</small>
+        </label>
         <label class="field"><span>Estratégia</span><select name="routing_strategy" {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}>{% for key, label in routing_strategies.items() %}<option value="{{ key }}" {% if queue.routing_strategy == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
         <label class="queue-check field-span-2"><input type="checkbox" name="is_default_inbound" value="true" {% if queue.is_default_inbound %}checked{% endif %} {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}><span>Fila padrão para novas mensagens espontâneas desta equipe/unidade</span></label>
         <label class="queue-check field-span-2"><input type="checkbox" name="active" value="true" {% if queue.active %}checked{% endif %} {% if current_user.role == 'SUPERVISOR' %}disabled{% endif %}><span>Fila ativa</span></label>
@@ -109,4 +134,23 @@
     </div>
   </aside>
 </div>
+<script nonce="{{ csp_nonce }}">
+(function () {
+  var form = document.querySelector('form[action*="/settings/queues/"]');
+  if (!form) return;
+  var select = form.querySelector('[data-provider-select]');
+  if (!select) return;
+  function sync() {
+    var provider = select.value || 'ZAPI';
+    form.querySelectorAll('[data-provider-panel]').forEach(function (panel) {
+      var match = panel.getAttribute('data-provider-panel') === provider;
+      panel.hidden = !match;
+      var field = panel.querySelector('select, input');
+      if (field && !field.disabled) field.required = match;
+    });
+  }
+  select.addEventListener('change', sync);
+  sync();
+})();
+</script>
 {% endblock %}

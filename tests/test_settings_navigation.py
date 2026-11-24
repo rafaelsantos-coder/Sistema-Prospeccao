@@ -34,7 +34,7 @@ def test_settings_is_a_navigation_hub():
         page = client.get("/settings")
         assert page.status_code == 200
         assert "Configurações do ambiente" in page.text
-        assert "Números e conexões Z-API" in page.text
+        assert "Números e conexões" in page.text
         assert "Filas de atendimento" in page.text
         assert "Usuários e acessos" in page.text
         assert "Metas e unidades" in page.text
@@ -50,7 +50,7 @@ def test_settings_subpages_load_independently():
         expected = {
             "/settings/users": "Usuários e acessos",
             "/settings/queues": "Filas de atendimento",
-            "/settings/whatsapp": "Números e conexões Z-API",
+            "/settings/whatsapp": "Números e conexões",
             "/settings/operations": "Metas e unidades",
             "/settings/integrations": "Integrações e ambiente",
             "/settings/audit": "Auditoria",

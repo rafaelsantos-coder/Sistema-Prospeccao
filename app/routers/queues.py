@@ -12,6 +12,14 @@ from app.models import Branch, ServiceQueue, ServiceQueueMember, User
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.ai_sdr import queue_ai_binding
 from app.services.audit import write_audit
+from app.services.meta_whatsapp import (
+    PROVIDER_META,
+    PROVIDER_ZAPI,
+    bind_queue_meta_account,
+    get_meta_account,
+    list_meta_accounts,
+    queue_meta_account,
+)
 from app.services.queue_routing import queue_summary
 from app.services.zapi_instances import (
     bind_queue_instance,
@@ -27,6 +35,10 @@ ROUTING_STRATEGIES = {
     "ROUND_ROBIN": "Carrossel / rodízio",
     "LEAST_OPEN": "Menor número de atendimentos pendentes",
     "MANUAL": "Somente distribuição manual",
+}
+WHATSAPP_PROVIDERS = {
+    PROVIDER_ZAPI: "Z-API",
+    PROVIDER_META: "API oficial Meta",
 }
 
 
@@ -104,6 +116,42 @@ def _unset_other_defaults(db: Session, queue: ServiceQueue) -> None:
         item.is_default_inbound = False
 
 
+def _parse_optional_id(value: str | int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    text = str(value).strip()
+    if not text or not text.isdigit():
+        return None
+    parsed = int(text)
+    return parsed if parsed > 0 else None
+
+
+def _bind_queue_whatsapp(
+    db: Session,
+    queue: ServiceQueue,
+    *,
+    provider: str,
+    zapi_instance_id: int | None,
+    meta_account_id: int | None,
+) -> tuple[str, int] | None:
+    """Vincula Z-API ou Meta à fila. Retorna (provider, id) ou None se inválido."""
+    clean_provider = (provider or PROVIDER_ZAPI).strip().upper()
+    if clean_provider == PROVIDER_META:
+        account = get_meta_account(db, meta_account_id)
+        if not account or not account.active:
+            return None
+        bind_queue_meta_account(db, queue.id, account.id)
+        return PROVIDER_META, account.id
+
+    instance = get_zapi_instance(db, zapi_instance_id)
+    if not instance or not instance.active:
+        return None
+    bind_queue_instance(db, queue.id, instance.id)
+    return PROVIDER_ZAPI, instance.id
+
+
 @router.post("")
 def create_queue(
     request: Request,
@@ -114,7 +162,9 @@ def create_queue(
     branch_id: str = Form(""),
     routing_strategy: str = Form("ROUND_ROBIN"),
     is_default_inbound: bool = Form(False),
-    zapi_instance_id: int = Form(...),
+    whatsapp_provider: str = Form(PROVIDER_ZAPI),
+    zapi_instance_id: str = Form(""),
+    meta_account_id: str = Form(""),
     member_user_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
@@ -135,10 +185,6 @@ def create_queue(
     if db.scalar(select(ServiceQueue.id).where(ServiceQueue.code == clean_code)):
         flash(request, "Já existe uma fila com este código.", "warning")
         return RedirectResponse("/settings/queues", status_code=303)
-    zapi_instance = get_zapi_instance(db, zapi_instance_id)
-    if not zapi_instance or not zapi_instance.active:
-        flash(request, "Selecione uma instância WhatsApp ativa para a fila.", "warning")
-        return RedirectResponse("/settings/queues", status_code=303)
 
     branch_value = int(branch_id) if branch_id and branch_id.isdigit() else None
     queue = ServiceQueue(
@@ -153,7 +199,24 @@ def create_queue(
     )
     db.add(queue)
     db.flush()
-    bind_queue_instance(db, queue.id, zapi_instance.id)
+
+    binding = _bind_queue_whatsapp(
+        db,
+        queue,
+        provider=whatsapp_provider,
+        zapi_instance_id=_parse_optional_id(zapi_instance_id),
+        meta_account_id=_parse_optional_id(meta_account_id),
+    )
+    if not binding:
+        db.rollback()
+        flash(
+            request,
+            "Selecione uma conexão WhatsApp ativa (Z-API ou API oficial Meta) para a fila.",
+            "warning",
+        )
+        return RedirectResponse("/settings/queues", status_code=303)
+
+    provider_name, connection_id = binding
     for user_id in sorted(set(member_user_ids)):
         user = db.get(User, user_id)
         if user and user.active:
@@ -170,7 +233,9 @@ def create_queue(
             "team": queue.team,
             "routing_strategy": queue.routing_strategy,
             "members": sorted(set(member_user_ids)),
-            "zapi_instance_id": zapi_instance.id,
+            "whatsapp_provider": provider_name,
+            "zapi_instance_id": connection_id if provider_name == PROVIDER_ZAPI else None,
+            "meta_account_id": connection_id if provider_name == PROVIDER_META else None,
         },
     )
     db.commit()
@@ -203,6 +268,9 @@ def queue_detail(
     branches = list(
         db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city))
     )
+    selected_zapi = queue_instance(db, queue.id)
+    selected_meta = queue_meta_account(db, queue.id)
+    selected_provider = PROVIDER_META if selected_meta else PROVIDER_ZAPI
     return render(
         request,
         "queue_detail.html",
@@ -217,7 +285,11 @@ def queue_detail(
         queue_stats=queue_summary(db, queue),
         ai_binding=queue_ai_binding(db, queue.id),
         zapi_instances=list_zapi_instances(db),
-        selected_zapi_instance=queue_instance(db, queue.id),
+        meta_accounts=list_meta_accounts(db),
+        selected_zapi_instance=selected_zapi,
+        selected_meta_account=selected_meta,
+        selected_whatsapp_provider=selected_provider,
+        whatsapp_providers=WHATSAPP_PROVIDERS,
         routing_strategies=ROUTING_STRATEGIES,
     )
 
@@ -233,7 +305,9 @@ def update_queue(
     routing_strategy: str = Form("ROUND_ROBIN"),
     is_default_inbound: bool = Form(False),
     active: bool = Form(False),
-    zapi_instance_id: int = Form(...),
+    whatsapp_provider: str = Form(PROVIDER_ZAPI),
+    zapi_instance_id: str = Form(""),
+    meta_account_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -247,18 +321,29 @@ def update_queue(
     strategy = routing_strategy.strip().upper()
     if strategy not in ROUTING_STRATEGIES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
-    zapi_instance = get_zapi_instance(db, zapi_instance_id)
-    if not zapi_instance or not zapi_instance.active:
-        flash(request, "Selecione uma instância WhatsApp ativa para a fila.", "warning")
+
+    binding = _bind_queue_whatsapp(
+        db,
+        queue,
+        provider=whatsapp_provider,
+        zapi_instance_id=_parse_optional_id(zapi_instance_id),
+        meta_account_id=_parse_optional_id(meta_account_id),
+    )
+    if not binding:
+        flash(
+            request,
+            "Selecione uma conexão WhatsApp ativa (Z-API ou API oficial Meta) para a fila.",
+            "warning",
+        )
         return RedirectResponse(f"/settings/queues/{queue.id}", status_code=303)
 
+    provider_name, connection_id = binding
     queue.name = name.strip() or queue.name
     queue.team = team.strip().upper()
     queue.branch_id = int(branch_id) if branch_id and branch_id.isdigit() else None
     queue.routing_strategy = strategy
     queue.is_default_inbound = is_default_inbound
     queue.active = active
-    bind_queue_instance(db, queue.id, zapi_instance.id)
 
     _unset_other_defaults(db, queue)
     write_audit(
@@ -273,7 +358,9 @@ def update_queue(
             "active": queue.active,
             "default_inbound": queue.is_default_inbound,
             "members_managed_separately": True,
-            "zapi_instance_id": zapi_instance.id,
+            "whatsapp_provider": provider_name,
+            "zapi_instance_id": connection_id if provider_name == PROVIDER_ZAPI else None,
+            "meta_account_id": connection_id if provider_name == PROVIDER_META else None,
         },
     )
     db.commit()

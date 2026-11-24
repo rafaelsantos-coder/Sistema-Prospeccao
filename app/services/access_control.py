@@ -367,7 +367,11 @@ def permission_for_request(path: str, method: str) -> str | None:
             return "settings.users.manage" if write or path.endswith("/edit") else "settings.users.view"
         if path.startswith("/settings/queues"):
             return "settings.queues.manage" if write else "settings.queues.view"
-        if path.startswith("/settings/whatsapp") or path.startswith("/settings/zapi"):
+        if (
+            path.startswith("/settings/whatsapp")
+            or path.startswith("/settings/zapi")
+            or path.startswith("/settings/meta")
+        ):
             return "settings.connections.manage" if write else "settings.connections.view"
         if path.startswith("/settings/operations"):
             return "settings.operations.view"
