@@ -2529,8 +2529,19 @@ def test_existing_customer_from_text_recognizes_assinante_variants():
     assert _existing_customer_from_text("Já sou cliente, valeu") == "CLIENTE"
     assert _existing_customer_from_text("Não sou assinante") == "NAO_CLIENTE"
     assert _existing_customer_from_text("Não sou cliente, quero conhecer") == "NAO_CLIENTE"
-    assert _existing_customer_from_text("Sou cliente da Vivo hoje") == ""
-    assert _existing_customer_from_text("Já sou assinante da Claro") == ""
+    assert _existing_customer_from_text("Sou cliente da Vivo hoje") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Já sou assinante da Claro") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Tudo bem, tenho o da br phonia") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Tenho internet da Unifique") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Uso a Unify") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Meu provedor é a Globoinfo") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Tenho o da Benderson") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Sou cliente da Oi") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Tenho a Viatec") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Internet da Metaserver") == "NAO_CLIENTE"
+    assert _existing_customer_from_text("Tenho o da @net") == "NAO_CLIENTE"
+    # Interesse em concorrente sem declarar provedor atual não fecha o gate.
+    assert _existing_customer_from_text("Tenho interesse na Vivo") == ""
 
 
 def test_existing_customer_confirmation_routes_to_mobile_or_new_connection(monkeypatch):
@@ -2837,7 +2848,8 @@ def test_simple_no_without_customer_question_does_not_confirm_not_customer():
     assert result.reply_text == "Antes de te mostrar as opções, você já é cliente Sulnet?"
 
 
-def test_competitor_customer_phrase_is_not_misread_as_sulnet_customer():
+def test_competitor_customer_phrase_is_not_misread_as_sulnet_customer(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
     decision = _base_prospecting_entry_decision()
     context = {
         "latest_customer_message": "Sou cliente da Vivo hoje",
@@ -2852,8 +2864,35 @@ def test_competitor_customer_phrase_is_not_misread_as_sulnet_customer():
 
     result = _apply_prospecting_entry_policy(decision, context)
 
-    assert result.qualification.existing_customer == "NAO_INFORMADO"
-    assert result.reply_text == "Antes de te mostrar as opções, você já é cliente Sulnet?"
+    assert result.qualification.existing_customer == "NAO_CLIENTE"
+    assert result.quick_replies
+    assert "já é cliente Sulnet" not in result.reply_text
+    assert "serviço da Sulnet" not in result.reply_text
+
+
+def test_brphonia_provider_skips_existing_customer_gate(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Tudo bem, tenho o da br phonia",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Boa tarde tudo bem??? com qual provedor voce teria hoje ?",
+            },
+            {"direction": "INBOUND", "body": "Tudo bem, tenho o da br phonia"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "NAO_CLIENTE"
+    assert "já é cliente Sulnet" not in result.reply_text
+    assert "serviço da Sulnet" not in result.reply_text
 
 
 def test_opt_out_is_not_overridden_by_prospecting_customer_gate():
