@@ -228,7 +228,8 @@ def _confirmed_city_from_text(value: str, previous_outbound: str = "") -> str:
     return ""
 
 
-# Provedores concorrentes: "sou cliente da Vivo" não confirma Sulnet.
+# Provedores concorrentes: citar um deles como provedor atual = não é cliente Sulnet.
+# Inclui marcas locais (Brphonia, Unify/@Net, etc.) além das nacionais.
 _COMPETITOR_PROVIDER_CUES = (
     "vivo",
     "claro",
@@ -238,11 +239,39 @@ _COMPETITOR_PROVIDER_CUES = (
     "desktop",
     "vero",
     "unifique",
+    "unify",
     "brisanet",
+    "brphonia",
+    "br phonia",
+    "globoinfo",
+    "globo info",
+    "benderson",
+    "viatec",
+    "metaserver",
+    "meta server",
+    "atnet",
+    "at net",
     "net virtua",
     "virtua",
     "sky",
     "starlink",
+)
+
+# "@net" vira "net" no fold — só conta com vizinhança de provedor (evita "internet").
+_ATNET_OWNERSHIP_RE = re.compile(
+    r"\b(?:da|do|o da|a da|provedor|internet da|internet do)\s+net\b"
+)
+
+_COMPETITOR_OWNERSHIP_RE = re.compile(
+    r"(?:"
+    r"\b(?:sou|ja sou) (?:cliente|assinante)\b|"
+    r"\b(?:cliente|assinante) d[ao]\b|"
+    r"\b(?:tenho|uso|ja tenho)(?: o| a)? da\b|"
+    r"\b(?:tenho|uso|ja tenho) (?:internet|plano)\b|"
+    r"\binternet d[ao]\b|"
+    r"\bmeu provedor\b|"
+    r"\bprovedor (?:e|eh|hoje)\b"
+    r")"
 )
 
 
@@ -254,6 +283,31 @@ def _mentions_competitor_provider(folded: str) -> bool:
                 return True
         elif cue in tokens:
             return True
+    # "@net" / "o da @net" → fold "net"; exige âncora de provedor.
+    if _ATNET_OWNERSHIP_RE.search(folded):
+        return True
+    return False
+
+
+def _discloses_competitor_as_current_provider(folded: str) -> bool:
+    """Cliente declara provedor concorrente atual → trata como NAO_CLIENTE Sulnet."""
+    if not folded or not _mentions_competitor_provider(folded):
+        return False
+    if _COMPETITOR_OWNERSHIP_RE.search(folded):
+        return True
+    # "tenho brphonia" / "uso a claro" / "tenho o da unifique"
+    for cue in _COMPETITOR_PROVIDER_CUES:
+        escaped = re.escape(cue)
+        if re.search(
+            rf"\b(?:tenho|uso|ja tenho)(?: a| o)?(?: da)? {escaped}\b",
+            folded,
+        ):
+            return True
+    if _ATNET_OWNERSHIP_RE.search(folded) and re.search(
+        r"\b(?:tenho|uso|ja tenho|sou|cliente|assinante|provedor|internet)\b",
+        folded,
+    ):
+        return True
     return False
 
 
@@ -304,9 +358,12 @@ def _existing_customer_from_text(
         return "NAO_CLIENTE"
     if any(cue in folded for cue in sulnet_positive_cues):
         return "CLIENTE"
+    # "Tenho o da Brphonia" / "Sou cliente da Vivo" → não é cliente Sulnet.
+    if _discloses_competitor_as_current_provider(folded):
+        return "NAO_CLIENTE"
     if any(cue in folded for cue in generic_positive_cues):
         if _mentions_competitor_provider(folded):
-            return ""
+            return "NAO_CLIENTE"
         return "CLIENTE"
 
     status_question = _asks_existing_customer(previous_outbound)
