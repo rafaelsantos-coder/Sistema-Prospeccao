@@ -29,6 +29,120 @@ def campaign_message_template(campaign: Campaign) -> str:
     return ""
 
 
+def campaign_sequence_messages(campaign: Campaign) -> list[dict[str, str | int]]:
+    """Extrai todas as mensagens da régua (abordagem + follow-ups)."""
+    try:
+        sequence = json.loads(campaign.sequence_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(sequence, list):
+        return []
+    items: list[dict[str, str | int]] = []
+    for index, step in enumerate(sequence, start=1):
+        if not isinstance(step, dict):
+            continue
+        message = str(step.get("message") or "").strip()
+        if not message:
+            continue
+        day = step.get("day")
+        items.append(
+            {
+                "index": index,
+                "day": int(day) if str(day or "").isdigit() else index,
+                "message": message,
+            }
+        )
+    return items
+
+
+QUICK_CHAT_TEMPLATE_STATUSES = ("ATIVA", "APROVADA", "PAUSADA")
+
+
+def list_quick_chat_templates(db: Session, user) -> list[dict]:
+    """Templates opcionais para Nova conversa: campanhas + mensagens da régua.
+
+    Retorna itens com id estável (`campaign:{id}` ou `campaign:{id}:step:{n}`),
+    rótulo para o select, grupo (Campanhas / Mensagens padronizadas) e texto.
+    """
+    from sqlalchemy import or_
+
+    stmt = (
+        select(Campaign)
+        .where(
+            Campaign.channel == "WHATSAPP",
+            Campaign.status.in_(QUICK_CHAT_TEMPLATE_STATUSES),
+        )
+        .order_by(Campaign.name.asc(), Campaign.id.asc())
+    )
+    if getattr(user, "role", None) == "SUPERVISOR":
+        stmt = stmt.where(
+            or_(Campaign.branch_id == user.branch_id, Campaign.branch_id.is_(None))
+        )
+    templates: list[dict] = []
+    for campaign in db.scalars(stmt):
+        messages = campaign_sequence_messages(campaign)
+        if not messages:
+            continue
+        first = messages[0]
+        templates.append(
+            {
+                "id": f"campaign:{campaign.id}",
+                "label": campaign.name,
+                "group": "Campanhas",
+                "message": first["message"],
+                "campaign_id": campaign.id,
+            }
+        )
+        for step in messages[1:]:
+            day = step["day"]
+            templates.append(
+                {
+                    "id": f"campaign:{campaign.id}:step:{step['index']}",
+                    "label": f"{campaign.name} · dia {day}",
+                    "group": "Mensagens padronizadas",
+                    "message": step["message"],
+                    "campaign_id": campaign.id,
+                }
+            )
+    return templates
+
+
+def resolve_quick_chat_template(db: Session, user, template_id: str | None) -> str:
+    """Resolve o texto do template escolhido; vazio = NENHUM."""
+    key = (template_id or "").strip()
+    if not key or key.upper() == "NENHUM":
+        return ""
+    for item in list_quick_chat_templates(db, user):
+        if item["id"] == key:
+            return str(item["message"] or "").strip()
+    return ""
+
+
+def personalize_quick_chat_template(
+    template: str,
+    *,
+    lead: Lead | None = None,
+    contact_name: str = "",
+    business_name: str = "",
+) -> str:
+    """Personaliza placeholders; sem lead, usa nome do contato quando houver."""
+    if not template:
+        return ""
+    if lead is not None:
+        return personalize_message(template, lead)
+    values = {
+        "nome": contact_name or business_name,
+        "empresa": business_name,
+        "cidade": "",
+        "segmento": "",
+    }
+    result = template
+    for key, value in values.items():
+        result = result.replace("{{" + key + "}}", str(value or ""))
+        result = result.replace("{{ " + key + " }}", str(value or ""))
+    return result.strip()
+
+
 def campaign_media_attachments(campaign: Campaign) -> list[dict[str, str]]:
     try:
         sequence = json.loads(campaign.sequence_json or "[]")

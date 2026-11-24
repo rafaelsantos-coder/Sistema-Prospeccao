@@ -117,6 +117,33 @@
         <option value="{{ queue.id }}">{{ queue.name }}</option>
         {% endfor %}
       </select>
+      <label for="mvp-new-template">Template</label>
+      <input type="search" id="mvp-new-template-search" class="mvp-new-template-search"
+             placeholder="Buscar campanha ou mensagem padronizada..." autocomplete="off"
+             data-template-search aria-controls="mvp-new-template">
+      <select id="mvp-new-template" name="template_id" data-template-select>
+        <option value="" selected>NENHUM</option>
+        {% set ns = namespace(has_campaign=false, has_standard=false) %}
+        {% for item in new_conversation_templates or [] %}
+          {% if item.group == 'Campanhas' %}{% set ns.has_campaign = true %}{% endif %}
+          {% if item.group == 'Mensagens padronizadas' %}{% set ns.has_standard = true %}{% endif %}
+        {% endfor %}
+        {% if ns.has_campaign %}
+        <optgroup label="Campanhas" data-template-group>
+          {% for item in new_conversation_templates if item.group == 'Campanhas' %}
+          <option value="{{ item.id }}" data-label="{{ item.label }}" data-group="Campanhas">{{ item.label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+        {% if ns.has_standard %}
+        <optgroup label="Mensagens padronizadas" data-template-group>
+          {% for item in new_conversation_templates if item.group == 'Mensagens padronizadas' %}
+          <option value="{{ item.id }}" data-label="{{ item.label }}" data-group="Mensagens padronizadas">{{ item.label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+      </select>
+      <p class="mvp-new-note">Opcional. NENHUM deixa o compositor vazio.</p>
       <p id="mvp-new-error" class="mvp-new-error" role="alert" hidden></p>
       <p class="mvp-new-note">A conversa fica com você como responsável. Nenhuma mensagem será enviada automaticamente.</p>
       <button type="submit" id="mvp-new-submit" class="mvp-new-submit">Abrir conversa</button>

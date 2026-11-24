@@ -14,6 +14,7 @@ from app.database import get_db
 from app.routers.conversations import _manual_outbound_queues
 from app.security import get_current_user
 from app.services.access_control import has_permission
+from app.services.campaign_queue import list_quick_chat_templates
 from app.web import render
 
 
@@ -30,17 +31,19 @@ def conversas_mvp(
     user = get_current_user(request, db)
     if user is None:
         return RedirectResponse("/login", status_code=303)
+    can_reply = has_permission(user, "conversations.reply")
     return render(
         request,
         "conversas_mvp.html",
         user=user,
         page_title="Prospecta Conversas",
         selected_conversation_id=conversation_id,
-        can_reply=has_permission(user, "conversations.reply"),
+        can_reply=can_reply,
         can_transfer=has_permission(user, "conversations.transfer"),
         user_id=user.id,
         new_conversation_queues=[
             {"id": queue.id, "name": queue.name}
             for queue, _instance in _manual_outbound_queues(db, user)
-        ] if has_permission(user, "conversations.reply") else [],
+        ] if can_reply else [],
+        new_conversation_templates=list_quick_chat_templates(db, user) if can_reply else [],
     )

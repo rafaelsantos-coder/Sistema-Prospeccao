@@ -1,9 +1,15 @@
+from types import SimpleNamespace
+
 from app.models import Campaign, Lead
 from app.services.campaign_queue import (
     campaign_media_attachments,
     campaign_message_template,
     campaign_quick_replies,
+    campaign_sequence_messages,
+    list_quick_chat_templates,
     personalize_message,
+    personalize_quick_chat_template,
+    resolve_quick_chat_template,
 )
 
 
@@ -27,6 +33,69 @@ def test_campaign_reads_first_message_from_sequence():
         sequence_json='[{"day":1,"message":"Mensagem inicial"},{"day":3,"label":"Follow-up"}]',
     )
     assert campaign_message_template(campaign) == "Mensagem inicial"
+
+
+def test_campaign_sequence_messages_keeps_follow_ups():
+    campaign = Campaign(
+        name="Régua",
+        channel="WHATSAPP",
+        sequence_json=(
+            '[{"day":1,"message":"Abordagem"},'
+            '{"day":3,"message":"Follow-up dia 3"},'
+            '{"day":5,"label":"sem texto"}]'
+        ),
+    )
+    steps = campaign_sequence_messages(campaign)
+    assert [item["message"] for item in steps] == ["Abordagem", "Follow-up dia 3"]
+    assert steps[1]["day"] == 3
+
+
+def test_quick_chat_templates_list_campaigns_and_standardized_steps():
+    from fastapi.testclient import TestClient
+
+    from app.database import SessionLocal
+    from app.main import app
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            db.add(
+                Campaign(
+                    name="650Mb 3 meses - Maria",
+                    channel="WHATSAPP",
+                    status="ATIVA",
+                    sequence_json=(
+                        '[{"day":1,"message":"Oi {{nome}}, oferta 650Mb"},'
+                        '{"day":3,"message":"Ainda posso te ajudar com a oferta?"}]'
+                    ),
+                )
+            )
+            db.add(
+                Campaign(
+                    name="Rascunho ignorado",
+                    channel="WHATSAPP",
+                    status="RASCUNHO",
+                    sequence_json='[{"day":1,"message":"Não deve aparecer"}]',
+                )
+            )
+            db.commit()
+            user = SimpleNamespace(role="ADMIN", branch_id=None)
+            templates = list_quick_chat_templates(db, user)
+            labels = [item["label"] for item in templates]
+            groups = {item["label"]: item["group"] for item in templates}
+            assert "650Mb 3 meses - Maria" in labels
+            assert "650Mb 3 meses - Maria · dia 3" in labels
+            assert groups["650Mb 3 meses - Maria"] == "Campanhas"
+            assert groups["650Mb 3 meses - Maria · dia 3"] == "Mensagens padronizadas"
+            assert "Rascunho ignorado" not in labels
+            assert resolve_quick_chat_template(db, user, "") == ""
+            assert resolve_quick_chat_template(db, user, "NENHUM") == ""
+            campaign_id = next(
+                item["id"] for item in templates if item["label"] == "650Mb 3 meses - Maria"
+            )
+            assert "oferta 650Mb" in resolve_quick_chat_template(db, user, campaign_id)
+            assert personalize_quick_chat_template(
+                "Oi {{nome}}", contact_name="Ana"
+            ) == "Oi Ana"
 
 
 

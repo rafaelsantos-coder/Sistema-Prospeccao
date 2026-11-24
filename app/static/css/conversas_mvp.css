@@ -170,6 +170,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   padding: 10px 12px;
   font-size: 16px;
 }
+.mvp-new-form input.mvp-new-template-search {
+  min-height: 40px;
+  font-size: 14px;
+  margin-bottom: -2px;
+}
 .mvp-new-form input:focus, .mvp-new-form select:focus {
   outline: 2px solid #ffd5b8;
   border-color: var(--mvp-orange);

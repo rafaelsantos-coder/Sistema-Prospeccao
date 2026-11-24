@@ -57,7 +57,9 @@ def test_conversas_mvp_reuses_login_and_has_no_crm_navigation():
         assert "/static/js/conversas_mvp.js" in page.text
         assert "/static/css/conversas_mvp.css" in page.text
         assert "Registrar CRM" not in page.text
-        assert "campanhas" not in page.text.lower()
+        assert 'href="/campaigns"' not in page.text
+        assert 'id="mvp-new-template"' in page.text
+        assert ">NENHUM<" in page.text
         assert "Cache-Control" in page.headers
         assert "no-store" in page.headers["Cache-Control"]
         deep_link = client.get("/conversas/98765432")

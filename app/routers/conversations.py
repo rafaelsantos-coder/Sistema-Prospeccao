@@ -31,6 +31,11 @@ from app.services.ai_reply_delivery import reply_statuses
 from app.services.ai_queue_scope import is_dedicated_ai_queue
 from app.services.ai_sdr import AI_INBOUND_MESSAGE_TYPES, enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
+from app.services.campaign_queue import (
+    list_quick_chat_templates,
+    personalize_quick_chat_template,
+    resolve_quick_chat_template,
+)
 from app.services.global_blacklist import (
     BlacklistPhoneError,
     block_phone,
@@ -889,6 +894,11 @@ def _render_inbox(
         ),
         quick_queues[0][0].id if quick_queues else None,
     )
+    quick_chat_templates = (
+        list_quick_chat_templates(db, user)
+        if has_permission(user, "conversations.reply") else []
+    )
+    compose_draft = str(request.session.pop("quick_compose_draft", "") or "")
     crm_seller = seller_for_user(selected.assigned_user) if selected else None
     crm_ai_owner = bool(
         selected and selected.assigned_user_id and db.scalar(
@@ -940,6 +950,8 @@ def _render_inbox(
         ai_reply_statuses=ai_reply_statuses,
         quick_outbound_queues=[q for q, _instance in quick_queues],
         quick_preferred_queue_id=quick_preferred_queue_id,
+        quick_chat_templates=quick_chat_templates,
+        compose_draft=compose_draft,
         latest_ai_run=latest_ai_run,
         counts=counts,
         query=q,
@@ -1021,12 +1033,33 @@ def conversation_detail(
     )
 
 
+def _quick_compose_draft(
+    db: Session,
+    user: User,
+    *,
+    template_id: str | None,
+    lead: Lead | None,
+    contact: Contact | None,
+) -> str:
+    """Monta o rascunho opcional do compositor a partir do template escolhido."""
+    raw = resolve_quick_chat_template(db, user, template_id)
+    if not raw:
+        return ""
+    return personalize_quick_chat_template(
+        raw,
+        lead=lead,
+        contact_name=(contact.name if contact else "") or "",
+        business_name=(contact.business_name if contact else "") or "",
+    )
+
+
 @router.post("/conversations/start")
 def quick_start_whatsapp_conversation(
     request: Request,
     csrf_token: str = Form(...),
     phone: str = Form(...),
     queue_id: int | None = Form(None),
+    template_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Inicia chat manual por telefone, preservando fila, instancia e titularidade.
@@ -1034,6 +1067,7 @@ def quick_start_whatsapp_conversation(
     Formulario tradicional continua redirecionando ao inbox. A interface
     Prospecta Conversas solicita JSON e abre apenas o chat autorizado.
     Nenhuma mensagem e enviada automaticamente ao criar a conversa.
+    Template e opcional (NENHUM): so preenche o compositor, sem disparo.
     """
     wants_json = "application/json" in request.headers.get("accept", "").lower()
 
@@ -1080,6 +1114,9 @@ def quick_start_whatsapp_conversation(
         return fail("Este cliente não autoriza contato por WhatsApp.", 403)
 
     contact = ensure_contact(db, normalized, lead=lead)
+    compose_draft = _quick_compose_draft(
+        db, user, template_id=template_id, lead=lead, contact=contact,
+    )
     existing = db.scalar(
         select(Conversation)
         .outerjoin(
@@ -1121,6 +1158,8 @@ def quick_start_whatsapp_conversation(
                     "reused": True,
                     "message_sent": False,
                     "kept_original_queue": True,
+                    "template_id": (template_id or "").strip() or None,
+                    "draft_prepared": bool(compose_draft),
                 },
             )
             db.commit()
@@ -1135,9 +1174,12 @@ def quick_start_whatsapp_conversation(
                         "queue_name": existing_queue.name,
                         "owner": user.name,
                         "status": existing.status,
+                        "draft": compose_draft,
                         "notice": "Conversa localizada na fila original e mantida com você.",
                     }
                 )
+            if compose_draft:
+                request.session["quick_compose_draft"] = compose_draft
             flash(request, "Conversa existente localizada na fila original e mantida com você.", "warning")
             return RedirectResponse(f"/conversations/{existing.id}?quick=1", status_code=303)
         db.rollback()
@@ -1168,7 +1210,9 @@ def quick_start_whatsapp_conversation(
         payload={"queue_id": queue_for_conversation(db, conversation.id).id,
                  "zapi_instance_id": instance.id,
                  "reused": bool(existing), "message_sent": False,
-                 "owner_user_id": user.id},
+                 "owner_user_id": user.id,
+                 "template_id": (template_id or "").strip() or None,
+                 "draft_prepared": bool(compose_draft)},
     )
     db.commit()
     if wants_json:
@@ -1182,8 +1226,11 @@ def quick_start_whatsapp_conversation(
                 "queue_name": (existing_queue or queue).name,
                 "owner": user.name,
                 "status": conversation.status,
+                "draft": compose_draft,
             }
         )
+    if compose_draft:
+        request.session["quick_compose_draft"] = compose_draft
     return RedirectResponse(
         f"/conversations/{conversation.id}?quick=1", status_code=303,
     )

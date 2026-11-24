@@ -390,7 +390,7 @@
     <div class="chat-compose">
       <form action="/conversations/{{ conversation.id }}/send" method="post" class="chat-send-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <textarea name="message" maxlength="4096" required placeholder="Digite uma mensagem para o cliente..." data-chat-input></textarea>
+        <textarea name="message" maxlength="4096" required placeholder="Digite uma mensagem para o cliente..." data-chat-input>{% if compose_draft %}{{ compose_draft }}{% endif %}</textarea>
         <div class="compose-bottom">
           <div class="compose-left">
             <div class="compose-tools">
@@ -787,6 +787,33 @@
     <input type="hidden" name="queue_id" value="{{ quick_outbound_queues[0].id }}">
     <span class="inbox-quick-chat-queue-note">Saída: {{ quick_outbound_queues[0].name }}</span>
     {% endif %}
+    <label for="inbox-quick-chat-template">Template</label>
+    <input type="search" id="inbox-quick-chat-template-search" class="inbox-quick-chat-template-search"
+           placeholder="Buscar campanha ou mensagem padronizada..." autocomplete="off"
+           data-template-search aria-controls="inbox-quick-chat-template">
+    <select name="template_id" id="inbox-quick-chat-template" data-template-select>
+      <option value="" selected>NENHUM</option>
+      {% set ns = namespace(has_campaign=false, has_standard=false) %}
+      {% for item in quick_chat_templates or [] %}
+        {% if item.group == 'Campanhas' %}{% set ns.has_campaign = true %}{% endif %}
+        {% if item.group == 'Mensagens padronizadas' %}{% set ns.has_standard = true %}{% endif %}
+      {% endfor %}
+      {% if ns.has_campaign %}
+      <optgroup label="Campanhas" data-template-group>
+        {% for item in quick_chat_templates if item.group == 'Campanhas' %}
+        <option value="{{ item.id }}" data-label="{{ item.label }}" data-group="Campanhas">{{ item.label }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endif %}
+      {% if ns.has_standard %}
+      <optgroup label="Mensagens padronizadas" data-template-group>
+        {% for item in quick_chat_templates if item.group == 'Mensagens padronizadas' %}
+        <option value="{{ item.id }}" data-label="{{ item.label }}" data-group="Mensagens padronizadas">{{ item.label }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endif %}
+    </select>
+    <span class="inbox-quick-chat-queue-note">Opcional. NENHUM deixa o compositor vazio; nada é enviado automaticamente.</span>
     <button class="button button-primary inbox-quick-chat-submit" type="submit" data-quick-chat-submit>Abrir conversa</button>
     <small>O chat abre com você como responsável para escrever a primeira mensagem. Nada é enviado automaticamente.</small>
   </form>
@@ -890,9 +917,10 @@
 .inbox-quick-chat-heading p{color:#64748b;font-size:12px;line-height:1.5;margin:0 0 10px}
 .inbox-quick-chat-close{flex:none;border:1px solid #e2e8f0;background:#fff;border-radius:8px;font-size:23px;color:#64748b;width:34px;height:34px;cursor:pointer}
 .inbox-quick-chat-form label{font-size:12px;font-weight:750;color:#334155}
-.inbox-quick-chat-form input[type=tel],.inbox-quick-chat-form select{width:100%;height:46px;border:1px solid #cbd5e1;border-radius:9px;padding:0 12px;font:inherit;font-size:15px;background:#fff;box-sizing:border-box}
+.inbox-quick-chat-form input[type=tel],.inbox-quick-chat-form input[type=search],.inbox-quick-chat-form select{width:100%;height:46px;border:1px solid #cbd5e1;border-radius:9px;padding:0 12px;font:inherit;font-size:15px;background:#fff;box-sizing:border-box}
 .inbox-quick-chat-form input:focus,.inbox-quick-chat-form select:focus{outline:2px solid #fb923c;outline-offset:1px}
 .inbox-quick-chat-form .inbox-quick-chat-queue-note{font-size:11px;color:#64748b}
+.inbox-quick-chat-form .inbox-quick-chat-template-search{height:40px;font-size:13px;margin-bottom:-4px}
 .inbox-quick-chat-form .inbox-quick-chat-submit{width:100%;min-height:44px;margin-top:3px}
 .inbox-quick-chat-form>small{font-size:11px;line-height:1.45;color:#64748b}
 
@@ -1076,7 +1104,29 @@
   });
   const quickChatDialog = document.getElementById('inbox-quick-chat-dialog');
   const quickPhone = document.getElementById('inbox-quick-chat-phone');
+  const templateSelect = quickChatDialog?.querySelector('[data-template-select]');
+  const templateSearch = quickChatDialog?.querySelector('[data-template-search]');
+  const filterQuickTemplates = () => {
+    if (!templateSelect) return;
+    const query = (templateSearch?.value || '').trim().toLocaleLowerCase('pt-BR');
+    templateSelect.querySelectorAll('option[data-label]').forEach(option => {
+      const label = (option.dataset.label || option.textContent || '').toLocaleLowerCase('pt-BR');
+      const group = (option.dataset.group || '').toLocaleLowerCase('pt-BR');
+      const match = !query || label.includes(query) || group.includes(query);
+      option.hidden = !match;
+      option.disabled = !match;
+    });
+    templateSelect.querySelectorAll('optgroup[data-template-group]').forEach(group => {
+      const visible = Array.from(group.querySelectorAll('option')).some(option => !option.hidden);
+      group.hidden = !visible;
+      group.disabled = !visible;
+    });
+  };
+  templateSearch?.addEventListener('input', filterQuickTemplates);
   document.querySelector('[data-quick-chat-open]')?.addEventListener('click', () => {
+    if (templateSearch) templateSearch.value = '';
+    if (templateSelect) templateSelect.value = '';
+    filterQuickTemplates();
     quickChatDialog?.showModal();
     quickPhone?.focus();
   });
@@ -1091,7 +1141,12 @@
     }
   });
   if (new URLSearchParams(window.location.search).get('quick') === '1') {
-    document.querySelector('[data-chat-input]')?.focus();
+    const chatInput = document.querySelector('[data-chat-input]');
+    chatInput?.focus();
+    if (chatInput && chatInput.value) {
+      const end = chatInput.value.length;
+      chatInput.setSelectionRange(end, end);
+    }
   }
   const crmDialog = document.getElementById('crm-manual-dialog');
   const crmOpen = document.querySelector('[data-crm-manual-open]');

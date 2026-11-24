@@ -22,6 +22,7 @@
     newOpen: $("mvp-new-open"), newDialog: $("mvp-new-dialog"),
     newForm: $("mvp-new-form"), newClose: $("mvp-new-close"),
     newPhone: $("mvp-new-phone"), newQueue: $("mvp-new-queue"),
+    newTemplate: $("mvp-new-template"), newTemplateSearch: $("mvp-new-template-search"),
     newError: $("mvp-new-error"), newSubmit: $("mvp-new-submit")
   };
   const state = {
@@ -446,6 +447,22 @@
     ui.newError.textContent = message || "";
     ui.newError.hidden = !message;
   }
+  function filterNewTemplates() {
+    if (!ui.newTemplate) return;
+    const query = (ui.newTemplateSearch?.value || "").trim().toLocaleLowerCase("pt-BR");
+    ui.newTemplate.querySelectorAll("option[data-label]").forEach(option => {
+      const label = (option.dataset.label || option.textContent || "").toLocaleLowerCase("pt-BR");
+      const group = (option.dataset.group || "").toLocaleLowerCase("pt-BR");
+      const match = !query || label.includes(query) || group.includes(query);
+      option.hidden = !match;
+      option.disabled = !match;
+    });
+    ui.newTemplate.querySelectorAll("optgroup[data-template-group]").forEach(group => {
+      const visible = Array.from(group.querySelectorAll("option")).some(option => !option.hidden);
+      group.hidden = !visible;
+      group.disabled = !visible;
+    });
+  }
   function closeNewConversation() {
     if (ui.newDialog?.open) ui.newDialog.close();
     newConversationError("");
@@ -471,14 +488,21 @@
     }
     ui.newSubmit.disabled = true;
     try {
+      const payload = {phone: rawPhone, queue_id: ui.newQueue.value};
+      if (ui.newTemplate && ui.newTemplate.value) {
+        payload.template_id = ui.newTemplate.value;
+      }
       const result = await api("/conversations/start", {
         method: "POST",
-        body: postData({phone: rawPhone, queue_id: ui.newQueue.value})
+        body: postData(payload)
       });
       if (!Number.isInteger(Number(result.conversation_id)) || Number(result.conversation_id) <= 0) {
         throw new Error("O servidor não retornou a conversa criada.");
       }
       ui.newForm.reset();
+      if (ui.newTemplate) ui.newTemplate.value = "";
+      if (ui.newTemplateSearch) ui.newTemplateSearch.value = "";
+      filterNewTemplates();
       closeNewConversation();
       ui.search.value = "";
       state.query = "";
@@ -487,6 +511,9 @@
       await refreshInbox();
       openChat(Number(result.conversation_id));
       if (result.notice) feedback(result.notice);
+      if (typeof result.draft === "string" && result.draft && ui.message) {
+        ui.message.value = result.draft;
+      }
       ui.message.focus();
     } catch (error) {
       newConversationError(error?.message || "Não foi possível abrir a conversa.");
@@ -501,11 +528,15 @@
       feedback("Entre no atendimento para iniciar novas conversas.");
       return;
     }
+    if (ui.newTemplateSearch) ui.newTemplateSearch.value = "";
+    if (ui.newTemplate) ui.newTemplate.value = "";
+    filterNewTemplates();
     if (ui.newDialog?.showModal) {
       ui.newDialog.showModal();
       ui.newPhone?.focus();
     }
   });
+  ui.newTemplateSearch?.addEventListener("input", filterNewTemplates);
   ui.newClose?.addEventListener("click", closeNewConversation);
   ui.newForm?.addEventListener("submit", createNewConversation);
   ui.join.addEventListener("click", joinPresence);
