@@ -979,9 +979,27 @@ def quick_start_whatsapp_conversation(
     queue_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    """Telefone -> conversa no inbox -> vendedor escreve a mensagem, sem template."""
+    """Inicia chat manual por telefone, preservando fila, instancia e titularidade.
+
+    Formulario tradicional continua redirecionando ao inbox. A interface
+    Prospecta Conversas solicita JSON e abre apenas o chat autorizado.
+    Nenhuma mensagem e enviada automaticamente ao criar a conversa.
+    """
+    wants_json = "application/json" in request.headers.get("accept", "").lower()
+
+    def fail(message: str, code: int = 400):
+        if wants_json:
+            return JSONResponse({"ok": False, "error": message}, status_code=code)
+        flash(request, message, "warning")
+        return RedirectResponse("/conversations", status_code=303)
+
     user, redirect = _user_or_redirect(request, db)
     if redirect:
+        if wants_json:
+            return JSONResponse(
+                {"ok": False, "error": "Entre no atendimento antes de iniciar uma conversa."},
+                status_code=401 if redirect.headers.get("location") == "/login" else 403,
+            )
         return redirect
     validate_csrf(request, csrf_token)
     if not has_permission(user, "conversations.reply"):
@@ -989,32 +1007,27 @@ def quick_start_whatsapp_conversation(
 
     queues = _manual_outbound_queues(db, user)
     if not queues:
-        flash(request, "Nenhuma fila WhatsApp com Z-API ativa está disponível para você.", "warning")
-        return RedirectResponse("/conversations", status_code=303)
+        return fail("Nenhuma fila WhatsApp com Z-API ativa está disponível para você.", 403)
     allowed = {queue.id: (queue, instance) for queue, instance in queues}
     if queue_id is None and len(queues) == 1:
         queue_id = queues[0][0].id
     if queue_id not in allowed:
-        flash(request, "Selecione uma fila WhatsApp autorizada para iniciar a conversa.", "warning")
-        return RedirectResponse("/conversations", status_code=303)
+        return fail("Selecione uma fila WhatsApp autorizada para iniciar a conversa.", 403)
     queue, instance = allowed[queue_id]
     require_instance_access(user, instance)
 
     normalized = normalize_phone(phone)
     if not normalized:
-        flash(request, "Informe um telefone válido com DDD (fixo ou celular).", "warning")
-        return RedirectResponse("/conversations", status_code=303)
+        return fail("Informe um telefone válido com DDD (fixo ou celular).")
     if is_globally_blocked(db, normalized):
-        flash(request, "Este contato está na blacklist e não pode receber mensagens.", "warning")
-        return RedirectResponse("/conversations", status_code=303)
+        return fail("Este contato está na blacklist e não pode receber mensagens.", 403)
 
     existing_contact = db.scalar(select(Contact).where(Contact.phone == normalized))
     lead = db.scalar(select(Lead).where(Lead.phone == normalized).limit(1))
     if not lead and existing_contact and existing_contact.lead_id:
         lead = db.get(Lead, existing_contact.lead_id)
     if lead and (lead.do_not_contact or lead.stage == "NAO_CONTATAR"):
-        flash(request, "Este cliente não autoriza contato por WhatsApp.", "warning")
-        return RedirectResponse("/conversations", status_code=303)
+        return fail("Este cliente não autoriza contato por WhatsApp.", 403)
 
     contact = ensure_contact(db, normalized, lead=lead)
     existing = db.scalar(
@@ -1037,36 +1050,47 @@ def quick_start_whatsapp_conversation(
     )
     if existing and existing.assigned_user_id not in (None, user.id):
         db.rollback()
-        flash(
-            request,
+        return fail(
             "Este número já tem uma conversa ativa com outro atendente. "
             "Solicite a transferência para não dividir o atendimento.",
-            "warning",
+            409,
         )
-        return RedirectResponse("/conversations", status_code=303)
+
     existing_queue = queue_for_conversation(db, existing.id) if existing else None
     if existing and existing_queue and existing_queue.id != queue.id:
         db.rollback()
         if existing.assigned_user_id == user.id:
+            if wants_json:
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "conversation_id": existing.id,
+                        "reused": True,
+                        "phone": normalized,
+                        "name": contact.business_name or contact.name or normalized,
+                        "queue_name": existing_queue.name,
+                        "owner": user.name,
+                        "status": existing.status,
+                        "notice": "Conversa localizada na fila original.",
+                    }
+                )
             flash(request, "Conversa existente localizada na fila original.", "warning")
             return RedirectResponse(f"/conversations/{existing.id}?quick=1", status_code=303)
-        flash(
-            request,
+        return fail(
             "Este número já possui conversa ativa em outra fila. "
             "Use a fila correta ou solicite transferência.",
-            "warning",
+            409,
         )
-        return RedirectResponse("/conversations", status_code=303)
 
     if existing:
         conversation = existing
-        # Não deslocar atendimento existente de fila/numero ao abrir o atalho.
+        # Nao deslocar atendimento existente de fila/numero ao abrir o atalho.
         bind_conversation_instance(db, conversation.id, instance.id)
         if not existing_queue:
             bind_conversation_queue(db, conversation.id, queue.id, origin="MANUAL_OUTBOUND")
             conversation.team = queue.team
         if conversation.source.startswith(("DISPARO:", "CAMPANHA:")):
-            # Quando o vendedor assume ativamente, passa a aparecer na caixa.
+            # Abertura humana explicita faz a conversa voltar ao inbox.
             conversation.source = "MANUAL"
     else:
         conversation = ensure_open_conversation(
@@ -1090,6 +1114,19 @@ def quick_start_whatsapp_conversation(
                  "reused": bool(existing), "message_sent": False},
     )
     db.commit()
+    if wants_json:
+        return JSONResponse(
+            {
+                "ok": True,
+                "conversation_id": conversation.id,
+                "reused": bool(existing),
+                "phone": normalized,
+                "name": contact.business_name or contact.name or normalized,
+                "queue_name": (existing_queue or queue).name,
+                "owner": user.name,
+                "status": conversation.status,
+            }
+        )
     return RedirectResponse(
         f"/conversations/{conversation.id}?quick=1", status_code=303,
     )

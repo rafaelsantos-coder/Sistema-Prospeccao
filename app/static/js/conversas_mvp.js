@@ -18,12 +18,17 @@
     feedback: $("mvp-chat-feedback"),
     file: $("mvp-attachment"), filePreview: $("mvp-file-preview"),
     fileName: $("mvp-file-name"), fileSend: $("mvp-file-send"),
-    fileCancel: $("mvp-file-cancel"), claim: $("mvp-claim")
+    fileCancel: $("mvp-file-cancel"), claim: $("mvp-claim"),
+    newOpen: $("mvp-new-open"), newDialog: $("mvp-new-dialog"),
+    newForm: $("mvp-new-form"), newClose: $("mvp-new-close"),
+    newPhone: $("mvp-new-phone"), newQueue: $("mvp-new-queue"),
+    newError: $("mvp-new-error"), newSubmit: $("mvp-new-submit")
   };
   const state = {
     csrf: root.dataset.csrf,
     userId: Number(root.dataset.userId || 0),
     role: root.dataset.role,
+    showOwner: ["ADMIN", "GESTOR", "SUPERVISOR"].includes(root.dataset.role),
     canReply: root.dataset.canReply === "true",
     canTransfer: root.dataset.canTransfer === "true",
     selectedId: Number(root.dataset.initialId || 0),
@@ -174,6 +179,12 @@
         bottom.append(el("span", "mvp-unread-bubble", item.unread_count > 99 ? "99+" : item.unread_count));
       }
       info.append(top, bottom, el("span", "mvp-contact-sub", item.queue_name || item.status || ""));
+      if (state.showOwner) {
+        const responsible = el("span", "mvp-contact-owner");
+        responsible.append(el("strong", "", "Responsável: "));
+        responsible.append(el("span", "", item.owner || "Sem responsável"));
+        info.append(responsible);
+      }
       row.append(avatar, info);
       row.setAttribute("aria-label", (item.name || item.phone || "Contato") +
         (item.unread_count ? ", " + item.unread_count + " não lidas" : ""));
@@ -220,7 +231,9 @@
     if (!item) return;
     ui.name.textContent = item.name || item.phone || "Contato";
     ui.avatar.textContent = initials(item.name || item.phone);
-    ui.meta.textContent = [item.phone, item.queue_name].filter(Boolean).join(" · ");
+    const details = [item.phone, item.queue_name];
+    if (state.showOwner) details.push("Responsável: " + (item.owner || "Sem responsável"));
+    ui.meta.textContent = details.filter(Boolean).join(" · ");
     ui.chatStatus.textContent = item.status ? item.status.replaceAll("_", " ").toLowerCase() : "";
     const unassignedSeller = state.role === "CONSULTOR" && item.owner === "Sem responsável";
     if (ui.claim) ui.claim.hidden = !(unassignedSeller && state.canTransfer);
@@ -428,6 +441,73 @@
     }
   }
 
+  function newConversationError(message) {
+    if (!ui.newError) return;
+    ui.newError.textContent = message || "";
+    ui.newError.hidden = !message;
+  }
+  function closeNewConversation() {
+    if (ui.newDialog?.open) ui.newDialog.close();
+    newConversationError("");
+  }
+  async function createNewConversation(event) {
+    event.preventDefault();
+    if (!ui.newForm || !ui.newPhone || !ui.newQueue || !state.canReply) return;
+    newConversationError("");
+    const rawPhone = ui.newPhone.value.trim();
+    const digits = rawPhone.replace(/\D/g, "");
+    const validLength = [10, 11].includes(digits.length) || (digits.startsWith("55") && [12, 13].includes(digits.length));
+    if (!validLength) {
+      newConversationError("Informe um número de WhatsApp válido com DDD.");
+      return;
+    }
+    if (!ui.newQueue.value) {
+      newConversationError("Selecione uma fila autorizada para seu atendimento.");
+      return;
+    }
+    if (state.role === "CONSULTOR" && !state.online) {
+      newConversationError("Entre no atendimento antes de iniciar uma nova conversa.");
+      return;
+    }
+    ui.newSubmit.disabled = true;
+    try {
+      const result = await api("/conversations/start", {
+        method: "POST",
+        body: postData({phone: rawPhone, queue_id: ui.newQueue.value})
+      });
+      if (!Number.isInteger(Number(result.conversation_id)) || Number(result.conversation_id) <= 0) {
+        throw new Error("O servidor não retornou a conversa criada.");
+      }
+      ui.newForm.reset();
+      closeNewConversation();
+      ui.search.value = "";
+      state.query = "";
+      state.view = "active";
+      renderFilters();
+      await refreshInbox();
+      openChat(Number(result.conversation_id));
+      if (result.notice) feedback(result.notice);
+      ui.message.focus();
+    } catch (error) {
+      newConversationError(error?.message || "Não foi possível abrir a conversa.");
+    } finally {
+      ui.newSubmit.disabled = false;
+    }
+  }
+
+  if (ui.newOpen) ui.newOpen.addEventListener("click", () => {
+    newConversationError("");
+    if (state.role === "CONSULTOR" && !state.online) {
+      feedback("Entre no atendimento para iniciar novas conversas.");
+      return;
+    }
+    if (ui.newDialog?.showModal) {
+      ui.newDialog.showModal();
+      ui.newPhone?.focus();
+    }
+  });
+  ui.newClose?.addEventListener("click", closeNewConversation);
+  ui.newForm?.addEventListener("submit", createNewConversation);
   ui.join.addEventListener("click", joinPresence);
   ui.back.addEventListener("click", () => clearChat());
   ui.list.addEventListener("click", event => {
