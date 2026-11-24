@@ -1399,3 +1399,21 @@ class VoiceTransferTest(Base):
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OriginCampaign(Base):
+    """Campanha de anúncio → origem do CRM, casada pelo texto padrão da mensagem."""
+
+    __tablename__ = "origin_campaigns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(180))
+    match_text: Mapped[str] = mapped_column(Text)
+    link: Mapped[str] = mapped_column(String(500), default="")
+    crm_origin: Mapped[str] = mapped_column(String(180))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    created_by: Mapped[User | None] = relationship()

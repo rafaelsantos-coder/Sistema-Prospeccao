@@ -97,6 +97,8 @@ PERMISSION_GROUPS: tuple[dict[str, Any], ...] = (
          ("settings.users.view", "Ver usuários e acessos", SUPERVISION_ROLES),
          ("settings.users.manage", "Criar, editar e desativar usuários", MANAGEMENT_ROLES),
          ("settings.operations.view", "Ver metas e unidades", SUPERVISION_ROLES),
+         ("settings.origin_campaigns.view", "Ver campanhas de origem do CRM", SUPERVISION_ROLES),
+         ("settings.origin_campaigns.manage", "Cadastrar campanhas de origem do CRM", MANAGEMENT_ROLES),
          ("settings.integrations.view", "Ver integrações", SUPERVISION_ROLES),
          ("settings.audit.view", "Ver auditoria", SUPERVISION_ROLES),
          ("settings.connections.view", "Ver números e conexões Z-API", MANAGEMENT_ROLES),
@@ -135,11 +137,13 @@ REQUIRES: dict[str, str] = {
     "blacklist.manage": "blacklist.view",
     **{k: "settings.view" for k in (
         "settings.queues.view", "settings.users.view",
-        "settings.operations.view", "settings.integrations.view",
+        "settings.operations.view", "settings.origin_campaigns.view",
+        "settings.integrations.view",
         "settings.audit.view", "settings.connections.view",
     )},
     "settings.queues.manage": "settings.queues.view",
     "settings.users.manage": "settings.users.view",
+    "settings.origin_campaigns.manage": "settings.origin_campaigns.view",
     "settings.connections.manage": "settings.connections.view",
 }
 
@@ -157,12 +161,14 @@ _BASE_SUPERVISOR = _BASE_CONSULTOR | {
     "leads.assign", "credit_map.view", "settings.view",
     "settings.queues.view", "settings.queues.manage",
     "settings.users.view", "settings.operations.view",
+    "settings.origin_campaigns.view",
     "settings.integrations.view", "settings.audit.view",
 }
 _BASE_GESTOR = _BASE_SUPERVISOR | {
     "campaigns.approve", "dispatches.view", "dispatches.manage",
     "ai.view", "ai.manage", "blacklist.view", "blacklist.manage",
     "credit_map.import", "settings.users.manage",
+    "settings.origin_campaigns.manage",
     "settings.connections.view", "settings.connections.manage",
 }
 DEFAULT_BY_ROLE: dict[str, frozenset[str]] = {
@@ -365,6 +371,11 @@ def permission_for_request(path: str, method: str) -> str | None:
             return "settings.connections.manage" if write else "settings.connections.view"
         if path.startswith("/settings/operations"):
             return "settings.operations.view"
+        if path.startswith("/settings/origin-campaigns"):
+            return (
+                "settings.origin_campaigns.manage"
+                if write else "settings.origin_campaigns.view"
+            )
         if path.startswith("/settings/integrations"):
             return "settings.integrations.view"
         if path.startswith("/settings/audit"):

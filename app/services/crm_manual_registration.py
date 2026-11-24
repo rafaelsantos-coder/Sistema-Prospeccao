@@ -14,12 +14,16 @@ from sqlalchemy.orm import Session
 from app.models import AuditLog, Conversation, User
 from app.services.audit import write_audit
 from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
+from app.services.origin_campaigns import (
+    DEFAULT_CRM_ORIGIN,
+    resolve_conversation_origin,
+)
 
 LOG = logging.getLogger("sulnet_crm_manual")
 ACTION_REGISTERED = "CRM_MANUAL_REGISTERED"
 ACTION_UNCERTAIN = "CRM_MANUAL_UNCERTAIN"
 ACTION_REVIEW = "CRM_MANUAL_REVIEW"
-ORIGIN = "Sulnet Prospecta"
+ORIGIN = DEFAULT_CRM_ORIGIN
 
 
 class CRMManualError(RuntimeError):
@@ -320,19 +324,30 @@ def register_conversation(
         _log_result(db, conversation, actor, ACTION_REGISTERED, result)
         return {"already": True, **result}
 
+    crm_origin, origin_match = resolve_conversation_origin(db, conversation.id)
+    origin_payload = {
+        "origin": crm_origin,
+        "originCampaignId": origin_match.campaign_id if origin_match else None,
+        "originCampaignName": origin_match.campaign_name if origin_match else None,
+    }
+
     try:
         result = crm.create_seller_lead(
             seller_username=seller.username,
             client_name=name,
             client_phone=phone,
-            origin=ORIGIN,
+            origin=crm_origin,
         )
     except CRMIntegrationError as exc:
         # Timeout/5xx é ambíguo: o CRM pode ter gravado mesmo sem responder.
         if exc.status_code is None or exc.status_code >= 500:
             _log_result(
                 db, conversation, actor, ACTION_UNCERTAIN,
-                {"sellerUsername": seller.username, "statusCode": exc.status_code},
+                {
+                    "sellerUsername": seller.username,
+                    "statusCode": exc.status_code,
+                    **origin_payload,
+                },
             )
             raise CRMManualError(
                 "Não houve confirmação do CRM. Confira o cadastro antes de tentar novamente."
@@ -358,6 +373,7 @@ def register_conversation(
                 "assignedUserId": assigned_id,
                 "funnelId": funnel_id,
                 "stageId": stage_id,
+                **origin_payload,
             },
         )
         raise CRMManualError(
@@ -373,7 +389,14 @@ def register_conversation(
         "funnelId": funnel_id,
         "stageId": stage_id,
         "outcome": "created",
+        **origin_payload,
     }
     _log_result(db, conversation, actor, ACTION_REGISTERED, saved)
-    LOG.info("crm_manual_registered opportunity=%s seller=%s", opportunity_id, seller.username)
+    LOG.info(
+        "crm_manual_registered opportunity=%s seller=%s origin=%s campaign=%s",
+        opportunity_id,
+        seller.username,
+        crm_origin,
+        origin_match.campaign_id if origin_match else None,
+    )
     return {"already": False, **saved}
