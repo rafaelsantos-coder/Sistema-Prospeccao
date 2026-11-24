@@ -7,8 +7,9 @@ import re
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
+from sqlalchemy.sql import ColumnElement
 
 from app.models import (
     Activity,
@@ -18,6 +19,7 @@ from app.models import (
     Contact,
     Lead,
     Message,
+    MessageEvent,
     ServiceQueue,
 )
 from app.services.audit import write_audit
@@ -28,6 +30,7 @@ from app.services.campaign_queue import (
     personalize_message,
 )
 from app.services.conversation_engine import (
+    apply_provider_message_status,
     ensure_contact,
     ensure_open_conversation,
     register_message,
@@ -291,14 +294,20 @@ def dispatch_counts_many(db: Session, dispatch_ids: list[int]) -> dict[int, dict
 
     # Uma resposta pode chegar em outra conversa do mesmo contato: reabertura,
     # transferência de fila ou mudança de instância Z-API alteram conversation_id.
-    # A identidade do destinatário é o telefone normalizado do contato.
+    # A identidade do destinatário é o telefone (e a forma 12/13 dígitos BR).
     # Em disparos sucessivos para o mesmo número, atribuímos cada resposta ao
     # disparo mais recente anterior a ela, nunca a duas campanhas ao mesmo tempo.
     later = aliased(CampaignDispatchRecipient)
+    recipient_phone_match = _sql_phones_equivalent(
+        Contact.phone, CampaignDispatchRecipient.phone
+    )
+    later_phone_match = _sql_phones_equivalent(
+        later.phone, CampaignDispatchRecipient.phone
+    )
     superseded_before_reply = (
         select(later.id)
         .where(
-            later.phone == CampaignDispatchRecipient.phone,
+            later_phone_match,
             later.status == "ENVIADO",
             later.sent_at.is_not(None),
             later.sent_at <= Message.created_at,
@@ -317,7 +326,7 @@ def dispatch_counts_many(db: Session, dispatch_ids: list[int]) -> dict[int, dict
         select(Message.id)
         .join(Contact, Contact.id == Message.contact_id)
         .where(
-            Contact.phone == CampaignDispatchRecipient.phone,
+            recipient_phone_match,
             Message.direction == "INBOUND",
             Message.created_at > CampaignDispatchRecipient.sent_at,
             ~superseded_before_reply,
@@ -342,28 +351,54 @@ def dispatch_counts_many(db: Session, dispatch_ids: list[int]) -> dict[int, dict
 
     # HTTP 200 no send-* significa solicitação aceita, NÃO entrega ao cliente.
     # A confirmação real depende dos callbacks de status (RECEIVED/READ/PLAYED).
+    # Casa messageId e zaapId: o webhook pode referenciar qualquer um dos dois.
+    # EXISTS evita double-count se mais de uma Message casar o mesmo destinatário.
+    provider_message_match = or_(
+        Message.provider_message_id == CampaignDispatchRecipient.provider_message_id,
+        and_(
+            CampaignDispatchRecipient.provider_message_id.is_not(None),
+            Message.provider_zaap_id == CampaignDispatchRecipient.provider_message_id,
+        ),
+    )
+    delivered_exists = (
+        select(Message.id)
+        .where(
+            provider_message_match,
+            or_(
+                Message.delivered_at.is_not(None),
+                Message.status.in_({"DELIVERED", "RECEIVED", "READ", "PLAYED"}),
+            ),
+        )
+        .correlate(CampaignDispatchRecipient)
+        .exists()
+    )
+    read_exists = (
+        select(Message.id)
+        .where(
+            provider_message_match,
+            or_(
+                Message.read_at.is_not(None),
+                Message.status.in_({"READ", "PLAYED"}),
+            ),
+        )
+        .correlate(CampaignDispatchRecipient)
+        .exists()
+    )
+    provider_failed_exists = (
+        select(Message.id)
+        .where(
+            provider_message_match,
+            Message.status.in_({"FAILED", "ERROR", "NOT_SENT", "UNDELIVERED"}),
+        )
+        .correlate(CampaignDispatchRecipient)
+        .exists()
+    )
     delivery_rows = db.execute(
         select(
             CampaignDispatchRecipient.dispatch_id,
-            func.count(CampaignDispatchRecipient.id).filter(
-                or_(
-                    Message.delivered_at.is_not(None),
-                    Message.status.in_({"DELIVERED", "RECEIVED", "READ", "PLAYED"}),
-                )
-            ),
-            func.count(CampaignDispatchRecipient.id).filter(
-                or_(
-                    Message.read_at.is_not(None),
-                    Message.status.in_({"READ", "PLAYED"}),
-                )
-            ),
-            func.count(CampaignDispatchRecipient.id).filter(
-                Message.status.in_({"FAILED", "ERROR", "NOT_SENT", "UNDELIVERED"})
-            ),
-        )
-        .outerjoin(
-            Message,
-            Message.provider_message_id == CampaignDispatchRecipient.provider_message_id,
+            func.count(CampaignDispatchRecipient.id).filter(delivered_exists),
+            func.count(CampaignDispatchRecipient.id).filter(read_exists),
+            func.count(CampaignDispatchRecipient.id).filter(provider_failed_exists),
         )
         .where(
             CampaignDispatchRecipient.dispatch_id.in_(ids),
@@ -427,6 +462,61 @@ def dispatch_delivery_proof(
 
 def dispatch_counts(db: Session, dispatch_id: int) -> dict[str, int]:
     return dispatch_counts_many(db, [dispatch_id])[dispatch_id]
+
+
+def _sql_brazilian_mobile_alternate(phone_col: ColumnElement[Any]) -> ColumnElement[Any]:
+    """Expressão SQL da forma alternativa 12↔13 dígitos (9º dígito após DDD)."""
+    return case(
+        (
+            and_(func.length(phone_col) == 13, func.substr(phone_col, 5, 1) == "9"),
+            func.concat(func.substr(phone_col, 1, 4), func.substr(phone_col, 6)),
+        ),
+        (
+            func.length(phone_col) == 12,
+            func.concat(
+                func.substr(phone_col, 1, 4),
+                literal("9"),
+                func.substr(phone_col, 5),
+            ),
+        ),
+        else_=phone_col,
+    )
+
+
+def _sql_phones_equivalent(
+    left: ColumnElement[Any], right: ColumnElement[Any]
+) -> ColumnElement[Any]:
+    """True se os telefones são iguais ou equivalentes no 9º dígito BR."""
+    return or_(
+        left == right,
+        left == _sql_brazilian_mobile_alternate(right),
+        _sql_brazilian_mobile_alternate(left) == right,
+    )
+
+
+def _reconcile_dispatch_message_status(db: Session, message: Message) -> None:
+    """Aplica STATUS_UNMATCHED que chegaram no webhook antes do registro do disparo."""
+    ids = [
+        value
+        for value in (message.provider_message_id, message.provider_zaap_id)
+        if value
+    ]
+    if not ids:
+        return
+    if message.id is None:
+        db.flush()
+    for event in db.scalars(
+        select(MessageEvent)
+        .where(
+            MessageEvent.provider_message_id.in_(ids),
+            MessageEvent.event_type == "STATUS_UNMATCHED",
+        )
+        .order_by(MessageEvent.id)
+    ):
+        apply_provider_message_status(message, event.status or "", event.created_at)
+        event.message_id = message.id
+        event.event_type = "STATUS"
+
 
 _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
@@ -862,6 +952,8 @@ def process_dispatch_recipient(
         provider_zaap_id=zaap_id,
         status="SENT",
     )
+    # Status RECEIVED/READ pode chegar no webhook antes do commit do disparo.
+    _reconcile_dispatch_message_status(db, message)
 
     media_sent = 0
     media_errors: list[str] = []
@@ -901,7 +993,7 @@ def process_dispatch_recipient(
                     media_result.get("messageId") or media_result.get("id") or ""
                 ).strip() or None
                 media_zaap_id = str(media_result.get("zaapId") or "").strip() or None
-                register_message(
+                media_message = register_message(
                     db,
                     conversation,
                     direction="OUTBOUND",
@@ -914,6 +1006,7 @@ def process_dispatch_recipient(
                     provider_zaap_id=media_zaap_id,
                     status="SENT",
                 )
+                _reconcile_dispatch_message_status(db, media_message)
                 media_sent += 1
             except (MediaStorageError, ZApiError) as exc:
                 media_errors.append(f"{file_name}: {exc}")

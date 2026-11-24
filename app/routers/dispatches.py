@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from sqlalchemy import select, func
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
@@ -314,15 +314,27 @@ def dispatch_detail(
     provider_ids = sorted({
         item.provider_message_id for item in recipients if item.provider_message_id
     })
-    provider_messages = {
-        message.provider_message_id: message
+    provider_messages: dict[str, Message] = {}
+    if provider_ids:
         for message in db.scalars(
-            select(Message).where(Message.provider_message_id.in_(provider_ids))
-        )
-    } if provider_ids else {}
+            select(Message).where(
+                or_(
+                    Message.provider_message_id.in_(provider_ids),
+                    Message.provider_zaap_id.in_(provider_ids),
+                )
+            )
+        ):
+            if message.provider_message_id:
+                provider_messages[message.provider_message_id] = message
+            if message.provider_zaap_id:
+                provider_messages[message.provider_zaap_id] = message
     delivery_proofs = {}
     for recipient in recipients:
-        evidence = provider_messages.get(recipient.provider_message_id)
+        evidence = (
+            provider_messages.get(recipient.provider_message_id)
+            if recipient.provider_message_id
+            else None
+        )
         delivery_proofs[recipient.id] = dispatch_delivery_proof(
             recipient.status, recipient.provider_message_id,
             evidence.status if evidence else None,
@@ -411,7 +423,14 @@ def download_dispatch_report(
             Message.read_at,
         )
         .outerjoin(
-            Message, Message.provider_message_id == CampaignDispatchRecipient.provider_message_id,
+            Message,
+            or_(
+                Message.provider_message_id == CampaignDispatchRecipient.provider_message_id,
+                and_(
+                    CampaignDispatchRecipient.provider_message_id.is_not(None),
+                    Message.provider_zaap_id == CampaignDispatchRecipient.provider_message_id,
+                ),
+            ),
         )
         .where(CampaignDispatchRecipient.dispatch_id == dispatch.id)
         .order_by(CampaignDispatchRecipient.id)
