@@ -55,50 +55,50 @@ def campaign_sequence_messages(campaign: Campaign) -> list[dict[str, str | int]]
     return items
 
 
-QUICK_CHAT_TEMPLATE_STATUSES = ("ATIVA", "APROVADA", "PAUSADA")
-
-
 def list_quick_chat_templates(db: Session, user) -> list[dict]:
-    """Templates opcionais para Nova conversa: campanhas + mensagens da régua.
+    """Templates opcionais para Nova conversa: todas as campanhas com mensagem.
 
-    Retorna itens com id estável (`campaign:{id}` ou `campaign:{id}:step:{n}`),
-    rótulo para o select, grupo (Campanhas / Mensagens padronizadas) e texto.
+    Inclui qualquer status (como a tela Campanhas) e todos os passos da régua.
+    Ids estáveis: `campaign:{id}` (abordagem) ou `campaign:{id}:step:{n}`.
     """
     from sqlalchemy import or_
 
     stmt = (
         select(Campaign)
-        .where(
-            Campaign.channel == "WHATSAPP",
-            Campaign.status.in_(QUICK_CHAT_TEMPLATE_STATUSES),
-        )
+        .where(Campaign.channel == "WHATSAPP")
         .order_by(Campaign.name.asc(), Campaign.id.asc())
     )
+    # Mesmo recorte da listagem de campanhas: supervisor vê a unidade.
     if getattr(user, "role", None) == "SUPERVISOR":
-        stmt = stmt.where(
-            or_(Campaign.branch_id == user.branch_id, Campaign.branch_id.is_(None))
-        )
+        stmt = stmt.where(Campaign.branch_id == user.branch_id)
     templates: list[dict] = []
     for campaign in db.scalars(stmt):
         messages = campaign_sequence_messages(campaign)
         if not messages:
             continue
+        status = str(campaign.status or "").strip().upper()
+        status_suffix = f" [{status}]" if status and status not in {"ATIVA", "APROVADA"} else ""
         first = messages[0]
         templates.append(
             {
                 "id": f"campaign:{campaign.id}",
-                "label": campaign.name,
+                "label": f"{campaign.name}{status_suffix}",
                 "group": "Campanhas",
                 "message": first["message"],
                 "campaign_id": campaign.id,
             }
         )
-        for step in messages[1:]:
+        for step in messages:
             day = step["day"]
+            step_label = (
+                f"{campaign.name} · abordagem"
+                if step["index"] == 1
+                else f"{campaign.name} · dia {day}"
+            )
             templates.append(
                 {
                     "id": f"campaign:{campaign.id}:step:{step['index']}",
-                    "label": f"{campaign.name} · dia {day}",
+                    "label": f"{step_label}{status_suffix}",
                     "group": "Mensagens padronizadas",
                     "message": step["message"],
                     "campaign_id": campaign.id,

@@ -83,10 +83,10 @@ def test_quick_chat_templates_list_campaigns_and_standardized_steps():
             labels = [item["label"] for item in templates]
             groups = {item["label"]: item["group"] for item in templates}
             assert "650Mb 3 meses - Maria" in labels
-            assert "650Mb 3 meses - Maria · dia 3" in labels
+            assert any(label.startswith("650Mb 3 meses - Maria · dia 3") for label in labels)
+            assert any(label.startswith("650Mb 3 meses - Maria · abordagem") for label in labels)
             assert groups["650Mb 3 meses - Maria"] == "Campanhas"
-            assert groups["650Mb 3 meses - Maria · dia 3"] == "Mensagens padronizadas"
-            assert "Rascunho ignorado" not in labels
+            assert "Rascunho ignorado [RASCUNHO]" in labels
             assert resolve_quick_chat_template(db, user, "") == ""
             assert resolve_quick_chat_template(db, user, "NENHUM") == ""
             campaign_id = next(

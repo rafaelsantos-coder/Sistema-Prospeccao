@@ -559,8 +559,16 @@ def test_consultant_quick_start_keeps_owner_and_stays_in_her_inbox():
         )
 
 
-def test_quick_start_with_campaign_template_prefills_composer_without_sending():
-    """Template opcional preenche o compositor; NENHUM e ausência não disparam envio."""
+def test_quick_start_with_campaign_template_sends_message(monkeypatch):
+    """Template escolhido envia a mensagem da campanha; NENHUM não envia."""
+    monkeypatch.setattr("app.routers.conversations.needs_pacing", lambda *_: False)
+    counter = {"n": 0}
+
+    def _fake_send(self, *, phone, message):
+        counter["n"] += 1
+        return {"messageId": f"QUICK-TEMPLATE-SEND-{counter['n']}"}
+
+    monkeypatch.setattr(ZApiService, "send_text", _fake_send)
     with TestClient(app) as client:
         _login(client)
         with SessionLocal() as db:
@@ -591,7 +599,14 @@ def test_quick_start_with_campaign_template_prefills_composer_without_sending():
                     '{"day":3,"message":"Posso te ajudar com a oferta de 650Mb?"}]'
                 ),
             )
+            draft = Campaign(
+                name="Campanha rascunho listada",
+                channel="WHATSAPP",
+                status="RASCUNHO",
+                sequence_json='[{"day":1,"message":"Texto de rascunho disponível no select"}]',
+            )
             db.add(campaign)
+            db.add(draft)
             db.flush()
             queue_id, campaign_id = queue.id, campaign.id
             db.commit()
@@ -601,6 +616,7 @@ def test_quick_start_with_campaign_template_prefills_composer_without_sending():
         assert "650Mb 3 meses - Template Teste" in inbox.text
         assert "Mensagens padronizadas" in inbox.text
         assert "650Mb 3 meses - Template Teste · dia 3" in inbox.text
+        assert "Campanha rascunho listada [RASCUNHO]" in inbox.text
         token = _csrf(inbox.text)
 
         none_option = client.post(
@@ -614,9 +630,11 @@ def test_quick_start_with_campaign_template_prefills_composer_without_sending():
             follow_redirects=False,
         )
         assert none_option.status_code == 303
-        empty_page = client.get(none_option.headers["location"])
-        assert empty_page.status_code == 200
-        assert "Oferta 650Mb da Sulnet" not in empty_page.text
+        empty_id = int(none_option.headers["location"].split("/")[2].split("?")[0])
+        with SessionLocal() as db:
+            assert db.scalar(select(func.count(Message.id)).where(
+                Message.conversation_id == empty_id
+            )) == 0
 
         with_template = client.post(
             "/conversations/start",
@@ -634,9 +652,13 @@ def test_quick_start_with_campaign_template_prefills_composer_without_sending():
         assert "Oferta 650Mb da Sulnet" in page.text
         conversation_id = int(with_template.headers["location"].split("/")[2].split("?")[0])
         with SessionLocal() as db:
-            assert db.scalar(select(func.count(Message.id)).where(
+            messages = list(db.scalars(select(Message).where(
                 Message.conversation_id == conversation_id
-            )) == 0
+            )))
+            assert len(messages) == 1
+            assert messages[0].direction == "OUTBOUND"
+            assert "Oferta 650Mb da Sulnet" in (messages[0].body or "")
+            assert messages[0].status == "SENT"
 
         json_start = client.post(
             "/conversations/start",
@@ -651,8 +673,9 @@ def test_quick_start_with_campaign_template_prefills_composer_without_sending():
         assert json_start.status_code == 200
         payload = json_start.json()
         assert payload["ok"] is True
-        assert "oferta de 650Mb" in payload["draft"]
+        assert payload["message_sent"] is True
+        assert payload.get("draft") in ("", None)
         with SessionLocal() as db:
             assert db.scalar(select(func.count(Message.id)).where(
                 Message.conversation_id == payload["conversation_id"]
-            )) == 0
+            )) == 1

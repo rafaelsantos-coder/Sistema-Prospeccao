@@ -511,9 +511,11 @@
       await refreshInbox();
       openChat(Number(result.conversation_id));
       if (result.notice) feedback(result.notice);
+      else if (result.message_sent) feedback("Mensagem da campanha enviada.");
       if (typeof result.draft === "string" && result.draft && ui.message) {
         ui.message.value = result.draft;
       }
+      await refreshMessages();
       ui.message.focus();
     } catch (error) {
       newConversationError(error?.message || "Não foi possível abrir a conversa.");
