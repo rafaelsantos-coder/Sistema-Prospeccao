@@ -71,6 +71,7 @@ def test_recipient_reply_flags_match_ninth_digit_variant():
             )
             db.add(dispatch)
             db.flush()
+            # 55 + DDD 55 + número: com 9º dígito vs sem (12↔13).
             contact = Contact(phone="555588881234", name="Sem nove")
             db.add(contact)
             db.flush()
@@ -81,7 +82,7 @@ def test_recipient_reply_flags_match_ninth_digit_variant():
             recipient = CampaignDispatchRecipient(
                 dispatch_id=dispatch.id,
                 name="Com nove",
-                phone="5555888891234",
+                phone="5555988881234",
                 status="ENVIADO",
                 sent_at=sent_at,
                 provider_message_id="FLAG-1",
@@ -89,7 +90,7 @@ def test_recipient_reply_flags_match_ninth_digit_variant():
             other = CampaignDispatchRecipient(
                 dispatch_id=dispatch.id,
                 name="Sem resposta",
-                phone="5555888899999",
+                phone="5555988899999",
                 status="ENVIADO",
                 sent_at=sent_at,
                 provider_message_id="FLAG-2",
