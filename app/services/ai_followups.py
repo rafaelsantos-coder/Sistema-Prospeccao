@@ -22,6 +22,11 @@ from app.models import (
     Message,
 )
 from app.services import dispatch_offer
+from app.services.ai_sales_protocol import (
+    BASELINE_RULES as SALES_PROTOCOL_RULES,
+    coaching_for_context,
+    requested_return_not_before,
+)
 from app.services.ai_queue_scope import is_dedicated_ai_queue
 from app.services.queue_routing import queue_for_conversation
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
@@ -249,6 +254,9 @@ def schedule_followup(
     else:
         delay = followup_delay_for(db, conversation_id, step)
         due = utcnow() + delay
+    client_return = _customer_requested_return_time(db, conversation_id)
+    if client_return is not None and utc_naive(client_return) > utc_naive(due):
+        due = utc_naive(client_return)
     job = AIFollowupJob(
         agent_id=agent_id,
         queue_id=queue_id,
@@ -570,6 +578,26 @@ def _latest_inbound_at(db: Session, conversation_id: int):
     )
 
 
+def _customer_requested_return_time(db: Session, conversation_id: int) -> datetime | None:
+    """Horario combinado somente pela ultima mensagem INBOUND da conversa."""
+    latest = db.scalar(
+        select(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction == "INBOUND",
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    if latest is None or not latest.body or latest.created_at is None:
+        return None
+    from app.services.auto_reply import is_automatic_inbound
+
+    if is_automatic_inbound(latest):
+        return None
+    return requested_return_not_before(latest.body, latest.created_at)
+
+
 # Cliente que respondeu nas últimas 24 h está engajado: o primeiro follow-up sai em 30 min,
 # não em 2 h (conversa Liciane, 10/11). Quem não responde segue a cadência normal.
 ENGAGED_WINDOW = timedelta(hours=24)
@@ -868,6 +896,7 @@ def _generate_followup(
         },
         "customer_evidence": inbound_history,
         "history": history,
+        "latest_customer_message": str(inbound_history[-1].get("body") or "") if inbound_history else "",
     }
     prompt = (
         "Crie APENAS a próxima mensagem de follow-up comercial para WhatsApp. "
@@ -899,7 +928,11 @@ def _generate_followup(
     )
     followup_agent = Agent(
         name=f"{agent.name} Follow-up",
-        instructions=(agent.system_prompt or "").strip() or SULIA_SYSTEM_PROMPT,
+        instructions=(
+            ((agent.system_prompt or "").strip() or SULIA_SYSTEM_PROMPT)
+            + "\n\n" + SALES_PROTOCOL_RULES
+            + "\n" + coaching_for_context(context)
+        ),
         model=agent.model or "gpt-6-luna",
         model_settings={
             "reasoning": {"effort": agent.reasoning_effort or "low"},
@@ -940,8 +973,15 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
             _persist_explicit_no_contact(db, job.conversation_id)
         return "cancelled"
 
-    # Follow-ups e respostas da SulIA operam 24 horas por dia, inclusive fins de semana.
+    # A IA responde 24/7, mas nao antecipa a data combinada pelo cliente.
     now = utcnow()
+    client_return = _customer_requested_return_time(db, job.conversation_id)
+    if client_return is not None and utc_naive(client_return) > utc_naive(now):
+        job.status = "PENDENTE"
+        job.due_at = utc_naive(client_return)
+        job.locked_at = None
+        job.attempts = max(0, int(job.attempts or 0) - 1)
+        return "customer_schedule"
     closing = closing_awaits_customer(db, job.conversation_id)
 
     pilot = getattr(job, "theme", None) in dispatch_offer.PILOT_DELAYS

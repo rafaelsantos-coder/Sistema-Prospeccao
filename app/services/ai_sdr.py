@@ -28,6 +28,12 @@ from app.models import (
     ServiceQueue,
 )
 from app.services import dispatch_offer
+from app.services.ai_sales_protocol import (
+    BASELINE_RULES as SALES_PROTOCOL_RULES,
+    PROTOCOL_VERSION as SALES_PROTOCOL_VERSION,
+    classify_signal as classify_sales_signal,
+    coaching_for_context,
+)
 from app.services.ai_customer_questions import context_denies_city
 from app.services.ai_customer_responses import priority_reply
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
@@ -1174,7 +1180,12 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     from agents import Agent
     from app.services.ai_runtime import run_agent_sync
 
-    instructions = ((agent.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT) + UNTRUSTED_INPUT_NOTICE
+    instructions = (
+        ((agent.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT)
+        + UNTRUSTED_INPUT_NOTICE
+        + "\n\n" + SALES_PROTOCOL_RULES
+        + "\n" + coaching_for_context(context)
+    )
     effective_mode = _effective_execution_mode(agent)
     prompt = (
         "Quando houver oferta_do_disparo, use essa promoção para responder à dúvida do cliente. Preserve plano e meses grátis. Só mude a oferta a pedido do cliente. "
@@ -1297,6 +1308,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "tool_facts": tool_facts,
         "prompt_chars": len(prompt),
         "catalog_in_context": bool(official_catalog),
+        "sales_protocol_version": SALES_PROTOCOL_VERSION,
+        "sales_signal": classify_sales_signal(context.get("latest_customer_message")),
     }
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
     decision, observations = _apply_rewrite_policies(decision, context)
