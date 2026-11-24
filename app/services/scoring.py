@@ -31,6 +31,35 @@ def normalize_phone(raw: str | None) -> str | None:
     return digits
 
 
+def brazilian_mobile_alternate(phone: str | None) -> str | None:
+    """Forma alternativa do celular BR (insere/remove o 9º dígito após o DDD).
+
+    Não altera normalize_phone: a identidade canônica permanece a digitada.
+    Serve só para cruzar disparo ↔ resposta quando CSV e webhook discordam
+    (12 vs 13 dígitos com país 55).
+    """
+    normalized = normalize_phone(phone)
+    if not normalized or not normalized.startswith("55"):
+        return None
+    if len(normalized) == 13 and normalized[4] == "9":
+        return normalized[:4] + normalized[5:]
+    if len(normalized) == 12:
+        return normalized[:4] + "9" + normalized[4:]
+    return None
+
+
+def phone_match_keys(phone: str | None) -> set[str]:
+    """Conjunto de telefones equivalentes para atribuição de resposta."""
+    normalized = normalize_phone(phone)
+    if not normalized:
+        return set()
+    keys = {normalized}
+    alternate = brazilian_mobile_alternate(normalized)
+    if alternate:
+        keys.add(alternate)
+    return keys
+
+
 def temperature_from_score(score: float) -> str:
     if score >= 8:
         return "QUENTE"
