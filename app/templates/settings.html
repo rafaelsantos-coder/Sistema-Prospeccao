@@ -12,9 +12,9 @@
 <div class="settings-hub-grid">
   {% if 'settings.connections.view' in current_user.permissions %}
   <a class="settings-hub-card" href="/settings/whatsapp">
-    <span class="settings-hub-icon">Z</span>
-    <div><span class="eyebrow">WHATSAPP</span><h3>Números e conexões Z-API</h3><p>Cadastre instâncias, números, credenciais, webhooks e faça testes de conexão.</p></div>
-    <div class="settings-hub-meta"><strong>{{ settings_stats.zapi_instances }}</strong><span>instâncias</span><b>→</b></div>
+    <span class="settings-hub-icon">W</span>
+    <div><span class="eyebrow">WHATSAPP</span><h3>Números e conexões</h3><p>Cadastre números Z-API ou da API oficial Meta, webhooks e testes de conexão.</p></div>
+    <div class="settings-hub-meta"><strong>{{ settings_stats.whatsapp_connections }}</strong><span>conexões</span><b>→</b></div>
   </a>
   {% endif %}
 

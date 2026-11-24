@@ -24,10 +24,19 @@
         {% for queue in queues %}
           {% set qs = queue_stats.get(queue.id, {}) %}
           {% set qi = queue_instances.get(queue.id) %}
+          {% set qm = queue_meta_accounts.get(queue.id) %}
           <tr>
             <td><strong>{{ queue.name }}</strong><span class="table-subline">{{ queue.code }}</span></td>
             <td>{{ constants.teams.get(queue.team, queue.team) }}<span class="table-subline">{{ queue.branch.city if queue.branch else 'Corporativo / todas' }}</span></td>
-            <td><strong>{{ qi.name if qi else 'Sem instância' }}</strong><span class="table-subline">{{ qi.phone_label if qi and qi.phone_label else '—' }}</span></td>
+            <td>
+              {% if qm %}
+              <strong>{{ qm.name }}</strong><span class="table-subline">API oficial Meta · {{ qm.phone_label if qm.phone_label else '—' }}</span>
+              {% elif qi %}
+              <strong>{{ qi.name }}</strong><span class="table-subline">Z-API · {{ qi.phone_label if qi.phone_label else '—' }}</span>
+              {% else %}
+              <strong>Sem conexão</strong><span class="table-subline">—</span>
+              {% endif %}
+            </td>
             <td>{{ routing_strategies.get(queue.routing_strategy, queue.routing_strategy) }}</td>
             <td>{{ qs.get('members', 0) }}</td>
             <td><span class="connection-status {% if qs.get('online', 0) %}on{% endif %}">{{ qs.get('online', 0) }} online</span></td>
@@ -45,14 +54,38 @@
     {% if current_user.role in ['ADMIN','GESTOR'] %}
     <div class="queue-create-box">
       <div class="panel-header"><div><span class="eyebrow">NOVA FILA</span><h3>Criar fila de atendimento</h3></div><span class="panel-note">Os membros poderão receber apenas enquanto estiverem online no WhatsApp.</span></div>
-      <form action="/settings/queues" method="post" class="stack-form">
+      <form action="/settings/queues" method="post" class="stack-form" data-whatsapp-provider-form>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-grid">
           <label class="field"><span>Nome</span><input name="name" required placeholder="Ex.: Comercial Digital"></label>
           <label class="field"><span>Código</span><input name="code" required placeholder="Ex.: DIGITAL"></label>
           <label class="field"><span>Equipe</span><select name="team">{% for key, label in constants.teams.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
           <label class="field"><span>Unidade</span><select name="branch_id"><option value="">Corporativo / todas</option>{% for branch in branches %}<option value="{{ branch.id }}">{{ branch.city }}</option>{% endfor %}</select></label>
-          <label class="field"><span>Instância WhatsApp</span><select name="zapi_instance_id" required><option value="">Selecione a instância</option>{% for instance in active_zapi_instances %}<option value="{{ instance.id }}">{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>{% endfor %}</select><small>Define qual número enviará e receberá as mensagens desta fila.</small></label>
+          <label class="field"><span>Tipo de conexão WhatsApp</span>
+            <select name="whatsapp_provider" data-provider-select>
+              <option value="ZAPI">Z-API</option>
+              <option value="META">API oficial Meta</option>
+            </select>
+            <small>Escolha se a fila usa um número via Z-API ou via Cloud API oficial da Meta.</small>
+          </label>
+          <label class="field" data-provider-panel="ZAPI"><span>Instância Z-API</span>
+            <select name="zapi_instance_id" data-zapi-select>
+              <option value="">Selecione a instância</option>
+              {% for instance in active_zapi_instances %}
+              <option value="{{ instance.id }}">{{ instance.name }}{% if instance.phone_label %} · {{ instance.phone_label }}{% endif %}</option>
+              {% endfor %}
+            </select>
+            <small>Número não oficial conectado pela Z-API.</small>
+          </label>
+          <label class="field" data-provider-panel="META" hidden><span>Número Meta (API oficial)</span>
+            <select name="meta_account_id" data-meta-select>
+              <option value="">Selecione o número Meta</option>
+              {% for account in active_meta_accounts %}
+              <option value="{{ account.id }}">{{ account.name }}{% if account.phone_label %} · {{ account.phone_label }}{% endif %}</option>
+              {% endfor %}
+            </select>
+            <small>Cadastre o número em Configurações → Números WhatsApp antes de vincular.</small>
+          </label>
           <label class="field"><span>Estratégia de distribuição</span><select name="routing_strategy">{% for key, label in routing_strategies.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
           <div class="field field-span-2">
             <span>Usuários da fila</span>
@@ -75,4 +108,24 @@
     {% endif %}
   </article>
 </div>
+<script>
+(function () {
+  function syncProvider(form) {
+    var select = form.querySelector('[data-provider-select]');
+    if (!select) return;
+    var provider = select.value || 'ZAPI';
+    form.querySelectorAll('[data-provider-panel]').forEach(function (panel) {
+      var match = panel.getAttribute('data-provider-panel') === provider;
+      panel.hidden = !match;
+      var field = panel.querySelector('select, input');
+      if (field) field.required = match;
+    });
+  }
+  document.querySelectorAll('[data-whatsapp-provider-form]').forEach(function (form) {
+    syncProvider(form);
+    var select = form.querySelector('[data-provider-select]');
+    if (select) select.addEventListener('change', function () { syncProvider(form); });
+  });
+})();
+</script>
 {% endblock %}

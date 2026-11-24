@@ -566,6 +566,67 @@ class ConversationZApiInstance(Base):
     zapi_instance: Mapped[ZApiInstance] = relationship()
 
 
+class MetaWhatsAppAccount(Base):
+    """Número WhatsApp cadastrado via Cloud API oficial da Meta."""
+
+    __tablename__ = "meta_whatsapp_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    phone_label: Mapped[str] = mapped_column(String(80), default="")
+    phone_number_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    waba_id: Mapped[str] = mapped_column(String(80), default="")
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    app_secret_encrypted: Mapped[str] = mapped_column(Text, default="")
+    verify_token: Mapped[str] = mapped_column(String(120))
+    webhook_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    graph_api_version: Mapped[str] = mapped_column(String(20), default="v21.0")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+
+
+class ServiceQueueMetaAccount(Base):
+    __tablename__ = "service_queue_meta_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    queue_id: Mapped[int] = mapped_column(
+        ForeignKey("service_queues.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    meta_account_id: Mapped[int] = mapped_column(
+        ForeignKey("meta_whatsapp_accounts.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    meta_account: Mapped[MetaWhatsAppAccount] = relationship()
+
+
+class ConversationMetaAccount(Base):
+    __tablename__ = "conversation_meta_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+    )
+    meta_account_id: Mapped[int] = mapped_column(
+        ForeignKey("meta_whatsapp_accounts.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    meta_account: Mapped[MetaWhatsAppAccount] = relationship()
+
+
 class ServiceQueue(Base):
     __tablename__ = "service_queues"
     __table_args__ = (

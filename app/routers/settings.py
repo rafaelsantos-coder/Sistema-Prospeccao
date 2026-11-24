@@ -27,6 +27,11 @@ from app.services.legacy_adapter import legacy_modules_available, rate_status
 from app.services.queue_routing import queue_summary
 from app.services.zapi import ZApiError
 from app.timeutils import utcnow
+from app.services.meta_whatsapp import (
+    account_webhook_url,
+    list_meta_accounts,
+    queue_meta_account,
+)
 from app.services.zapi_instances import (
     list_zapi_instances,
     queue_instance,
@@ -186,6 +191,11 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         if user.role in {"ADMIN", "GESTOR"}
         else []
     )
+    meta_accounts = (
+        list_meta_accounts(db, active_only=False)
+        if user.role in {"ADMIN", "GESTOR"}
+        else []
+    )
     audit_count = len(
         list(
             db.scalars(
@@ -212,6 +222,8 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             "users": len(users),
             "queues": len(queues),
             "zapi_instances": len(zapi_instances),
+            "meta_accounts": len(meta_accounts),
+            "whatsapp_connections": len(zapi_instances) + len(meta_accounts),
             "targets": len(targets),
             "branches": len(branches),
             "audit": audit_count,
@@ -260,9 +272,14 @@ def settings_queues_page(request: Request, db: Session = Depends(get_db)):
     human_users = [item for item in users if item.role != "AI_SDR"]
     queues = _visible_queues(db, user)
     active_zapi_instances = list_zapi_instances(db)
+    active_meta_accounts = list_meta_accounts(db)
     queue_stats = {item.id: queue_summary(db, item) for item in queues}
     queue_instances = {
         item.id: queue_instance(db, item.id)
+        for item in queues
+    }
+    queue_meta_accounts = {
+        item.id: queue_meta_account(db, item.id)
         for item in queues
     }
 
@@ -278,7 +295,9 @@ def settings_queues_page(request: Request, db: Session = Depends(get_db)):
         queues=queues,
         queue_stats=queue_stats,
         queue_instances=queue_instances,
+        queue_meta_accounts=queue_meta_accounts,
         active_zapi_instances=active_zapi_instances,
+        active_meta_accounts=active_meta_accounts,
         routing_strategies=_routing_strategies(),
     )
 
@@ -398,18 +417,48 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
         "webhook_ready": bool(settings.app_public_url and active_zapi_instances),
     }
 
+    meta_accounts = list_meta_accounts(db, active_only=True)
+    meta_account_info: dict[int, dict] = {}
+    for account in meta_accounts:
+        info = {
+            "connected": None,
+            "error": None,
+            "phone_label": account.phone_label or "",
+            "verified_name": "",
+            "quality_rating": "",
+            "webhook_url": account_webhook_url(account),
+            "verify_token": account.verify_token,
+        }
+        try:
+            from app.services.meta_whatsapp import service_for_meta_account
+
+            phone_info = service_for_meta_account(account).phone_info()
+            info["connected"] = True
+            info["verified_name"] = str(phone_info.get("verified_name") or "")
+            info["quality_rating"] = str(phone_info.get("quality_rating") or "")
+            display = str(phone_info.get("display_phone_number") or "").strip()
+            if display:
+                info["phone_label"] = display
+        except ZApiError as exc:
+            info["connected"] = False
+            info["error"] = str(exc)
+        meta_account_info[account.id] = info
+
     return render(
         request,
         "settings_whatsapp.html",
         user=user,
         active_nav="settings",
         settings_section="whatsapp",
-        page_title="Números e conexões Z-API",
+        page_title="Números WhatsApp",
         zapi_status=zapi_status,
         zapi_instances=zapi_instances,
         active_zapi_instances=active_zapi_instances,
         zapi_instance_info=zapi_instance_info,
         duplicate_instance_ids=duplicate_instance_ids,
+        meta_accounts=meta_accounts,
+        meta_account_info=meta_account_info,
+        app_public_url=settings.app_public_url,
     )
 
 
