@@ -142,7 +142,10 @@ def _bind_queue_whatsapp(
         account = get_meta_account(db, meta_account_id)
         if not account or not account.active:
             return None
-        bind_queue_meta_account(db, queue.id, account.id)
+        try:
+            bind_queue_meta_account(db, queue.id, account.id)
+        except ValueError:
+            return None
         return PROVIDER_META, account.id
 
     instance = get_zapi_instance(db, zapi_instance_id)
@@ -211,7 +214,7 @@ def create_queue(
         db.rollback()
         flash(
             request,
-            "Selecione uma conexão WhatsApp ativa (Z-API ou API oficial Meta) para a fila.",
+            "Selecione uma conexão WhatsApp ativa e disponível. Número Meta não pode ser compartilhado entre filas.",
             "warning",
         )
         return RedirectResponse("/settings/queues", status_code=303)
@@ -332,7 +335,7 @@ def update_queue(
     if not binding:
         flash(
             request,
-            "Selecione uma conexão WhatsApp ativa (Z-API ou API oficial Meta) para a fila.",
+            "Selecione uma conexão WhatsApp ativa e disponível. Número Meta não pode ser compartilhado entre filas.",
             "warning",
         )
         return RedirectResponse(f"/settings/queues/{queue.id}", status_code=303)

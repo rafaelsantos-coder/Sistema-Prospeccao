@@ -135,7 +135,7 @@
     {% if meta_accounts %}
     <div class="data-table-wrap top-space">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>Número</th><th>Phone Number ID</th><th>Webhook</th><th>Status</th><th>Ações</th></tr></thead>
+        <thead><tr><th>Nome</th><th>Número</th><th>Phone Number ID</th><th>Fila vinculada</th><th>Webhook</th><th>Status</th><th>Ações</th></tr></thead>
         <tbody>
         {% for account in meta_accounts %}
           {% set mi = meta_account_info.get(account.id, {}) %}
@@ -143,6 +143,7 @@
             <td><strong>{{ account.name }}</strong>{% if mi.get('verified_name') %}<span class="table-subline">{{ mi.get('verified_name') }}</span>{% endif %}</td>
             <td><strong>{{ mi.get('phone_label') or account.phone_label or 'Não identificado' }}</strong></td>
             <td><span class="table-subline">{{ account.phone_number_id }}</span></td>
+            <td>{% if mi.get('destination') %}<a href="/settings/queues/{{ mi.get('destination').id }}">{{ mi.get('destination').name }}</a><span class="table-subline">Entrada exclusiva</span>{% else %}<strong>Roteamento bloqueado</strong>{% for q in mi.get('queues', []) %}<span class="table-subline">{{ q.name }}</span>{% endfor %}{% endif %}</td>
             <td>
               {% if mi.get('webhook_url') %}
               <span class="table-subline">{{ mi.get('webhook_url') }}</span>
