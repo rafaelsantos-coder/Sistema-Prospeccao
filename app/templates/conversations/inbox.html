@@ -765,7 +765,7 @@
 </div>
 {% if 'conversations.reply' in current_user.permissions and quick_outbound_queues %}
 <dialog class="inbox-quick-chat-dialog" id="inbox-quick-chat-dialog" aria-labelledby="inbox-quick-chat-title">
-  <form method="post" action="/conversations/start" class="inbox-quick-chat-form" data-quick-chat-form>
+  <form method="post" action="/conversations/start" class="inbox-quick-chat-form" data-quick-chat-form data-manual-channel-form>
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="inbox-quick-chat-heading">
       <div>
@@ -779,17 +779,14 @@
     <input id="inbox-quick-chat-phone" name="phone" type="tel" inputmode="tel"
            placeholder="(55) 99999-9999" autocomplete="tel" minlength="10" maxlength="24"
            required>
-    {% if quick_outbound_queues|length > 1 %}
-    <label for="inbox-quick-chat-queue">Número de saída / fila</label>
+    <label for="inbox-quick-chat-queue">Fila / número de saída</label>
     <select name="queue_id" id="inbox-quick-chat-queue" required>
+      {% if quick_outbound_queues|length > 1 %}<option value="" selected>Selecione a fila de saída</option>{% endif %}
       {% for item in quick_outbound_queues %}
-      <option value="{{ item.id }}" {% if item.id == quick_preferred_queue_id %}selected{% endif %}>{{ item.name }}</option>
+      <option value="{{ item.id }}" data-channel="{{ quick_queue_channels[item.id] }}">{{ item.name }} — {{ 'Meta Oficial' if quick_queue_channels[item.id] == 'META' else 'Z-API' }}</option>
       {% endfor %}
     </select>
-    {% else %}
-    <input type="hidden" name="queue_id" value="{{ quick_outbound_queues[0].id }}">
-    <span class="inbox-quick-chat-queue-note">Saída: {{ quick_outbound_queues[0].name }}</span>
-    {% endif %}
+    <fieldset data-internal-template style="border:0;padding:0;margin:0;min-width:0">
     <label for="inbox-quick-chat-template">Template</label>
     <input type="search" id="inbox-quick-chat-template-search" class="inbox-quick-chat-template-search"
            placeholder="Buscar campanha ou mensagem padronizada..." autocomplete="off"
@@ -817,10 +814,21 @@
       {% endif %}
     </select>
     <span class="inbox-quick-chat-queue-note">Opcional. NENHUM abre o chat sem mensagem. Ao escolher uma campanha, a mensagem é enviada.</span>
+    </fieldset>
+    <fieldset data-meta-template hidden disabled style="border:0;padding:0;margin:0;min-width:0">
+      <label for="inbox-meta-template">Template oficial Meta</label>
+      <select id="inbox-meta-template" name="meta_template_id"><option value="">Selecione um template aprovado</option></select>
+      <div data-meta-parameters></div>
+      <input type="hidden" name="meta_parameters" value="">
+      <p data-meta-preview style="white-space:pre-wrap;font-size:12px"></p>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="meta_consent" value="true"> Cliente autorizou contato pelo WhatsApp.</label>
+      <small data-meta-note>Selecione um template aprovado para iniciar pela Meta.</small>
+    </fieldset>
     <button class="button button-primary inbox-quick-chat-submit" type="submit" data-quick-chat-submit>Abrir conversa</button>
-    <small>Com NENHUM, você escreve a primeira mensagem. Com um template, a mensagem da campanha é enviada na hora.</small>
+    <small>A conversa fica vinculada ao canal e ao vendedor responsável.</small>
   </form>
 </dialog>
+<script src="{{ url_for('static', path='/js/manual_outbound.js') }}" defer></script>
 {% endif %}
 {% if 'conversations.reply' in current_user.permissions and conversation and conversation.status not in closed_statuses and not globally_blacklisted %}
 <dialog class="inbox-microphone-dialog" data-mic-dialog aria-labelledby="inbox-microphone-title">
