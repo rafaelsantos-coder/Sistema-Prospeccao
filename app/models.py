@@ -277,6 +277,11 @@ class Conversation(Base):
     team: Mapped[str] = mapped_column(String(30), default="B2B", index=True)
     source: Mapped[str] = mapped_column(String(40), default="WHATSAPP", index=True)
     status: Mapped[str] = mapped_column(String(30), default="NOVO", index=True)
+    # Particular: só o responsável (e o WhatsApp dele) enxerga. Fila/equipe/gestão
+    # não abrem o histórico; novo atendimento comercial nasce em outra conversa.
+    private_to_assignee: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, index=True
+    )
     unread_count: Mapped[int] = mapped_column(Integer, default=0)
     last_message_preview: Mapped[str] = mapped_column(String(240), default="")
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

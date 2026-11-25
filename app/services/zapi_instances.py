@@ -178,6 +178,8 @@ def bind_conversation_instance(
     conversation_id: int,
     zapi_instance_id: int,
 ) -> ConversationZApiInstance:
+    from app.models import Conversation  # noqa: PLC0415 — evita import circular
+
     link = db.scalar(
         select(ConversationZApiInstance).where(
             ConversationZApiInstance.conversation_id == conversation_id
@@ -191,6 +193,12 @@ def bind_conversation_instance(
         db.add(link)
     else:
         link.zapi_instance_id = zapi_instance_id
+    instance = db.get(ZApiInstance, zapi_instance_id)
+    conversation = db.get(Conversation, conversation_id)
+    # Número exclusivo: conversa fica particular. A atribuição de responsável
+    # continua no webhook (respeita quem já escreveu no thread).
+    if instance and instance.exclusive_access and conversation is not None:
+        conversation.private_to_assignee = True
     db.flush()
     return link
 

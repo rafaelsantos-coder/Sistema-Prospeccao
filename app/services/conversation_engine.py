@@ -420,7 +420,18 @@ def ensure_open_conversation(
         branch_id=branch_id,
     )
     ai_reserved = _queue_reserved_for_ai(db, queue)
-    owner = (
+    exclusive_owner = None
+    if zapi_instance_id and assign_if_unowned:
+        exclusive_instance = db.get(ZApiInstance, zapi_instance_id)
+        if (
+            exclusive_instance
+            and exclusive_instance.exclusive_access
+            and exclusive_instance.exclusive_user_id
+        ):
+            exclusive_owner = db.get(User, exclusive_instance.exclusive_user_id)
+            if exclusive_owner and not exclusive_owner.active:
+                exclusive_owner = None
+    owner = exclusive_owner or (
         choose_assignee(db, contact, lead, queue=queue)
         if assign_if_unowned and not ai_reserved
         else None
@@ -707,6 +718,24 @@ def exclusive_conversation_access_clause(user: User):
     return Conversation.id.not_in(restricted)
 
 
+def private_assignee_access_clause(user: User):
+    """Conversa marcada como particular: só o responsável enxerga.
+
+    Cobre o caso da fila compartilhada (ex.: Loja Três de Maio) em que um
+    atendimento pessoal entre a consultora e o contato não pode vazar para a
+    equipe, gestores ou administradores na caixa comercial. Sem responsável,
+    falha fechado (ninguém vê) até alguém assumir e marcar/desmarcar.
+    """
+    restricted = select(Conversation.id).where(
+        Conversation.private_to_assignee.is_(True),
+        or_(
+            Conversation.assigned_user_id.is_(None),
+            Conversation.assigned_user_id != user.id,
+        ),
+    )
+    return Conversation.id.not_in(restricted)
+
+
 def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
     """Restringe as conversas que cada perfil enxerga.
 
@@ -715,8 +744,11 @@ def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
       somente o que já está com algum vendedor.
     - CONSULTOR: somente as conversas atribuídas a ele. A exceção são filas
       MANUAL, em que ele vê o que pediu atendimento humano para poder pegar.
+    Conversas particulares e de instância exclusiva ficam fora para qualquer
+    perfil que não seja o responsável.
     """
     stmt = stmt.where(exclusive_conversation_access_clause(user))
+    stmt = stmt.where(private_assignee_access_clause(user))
     if inbox:
         stmt = stmt.where(~outbound_without_reply_clause())
     if user.role in {"ADMIN", "GESTOR"}:

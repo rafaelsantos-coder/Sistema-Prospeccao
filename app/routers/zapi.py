@@ -316,20 +316,22 @@ def _process_zapi_payload(
 
     # Instância exclusiva só preenche responsável vazio. Nunca rouba atendimento
     # de outro vendedor que já assumiu ou já escreveu no thread.
-    if zapi_instance_id is not None and conversation.assigned_user_id is None:
+    if zapi_instance_id is not None:
         inbound_instance = db.get(ZApiInstance, zapi_instance_id)
         if inbound_instance and inbound_instance.exclusive_access:
-            recent_owner = recent_manual_outbound_user_id(db, conversation)
-            if recent_owner is not None:
-                conversation.assigned_user_id = recent_owner
-            else:
-                # Sem dono e sem mensagem humana: fica com a dona da instância.
-                conversation.assigned_user_id = inbound_instance.exclusive_user_id
-            if (
-                conversation.assigned_user_id is not None
-                and conversation.status in {"EM_FILA", "NOVO", "AGUARDANDO_CLIENTE"}
-            ):
-                conversation.status = "ATRIBUIDO"
+            conversation.private_to_assignee = True
+            if conversation.assigned_user_id is None:
+                recent_owner = recent_manual_outbound_user_id(db, conversation)
+                if recent_owner is not None:
+                    conversation.assigned_user_id = recent_owner
+                else:
+                    # Sem dono e sem mensagem humana: fica com a dona da instância.
+                    conversation.assigned_user_id = inbound_instance.exclusive_user_id
+                if (
+                    conversation.assigned_user_id is not None
+                    and conversation.status in {"EM_FILA", "NOVO", "AGUARDANDO_CLIENTE"}
+                ):
+                    conversation.status = "ATRIBUIDO"
     opt_out = False
     if created and message.direction == "INBOUND":
         opt_out = _is_explicit_opt_out(message.body)
@@ -759,7 +761,17 @@ def update_zapi_instance_route(
                     ConversationZApiInstance.zapi_instance_id == instance.id
                 )
             ))
-            .values(assigned_user_id=target.id)
+            .values(assigned_user_id=target.id, private_to_assignee=True)
+        )
+    elif exclusive_access:
+        db.execute(
+            update(Conversation)
+            .where(Conversation.id.in_(
+                select(ConversationZApiInstance.conversation_id).where(
+                    ConversationZApiInstance.zapi_instance_id == instance.id
+                )
+            ))
+            .values(private_to_assignee=True)
         )
     write_audit(
         db,
