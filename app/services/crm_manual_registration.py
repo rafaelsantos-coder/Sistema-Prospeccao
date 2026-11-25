@@ -52,6 +52,7 @@ _SELLERS: dict[str, CRMSeller] = {
     # Os nomes longos são apenas aliases do login de usuário do Prospecta;
     # o sellerUsername enviado à API é sempre o login oficial do CRM.
     "jenifer garcia dutra": CRMSeller("jenifer.dutra", 8, 18, "Digital", 71, (23, 24)),
+    "jennifer garcia dutra": CRMSeller("jenifer.dutra", 8, 18, "Digital", 71, (23, 24)),
     "daiane mattos": CRMSeller("daiane.mattos", 11, 18, "Digital", 71, (23, 24)),
     "daiane dos santos mattos": CRMSeller("daiane.mattos", 11, 18, "Digital", 71, (23, 24)),
     "andressa reus": CRMSeller("andressa.reus", 4, 18, "Digital", 71, (23, 24)),
