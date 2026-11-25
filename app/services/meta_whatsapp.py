@@ -571,6 +571,14 @@ class MetaWhatsAppService:
             "device_model": "Meta Cloud API",
         }
 
+    def send_template(self, *, phone: str, template: dict[str, Any]) -> dict[str, Any]:
+        normalized_phone = self.normalize_phone(phone)
+        self._assert_recipient_not_blacklisted(normalized_phone)
+        return self._post_message({
+            "messaging_product": "whatsapp", "recipient_type": "individual",
+            "to": normalized_phone, "type": "template", "template": template,
+        })
+
     def send_text(self, *, phone: str, message: str) -> dict[str, Any]:
         normalized_phone = self.normalize_phone(phone)
         self._assert_recipient_not_blacklisted(normalized_phone)
