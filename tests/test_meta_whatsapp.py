@@ -434,3 +434,40 @@ def test_meta_legacy_mixed_history_starts_clean_conversation():
         assert db.scalar(select(Message).where(Message.conversation_id == old.id,
                                                Message.provider_message_id == f"zapi-old-{suffix}")) is not None
         db.rollback()
+
+
+def test_zapi_seed_preserves_meta_queue(monkeypatch):
+    from types import SimpleNamespace
+    from app.services import zapi_instances
+
+    suffix = uuid4().hex[:8]
+    monkeypatch.setattr(zapi_instances, "settings", SimpleNamespace(
+        integrations={"zapi": True},
+        zapi_base_url="https://api.z-api.io",
+        zapi_instance_id=f"seed-zapi-{suffix}",
+        zapi_instance_token="test-instance-token",
+        zapi_client_token="test-client-token",
+    ))
+    with SessionLocal() as db:
+        try:
+            account = create_meta_account(
+                db, name=f"Meta seed {suffix}", phone_label="",
+                phone_number_id=f"seed-meta-{suffix}", waba_id="",
+                access_token="test-token", app_secret="", verify_token="",
+                graph_api_version="v21.0", created_by_id=None,
+            )
+            queue = ServiceQueue(
+                name=f"Meta seed {suffix}", code=f"MS-{suffix}",
+                team="DIGITAL", routing_strategy="MANUAL", active=True,
+            )
+            db.add(queue)
+            db.flush()
+            bind_queue_meta_account(db, queue.id, account.id)
+            zapi_instances.seed_default_zapi_instance(db, created_by_id=None)
+            assert queue_meta_account(db, queue.id).id == account.id
+            assert queue_instance(db, queue.id) is None
+            zapi_instances.seed_default_zapi_instance(db, created_by_id=None)
+            assert queue_meta_account(db, queue.id).id == account.id
+            assert queue_instance(db, queue.id) is None
+        finally:
+            db.rollback()
