@@ -48,6 +48,15 @@ _SELLERS: dict[str, CRMSeller] = {
     "fabiano braga": CRMSeller("fabiano.braga", 36, 17, "Santa Rosa", 63),
     "gabriele naiane barbosa": CRMSeller("gabriele.barbosa", 42, 17, "Santa Rosa", 63, (23,)),
     "michele zandona": CRMSeller("michele.zandona", 43, 17, "Santa Rosa", 63, (23,)),
+    # Vendedoras confirmadas no CRM Comercial (25/11/2026).
+    # Os nomes longos são apenas aliases do login de usuário do Prospecta;
+    # o sellerUsername enviado à API é sempre o login oficial do CRM.
+    "jenifer garcia dutra": CRMSeller("jenifer.dutra", 8, 18, "Digital", 71, (23, 24)),
+    "daiane mattos": CRMSeller("daiane.mattos", 11, 18, "Digital", 71, (23, 24)),
+    "daiane dos santos mattos": CRMSeller("daiane.mattos", 11, 18, "Digital", 71, (23, 24)),
+    "andressa reus": CRMSeller("andressa.reus", 4, 18, "Digital", 71, (23, 24)),
+    "larissa almeida": CRMSeller("larissa.almeida", 40, 15, "Missões", 47, (23, 24)),
+    "larissa da rosa de almeida": CRMSeller("larissa.almeida", 40, 15, "Missões", 47, (23, 24)),
 }
 
 
@@ -64,7 +73,7 @@ def seller_for_user(user: User | None) -> CRMSeller | None:
 
 
 def seller_accepts_funnel(seller: CRMSeller, funnel_id: int | None) -> bool:
-    """O funil primário é Santa Rosa; Upgrade é permitido às vendedoras habilitadas."""
+    """Confere funil primário ou adicional autorizado, sem inferir pela fila local."""
     return funnel_id is not None and funnel_id in (seller.funnel_id, *seller.additional_funnel_ids)
 
 
@@ -75,7 +84,7 @@ def _verified_stage(
     *,
     newly_created: bool = True,
 ) -> bool:
-    """Respeita a etapa atual de oportunidade existente sem inventar etapa do Upgrade."""
+    """Valida a etapa inicial do funil principal sem inventar etapas de funis adicionais."""
     return (
         seller_accepts_funnel(seller, funnel_id)
         and stage_id is not None and stage_id > 0
