@@ -11,6 +11,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import Branch, User
 from app.security import hash_password
 from app.services.legacy_import import import_legacy_sqlite
+from app.services.origin_campaigns import upsert_paid_traffic_origin_campaigns
 from app.services.seed import seed_database
 
 
@@ -71,6 +72,21 @@ def import_legacy(args) -> None:
         db.close()
 
 
+def seed_origin_campaigns(args) -> None:
+    """Upsert das campanhas de tráfego pago → origem CRM."""
+    db = SessionLocal()
+    try:
+        result = upsert_paid_traffic_origin_campaigns(db)
+        db.commit()
+        print(
+            "Campanhas de origem atualizadas: "
+            f"{result['created']} criadas, {result['updated']} atualizadas, "
+            f"{result['unchanged']} inalteradas."
+        )
+    finally:
+        db.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sulnet-prospecta", description="Administração do Sulnet Prospecta")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -93,6 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
     legacy.add_argument("--user", required=True, help="E-mail do responsável pelos leads importados")
     legacy.add_argument("--branch", help="Código da unidade padrão")
     legacy.set_defaults(func=import_legacy)
+
+    origins = sub.add_parser(
+        "seed-origin-campaigns",
+        help="Cadastra/atualiza campanhas de tráfego pago para origem automática no CRM",
+    )
+    origins.set_defaults(func=seed_origin_campaigns)
     return parser
 
 

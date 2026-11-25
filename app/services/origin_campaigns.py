@@ -9,10 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Message, OriginCampaign
+from app.services.origin_campaign_catalog import PAID_TRAFFIC_ORIGIN_CAMPAIGNS
 
 DEFAULT_CRM_ORIGIN = "Sulnet Prospecta"
 MIN_MATCH_CHARS = 12
 MAX_INBOUND_SCAN = 12
+
+# Marca d'água do Meta no prefill do WhatsApp (Cf = format controls).
+_FINGERPRINT_CATEGORIES = frozenset({"Cf"})
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,21 @@ def fold_match_text(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+def fingerprint_sequence(value: str | None) -> str:
+    """Extrai a sequência de caracteres invisíveis usada como fingerprint do anúncio."""
+    return "".join(
+        ch
+        for ch in (value or "")
+        if unicodedata.category(ch) in _FINGERPRINT_CATEGORIES
+    )
+
+
+def _normalize_match_text_preserve_fingerprint(value: str | None) -> str:
+    """Trim + colapsa espaços visíveis, preservando ZWSP/ZWNJ/WJ/BOM do Meta."""
+    text = (value or "").strip()
+    return re.sub(r"[^\S\u200b\u200c\u200d\u2060\ufeff]+", " ", text).strip()
+
+
 def validate_campaign_fields(
     *,
     name: str,
@@ -39,7 +58,7 @@ def validate_campaign_fields(
     link: str = "",
 ) -> tuple[str, str, str, str]:
     clean_name = " ".join((name or "").strip().split())
-    clean_match = " ".join((match_text or "").strip().split())
+    clean_match = _normalize_match_text_preserve_fingerprint(match_text)
     clean_origin = " ".join((crm_origin or "").strip().split())
     clean_link = (link or "").strip()[:500]
     if len(clean_name) < 2 or len(clean_name) > 180:
@@ -99,26 +118,43 @@ def match_origin_from_texts(
     campaigns: list[OriginCampaign],
     message_bodies: list[str],
 ) -> OriginMatch | None:
-    """Escolhe a campanha cujo texto padrão está contido na mensagem (mais longo vence)."""
+    """Escolhe a campanha cujo texto padrão está contido na mensagem (mais longo vence).
+
+    Se a campanha tiver fingerprint invisível do Meta, exige a mesma sequência
+    no corpo bruto da mensagem — assim PERFORMANCE de cidades distintas não
+    colidem quando o copy visível é igual.
+    """
     if not campaigns or not message_bodies:
         return None
-    folded_bodies = [fold_match_text(body) for body in message_bodies]
-    folded_bodies = [body for body in folded_bodies if body]
-    if not folded_bodies:
+    raw_bodies = [body for body in message_bodies if (body or "").strip()]
+    if not raw_bodies:
         return None
+    folded_bodies = [fold_match_text(body) for body in raw_bodies]
 
     best: OriginMatch | None = None
     best_len = -1
+    best_fp = -1
     for campaign in campaigns:
         if not campaign.active:
             continue
         needle = fold_match_text(campaign.match_text)
         if len(needle) < MIN_MATCH_CHARS:
             continue
-        if not any(needle in body for body in folded_bodies):
+        fingerprint = fingerprint_sequence(campaign.match_text)
+        matched = False
+        for raw, folded in zip(raw_bodies, folded_bodies, strict=True):
+            if needle not in folded:
+                continue
+            if fingerprint and fingerprint not in raw:
+                continue
+            matched = True
+            break
+        if not matched:
             continue
-        if len(needle) > best_len:
+        fp_score = len(fingerprint) if fingerprint else 0
+        if len(needle) > best_len or (len(needle) == best_len and fp_score > best_fp):
             best_len = len(needle)
+            best_fp = fp_score
             best = OriginMatch(
                 campaign_id=campaign.id,
                 campaign_name=campaign.name,
@@ -126,6 +162,51 @@ def match_origin_from_texts(
                 match_text=campaign.match_text,
             )
     return best
+
+
+def upsert_paid_traffic_origin_campaigns(db: Session) -> dict[str, int]:
+    """Garante as campanhas de tráfego pago ativas (idempotente por nome)."""
+    created = updated = unchanged = 0
+    for spec in PAID_TRAFFIC_ORIGIN_CAMPAIGNS:
+        name, match_text, crm_origin, link = validate_campaign_fields(
+            name=spec["name"],
+            match_text=spec["match_text"],
+            crm_origin=spec["crm_origin"],
+            link=spec.get("link", ""),
+        )
+        existing = db.scalar(
+            select(OriginCampaign).where(OriginCampaign.name == name)
+        )
+        if existing is None:
+            db.add(
+                OriginCampaign(
+                    name=name,
+                    match_text=match_text,
+                    crm_origin=crm_origin,
+                    link=link,
+                    active=True,
+                )
+            )
+            created += 1
+            continue
+        changed = False
+        if existing.match_text != match_text:
+            existing.match_text = match_text
+            changed = True
+        if existing.crm_origin != crm_origin:
+            existing.crm_origin = crm_origin
+            changed = True
+        if (existing.link or "") != link:
+            existing.link = link
+            changed = True
+        if not existing.active:
+            existing.active = True
+            changed = True
+        if changed:
+            updated += 1
+        else:
+            unchanged += 1
+    return {"created": created, "updated": updated, "unchanged": unchanged}
 
 
 def resolve_conversation_origin(
