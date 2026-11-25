@@ -354,6 +354,11 @@ def process_recipient(db: Session, recipient: CampaignRecipient) -> str:
         recipient.error = "Campanha sem fila de atendimento configurada."
         return "failed"
 
+    from app.models import ServiceQueueMetaAccount
+    if db.scalar(select(ServiceQueueMetaAccount.id).where(ServiceQueueMetaAccount.queue_id == service_queue.id)) is not None:
+        recipient.status = "FALHOU"
+        recipient.error = "Fila Meta exclusiva: use Campanhas Meta Oficial."
+        return "failed"
     recipient.attempts = int(recipient.attempts or 0) + 1
     quick_replies = campaign_quick_replies(campaign)
     zapi_instance = queue_instance(db, service_queue.id)
