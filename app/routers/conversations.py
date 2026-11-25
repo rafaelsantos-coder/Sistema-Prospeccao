@@ -899,13 +899,8 @@ def _manual_meta_start(db, request, user, queue, account, contact, lead,
     if conversation.assigned_user_id not in (None, user.id):
         db.rollback()
         return fail("Atendimento já atribuído a outro vendedor.", 409)
-    if existing is None and conversation.assigned_user_id is None:
-        # Ownership is per conversation; do not change an unrelated CRM lead owner.
-        conversation.assigned_user_id = user.id
-        conversation.status = "ATRIBUIDO"
-        db.add(ConversationAssignment(conversation_id=conversation.id, user_id=user.id,
-                                      assigned_by_id=user.id, event="CLAIMED"))
-    elif conversation.assigned_user_id is None:
+    # Ownership is per conversation; do not change an unrelated CRM lead owner.
+    if conversation.assigned_user_id is None:
         conversation.assigned_user_id = user.id
         conversation.status = "ATRIBUIDO"
         db.add(ConversationAssignment(conversation_id=conversation.id, user_id=user.id,
@@ -1009,7 +1004,10 @@ def _render_inbox(
         transfer_online_ids = set(online_user_ids(db))
         users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
         ai_queue = ai_transfer_queue(db)
-        transfer_queues = _transfer_queues(db, user, selected_queue)
+        transfer_queues = [] if _has_meta_link(db, selected) else [
+            item for item in _transfer_queues(db, user, selected_queue)
+            if not queue_meta_account(db, item["id"])
+        ]
     else:
         transfer_online_ids = set()
         ai_queue = None
@@ -1437,6 +1435,9 @@ def quick_start_whatsapp_conversation(
         )
 
     existing_queue = queue_for_conversation(db, existing.id) if existing else None
+    if existing_queue and queue_meta_account(db, existing_queue.id):
+        db.rollback()
+        return fail("Vínculo de WhatsApp inconsistente. Solicite revisão do gestor.", 409)
     if existing and existing_queue and existing_queue.id != queue.id:
         if existing.assigned_user_id == user.id:
             # Mesma vendedora: mantém a fila original, mas reforça titularidade e
@@ -2126,6 +2127,9 @@ def transfer_conversation_queue(
     queue = get_queue(db, queue_id)
     if not queue or not queue.active or queue.id not in allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    # A fila Digital do WhatsApp oficial não é intercambiável com filas Z-API.
+    if _has_meta_link(db, conversation) or queue_meta_account(db, queue.id):
+        raise HTTPException(status_code=409, detail="Transfira o responsável dentro da fila Meta, sem trocar o canal.")
 
     result = _move_conversation_to_queue(
         db,
