@@ -19,6 +19,7 @@ from app.models import (
     ConversationAssignment,
     ConversationQueueLink,
     ConversationZApiInstance,
+    ConversationMetaAccount,
     ConversationCommercialInsight,
     ConversationCommercialTag,
     Lead,
@@ -1266,6 +1267,7 @@ def quick_start_whatsapp_conversation(
             Conversation.contact_id == contact.id,
             Conversation.source != "TELEGRAM",
             Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            Conversation.id.not_in(select(ConversationMetaAccount.conversation_id)),
             or_(
                 ConversationZApiInstance.zapi_instance_id == instance.id,
                 ConversationZApiInstance.id.is_(None),

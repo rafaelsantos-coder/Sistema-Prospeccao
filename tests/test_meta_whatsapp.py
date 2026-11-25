@@ -395,3 +395,42 @@ def test_meta_inbound_does_not_reuse_other_provider_or_meta_account(monkeypatch)
         assert queue_for_conversation(db, first.id).id == queues[0].id
         assert queue_for_conversation(db, second.id).id == queues[1].id
         db.rollback()
+
+
+
+def test_meta_legacy_mixed_history_starts_clean_conversation():
+    from app.models import Message
+    from app.services.conversation_engine import store_received_payload
+    from app.services.meta_whatsapp import bind_conversation_meta_account
+
+    suffix = uuid4().hex[:8]
+    phone = "55559" + str(int(suffix, 16)).zfill(8)[-8:]
+    with SessionLocal() as db:
+        account = create_meta_account(
+            db, name=f"Meta legacy {suffix}", phone_label="",
+            phone_number_id=f"legacy-{suffix}", waba_id="", access_token="test-token",
+            app_secret="", verify_token="", graph_api_version="v27.0", created_by_id=None,
+        )
+        queue = ServiceQueue(name=f"Digital legacy {suffix}", code=f"ML-{suffix}",
+                             team="DIGITAL", routing_strategy="MANUAL", active=True)
+        db.add(queue)
+        db.flush()
+        bind_queue_meta_account(db, queue.id, account.id)
+        def receive(mid, **kwargs):
+            conv, msg, _ = store_received_payload(
+                db, {"phone": phone, "fromMe": False, "messageId": mid,
+                     "text": {"message": mid}}, **kwargs)
+            assert conv and msg
+            return conv
+        old = receive(f"zapi-old-{suffix}")
+        bind_conversation_meta_account(db, old.id, account.id)
+        clean = receive(f"wamid.clean-{suffix}", queue_id=queue.id, meta_account_id=account.id)
+        repeat = receive(f"wamid.repeat-{suffix}", queue_id=queue.id, meta_account_id=account.id)
+        other = receive(f"zapi-new-{suffix}")
+        assert old.id != clean.id
+        assert repeat.id == clean.id
+        assert other.id != clean.id
+        assert len(list(db.scalars(select(Message).where(Message.conversation_id == clean.id)))) == 2
+        assert db.scalar(select(Message).where(Message.conversation_id == old.id,
+                                               Message.provider_message_id == f"zapi-old-{suffix}")) is not None
+        db.rollback()
