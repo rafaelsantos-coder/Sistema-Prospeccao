@@ -16,23 +16,32 @@
   <article class="panel panel-span-5">
     <div class="panel-header">
       <div>
-        <span class="eyebrow">NOVA CAMPANHA</span>
-        <h3>Cadastrar mapeamento</h3>
+        <span class="eyebrow">{% if editing_campaign %}EDITAR CAMPANHA{% else %}NOVA CAMPANHA{% endif %}</span>
+        <h3>{% if editing_campaign %}Atualizar mapeamento{% else %}Cadastrar mapeamento{% endif %}</h3>
       </div>
     </div>
-    <form method="post" action="/settings/origin-campaigns" class="origin-campaign-form">
+    <form
+      method="post"
+      action="{% if editing_campaign %}/settings/origin-campaigns/{{ editing_campaign.id }}/edit{% else %}/settings/origin-campaigns{% endif %}"
+      class="origin-campaign-form"
+    >
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label for="oc-name">Nome da campanha *</label>
-      <input id="oc-name" name="name" required maxlength="180" placeholder="Ex.: Black November 2026">
+      <input id="oc-name" name="name" required maxlength="180" placeholder="Ex.: Black November 2026" value="{{ editing_campaign.name if editing_campaign else '' }}">
       <label for="oc-match">Texto padrão da mensagem *</label>
-      <textarea id="oc-match" name="match_text" required rows="3" maxlength="2000" placeholder="Ex.: Olá, vim do anúncio de BLACK NOVEMBER e quero assinar Sulnet"></textarea>
+      <textarea id="oc-match" name="match_text" required rows="3" maxlength="2000" placeholder="Ex.: Olá, vim do anúncio de BLACK NOVEMBER e quero assinar Sulnet">{{ editing_campaign.match_text if editing_campaign else '' }}</textarea>
       <p class="origin-campaign-tip">Use o texto (ou o trecho distintivo) que o cliente envia ao clicar no anúncio. A comparação ignora acentos e maiúsculas.</p>
       <label for="oc-origin">Origem no CRM *</label>
-      <input id="oc-origin" name="crm_origin" required maxlength="180" placeholder="Ex.: Facebook Ads · Black November">
+      <input id="oc-origin" name="crm_origin" required maxlength="180" placeholder="Ex.: Facebook Ads · Black November" value="{{ editing_campaign.crm_origin if editing_campaign else '' }}">
       <p class="origin-campaign-tip">Mesmo valor de origem/canal que deve aparecer na oportunidade do CRM Comercial.</p>
       <label for="oc-link">Link do anúncio (opcional)</label>
-      <input id="oc-link" name="link" type="url" maxlength="500" placeholder="https://…">
-      <button class="button button-primary" type="submit">Salvar campanha</button>
+      <input id="oc-link" name="link" type="url" maxlength="500" placeholder="https://…" value="{{ editing_campaign.link if editing_campaign else '' }}">
+      <div class="origin-campaign-form-actions">
+        <button class="button button-primary" type="submit">{% if editing_campaign %}Salvar alterações{% else %}Salvar campanha{% endif %}</button>
+        {% if editing_campaign %}
+        <a class="button button-secondary" href="/settings/origin-campaigns">Cancelar</a>
+        {% endif %}
+      </div>
     </form>
   </article>
   {% endif %}
@@ -58,7 +67,7 @@
         </thead>
         <tbody>
           {% for item in campaigns %}
-          <tr class="{% if not item.active %}is-inactive{% endif %}">
+          <tr class="{% if not item.active %}is-inactive{% endif %}{% if editing_campaign and editing_campaign.id == item.id %} is-editing{% endif %}">
             <td>
               <strong>{{ item.name }}</strong>
               {% if item.link %}<small><a href="{{ item.link }}" target="_blank" rel="noopener">Abrir link</a></small>{% endif %}
@@ -68,10 +77,22 @@
             <td>{% if item.active %}<span class="origin-campaign-pill active">Ativa</span>{% else %}<span class="origin-campaign-pill inactive">Inativa</span>{% endif %}</td>
             {% if can_manage_origin_campaigns %}
             <td>
-              <form method="post" action="/settings/origin-campaigns/{{ item.id }}/toggle">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button class="button button-secondary" type="submit">{% if item.active %}Desativar{% else %}Reativar{% endif %}</button>
-              </form>
+              <div class="origin-campaign-actions">
+                <a class="button button-secondary" href="/settings/origin-campaigns?edit={{ item.id }}">Editar</a>
+                <form method="post" action="/settings/origin-campaigns/{{ item.id }}/toggle">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="button button-secondary" type="submit">{% if item.active %}Desativar{% else %}Reativar{% endif %}</button>
+                </form>
+                <details class="origin-campaign-delete">
+                  <summary>Excluir</summary>
+                  <form method="post" action="/settings/origin-campaigns/{{ item.id }}/delete" class="origin-campaign-delete-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <p>Remove o mapeamento definitivamente. Digite <strong>EXCLUIR</strong> para confirmar.</p>
+                    <input name="confirmation" required autocomplete="off" placeholder="EXCLUIR" aria-label="Confirmar exclusão">
+                    <button class="button button-secondary origin-campaign-delete-btn" type="submit">Confirmar exclusão</button>
+                  </form>
+                </details>
+              </div>
             </td>
             {% endif %}
           </tr>
@@ -96,6 +117,7 @@
 .origin-campaign-form textarea {
   width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; font: inherit; font-size: 13px;
 }
+.origin-campaign-form-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .origin-campaign-tip { margin: 0 0 4px; font-size: 11px; color: var(--muted); line-height: 1.45; }
 .origin-campaign-table-wrap { overflow-x: auto; }
 .origin-campaign-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -110,7 +132,27 @@
 .origin-campaign-pill.active { background: #ecfdf5; color: #166534; }
 .origin-campaign-pill.inactive { background: #f1f5f9; color: #64748b; }
 .origin-campaign-table tr.is-inactive td { opacity: .72; }
+.origin-campaign-table tr.is-editing td { background: #fff7ed; }
 .origin-campaign-empty { color: var(--muted); padding: 18px 8px !important; }
+.origin-campaign-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+.origin-campaign-actions form { margin: 0; }
+.origin-campaign-actions .button { font-size: 11px; padding: 6px 10px; }
+.origin-campaign-delete { position: relative; }
+.origin-campaign-delete > summary {
+  list-style: none; cursor: pointer; border: 1px solid #fecaca; background: #fff1f2; color: #991b1b;
+  border-radius: 8px; padding: 6px 10px; font-size: 11px; font-weight: 800;
+}
+.origin-campaign-delete > summary::-webkit-details-marker { display: none; }
+.origin-campaign-delete-form {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: 240px;
+  display: grid; gap: 8px; padding: 12px; border: 1px solid #fecaca; border-radius: 10px;
+  background: #fff; box-shadow: 0 10px 24px rgba(15, 23, 42, .12);
+}
+.origin-campaign-delete-form p { margin: 0; font-size: 11px; color: #7f1d1d; line-height: 1.4; }
+.origin-campaign-delete-form input {
+  width: 100%; border: 1px solid #fecaca; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 12px;
+}
+.origin-campaign-delete-btn { background: #991b1b !important; color: #fff !important; border-color: #991b1b !important; }
 @media (max-width: 960px) {
   .origin-campaigns-layout .panel-span-5,
   .origin-campaigns-layout .panel-span-7 { grid-column: span 12; }
