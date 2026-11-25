@@ -38,7 +38,7 @@ CONTEST_UNCERTAIN = "CRM_CONTEST_UNCERTAIN"
 CONTEST_REVIEW = "CRM_CONTEST_REVIEW"
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_DOCUMENT_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
-CREDIT_ROLES = {"CONSULTOR", "SUPERVISOR"}
+CREDIT_ROLES = {"CONSULTOR", "SUPERVISOR", "GESTOR", "ADMIN"}
 
 
 @dataclass(frozen=True)
@@ -221,7 +221,8 @@ def get_contestation_panel(db: Session, *, conversation: Conversation, actor: Us
             status["reviewRequired"] = True
         else:
             status["reviewRequired"] = False
-        # A UI do CRM só permite que vendedor e supervisão enviem contestação.
+        # Aceita gestor/admin responsável, além de consultor/supervisor; o CRM
+        # valida a elegibilidade (canContest) e o proprietário real da análise.
         if actor.role not in CREDIT_ROLES:
             status["canContest"] = False
             status["readOnly"] = True
