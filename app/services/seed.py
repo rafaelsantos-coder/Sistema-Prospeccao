@@ -32,6 +32,7 @@ from app.services.ai_sdr_policy import (
     SYSTEM_KNOWLEDGE_ITEMS,
 )
 from app.services.followups import initial_next_action
+from app.services.origin_campaigns import upsert_paid_traffic_origin_campaigns
 from app.services.scoring import calculate_sulnet_score
 from app.services.zapi_instances import (
     bind_queue_instance,
@@ -430,6 +431,7 @@ def seed_database(db: Session, include_demo: bool = True) -> None:
         )
 
     _release_unclaimed_queue_prospecting_leads(db)
+    upsert_paid_traffic_origin_campaigns(db)
 
     for team, metric, goal in DEFAULT_TARGETS:
         exists = db.scalar(

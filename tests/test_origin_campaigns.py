@@ -11,13 +11,20 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import Contact, Conversation, Message, OriginCampaign, User
 from app.services import crm_manual_registration as manual
+from app.services.origin_campaign_catalog import (
+    CRM_ORIGIN_NAMES,
+    PAID_TRAFFIC_ORIGIN_CAMPAIGNS,
+)
 from app.services.origin_campaigns import (
     DEFAULT_CRM_ORIGIN,
+    fingerprint_sequence,
     fold_match_text,
     match_origin_from_texts,
     resolve_conversation_origin,
+    upsert_paid_traffic_origin_campaigns,
     validate_campaign_fields,
 )
+from app.services.seed import seed_database
 
 
 def _csrf(body: str) -> str:
@@ -101,6 +108,80 @@ def test_inactive_campaign_is_ignored():
     ) is None
 
 
+def test_fingerprint_separates_performance_campaigns():
+    fp_shared = (
+        "\ufeff\u200c\u200c\u200c\u200c\u200b\u200b\u200b\u2060"
+        "\u200c\u200c\u200c\u200c\u200b\u200b\u200b\ufeff"
+    )
+    fp_santo = (
+        "\ufeff\u200c\u200b\u200c\u200b\u200c\u200c\u200c\u2060"
+        "\u200c\u200c\u200c\u200b\u200b\u200b\ufeff"
+    )
+    shared = OriginCampaign(
+        id=1,
+        name="Performance compartilhada",
+        match_text=f"Olá, vim do anúncio e go{fp_shared}staria de assinar sulnet!",
+        crm_origin="Facebook Ads · Performance (Santa Rosa/Cidades)",
+        active=True,
+    )
+    santo = OriginCampaign(
+        id=2,
+        name="Performance Santo Ângelo",
+        match_text=f"Olá, vim do anúncio e go{fp_santo}staria de assinar Sulnet!",
+        crm_origin="Facebook Ads · Santo Ângelo · Performance",
+        active=True,
+    )
+    body_santo = f"Olá, vim do anúncio e go{fp_santo}staria de assinar Sulnet!"
+    match = match_origin_from_texts([shared, santo], [body_santo])
+    assert match is not None
+    assert match.campaign_id == 2
+    assert match.crm_origin == "Facebook Ads · Santo Ângelo · Performance"
+    assert fingerprint_sequence(shared.match_text) != fingerprint_sequence(santo.match_text)
+
+
+def test_paid_traffic_catalog_and_seed_upsert():
+    assert len(PAID_TRAFFIC_ORIGIN_CAMPAIGNS) >= 7
+    assert len(CRM_ORIGIN_NAMES) == len(PAID_TRAFFIC_ORIGIN_CAMPAIGNS)
+    with TestClient(app):
+        with SessionLocal() as db:
+            seed_database(db, include_demo=False)
+            first = upsert_paid_traffic_origin_campaigns(db)
+            db.commit()
+            second = upsert_paid_traffic_origin_campaigns(db)
+            db.commit()
+            assert first["created"] + first["updated"] + first["unchanged"] == len(
+                PAID_TRAFFIC_ORIGIN_CAMPAIGNS
+            )
+            assert second["created"] == 0
+            assert second["unchanged"] == len(PAID_TRAFFIC_ORIGIN_CAMPAIGNS)
+            names = {
+                row.name
+                for row in db.scalars(
+                    select(OriginCampaign).where(
+                        OriginCampaign.name.in_(
+                            [item["name"] for item in PAID_TRAFFIC_ORIGIN_CAMPAIGNS]
+                        )
+                    )
+                )
+            }
+            assert names == {item["name"] for item in PAID_TRAFFIC_ORIGIN_CAMPAIGNS}
+
+            campaigns = list(
+                db.scalars(
+                    select(OriginCampaign).where(OriginCampaign.active.is_(True))
+                )
+            )
+            match = match_origin_from_texts(
+                campaigns,
+                [
+                    "Olá, vim do anúncio de BLACK NOVEMBER e quero "
+                    "assinar Sulnet em Santo Ângelo!"
+                ],
+            )
+            assert match is not None
+            assert match.crm_origin == "Facebook Ads · Santo Ângelo · Black November"
+
+
 def test_resolve_conversation_origin_from_inbound_message():
     with TestClient(app):
         with SessionLocal() as db:
@@ -114,10 +195,10 @@ def test_resolve_conversation_origin_from_inbound_message():
             )
             conversation = Conversation(contact=contact, assigned_user=seller)
             campaign = OriginCampaign(
-                name="Black November Match",
-                match_text="Olá, vim do anúncio de BLACK NOVEMBER",
-                crm_origin="Facebook Ads · Black November",
-                link="https://example.com/black",
+                name="Campanha Unica Match Teste",
+                match_text="Olá, vim do anúncio exclusivo MATCHTESTE-ORIGIN-9f3a",
+                crm_origin="Facebook Ads · Match Teste Unico",
+                link="https://example.com/match-teste",
                 active=True,
             )
             db.add_all([conversation, campaign])
@@ -129,8 +210,8 @@ def test_resolve_conversation_origin_from_inbound_message():
                     direction="INBOUND",
                     message_type="TEXT",
                     body=(
-                        "Olá, vim do anúncio de BLACK NOVEMBER e quero "
-                        "assinar Sulnet em Santo Ângelo!"
+                        "Olá, vim do anúncio exclusivo MATCHTESTE-ORIGIN-9f3a "
+                        "e quero assinar Sulnet!"
                     ),
                     status="RECEIVED",
                 )
@@ -139,9 +220,9 @@ def test_resolve_conversation_origin_from_inbound_message():
             conversation_id = conversation.id
 
             origin, match = resolve_conversation_origin(db, conversation_id)
-            assert origin == "Facebook Ads · Black November"
+            assert origin == "Facebook Ads · Match Teste Unico"
             assert match is not None
-            assert match.campaign_name == "Black November Match"
+            assert match.campaign_name == "Campanha Unica Match Teste"
 
 
 def test_settings_origin_campaigns_crud_and_crm_register_uses_match(monkeypatch):
@@ -177,10 +258,10 @@ def test_settings_origin_campaigns_crud_and_crm_register_uses_match(monkeypatch)
             "/settings/origin-campaigns",
             data={
                 "csrf_token": _csrf(page.text),
-                "name": "Black November",
-                "match_text": "Olá, vim do anúncio de BLACK NOVEMBER",
-                "crm_origin": "Facebook Ads · Black November",
-                "link": "https://example.com/black-november",
+                "name": "Campanha CRM Register Teste",
+                "match_text": "Olá, vim do anúncio exclusivo CRMREGISTER-ORIGIN-7c2b",
+                "crm_origin": "Facebook Ads · CRM Register Teste",
+                "link": "https://example.com/crm-register-teste",
             },
             follow_redirects=False,
         )
@@ -188,7 +269,9 @@ def test_settings_origin_campaigns_crud_and_crm_register_uses_match(monkeypatch)
 
         with SessionLocal() as db:
             campaign = db.scalar(
-                select(OriginCampaign).where(OriginCampaign.name == "Black November")
+                select(OriginCampaign).where(
+                    OriginCampaign.name == "Campanha CRM Register Teste"
+                )
             )
             assert campaign is not None
             assert campaign.active is True
@@ -211,8 +294,8 @@ def test_settings_origin_campaigns_crud_and_crm_register_uses_match(monkeypatch)
                     direction="INBOUND",
                     message_type="TEXT",
                     body=(
-                        "Olá, vim do anúncio de BLACK NOVEMBER e quero "
-                        "assinar Sulnet em Santo Ângelo!"
+                        "Olá, vim do anúncio exclusivo CRMREGISTER-ORIGIN-7c2b "
+                        "e quero assinar Sulnet!"
                     ),
                     status="RECEIVED",
                 )
@@ -222,8 +305,8 @@ def test_settings_origin_campaigns_crud_and_crm_register_uses_match(monkeypatch)
 
         detail = client.get(f"/conversations/{conversation_id}")
         assert detail.status_code == 200
-        assert "Facebook Ads · Black November" in detail.text
-        assert "Black November" in detail.text
+        assert "Facebook Ads · CRM Register Teste" in detail.text
+        assert "Campanha CRM Register Teste" in detail.text
 
         registered = client.post(
             f"/conversations/{conversation_id}/register-crm",
@@ -235,7 +318,7 @@ def test_settings_origin_campaigns_crud_and_crm_register_uses_match(monkeypatch)
         )
         assert registered.status_code == 303
         assert len(calls) == 1
-        assert calls[0]["origin"] == "Facebook Ads · Black November"
+        assert calls[0]["origin"] == "Facebook Ads · CRM Register Teste"
         assert calls[0]["seller_username"] == "claudia.linde"
 
 
