@@ -58,6 +58,20 @@ _SELLERS: dict[str, CRMSeller] = {
     "andressa reus": CRMSeller("andressa.reus", 4, 18, "Digital", 71, (23, 24)),
     "larissa almeida": CRMSeller("larissa.almeida", 40, 15, "Missões", 47, (23, 24)),
     "larissa da rosa de almeida": CRMSeller("larissa.almeida", 40, 15, "Missões", 47, (23, 24)),
+    # Conta rafael.vendedor no Prospecta -> usuário gerencia rafael.santos no CRM.
+    # IDs/funis confirmados pelo CRM em 25/11/2026; sem impersonação do SDR IA.
+    "rafael trennepohl": CRMSeller(
+        "rafael.santos", 7, 15, "Missões", 47, (16, 17, 18, 11, 3, 13, 20, 22, 23, 24),
+    ),
+    "rafael.vendedor": CRMSeller(
+        "rafael.santos", 7, 15, "Missões", 47, (16, 17, 18, 11, 3, 13, 20, 22, 23, 24),
+    ),
+}
+
+# A tabela de usuários do Prospecta possui e-mail de login, não username.
+# Resolver APENAS o login exato solicitado sem inferir por região ou domínio.
+_PROSPECTA_ACCOUNT_SELLERS = {
+    "rafael.vendedor": _SELLERS["rafael trennepohl"],
 }
 
 
@@ -70,7 +84,14 @@ def _fold(value: str) -> str:
 def seller_for_user(user: User | None) -> CRMSeller | None:
     if user is None or not user.active:
         return None
-    return _SELLERS.get(_fold(user.name))
+    by_name = _SELLERS.get(_fold(user.name))
+    login = (user.email or "").strip().casefold().partition("@")[0]
+    by_login = _PROSPECTA_ACCOUNT_SELLERS.get(login)
+    # Se um login dedicado estiver atrelado a outro vendedor conhecido, não
+    # permitir registrar oportunidades em um proprietário ambíguo.
+    if by_login is not None and by_name is not None and by_login != by_name:
+        return None
+    return by_login or by_name
 
 
 def seller_accepts_funnel(seller: CRMSeller, funnel_id: int | None) -> bool:
