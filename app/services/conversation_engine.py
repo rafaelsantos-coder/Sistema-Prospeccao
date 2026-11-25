@@ -288,6 +288,17 @@ def ensure_open_conversation(
                 Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
                 channel_filter,
                 ConversationMetaAccount.meta_account_id == meta_account_id,
+                ~exists().where(ConversationZApiInstance.conversation_id == Conversation.id),
+                # Legacy links were created AFTER storing the first Meta message
+                # and could have adopted an older conversation of another number.
+                ~exists().where(
+                    Message.conversation_id == Conversation.id,
+                    Message.created_at < ConversationMetaAccount.created_at,
+                    or_(
+                        Message.provider_message_id.is_(None),
+                        ~Message.provider_message_id.like("wamid.%"),
+                    ),
+                ),
             )
             .order_by(Conversation.updated_at.desc())
             .limit(1)
@@ -304,6 +315,7 @@ def ensure_open_conversation(
                 Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
                 channel_filter,
                 ConversationZApiInstance.zapi_instance_id == zapi_instance_id,
+                ~exists().where(ConversationMetaAccount.conversation_id == Conversation.id),
             )
             .order_by(Conversation.updated_at.desc())
             .limit(1)
@@ -332,6 +344,7 @@ def ensure_open_conversation(
                 Conversation.contact_id == contact.id,
                 Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
                 channel_filter,
+                ~exists().where(ConversationMetaAccount.conversation_id == Conversation.id),
             )
             .order_by(Conversation.updated_at.desc())
             .limit(1)
