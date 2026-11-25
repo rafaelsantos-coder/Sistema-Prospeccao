@@ -28,7 +28,18 @@ OFFER_MARK = "promocao black da sulnet"
 # Para quem já é cliente (pedido do comercial, 05/11).
 CUSTOMER_OFFER_QUESTION = "Você já está sabendo da Black da Sulnet, que beneficia os nossos clientes?"
 CUSTOMER_OFFER_MARK = "black da sulnet que beneficia"
+# Quem está em concorrente: reconhece o provedor e puxa a Black (SDR agressivo).
+COMPETITOR_OFFER_MARK = "super promocao black da sulnet"
 OPTIONS_MARK = "black que pula o fim de ano"
+
+
+def competitor_offer_question(provider_label: str) -> str:
+    name = (provider_label or "outro provedor").strip() or "outro provedor"
+    return (
+        f"Entendi — você está com a {name}. "
+        "Estamos com uma super promoção Black da Sulnet agora. "
+        "Quer saber como fica pra você trocar?"
+    )
 QUOTE_COMBO_MARK = "combo black da sulnet"
 QUOTE_MOBILE_MARK = "telefonia movel da black sulnet"
 ORDINARY_FIRST_DUE = "A data da primeira fatura é confirmada no cadastro."
@@ -60,7 +71,11 @@ def _fold(value: str | None) -> str:
 
 def is_offer_question(previous_outbound: str | None) -> bool:
     folded = _fold(previous_outbound)
-    return OFFER_MARK in folded or CUSTOMER_OFFER_MARK in folded
+    return (
+        OFFER_MARK in folded
+        or CUSTOMER_OFFER_MARK in folded
+        or COMPETITOR_OFFER_MARK in folded
+    )
 
 
 def is_options_question(previous_outbound: str | None) -> bool:

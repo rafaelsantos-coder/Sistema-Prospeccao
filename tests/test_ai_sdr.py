@@ -2895,6 +2895,36 @@ def test_brphonia_provider_skips_existing_customer_gate(monkeypatch):
     assert "serviço da Sulnet" not in result.reply_text
 
 
+def test_brphonia_provider_pitches_black_aggressively(monkeypatch):
+    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: True)
+    decision = _base_prospecting_entry_decision()
+    context = {
+        "latest_customer_message": "Tudo bem, tenho o da br phonia",
+        "lead": {
+            "city": "Santa Rosa",
+            "confirmed_existing_customer": "",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": "Boa tarde tudo bem??? com qual provedor voce teria hoje ?",
+            },
+            {"direction": "INBOUND", "body": "Tudo bem, tenho o da br phonia"},
+        ],
+    }
+
+    result = _apply_prospecting_entry_policy(decision, context)
+
+    assert result.qualification.existing_customer == "NAO_CLIENTE"
+    assert "Brphonia" in result.reply_text
+    assert "promoção Black da Sulnet" in result.reply_text
+    assert "trocar" in result.reply_text.casefold()
+    assert [item.label for item in result.quick_replies] == ["Quero saber", "Agora não"]
+    assert "já é cliente Sulnet" not in result.reply_text
+    assert "situação com a Sulnet" not in result.reply_text.casefold()
+    assert result.followup_needed is True
+
+
 def test_opt_out_is_not_overridden_by_prospecting_customer_gate():
     decision = AIDecision(
         reply_text="Tudo bem. Não enviaremos novas mensagens.",

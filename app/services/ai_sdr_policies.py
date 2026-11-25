@@ -311,6 +311,68 @@ def _discloses_competitor_as_current_provider(folded: str) -> bool:
     return False
 
 
+# Rótulo comercial para a pitch (ordem: multi-palavra antes de tokens curtos).
+_COMPETITOR_DISPLAY_LABELS: tuple[tuple[str, str], ...] = (
+    ("br phonia", "Brphonia"),
+    ("brphonia", "Brphonia"),
+    ("globo info", "Globoinfo"),
+    ("globoinfo", "Globoinfo"),
+    ("meta server", "Metaserver"),
+    ("metaserver", "Metaserver"),
+    ("net virtua", "Net Virtua"),
+    ("at net", "@Net"),
+    ("atnet", "@Net"),
+    ("unifique", "Unifique"),
+    ("unify", "Unify"),
+    ("benderson", "Benderson"),
+    ("viatec", "Viatec"),
+    ("brisanet", "Brisanet"),
+    ("desktop", "Desktop"),
+    ("starlink", "Starlink"),
+    ("virtua", "Virtua"),
+    ("algar", "Algar"),
+    ("claro", "Claro"),
+    ("vivo", "Vivo"),
+    ("tim", "TIM"),
+    ("sky", "Sky"),
+    ("vero", "Vero"),
+    ("oi", "Oi"),
+)
+
+
+def _competitor_provider_label(value: str | None) -> str:
+    folded = _fold_sales_text(value)
+    if not folded:
+        return "outro provedor"
+    if _ATNET_OWNERSHIP_RE.search(folded):
+        return "@Net"
+    for cue, label in _COMPETITOR_DISPLAY_LABELS:
+        if " " in cue:
+            if cue in folded:
+                return label
+        elif cue in set(folded.split()):
+            return label
+    return "outro provedor"
+
+
+def _context_competitor_provider_label(context: dict) -> str:
+    """Provedor concorrente já dito pelo cliente nesta conversa (última ocorrência)."""
+    latest = str(context.get("latest_customer_message") or "")
+    if _discloses_competitor_as_current_provider(_fold_sales_text(latest)):
+        return _competitor_provider_label(latest)
+    for row in reversed(context.get("history") or []):
+        if str(row.get("direction") or "").upper() != "INBOUND":
+            continue
+        body = str(row.get("body") or "")
+        if _discloses_competitor_as_current_provider(_fold_sales_text(body)):
+            return _competitor_provider_label(body)
+    return ""
+
+
+def _context_discloses_competitor(context: dict) -> bool:
+    return bool(_context_competitor_provider_label(context))
+
+
 def _existing_customer_from_text(
     value: str | None,
     *,
@@ -551,18 +613,29 @@ def _sanitize_unconfirmed_customer_facts(
 
     provider = _fold_sales_text(qualification.current_provider)
     if provider and provider not in inbound:
-        original_provider = qualification.current_provider or ""
-        qualification.current_provider = None
-        for field_name in ("reply_text", "summary", "next_action", "proposal_summary"):
-            value = getattr(decision, field_name, "") or ""
-            if original_provider and original_provider.casefold() in value.casefold():
-                value = re.sub(
-                    re.escape(original_provider),
-                    "seu provedor atual",
-                    value,
-                    flags=re.IGNORECASE,
-                )
-                setattr(decision, field_name, value)
+        # Rótulo comercial (ex.: "Brphonia") pode diferir do texto ("br phonia").
+        disclosed_label = (
+            _competitor_provider_label(inbound)
+            if _discloses_competitor_as_current_provider(inbound)
+            or _mentions_competitor_provider(inbound)
+            else ""
+        )
+        same_competitor = bool(
+            disclosed_label and _fold_sales_text(disclosed_label) == provider
+        )
+        if not same_competitor:
+            original_provider = qualification.current_provider or ""
+            qualification.current_provider = None
+            for field_name in ("reply_text", "summary", "next_action", "proposal_summary"):
+                value = getattr(decision, field_name, "") or ""
+                if original_provider and original_provider.casefold() in value.casefold():
+                    value = re.sub(
+                        re.escape(original_provider),
+                        "seu provedor atual",
+                        value,
+                        flags=re.IGNORECASE,
+                    )
+                    setattr(decision, field_name, value)
 
     speed_numbers = _numbers_in_text(qualification.current_speed)
     inbound_numbers = _numbers_in_text(inbound)
@@ -1439,6 +1512,35 @@ def _show_black_offer_question(decision: AIDecision, status: str) -> AIDecision:
     return decision
 
 
+def _show_competitor_black_offer(
+    decision: AIDecision,
+    status: str,
+    *,
+    provider_label: str,
+) -> AIDecision:
+    """SDR agressivo: reconhece o concorrente e puxa a Black para despertar interesse."""
+    decision.reply_text = black.competitor_offer_question(provider_label)
+    decision.quick_replies = [
+        QuickReply(id="black_sim", label="Quero saber"),
+        QuickReply(id="black_nao", label="Agora não"),
+    ]
+    decision.intent = "QUALIFYING"
+    decision.sales_state = "DISCOVERY"
+    decision.recommended_stage = "CONTATO_REALIZADO"
+    decision.qualification.existing_customer = status or "NAO_CLIENTE"
+    decision.qualification.desired_product = None
+    decision.qualification.current_provider = provider_label
+    decision.summary = (
+        f"Cliente na {provider_label}; SulIA ofereceu a Black da Sulnet para converter."
+    )
+    decision.next_action = "Insistir na Black e avançar se o cliente quiser saber."
+    decision.journey_state = "DISCOVERY"
+    decision.followup_needed = True
+    _reset_entry_offer(decision)
+    decision._contextual_reply = True
+    return decision
+
+
 def _show_black_options(decision: AIDecision, status: str) -> AIDecision:
     decision.reply_text = black.OPTIONS_TEXT
     decision.quick_replies = [
@@ -1483,10 +1585,18 @@ def _apply_black_entry(decision: AIDecision, context: dict, status: str, *, just
         return None
     previous = _last_outbound_text(context)
     latest_raw = str(context.get("latest_customer_message") or "")
+    competitor_label = _context_competitor_provider_label(context)
     if (black.is_offer_question(previous) or black.is_options_question(previous)) and any(
         cue in _fold_sales_text(latest_raw) for cue in _BLACK_VALIDITY_CUES
     ):
         return _answer_black_validity(decision, status)
+    # Concorrente declarado: pitch agressiva da Black (não perguntar "situação Sulnet").
+    if competitor_label and not black.was_offered(context.get("history")):
+        return _show_competitor_black_offer(
+            decision,
+            status or "NAO_CLIENTE",
+            provider_label=competitor_label,
+        )
     if just_identified and not black.was_offered(context.get("history")):
         return _show_black_offer_question(decision, status)
     if black.is_offer_question(previous):
@@ -2839,6 +2949,17 @@ def _apply_stagnation_strategy(
     previous_outbound = _recent_outbound_messages_for_repetition(context)
 
     if state == "IDENTIFY_CUSTOMER":
+        competitor_label = _context_competitor_provider_label(context)
+        if (
+            competitor_label
+            and black.black_active()
+            and not black.was_offered(context.get("history"))
+        ):
+            return _show_competitor_black_offer(
+                decision,
+                "NAO_CLIENTE",
+                provider_label=competitor_label,
+            )
         decision = _show_existing_customer_question(decision)
         if previous_outbound:
             decision.reply_text = "Só para eu direcionar certinho: você já possui algum serviço da Sulnet?"
@@ -2851,6 +2972,17 @@ def _apply_stagnation_strategy(
                 decision.reply_text = "Para sua próxima contratação, prefere Telefonia Móvel ou internet em outro endereço?"
             return decision
         if existing == "NAO_CLIENTE":
+            competitor_label = _context_competitor_provider_label(context)
+            if (
+                competitor_label
+                and black.black_active()
+                and not black.was_offered(context.get("history"))
+            ):
+                return _show_competitor_black_offer(
+                    decision,
+                    "NAO_CLIENTE",
+                    provider_label=competitor_label,
+                )
             decision = _show_new_customer_product_question(decision)
             if previous_outbound:
                 decision.reply_text = "Qual caminho você quer seguir primeiro: Internet ou Telefonia Móvel?"
