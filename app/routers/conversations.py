@@ -109,6 +109,12 @@ from app.services.queue_routing import (
 )
 from app.services.whatsapp_presence import is_user_whatsapp_online, online_user_ids
 from app.services.paced_outbound import needs_pacing, queue_manual_message
+from app.services.meta_whatsapp import (
+    MetaWhatsAppError, default_queue_for_meta_account, is_digital_queue,
+    is_official_digital, queue_meta_account, service_for_meta_account,
+)
+from app.routers.meta_campaigns import _list as list_official_templates
+from app.services.manual_meta_templates import eligible_templates, template_payload
 from app.services.zapi import ZApiError
 from app.services.zapi_instances import (
     bind_conversation_instance,
@@ -798,13 +804,140 @@ def _validate_queue_filter(user: User, queue_id: int | None, queues: list[dict])
 
 
 def _manual_outbound_queues(db: Session, user: User) -> list[tuple[ServiceQueue, object]]:
-    """Somente filas ativas do usuario com instância Z-API ativa vinculada."""
-    return [
-        (queue, instance)
-        for queue in available_queues_for_user(db, user)
-        if (instance := queue_instance(db, queue.id)) is not None
-        and may_access_instance(user, instance)
-    ]
+    """Filas autorizadas, com um único provedor ativo e sem fallback."""
+    rows = []
+    for queue in available_queues_for_user(db, user):
+        meta = queue_meta_account(db, queue.id)
+        instance = queue_instance(db, queue.id)
+        if meta:
+            bound = default_queue_for_meta_account(db, meta.id)
+            if not instance and bound and bound.id == queue.id and is_official_digital(meta) and is_digital_queue(queue):
+                rows.append((queue, meta))
+        elif instance and may_access_instance(user, instance):
+            rows.append((queue, instance))
+    return rows
+
+
+def _manual_queue_channel(db: Session, queue_id: int) -> str:
+    return "META" if queue_meta_account(db, queue_id) else "ZAPI"
+
+
+@router.get("/conversations/start/meta-templates")
+def manual_meta_templates(request: Request, queue_id: int, db: Session = Depends(get_db)):
+    user, redirect = _user_or_redirect(request, db)
+    if redirect or not has_permission(user, "conversations.reply"):
+        return JSONResponse({"error": "Acesso não autorizado."}, status_code=403)
+    allowed = dict((q.id, provider) for q, provider in _manual_outbound_queues(db, user))
+    if queue_id not in allowed or _manual_queue_channel(db, queue_id) != "META":
+        return JSONResponse({"error": "Fila Meta não autorizada."}, status_code=403)
+    try:
+        rows = eligible_templates(list_official_templates(allowed[queue_id]))
+    except (ValueError, ZApiError):
+        return JSONResponse({"error": "Não foi possível consultar templates oficiais."}, status_code=502)
+    return JSONResponse({"templates": rows}, headers={"Cache-Control": "no-store"})
+
+
+def _has_meta_link(db: Session, conversation: Conversation) -> bool:
+    return db.scalar(select(ConversationMetaAccount.id).where(
+        ConversationMetaAccount.conversation_id == conversation.id
+    )) is not None
+
+
+def _manual_meta_start(db, request, user, queue, account, contact, lead,
+                       template_id, parameters, consent, wants_json, fail):
+    # O vínculo da conta, e não apenas o telefone do cliente, identifica a conversa.
+    db.scalar(select(Contact.id).where(Contact.id == contact.id).with_for_update())
+    existing = db.scalar(select(Conversation).join(
+        ConversationMetaAccount,
+        ConversationMetaAccount.conversation_id == Conversation.id,
+    ).where(
+        Conversation.contact_id == contact.id,
+        Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+        ConversationMetaAccount.meta_account_id == account.id,
+        Conversation.id.not_in(select(ConversationZApiInstance.conversation_id)),
+        Conversation.id.not_in(select(Message.conversation_id).join(ConversationMetaAccount, ConversationMetaAccount.conversation_id == Message.conversation_id).where(Message.created_at < ConversationMetaAccount.created_at, or_(Message.provider_message_id.is_(None), ~Message.provider_message_id.like("wamid.%")))),
+    ).order_by(Conversation.updated_at.desc(), Conversation.id.desc()).limit(1))
+    if not existing and db.scalar(select(Conversation.id).join(
+        ConversationMetaAccount, ConversationMetaAccount.conversation_id == Conversation.id
+    ).where(Conversation.contact_id == contact.id,
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            ConversationMetaAccount.meta_account_id == account.id).limit(1)):
+        db.rollback()
+        return fail("Histórico Meta com vínculo inconsistente. Solicite revisão do gestor.", 409)
+    if existing and (existing.assigned_user_id not in (None, user.id)
+                     or (existing.assigned_user_id is not None and not _get_conversation(db, user, existing.id))):
+        db.rollback()
+        return fail("Este número já tem atendimento Meta ativo. Solicite transferência.", 409)
+    if existing:
+        linked_queue = queue_for_conversation(db, existing.id)
+        if not linked_queue or linked_queue.id != queue.id:
+            db.rollback()
+            return fail("Atendimento Meta vinculado a outra fila. Solicite revisão do gestor.", 409)
+    if not template_id and (not existing or needs_pacing(db, existing)):
+        db.rollback()
+        return fail("Selecione um template aprovado da Meta para iniciar ou retomar o contato.")
+    if template_id and not consent:
+        db.rollback()
+        return fail("Confirme que o cliente autorizou o contato pelo WhatsApp.")
+    body, template = "", None
+    if template_id:
+        try:
+            rows = eligible_templates(list_official_templates(account))
+            row = next((r for r in rows if r["id"] == template_id), None)
+            if not row:
+                raise ValueError("Template indisponível ou não aprovado.")
+            template, body = template_payload(row, parameters)
+        except (ValueError, ZApiError) as exc:
+            db.rollback()
+            return fail(str(exc))
+    conversation = existing or ensure_open_conversation(
+        db, contact, lead=lead, source="MANUAL", queue_id=queue.id,
+        queue_origin="MANUAL_OUTBOUND", assign_if_unowned=False,
+        meta_account_id=account.id,
+    )
+    # A engine pode encontrar uma conversa concorrente; nunca roubar titularidade.
+    if conversation.assigned_user_id not in (None, user.id):
+        db.rollback()
+        return fail("Atendimento já atribuído a outro vendedor.", 409)
+    # Ownership is per conversation; do not change an unrelated CRM lead owner.
+    if conversation.assigned_user_id is None:
+        conversation.assigned_user_id = user.id
+        conversation.status = "ATRIBUIDO"
+        db.add(ConversationAssignment(conversation_id=conversation.id, user_id=user.id,
+                                      assigned_by_id=user.id, event="CLAIMED"))
+    sent = False
+    if template:
+        try:
+            service = service_for_meta_account(account)
+            result = service.send_template(phone=contact.phone, template=template)
+            provider_id = result.get("messageId") or result.get("id")
+            if not provider_id:
+                raise MetaWhatsAppError("Meta não confirmou a mensagem. Não reenvie automaticamente.")
+        except ZApiError as exc:
+            db.rollback()
+            return fail(str(exc), 502)
+        register_message(db, conversation, direction="OUTBOUND", message_type="TEXT",
+                         body=body, sender_user_id=user.id, provider_message_id=str(provider_id),
+                         status="SENT")
+        if lead:
+            lead.last_contact_at = utcnow()
+        sent = True
+    write_audit(db, user=user, action="CONVERSATION_QUICK_STARTED",
+                entity_type="conversation", entity_id=conversation.id,
+                payload={"queue_id": queue.id, "meta_account_id": account.id,
+                         "provider": "META", "template_id": template_id or None,
+                         "consent_confirmed": bool(consent), "message_sent": sent,
+                         "owner_user_id": user.id})
+    db.commit()
+    notice = "Template oficial enviado." if sent else "Conversa Meta aberta."
+    if wants_json:
+        return JSONResponse({"ok": True, "conversation_id": conversation.id,
+            "reused": bool(existing), "phone": contact.phone, "name": contact.name or contact.phone,
+            "queue_name": queue.name, "owner": user.name, "status": conversation.status,
+            "draft": "", "message_sent": sent, "send_status": "SENT" if sent else None,
+            "notice": notice})
+    flash(request, notice, "success")
+    return RedirectResponse(f"/conversations/{conversation.id}?quick=1", status_code=303)
 
 
 def _render_inbox(
@@ -871,7 +1004,10 @@ def _render_inbox(
         transfer_online_ids = set(online_user_ids(db))
         users.sort(key=lambda item: (item.id not in transfer_online_ids, item.name or ""))
         ai_queue = ai_transfer_queue(db)
-        transfer_queues = _transfer_queues(db, user, selected_queue)
+        transfer_queues = [] if _has_meta_link(db, selected) else [
+            item for item in _transfer_queues(db, user, selected_queue)
+            if not queue_meta_account(db, item["id"])
+        ]
     else:
         transfer_online_ids = set()
         ai_queue = None
@@ -1002,6 +1138,7 @@ def _render_inbox(
         conversation_queue_labels=conversation_queue_labels,
         ai_reply_statuses=ai_reply_statuses,
         quick_outbound_queues=[q for q, _instance in quick_queues],
+        quick_queue_channels={q.id: _manual_queue_channel(db, q.id) for q, _ in quick_queues},
         quick_preferred_queue_id=quick_preferred_queue_id,
         quick_chat_templates=quick_chat_templates,
         compose_draft=compose_draft,
@@ -1200,6 +1337,9 @@ def quick_start_whatsapp_conversation(
     phone: str = Form(...),
     queue_id: int | None = Form(None),
     template_id: str = Form(""),
+    meta_template_id: str = Form(""),
+    meta_parameters: str = Form(""),
+    meta_consent: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     """Inicia chat manual por telefone, preservando fila, instancia e titularidade.
@@ -1231,14 +1371,20 @@ def quick_start_whatsapp_conversation(
 
     queues = _manual_outbound_queues(db, user)
     if not queues:
-        return fail("Nenhuma fila WhatsApp com Z-API ativa está disponível para você.", 403)
+        return fail("Nenhuma fila WhatsApp ativa está disponível para você.", 403)
     allowed = {queue.id: (queue, instance) for queue, instance in queues}
     if queue_id is None and len(queues) == 1:
         queue_id = queues[0][0].id
     if queue_id not in allowed:
         return fail("Selecione uma fila WhatsApp autorizada para iniciar a conversa.", 403)
     queue, instance = allowed[queue_id]
-    require_instance_access(user, instance)
+    is_meta = _manual_queue_channel(db, queue.id) == "META"
+    if not is_meta:
+        require_instance_access(user, instance)
+        if meta_template_id or meta_parameters or meta_consent:
+            return fail("Templates Meta não podem ser enviados pela Z-API.")
+    elif template_id:
+        return fail("Templates internos não podem ser enviados pela Meta.")
 
     normalized = normalize_phone(phone)
     if not normalized:
@@ -1254,6 +1400,10 @@ def quick_start_whatsapp_conversation(
         return fail("Este cliente não autoriza contato por WhatsApp.", 403)
 
     contact = ensure_contact(db, normalized, lead=lead)
+    if is_meta:
+        return _manual_meta_start(db, request, user, queue, instance, contact, lead,
+                                  meta_template_id, meta_parameters, meta_consent,
+                                  wants_json, fail)
     compose_draft = _quick_compose_draft(
         db, user, template_id=template_id, lead=lead, contact=contact,
     )
@@ -1285,6 +1435,9 @@ def quick_start_whatsapp_conversation(
         )
 
     existing_queue = queue_for_conversation(db, existing.id) if existing else None
+    if existing_queue and queue_meta_account(db, existing_queue.id):
+        db.rollback()
+        return fail("Vínculo de WhatsApp inconsistente. Solicite revisão do gestor.", 409)
     if existing and existing_queue and existing_queue.id != queue.id:
         if existing.assigned_user_id == user.id:
             # Mesma vendedora: mantém a fila original, mas reforça titularidade e
@@ -1498,6 +1651,12 @@ def send_message(
             )
         flash(request, "Este contato esta bloqueado para novas mensagens.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+    if _has_meta_link(db, conversation) and needs_pacing(db, conversation):
+        error = "Janela Meta de 24 horas encerrada. Use Nova conversa e um template oficial aprovado."
+        if wants_json:
+            return JSONResponse({"ok": False, "error": error}, status_code=400)
+        flash(request, error, "warning")
+        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
     clean_message = message.strip()
     if not clean_message:
         if wants_json:
@@ -1619,6 +1778,8 @@ async def send_media(
             status_code=403,
         )
 
+    if _has_meta_link(db, conversation) and needs_pacing(db, conversation):
+        return JSONResponse({"ok": False, "error": "Janela Meta encerrada. Envie um template oficial aprovado."}, status_code=400)
     original_name = Path(media.filename or "arquivo").name
     raw = await media.read()
     mime_type = (media.content_type or "application/octet-stream").split(";")[0].strip()
@@ -1966,6 +2127,9 @@ def transfer_conversation_queue(
     queue = get_queue(db, queue_id)
     if not queue or not queue.active or queue.id not in allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    # A fila Digital do WhatsApp oficial não é intercambiável com filas Z-API.
+    if _has_meta_link(db, conversation) or queue_meta_account(db, queue.id):
+        raise HTTPException(status_code=409, detail="Transfira o responsável dentro da fila Meta, sem trocar o canal.")
 
     result = _move_conversation_to_queue(
         db,

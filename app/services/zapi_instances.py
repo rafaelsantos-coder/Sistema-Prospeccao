@@ -225,10 +225,11 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
     sobrescrever o número configurado atualmente na fila. Se estiver antigo,
     ele é autocorrigido antes do envio.
     """
-    from app.models import Conversation
+    from app.models import Conversation, ConversationMetaAccount
     from app.services.meta_whatsapp import (
         bind_conversation_meta_account,
         conversation_meta_account,
+        default_queue_for_meta_account,
         queue_meta_account,
         service_for_meta_account,
     )
@@ -240,6 +241,26 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
         from app.services.telegram import service_for_telegram_conversation
 
         return service_for_telegram_conversation(db, conversation)  # type: ignore[return-value]
+
+    # Uma conversa Meta mantém o número de origem mesmo após alterações de fila.
+    # Se a conta estiver inativa, vinculada a outra fila ou misturada com Z-API,
+    # bloquear o envio em vez de sair por outro WhatsApp.
+    meta_link = db.scalar(select(ConversationMetaAccount).where(
+        ConversationMetaAccount.conversation_id == conversation_id
+    ))
+    if meta_link:
+        meta = conversation_meta_account(db, conversation_id)
+        queue = queue_for_conversation(db, conversation_id)
+        bound = default_queue_for_meta_account(db, meta.id) if meta else None
+        if (not meta or not queue or not bound or bound.id != queue.id
+                or queue_instance(db, queue.id)
+                or conversation_instance(db, conversation_id)):
+            raise ZApiNotConfigured("Vínculo Meta indisponível ou inconsistente; envio bloqueado.")
+        return service_for_meta_account(meta)  # type: ignore[return-value]
+
+    queue = queue_for_conversation(db, conversation_id)
+    if queue and queue_meta_account(db, queue.id) and conversation_instance(db, conversation_id):
+        raise ZApiNotConfigured("Conversa Z-API não pode utilizar um número oficial Meta.")
 
     if manually_transferred_to_ai(db, conversation_id):
         # Delegar para a SulIA nao troca a fila/linha WhatsApp: a instancia

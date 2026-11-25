@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', path='/css/conversas_mvp.css') }}">
+  <script src="{{ url_for('static', path='/js/manual_outbound.js') }}" defer></script>
   <script src="{{ url_for('static', path='/js/conversas_mvp.js') }}" defer></script>
 </head>
 <body>
@@ -97,7 +98,7 @@
   </section>
   {% if can_reply %}
   <dialog id="mvp-new-dialog" class="mvp-new-dialog" aria-labelledby="mvp-new-title">
-    <form id="mvp-new-form" class="mvp-new-form">
+    <form id="mvp-new-form" class="mvp-new-form" data-manual-channel-form>
       <div class="mvp-new-head">
         <div>
           <h2 id="mvp-new-title">Nova conversa</h2>
@@ -114,9 +115,10 @@
         <option value="">Selecione a fila de atendimento</option>
         {% endif %}
         {% for queue in new_conversation_queues %}
-        <option value="{{ queue.id }}">{{ queue.name }}</option>
+        <option value="{{ queue.id }}" data-channel="{{ queue.channel }}">{{ queue.name }} — {{ 'Meta Oficial' if queue.channel == 'META' else 'Z-API' }}</option>
         {% endfor %}
       </select>
+      <fieldset data-internal-template style="border:0;padding:0;margin:0;min-width:0">
       <label for="mvp-new-template">Template</label>
       <input type="search" id="mvp-new-template-search" class="mvp-new-template-search"
              placeholder="Buscar campanha ou mensagem padronizada..." autocomplete="off"
@@ -144,6 +146,16 @@
         {% endif %}
       </select>
       <p class="mvp-new-note">Opcional. NENHUM abre sem mensagem; ao escolher campanha, a mensagem é enviada.</p>
+      </fieldset>
+      <fieldset data-meta-template hidden disabled style="border:0;padding:0;margin:0;min-width:0">
+      <label for="mvp-meta-template">Template oficial Meta</label>
+      <select id="mvp-meta-template" name="meta_template_id"><option value="">Selecione um template aprovado</option></select>
+      <div data-meta-parameters></div>
+      <input type="hidden" name="meta_parameters" value="">
+      <p data-meta-preview style="white-space:pre-wrap;font-size:12px"></p>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="meta_consent" value="true"> Cliente autorizou contato pelo WhatsApp.</label>
+      <small data-meta-note>Selecione um template aprovado para iniciar pela Meta.</small>
+    </fieldset>
       <p id="mvp-new-error" class="mvp-new-error" role="alert" hidden></p>
       <p class="mvp-new-note">A conversa fica com você como responsável.</p>
       <button type="submit" id="mvp-new-submit" class="mvp-new-submit">Abrir conversa</button>

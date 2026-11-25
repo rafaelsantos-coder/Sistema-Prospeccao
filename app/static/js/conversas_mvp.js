@@ -494,8 +494,10 @@
     ui.newSubmit.disabled = true;
     try {
       const payload = {phone: rawPhone, queue_id: ui.newQueue.value};
-      if (ui.newTemplate && ui.newTemplate.value) {
-        payload.template_id = ui.newTemplate.value;
+      const fields = new FormData(ui.newForm);
+      for (const key of ["template_id", "meta_template_id", "meta_parameters", "meta_consent"]) {
+        const value = fields.get(key);
+        if (value) payload[key] = value;
       }
       const result = await api("/conversations/start", {
         method: "POST",

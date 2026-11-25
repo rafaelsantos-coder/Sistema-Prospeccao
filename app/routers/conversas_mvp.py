@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import RedirectResponse
 
 from app.database import get_db
-from app.routers.conversations import _manual_outbound_queues
+from app.routers.conversations import _manual_outbound_queues, _manual_queue_channel
 from app.security import get_current_user
 from app.services.access_control import has_permission
 from app.services.campaign_queue import list_quick_chat_templates
@@ -42,7 +42,7 @@ def conversas_mvp(
         can_transfer=has_permission(user, "conversations.transfer"),
         user_id=user.id,
         new_conversation_queues=[
-            {"id": queue.id, "name": queue.name}
+            {"id": queue.id, "name": queue.name, "channel": _manual_queue_channel(db, queue.id)}
             for queue, _instance in _manual_outbound_queues(db, user)
         ] if can_reply else [],
         new_conversation_templates=list_quick_chat_templates(db, user) if can_reply else [],
