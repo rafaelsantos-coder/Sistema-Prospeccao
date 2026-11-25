@@ -4269,6 +4269,128 @@ def _fiber_sale(state, collected):
     return any(word in product for word in ("fibra", "ftth", "banda larga", "combo", "corporativ")) or bool(_resid_fiber_speed(state.plan_label))
 
 
+def _format_cep_display(cep: str) -> str:
+    digits = _digits(cep)
+    if len(digits) == 8:
+        return f"{digits[:5]}-{digits[5:]}"
+    return cep
+
+
+def _service_city_for_label(city: str) -> str | None:
+    """Cidade de atuação Sulnet correspondente ao rótulo do CEP, ou None se fora da área."""
+    from app.services.ai_sdr_policies import _normalized_city
+    from app.services.ai_sdr_policy import SERVICE_CITIES
+
+    key = _normalized_city(city)
+    if not key:
+        return None
+    for item in SERVICE_CITIES:
+        if _normalized_city(item) == key:
+            return item
+    return None
+
+
+def _out_of_coverage_cep_reply(cep: str, city: str | None = None) -> str:
+    city_bit = f" ({city})" if (city or "").strip() else ""
+    return (
+        f"Verifiquei o CEP {_format_cep_display(cep)}{city_bit}. "
+        "Ainda não temos cobertura de fibra da Sulnet nessa região, "
+        "então não consigo seguir com a contratação por aqui."
+    )
+
+
+def _handle_cep_while_awaiting_cpf(
+    db,
+    client,
+    state: AIClosingState,
+    collected: dict[str, Any],
+    text: str,
+) -> str | None:
+    """CEP na etapa CPF (fibra): checa cobertura/viabilidade antes de pedir CPF.
+
+    Retorna a resposta pronta, ou None quando o fluxo normal de CPF deve seguir.
+    Sem cobertura → não pede CPF.
+    """
+    if state.step != "CPF" or not _fiber_sale(state, collected):
+        return None
+    if _extract_cpf(text):
+        return None
+    cep = _extract_cep(text)
+    if not cep:
+        return None
+
+    address: dict[str, Any] = {}
+    try:
+        address = client.lookup_cep(cep) if client is not None else {}
+    except CRMIntegrationError:
+        address = {}
+    if not isinstance(address, dict):
+        address = {}
+
+    city = str(address.get("city") or collected.get("city") or "").strip()
+    patch = {
+        key: address[key]
+        for key in ("street", "neighborhood", "city", "uf")
+        if address.get(key)
+    }
+    patch["cep"] = address.get("cep") or cep
+    number = address.get("addressNumber") or address.get("number")
+    if number:
+        patch["addressNumber"] = str(number)
+        collected["number"] = str(number)
+    collected.update({key: value for key, value in patch.items() if key != "addressNumber"})
+    collected["cep"] = patch["cep"]
+    collected["_cep_before_cpf"] = True
+    collected["_after_fiber_location"] = "CPF"
+
+    if city:
+        service_city = _service_city_for_label(city)
+        if service_city is None:
+            state.step = "COMPLETED"
+            state.completed_at = utcnow()
+            collected["fiberFeasibility"] = {
+                "status": "out_of_coverage",
+                "nap": None,
+                "city": city,
+            }
+            _save_collected(state, collected)
+            return _out_of_coverage_cep_reply(cep, city)
+        collected["city"] = service_city
+
+    if state.opportunity_id and client is not None:
+        try:
+            client.update_opportunity(state.opportunity_id, patch)
+        except CRMIntegrationError:
+            pass
+
+    _save_collected(state, collected)
+
+    if not city:
+        state.step = "ADDRESS_DETAILS"
+        collected.update(
+            _playbook_code="street",
+            _playbook_step="ADDRESS_DETAILS",
+            _playbook_question=(
+                f"Recebi o CEP {_format_cep_display(cep)}. "
+                "Para confirmar se atendemos sua região, me passa a rua, o número e a cidade do imóvel?"
+            ),
+        )
+        return str(collected["_playbook_question"])
+
+    reply = _installation_address_step(db, client, state, collected)
+    status = str((collected.get("fiberFeasibility") or {}).get("status") or "")
+    if status in {"review", "no_data", "out_of_coverage"}:
+        # Sem viabilidade: não volta a pedir CPF.
+        return reply if reply else feasibility.REVIEW
+    if status == "available" or state.step == "CPF":
+        state.step = "CPF"
+        return (
+            "Temos disponibilidade de fibra nesse local! "
+            "Agora preciso do seu CPF com 11 dígitos para fazer a consulta cadastral."
+        )
+    return reply
+
+
 def _sync_fiber_nap(client, state, collected, *, before_contract=False):
     result = collected.get("fiberFeasibility")
     if not state.opportunity_id or not isinstance(result, dict) or not _fiber_sale(state, collected):
@@ -5497,9 +5619,7 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
             collected,
             text,
         )
-        if state.step == "FIBER_LOCATION" and not collected.get("cpf"):
-            collected.pop("_after_fiber_location", None)
-            state.step = "CPF"
+        # Viabilidade (CEP/local) pode ocorrer antes do CPF; não forçar volta ao CPF.
         point = None
         if state.step == "FIBER_LOCATION":
             point = feasibility.locate(db, text, collected.get("city"), message)
@@ -5592,10 +5712,21 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 )
 
         elif state.step == "CPF":
-            cpf = _extract_cpf(text)
-            if not cpf:
-                reply = "Preciso do CPF com 11 dígitos para fazer a consulta cadastral. Pode me enviar?"
+            cep_first_reply = _handle_cep_while_awaiting_cpf(
+                db,
+                client,
+                state,
+                collected,
+                text,
+            )
+            if cep_first_reply is not None:
+                reply = cep_first_reply
+                cpf = None
             else:
+                cpf = _extract_cpf(text)
+            if cep_first_reply is None and not cpf:
+                reply = "Preciso do CPF com 11 dígitos para fazer a consulta cadastral. Pode me enviar?"
+            elif cpf:
                 if not state.opportunity_id:
                     _create_crm_if_ready(db, state=state, conversation=conversation)
                 if not state.opportunity_id:
