@@ -858,12 +858,20 @@ def toggle_user(
 
 
 @router.get("/origin-campaigns")
-def settings_origin_campaigns_page(request: Request, db: Session = Depends(get_db)):
+def settings_origin_campaigns_page(
+    request: Request,
+    edit: int | None = None,
+    db: Session = Depends(get_db),
+):
     user, redirect = _settings_actor(request, db)
     if redirect:
         return redirect
     require_permission(user, "settings.origin_campaigns.view")
     campaigns = list_campaigns(db, include_inactive=True)
+    editing = db.get(OriginCampaign, edit) if edit else None
+    if edit is not None and editing is None:
+        flash(request, "Campanha não encontrada para edição.", "warning")
+        return RedirectResponse("/settings/origin-campaigns", status_code=303)
     return render(
         request,
         "settings_origin_campaigns.html",
@@ -872,6 +880,7 @@ def settings_origin_campaigns_page(request: Request, db: Session = Depends(get_d
         settings_section="origin_campaigns",
         page_title="Campanhas de origem",
         campaigns=campaigns,
+        editing_campaign=editing,
         can_manage_origin_campaigns=has_permission(user, "settings.origin_campaigns.manage"),
         settings_stats={"origin_campaigns": len(campaigns)},
     )
@@ -929,6 +938,56 @@ def create_origin_campaign(
     return RedirectResponse("/settings/origin-campaigns", status_code=303)
 
 
+@router.post("/origin-campaigns/{campaign_id}/edit")
+def update_origin_campaign(
+    campaign_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    name: str = Form(...),
+    match_text: str = Form(...),
+    crm_origin: str = Form(...),
+    link: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_permission(user, "settings.origin_campaigns.manage")
+    campaign = db.get(OriginCampaign, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        clean_name, clean_match, clean_origin, clean_link = validate_campaign_fields(
+            name=name,
+            match_text=match_text,
+            crm_origin=crm_origin,
+            link=link,
+        )
+    except ValueError as exc:
+        flash(request, str(exc), "warning")
+        return RedirectResponse(
+            f"/settings/origin-campaigns?edit={campaign_id}", status_code=303
+        )
+
+    campaign.name = clean_name
+    campaign.match_text = clean_match
+    campaign.crm_origin = clean_origin
+    campaign.link = clean_link
+    campaign.updated_at = utcnow()
+    write_audit(
+        db,
+        user=user,
+        action="ORIGIN_CAMPAIGN_UPDATED",
+        entity_type="origin_campaign",
+        entity_id=campaign.id,
+        payload={"name": clean_name, "crmOrigin": clean_origin},
+    )
+    db.commit()
+    flash(request, "Campanha de origem atualizada.", "success")
+    return RedirectResponse("/settings/origin-campaigns", status_code=303)
+
+
 @router.post("/origin-campaigns/{campaign_id}/toggle")
 def toggle_origin_campaign(
     campaign_id: int,
@@ -960,4 +1019,39 @@ def toggle_origin_campaign(
         "Campanha reativada." if campaign.active else "Campanha desativada.",
         "success",
     )
+    return RedirectResponse("/settings/origin-campaigns", status_code=303)
+
+
+@router.post("/origin-campaigns/{campaign_id}/delete")
+def delete_origin_campaign(
+    campaign_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    confirmation: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _settings_actor(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_permission(user, "settings.origin_campaigns.manage")
+    campaign = db.get(OriginCampaign, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if (confirmation or "").strip().upper() != "EXCLUIR":
+        flash(request, "Digite EXCLUIR para confirmar a exclusão da campanha.", "warning")
+        return RedirectResponse("/settings/origin-campaigns", status_code=303)
+
+    name = campaign.name
+    write_audit(
+        db,
+        user=user,
+        action="ORIGIN_CAMPAIGN_DELETED",
+        entity_type="origin_campaign",
+        entity_id=campaign.id,
+        payload={"name": name, "crmOrigin": campaign.crm_origin},
+    )
+    db.delete(campaign)
+    db.commit()
+    flash(request, f"Campanha «{name}» excluída.", "success")
     return RedirectResponse("/settings/origin-campaigns", status_code=303)

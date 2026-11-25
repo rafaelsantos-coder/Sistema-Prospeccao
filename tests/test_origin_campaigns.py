@@ -301,3 +301,76 @@ def test_crm_register_keeps_default_origin_without_match(monkeypatch):
         )
         assert registered.status_code == 303
         assert calls[0]["origin"] == DEFAULT_CRM_ORIGIN
+
+
+def test_origin_campaign_edit_and_delete():
+    with TestClient(app) as client:
+        _login(client)
+        page = client.get("/settings/origin-campaigns")
+        assert page.status_code == 200
+        created = client.post(
+            "/settings/origin-campaigns",
+            data={
+                "csrf_token": _csrf(page.text),
+                "name": "Campanha Editavel",
+                "match_text": "Olá, vim do anúncio de CAMPANHA EDITAVEL",
+                "crm_origin": "Origem Editavel",
+                "link": "",
+            },
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+
+        with SessionLocal() as db:
+            campaign = db.scalar(
+                select(OriginCampaign).where(OriginCampaign.name == "Campanha Editavel")
+            )
+            assert campaign is not None
+            campaign_id = campaign.id
+
+        edit_page = client.get(f"/settings/origin-campaigns?edit={campaign_id}")
+        assert edit_page.status_code == 200
+        assert "Atualizar mapeamento" in edit_page.text
+        assert "Campanha Editavel" in edit_page.text
+        assert "Editar" in edit_page.text
+        assert "Excluir" in edit_page.text
+
+        updated = client.post(
+            f"/settings/origin-campaigns/{campaign_id}/edit",
+            data={
+                "csrf_token": _csrf(edit_page.text),
+                "name": "Campanha Editada",
+                "match_text": "Olá, vim do anúncio de CAMPANHA EDITADA",
+                "crm_origin": "Origem Editada",
+                "link": "https://example.com/editada",
+            },
+            follow_redirects=False,
+        )
+        assert updated.status_code == 303
+
+        with SessionLocal() as db:
+            campaign = db.get(OriginCampaign, campaign_id)
+            assert campaign is not None
+            assert campaign.name == "Campanha Editada"
+            assert campaign.crm_origin == "Origem Editada"
+            assert campaign.link == "https://example.com/editada"
+
+        list_page = client.get("/settings/origin-campaigns")
+        blocked = client.post(
+            f"/settings/origin-campaigns/{campaign_id}/delete",
+            data={"csrf_token": _csrf(list_page.text), "confirmation": "nao"},
+            follow_redirects=True,
+        )
+        assert blocked.status_code == 200
+        assert "Digite EXCLUIR" in blocked.text
+        with SessionLocal() as db:
+            assert db.get(OriginCampaign, campaign_id) is not None
+
+        deleted = client.post(
+            f"/settings/origin-campaigns/{campaign_id}/delete",
+            data={"csrf_token": _csrf(list_page.text), "confirmation": "EXCLUIR"},
+            follow_redirects=False,
+        )
+        assert deleted.status_code == 303
+        with SessionLocal() as db:
+            assert db.get(OriginCampaign, campaign_id) is None
