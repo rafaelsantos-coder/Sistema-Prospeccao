@@ -14,6 +14,7 @@ from app.services.meta_whatsapp import (
     default_queue_for_meta_account, is_digital_queue, is_official_digital,
     list_meta_accounts, service_for_meta_account,
 )
+from app.services.audit import write_audit
 from app.web import flash, render
 
 router = APIRouter(prefix="/meta-campaigns")
@@ -41,17 +42,19 @@ def _account(db, account_id):
     return next((a for a in _accounts(db) if a.id == account_id), None)
 
 
-def _graph(account, method, *, params=None, payload=None):
+def _graph(account, method, *, params=None, payload=None, waba_id=None, edge="message_templates"):
     # Never follow Graph's arbitrary paging URLs or expose tokens in error output.
-    waba = (account.waba_id or "").strip()
+    waba = (waba_id if waba_id is not None else account.waba_id or "").strip()
     version = (account.graph_api_version or "").strip()
     if not re.fullmatch(r"[0-9]+", waba) or not re.fullmatch(r"v[0-9]+\.[0-9]+", version):
         raise ValueError("Configure WABA ID e versão da Graph API no número oficial.")
+    if edge not in {"message_templates", "phone_numbers"}:
+        raise ValueError("Operação Meta inválida.")
     service = service_for_meta_account(account)
     try:
         with httpx.Client(timeout=15, follow_redirects=False) as client:
             response = client.request(
-                method, f"https://graph.facebook.com/{version}/{waba}/message_templates",
+                method, f"https://graph.facebook.com/{version}/{waba}/{edge}",
                 headers={"Authorization": f"Bearer {service.access_token}"},
                 params=params, json=payload,
             )
@@ -63,18 +66,28 @@ def _graph(account, method, *, params=None, payload=None):
     if response.status_code >= 300 or "error" in data:
         error = data.get("error")
         code = error.get("code") if isinstance(error, dict) else None
-        raise ValueError(f"Meta recusou a operação (HTTP {response.status_code}, código {code}). Confira permissões e WABA.")
+        subcode = error.get("error_subcode") if isinstance(error, dict) else None
+        code = code if isinstance(code, int) else "desconhecido"
+        subcode = subcode if isinstance(subcode, int) else None
+        hint = "Confira o WABA ID e a permissão whatsapp_business_management."
+        if code == 190:
+            hint = "Token inválido ou expirado."
+        elif code == 200:
+            hint = "Token sem acesso ao WABA ou sem whatsapp_business_management."
+        elif code == 100 and subcode == 33:
+            hint = "WABA não encontrado ou sem acesso pelo token. Confira o ID e a atribuição do ativo."
+        raise ValueError(f"Meta recusou {edge} (HTTP {response.status_code}, código {code}, subcódigo {subcode}). {hint}")
     return data
 
 
-def _list(account):
+def _list(account, *, waba_id=None):
     rows = []
     after = None
     for _ in range(20):
         params = {"fields": "id,name,language,status,category,components", "limit": 100}
         if after:
             params["after"] = after
-        data = _graph(account, "GET", params=params)
+        data = _graph(account, "GET", params=params, waba_id=waba_id)
         page = data.get("data")
         if not isinstance(page, list):
             raise ValueError("Lista de templates inválida.")
@@ -169,3 +182,55 @@ def submit_template(request: Request, csrf_token: str = Form(...), account_id: i
     except ValueError as exc:
         flash(request, str(exc), "warning")
     return RedirectResponse(f"{PAGE}?account_id={account.id}", status_code=303)
+
+
+def _validate_waba(account, waba_id):
+    # A mudança só é permitida se o WABA contém exatamente o Phone Number ID
+    # já cadastrado e o token consegue ler templates. Não toca em webhooks.
+    after = None
+    for _ in range(20):
+        params = {"fields": "id", "limit": 100}
+        if after:
+            params["after"] = after
+        data = _graph(account, "GET", params=params, waba_id=waba_id, edge="phone_numbers")
+        page = data.get("data")
+        if not isinstance(page, list):
+            raise ValueError("Resposta inválida na consulta de números do WABA.")
+        if any(isinstance(row, dict) and str(row.get("id")) == account.phone_number_id for row in page):
+            _list(account, waba_id=waba_id)
+            return
+        paging = data.get("paging") or {}
+        if not paging.get("next"):
+            raise ValueError("Este WABA não contém o Phone Number ID cadastrado. Nenhuma alteração foi feita.")
+        cursor = (paging.get("cursors") or {}).get("after")
+        if not cursor or cursor == after:
+            break
+        after = cursor
+    raise ValueError("Não foi possível confirmar o vínculo do número ao WABA. Nenhuma alteração foi feita.")
+
+
+@router.post("/waba")
+def update_waba(request: Request, csrf_token: str = Form(...),
+                account_id: int = Form(...), waba_id: str = Form(...),
+                db: Session = Depends(get_db)):
+    user = _actor(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    validate_csrf(request, csrf_token)
+    account = _account(db, account_id)
+    if not account:
+        raise HTTPException(status_code=404)
+    clean = waba_id.strip()
+    try:
+        if not re.fullmatch(r"[0-9]{1,80}", clean):
+            raise ValueError("Informe o WhatsApp Business Account ID numérico.")
+        _validate_waba(account, clean)
+        account.waba_id = clean
+        write_audit(db, user=user, action="META_WABA_VALIDATED",
+                    entity_type="meta_whatsapp_account", entity_id=account.id)
+        db.commit()
+        flash(request, "WABA validado. Acesso aos templates confirmado e configuração gravada.", "success")
+    except ValueError as exc:
+        db.rollback()
+        flash(request, str(exc), "warning")
+    return RedirectResponse(f"{PAGE}?account_id={account_id}", status_code=303)
