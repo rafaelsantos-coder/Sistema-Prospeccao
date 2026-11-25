@@ -142,7 +142,7 @@ def match_origin_from_texts(
             continue
         fingerprint = fingerprint_sequence(campaign.match_text)
         matched = False
-        for raw, folded in zip(raw_bodies, folded_bodies):
+        for raw, folded in zip(raw_bodies, folded_bodies, strict=True):
             if needle not in folded:
                 continue
             if fingerprint and fingerprint not in raw:
