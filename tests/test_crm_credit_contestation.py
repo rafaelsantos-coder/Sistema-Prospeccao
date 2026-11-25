@@ -108,14 +108,22 @@ def test_panel_reasons_and_readonly_for_admin(monkeypatch):
     assert panel["billMonthExpected"] == "10/2026"
     assert len(panel["reasons"]) == 4
     assert [c[0] for c in calls] == ["status", "reasons"]
+    # Gestor e administrador só contestam quando são o responsável real.
+    for manager_role in ("GESTOR", "ADMIN"):
+        owner = SimpleNamespace(id=conv.assigned_user_id, role=manager_role)
+        owner_panel = contest.get_contestation_panel(None, conversation=conv, actor=owner)
+        assert owner_panel["canContest"] is True
+        assert owner_panel["readOnly"] is False
     admin = SimpleNamespace(id=9, role="ADMIN")
     panel = contest.get_contestation_panel(None, conversation=conv, actor=admin)
     assert panel["readOnly"] is True
     assert panel["canContest"] is False
 
 
-def test_send_fatura_uses_same_analysis_without_serasa_or_local_document(monkeypatch):
+@pytest.mark.parametrize("prospecta_role", ["CONSULTOR", "GESTOR", "ADMIN"])
+def test_send_fatura_uses_same_analysis_without_serasa_or_local_document(monkeypatch, prospecta_role):
     conv, actor = _setup(monkeypatch)
+    actor.role = prospecta_role
     calls = []
     audits = []
 
@@ -205,6 +213,18 @@ def test_invalid_contestation_fails_without_external_submission(
             None, conversation=conv, actor=actor,
             reason_type=reason_type, justification=justification,
             doc_confirmed=confirmed, documents=documents,
+        )
+
+
+def test_crm_contestation_for_manager_requires_same_conversation_owner(monkeypatch):
+    conv, actor = _setup(monkeypatch)
+    actor.role = "GESTOR"
+    actor.id = 13  # gestor de outra conversa não personifica vendedor.
+    with pytest.raises(CRMManualError, match="responsável"):
+        contest.send_contestation(
+            None, conversation=conv, actor=actor,
+            reason_type="geral", justification="Solicitação", doc_confirmed=False,
+            documents=[],
         )
 
 
