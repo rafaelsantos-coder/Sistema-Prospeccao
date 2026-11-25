@@ -10,6 +10,7 @@ from app.config import settings
 from app.models import (
     ConversationZApiInstance,
     ServiceQueue,
+    ServiceQueueMetaAccount,
     ServiceQueueZApiInstance,
     ZApiInstance,
 )
@@ -383,7 +384,10 @@ def seed_default_zapi_instance(
         item.active = True
 
     queue_ids = list(db.scalars(select(ServiceQueue.id)))
+    # A fila Meta já possui provedor, mesmo sem vínculo Z-API.
+    # Nunca substituir essa configuração durante o bootstrap/redeploy.
     bound_queue_ids = set(db.scalars(select(ServiceQueueZApiInstance.queue_id)))
+    bound_queue_ids.update(db.scalars(select(ServiceQueueMetaAccount.queue_id)))
     for queue_id in queue_ids:
         if queue_id not in bound_queue_ids:
             bind_queue_instance(db, queue_id, item.id)
