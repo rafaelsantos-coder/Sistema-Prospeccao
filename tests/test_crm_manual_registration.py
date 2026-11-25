@@ -42,6 +42,12 @@ def _login(client: TestClient) -> None:
         ("Fabiano Braga", "fabiano.braga", 17, 63),
         ("Gabriele Naiane Barbosa", "gabriele.barbosa", 17, 63),
         ("Michele Zandona", "michele.zandona", 17, 63),
+        ("Jenifer Garcia Dutra", "jenifer.dutra", 18, 71),
+        ("Daiane Mattos", "daiane.mattos", 18, 71),
+        ("Daiane dos Santos Mattos", "daiane.mattos", 18, 71),
+        ("Andressa Reus", "andressa.reus", 18, 71),
+        ("Larissa Almeida", "larissa.almeida", 15, 47),
+        ("Larissa da Rosa de Almeida", "larissa.almeida", 15, 47),
     ],
 )
 def test_seller_mapping_is_exact(name, username, funnel, stage):
@@ -83,6 +89,63 @@ def test_new_santa_rosa_sellers_allow_upgrade_without_inventing_upgrade_stage(
     assert not manual._verified_stage(seller, 23, 0)
     user.active = False
     assert manual.seller_for_user(user) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "username", "user_id", "funnel_id", "funnel_name", "stage_id"),
+    [
+        ("Jenifer Garcia Dutra", "jenifer.dutra", 8, 18, "Digital", 71),
+        ("Daiane Mattos", "daiane.mattos", 11, 18, "Digital", 71),
+        ("Andressa Reus", "andressa.reus", 4, 18, "Digital", 71),
+        ("Larissa Almeida", "larissa.almeida", 40, 15, "Missões", 47),
+    ],
+)
+def test_crm_digital_and_missoes_sellers_have_verified_funnels(
+    name, username, user_id, funnel_id, funnel_name, stage_id,
+):
+    seller = manual.seller_for_user(User(
+        name=name, email="conta@sulnet.local", password_hash="x", active=True,
+    ))
+    assert seller is not None
+    assert (
+        seller.username, seller.user_id, seller.funnel_id,
+        seller.funnel_name, seller.stage_id,
+    ) == (username, user_id, funnel_id, funnel_name, stage_id)
+    assert seller.additional_funnel_ids == (23, 24)
+    assert manual._verified_stage(seller, funnel_id, stage_id)
+    assert not manual._verified_stage(seller, funnel_id, 55)
+    assert not manual._verified_stage(seller, funnel_id, 63)
+    # Upgrade e troca de endereço têm etapas próprias; não presumir estágio.
+    assert manual.seller_accepts_funnel(seller, 23)
+    assert manual.seller_accepts_funnel(seller, 24)
+    assert manual._verified_stage(seller, 23, 100)
+    assert manual._verified_stage(seller, 24, 100)
+    assert not manual._verified_stage(seller, 23, None)
+    assert not manual._verified_stage(seller, 24, 0)
+    assert not manual.seller_accepts_funnel(seller, 16)
+    assert not manual.seller_accepts_funnel(seller, 17)
+    assert not manual._verified_stage(seller, 16, 55, newly_created=False)
+    assert not manual._verified_stage(seller, 17, 63, newly_created=False)
+
+
+def test_crm_seller_aliases_remain_same_owner():
+    aliases = (
+        ("Daiane Mattos", "Daiane dos Santos Mattos"),
+        ("Larissa Almeida", "Larissa da Rosa de Almeida"),
+    )
+    for official, local_name in aliases:
+        seller = manual.seller_for_user(User(
+            name=official, email="crm@sulnet.local", password_hash="x", active=True,
+        ))
+        alias = manual.seller_for_user(User(
+            name=local_name, email="prospecta@sulnet.local", password_hash="x", active=True,
+        ))
+        assert seller is not None
+        assert seller == alias
+        assert manual.seller_for_user(User(
+            name=local_name, email="prospecta@sulnet.local", password_hash="x",
+            active=False,
+        )) is None
 
 
 def test_crm_search_rejects_incomplete_pagination_and_unknown_shape():
