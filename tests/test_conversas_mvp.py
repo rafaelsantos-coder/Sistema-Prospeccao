@@ -180,7 +180,7 @@ def test_conversas_mvp_new_chat_json_creates_owner_without_sending():
         assert page.status_code == 200
         assert 'id="mvp-new-open"' in page.text
         assert 'id="mvp-new-dialog"' in page.text
-        assert f'<option value="{queue_id}">' in page.text
+        assert f'<option value="{queue_id}" data-channel="ZAPI">' in page.text
         token = _csrf(page.text)
         response = client.post(
             "/conversations/start",
