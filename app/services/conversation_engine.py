@@ -260,6 +260,7 @@ def ensure_open_conversation(
     assign_if_unowned: bool = True,
     zapi_instance_id: int | None = None,
     meta_account_id: int | None = None,
+    allow_unbound_reuse: bool = True,
 ) -> Conversation:
     # Canais não se misturam: Telegram só reaproveita conversa Telegram, e o
     # restante nunca cai numa conversa de Telegram (a resposta sairia no canal errado).
@@ -320,7 +321,7 @@ def ensure_open_conversation(
             .order_by(Conversation.updated_at.desc())
             .limit(1)
         )
-        if not conversation:
+        if not conversation and allow_unbound_reuse:
             conversation = db.scalar(
                 select(Conversation)
                 .outerjoin(
