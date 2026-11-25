@@ -49,6 +49,8 @@ def _login(client: TestClient) -> None:
         ("Andressa Reus", "andressa.reus", 18, 71),
         ("Larissa Almeida", "larissa.almeida", 15, 47),
         ("Larissa da Rosa de Almeida", "larissa.almeida", 15, 47),
+        ("Rafael Trennepohl", "rafael.santos", 15, 47),
+        ("rafael.vendedor", "rafael.santos", 15, 47),
     ],
 )
 def test_seller_mapping_is_exact(name, username, funnel, stage):
@@ -148,6 +150,47 @@ def test_crm_seller_aliases_remain_same_owner():
             name=local_name, email="prospecta@sulnet.local", password_hash="x",
             active=False,
         )) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "email"),
+    [
+        ("Rafael Trennepohl", "rafael.vendedor@sulnet.local"),
+        ("rafael.vendedor", "rafael.vendedor@sulnet.local"),
+        ("Rafael Trennepohl", "rafael@sulnet.local"),
+        ("Nome comercial diferente", "rafael.vendedor@sulnet.local"),
+    ],
+)
+def test_rafael_prospecta_account_maps_to_confirmed_crm_manager(name, email):
+    seller = manual.seller_for_user(User(
+        name=name, email=email, password_hash="x", role="GESTOR", active=True,
+    ))
+    assert seller == manual.CRMSeller(
+        "rafael.santos", 7, 15, "Missões", 47,
+        (16, 17, 18, 11, 3, 13, 20, 22, 23, 24),
+    )
+    assert manual._verified_stage(seller, 15, 47)
+    assert not manual._verified_stage(seller, 15, 71)
+    assert all(manual.seller_accepts_funnel(seller, fid) for fid in (
+        15, 16, 17, 18, 11, 3, 13, 20, 22, 23, 24
+    ))
+    assert not manual.seller_accepts_funnel(seller, 999)
+    assert manual._verified_stage(seller, 18, 71)  # etapa própria de funil adicional
+    assert not manual._verified_stage(seller, 18, None)
+    assert manual.seller_for_user(User(
+        name=name, email=email, password_hash="x", active=False,
+    )) is None
+
+
+def test_rafael_login_never_impersonates_other_registered_seller():
+    assert manual.seller_for_user(User(
+        name="Fabiano Braga", email="rafael.vendedor@sulnet.local",
+        password_hash="x", active=True,
+    )) is None
+    assert manual.seller_for_user(User(
+        name="Rafael qualquer", email="outro.usuario@sulnet.local",
+        password_hash="x", active=True,
+    )) is None
 
 
 def test_crm_search_rejects_incomplete_pagination_and_unknown_shape():
