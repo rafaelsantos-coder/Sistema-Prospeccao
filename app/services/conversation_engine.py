@@ -18,6 +18,7 @@ from app.models import (
     Conversation,
     ConversationAssignment,
     ConversationQueueLink,
+    ConversationMetaAccount,
     ConversationZApiInstance,
     ZApiInstance,
     Lead,
@@ -256,6 +257,7 @@ def ensure_open_conversation(
     queue_origin: str = "INBOUND",
     assign_if_unowned: bool = True,
     zapi_instance_id: int | None = None,
+    meta_account_id: int | None = None,
 ) -> Conversation:
     # Canais não se misturam: Telegram só reaproveita conversa Telegram, e o
     # restante nunca cai numa conversa de Telegram (a resposta sairia no canal errado).
@@ -270,6 +272,20 @@ def ensure_open_conversation(
                 Conversation.contact_id == contact.id,
                 Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
                 channel_filter,
+            )
+            .order_by(Conversation.updated_at.desc())
+            .limit(1)
+        )
+    elif meta_account_id:
+        # Never reuse a conversation from another sender number/provider.
+        conversation = db.scalar(
+            select(Conversation)
+            .join(ConversationMetaAccount, ConversationMetaAccount.conversation_id == Conversation.id)
+            .where(
+                Conversation.contact_id == contact.id,
+                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                channel_filter,
+                ConversationMetaAccount.meta_account_id == meta_account_id,
             )
             .order_by(Conversation.updated_at.desc())
             .limit(1)
@@ -302,6 +318,7 @@ def ensure_open_conversation(
                     Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
                 channel_filter,
                     ConversationZApiInstance.id.is_(None),
+                    ~exists().where(ConversationMetaAccount.conversation_id == Conversation.id),
                 )
                 .order_by(Conversation.updated_at.desc())
                 .limit(1)
@@ -444,6 +461,10 @@ def ensure_open_conversation(
 
     if zapi_instance_id:
         bind_conversation_instance(db, conversation.id, zapi_instance_id)
+    if meta_account_id:
+        from app.services.meta_whatsapp import bind_conversation_meta_account
+
+        bind_conversation_meta_account(db, conversation.id, meta_account_id)
 
     if queue:
         bind_conversation_queue(
@@ -981,6 +1002,7 @@ def store_received_payload(
     *,
     queue_id: int | None = None,
     zapi_instance_id: int | None = None,
+    meta_account_id: int | None = None,
 ) -> tuple[Conversation | None, Message | None, bool]:
     if payload.get("isGroup") or payload.get("isNewsletter") or payload.get("isStatusReply"):
         return None, None, False
@@ -1021,8 +1043,9 @@ def store_received_payload(
         lead=lead,
         source="WHATSAPP",
         queue_id=queue_id,
-        queue_origin="ZAPI_INSTANCE" if zapi_instance_id else "INBOUND",
+        queue_origin="META_INSTANCE" if meta_account_id else ("ZAPI_INSTANCE" if zapi_instance_id else "INBOUND"),
         zapi_instance_id=zapi_instance_id,
+        meta_account_id=meta_account_id,
     )
 
     from_me = payload_from_me(payload)

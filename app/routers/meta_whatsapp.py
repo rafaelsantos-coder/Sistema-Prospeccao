@@ -80,11 +80,8 @@ def _process_meta_value(
             db,
             engine_payload,
             queue_id=queue_id,
+            meta_account_id=meta_account_id,
         )
-        if conversation and meta_account_id:
-            from app.services.meta_whatsapp import bind_conversation_meta_account
-
-            bind_conversation_meta_account(db, conversation.id, meta_account_id)
         if stored:
             processed += 1
 
