@@ -336,6 +336,18 @@ def test_quick_start_from_phone_opens_chat_without_template_or_message():
             )
             bind_queue_instance(db, queue.id, instance.id)
             queue_id, instance_id = queue.id, instance.id
+            # A legacy chat without provider binding must not be adopted by
+            # a new outgoing conversation, even if it has the same contact.
+            legacy_contact = Contact(phone="5588999921143", name="Cliente antigo")
+            db.add(legacy_contact)
+            db.flush()
+            legacy = Conversation(contact_id=legacy_contact.id, team="DIGITAL",
+                                  source="MANUAL", status="EM_ATENDIMENTO")
+            db.add(legacy)
+            db.flush()
+            legacy_id = legacy.id
+            db.add(Message(conversation_id=legacy.id, contact_id=legacy_contact.id,
+                           direction="INBOUND", message_type="TEXT", body="Histórico antigo", status="RECEIVED"))
             db.commit()
 
         inbox = client.get("/conversations")
@@ -356,6 +368,7 @@ def test_quick_start_from_phone_opens_chat_without_template_or_message():
         assert created.headers["location"].startswith("/conversations/")
         assert "?quick=1" in created.headers["location"]
         conversation_id = int(created.headers["location"].split("/")[2].split("?")[0])
+        assert conversation_id != legacy_id
         page = client.get(created.headers["location"])
         assert page.status_code == 200
         assert 'class="chat-send-form"' in page.text
@@ -380,17 +393,22 @@ def test_quick_start_from_phone_opens_chat_without_template_or_message():
         opened_again = client.post(
             "/conversations/start",
             data={"csrf_token": token, "queue_id": queue_id,
-                  "phone": "5588999921143"},
+                  "phone": "5588999921143", "meta_parameters": "[]"},
+            headers={"Accept": "application/json", "X-Prospecta-Desktop": "1"},
             follow_redirects=False,
         )
-        assert opened_again.status_code == 303
-        assert opened_again.headers["location"] == created.headers["location"]
+        assert opened_again.status_code == 200
+        assert opened_again.json()["conversation_id"] == conversation_id
+        assert opened_again.json()["reused"] is True
         with SessionLocal() as db:
             contact = db.scalar(select(Contact).where(Contact.phone == "5588999921143"))
             assert contact is not None
             assert db.scalar(select(func.count(Conversation.id)).where(
                 Conversation.contact_id == contact.id
-            )) == 1
+            )) == 2
+            assert db.scalar(select(ConversationZApiInstance).where(
+                ConversationZApiInstance.conversation_id == legacy_id
+            )) is None
 
 
 def test_quick_start_rejects_unavailable_queue_and_bad_phone():
