@@ -43,6 +43,7 @@ def _login(client: TestClient) -> None:
         ("Gabriele Naiane Barbosa", "gabriele.barbosa", 17, 63),
         ("Michele Zandona", "michele.zandona", 17, 63),
         ("Jenifer Garcia Dutra", "jenifer.dutra", 18, 71),
+        ("Jennifer Garcia Dutra", "jenifer.dutra", 18, 71),
         ("Daiane Mattos", "daiane.mattos", 18, 71),
         ("Daiane dos Santos Mattos", "daiane.mattos", 18, 71),
         ("Andressa Reus", "andressa.reus", 18, 71),
@@ -132,6 +133,7 @@ def test_crm_seller_aliases_remain_same_owner():
     aliases = (
         ("Daiane Mattos", "Daiane dos Santos Mattos"),
         ("Larissa Almeida", "Larissa da Rosa de Almeida"),
+        ("Jenifer Garcia Dutra", "Jennifer Garcia Dutra"),
     )
     for official, local_name in aliases:
         seller = manual.seller_for_user(User(
