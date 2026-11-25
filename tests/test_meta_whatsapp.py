@@ -471,3 +471,90 @@ def test_zapi_seed_preserves_meta_queue(monkeypatch):
             assert queue_instance(db, queue.id) is None
         finally:
             db.rollback()
+
+
+def test_manual_meta_and_zapi_separate_same_phone(monkeypatch):
+    from app.models import Conversation, ConversationZApiInstance, ConversationMetaAccount, Message
+    from app.routers import conversations
+    from app.services.zapi_instances import bind_queue_instance
+    suffix = uuid4().hex[:8]
+    phone = "55559" + str(int(suffix, 16)).zfill(8)[-8:]
+    rows = [{"id": "123", "name": "oferta", "language": "pt_BR",
+             "status": "APPROVED", "category": "MARKETING",
+             "components": [{"type": "BODY", "text": "Olá {{1}}!"}]},
+            {"id": "456", "name": "pendente", "language": "pt_BR",
+             "status": "PENDING", "category": "MARKETING",
+             "components": [{"type": "BODY", "text": "Não enviar"}]}]
+    sent = []
+    def fake_send(self, *, phone, template):
+        sent.append((phone, template))
+        return {"messageId": "wamid.manual." + suffix}
+    monkeypatch.setattr(MetaWhatsAppService, "send_template", fake_send)
+    monkeypatch.setattr(conversations, "list_official_templates", lambda account: rows)
+    monkeypatch.setattr(conversations, "is_official_digital", lambda account: account.name == "Meta manual " + suffix)
+    monkeypatch.setattr(conversations, "is_digital_queue", lambda queue: queue.name == "Digital manual " + suffix)
+    with TestClient(app) as client:
+        token = _login(client)
+        with SessionLocal() as db:
+            account = create_meta_account(db, name="Meta manual " + suffix, phone_label="",
+                phone_number_id="meta-manual-" + suffix, waba_id="123456",
+                access_token="test-meta-token", app_secret="", verify_token="",
+                graph_api_version="v27.0", created_by_id=None)
+            digital = ServiceQueue(name="Digital manual " + suffix, code="MM-" + suffix,
+                team="DIGITAL", routing_strategy="MANUAL", active=True)
+            general = ServiceQueue(name="Comercial manual " + suffix, code="ZM-" + suffix,
+                team="LOJA", routing_strategy="MANUAL", active=True)
+            db.add_all([digital, general])
+            db.flush()
+            bind_queue_meta_account(db, digital.id, account.id)
+            instance = create_zapi_instance(db, name="Z-API manual " + suffix, phone_label="Teste",
+                base_url="https://api.z-api.io", instance_id="manual-" + suffix,
+                instance_token="test-instance", client_token="test-client", created_by_id=None)
+            bind_queue_instance(db, general.id, instance.id)
+            digital_id, general_id, account_id = digital.id, general.id, account.id
+            db.commit()
+        page = client.get("/conversations")
+        assert page.status_code == 200
+        assert f'value="{digital_id}" data-channel="META"' in page.text
+        assert f'value="{general_id}" data-channel="ZAPI"' in page.text
+        mobile = client.get("/conversas")
+        assert f'value="{digital_id}" data-channel="META"' in mobile.text
+        assert f'value="{general_id}" data-channel="ZAPI"' in mobile.text
+        token = _csrf(page.text)
+        headers = {"Accept": "application/json"}
+        def start(queue_id, **extra):
+            return client.post("/conversations/start", data={"csrf_token": token,
+                "phone": phone, "queue_id": queue_id, **extra},
+                headers=headers, follow_redirects=False)
+        catalog = client.get(f"/conversations/start/meta-templates?queue_id={digital_id}")
+        assert catalog.status_code == 200, catalog.text
+        assert [x["id"] for x in catalog.json()["templates"]] == ["123"]
+        assert client.get(f"/conversations/start/meta-templates?queue_id={general_id}").status_code == 403
+        assert start(digital_id).status_code == 400
+        assert start(digital_id, template_id="internal").status_code == 400
+        assert start(digital_id, meta_template_id="123", meta_parameters='["Ana"]').status_code == 400
+        assert start(digital_id, meta_template_id="456", meta_consent="true").status_code == 400
+        assert start(general_id, meta_template_id="123").status_code == 400
+        assert not sent
+        zapi = start(general_id)
+        assert zapi.status_code == 200, zapi.text
+        meta = start(digital_id, meta_template_id="123", meta_parameters='["Ana"]', meta_consent="true")
+        assert meta.status_code == 200, meta.text
+        mid = meta.json()["conversation_id"]
+        zid = zapi.json()["conversation_id"]
+        assert mid != zid
+        assert len(sent) == 1
+        assert sent[0][1]["name"] == "oferta"
+        with SessionLocal() as db:
+            assert db.scalar(select(ConversationMetaAccount).where(
+                ConversationMetaAccount.conversation_id == mid)).meta_account_id == account_id
+            assert db.scalar(select(ConversationZApiInstance).where(
+                ConversationZApiInstance.conversation_id == mid)) is None
+            assert db.scalar(select(ConversationMetaAccount).where(
+                ConversationMetaAccount.conversation_id == zid)) is None
+            assert db.get(Conversation, mid).assigned_user_id is not None
+            assert db.scalar(select(Message).where(Message.conversation_id == mid)).body == "Olá Ana!"
+        blocked = client.post(f"/conversations/{mid}/send", data={"csrf_token": token,
+                              "message": "Fora da janela"}, headers=headers, follow_redirects=False)
+        assert blocked.status_code == 400, blocked.text
+        assert "24 horas" in blocked.json()["error"]
