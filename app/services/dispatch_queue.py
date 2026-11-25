@@ -887,6 +887,12 @@ def process_dispatch_recipient(
         return "failed"
 
     telegram = (dispatch.channel or "WHATSAPP") == "TELEGRAM"
+    from app.models import ServiceQueueMetaAccount
+    if not telegram and db.scalar(select(ServiceQueueMetaAccount.id).where(ServiceQueueMetaAccount.queue_id == queue.id)) is not None:
+        recipient.status = "FALHOU"
+        recipient.error = "Fila Meta exclusiva: use Campanhas Meta Oficial."
+        _finish_if_done(db, dispatch)
+        return "failed"
     telegram_link = None
     if telegram:
         # Telegram só fala com quem já abriu o bot pelo link; nunca há envio a frio.
