@@ -37,6 +37,23 @@ PROVIDER_META = "META"
 PROVIDER_ZAPI = "ZAPI"
 
 
+def is_official_digital(account: MetaWhatsAppAccount) -> bool:
+    return re.sub(r"\D", "", account.phone_label or "") in {"555535118003", "5535118003"} or account.name.strip().casefold() == "sulnet - meta oficial 01"
+
+
+def is_digital_queue(queue: ServiceQueue) -> bool:
+    return queue.team == "DIGITAL" and (
+        queue.name.strip().casefold() in {"digital", "fila digital"}
+        or queue.code.strip().upper() in {"DIGITAL", "FILA-DIGITAL", "FILA_DIGITAL"}
+    )
+
+
+def meta_linked_queues(db: Session, account_id: int) -> list[ServiceQueue]:
+    return list(db.scalars(select(ServiceQueue).join(
+        ServiceQueueMetaAccount, ServiceQueueMetaAccount.queue_id == ServiceQueue.id
+    ).where(ServiceQueueMetaAccount.meta_account_id == account_id).order_by(ServiceQueue.id)))
+
+
 class MetaWhatsAppError(ZApiError):
     pass
 
@@ -164,7 +181,16 @@ def bind_queue_meta_account(
     queue_id: int,
     meta_account_id: int,
 ) -> ServiceQueueMetaAccount:
-    # Uma fila tem um único canal WhatsApp: Meta e Z-API são mutuamente exclusivos.
+    account = db.scalar(select(MetaWhatsAppAccount).where(
+        MetaWhatsAppAccount.id == meta_account_id
+    ).with_for_update())
+    queue = db.get(ServiceQueue, queue_id)
+    if not account or not account.active or not queue:
+        raise ValueError("Conta Meta ou fila inválida.")
+    if is_official_digital(account) and not is_digital_queue(queue):
+        raise ValueError("O número oficial 3511-8003 é exclusivo da fila Digital.")
+    if any(q.id != queue_id for q in meta_linked_queues(db, account.id)):
+        raise ValueError("Número Meta já vinculado a outra fila.")
     clear_queue_zapi_binding(db, queue_id)
     link = db.scalar(
         select(ServiceQueueMetaAccount).where(ServiceQueueMetaAccount.queue_id == queue_id)
@@ -223,19 +249,14 @@ def default_queue_for_meta_account(
     db: Session,
     meta_account_id: int,
 ) -> ServiceQueue | None:
-    stmt = (
-        select(ServiceQueue)
-        .join(
-            ServiceQueueMetaAccount,
-            ServiceQueueMetaAccount.queue_id == ServiceQueue.id,
-        )
-        .where(
-            ServiceQueueMetaAccount.meta_account_id == meta_account_id,
-            ServiceQueue.active.is_(True),
-        )
-        .order_by(ServiceQueue.is_default_inbound.desc(), ServiceQueue.id.asc())
-    )
-    return db.scalar(stmt.limit(1))
+    account = db.get(MetaWhatsAppAccount, meta_account_id)
+    queues = meta_linked_queues(db, meta_account_id)
+    if not account or not account.active or len(queues) != 1 or not queues[0].active:
+        return None
+    queue = queues[0]
+    if is_official_digital(account) and not is_digital_queue(queue):
+        return None
+    return queue
 
 
 def service_for_meta_account(account: MetaWhatsAppAccount) -> "MetaWhatsAppService":

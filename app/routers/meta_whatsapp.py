@@ -76,13 +76,23 @@ def _process_meta_value(
         engine_payload = meta_inbound_to_engine_payload(
             message, contact_wa_id=contact_wa_id
         )
-        conversation, stored, _created = store_received_payload(
+        if not queue_id or not meta_account_id:
+            LOG.warning("meta_inbound_blocked account_id=%s reason=invalid_queue", meta_account_id)
+            raise HTTPException(status_code=503, detail="Fila Meta indisponível")
+        conversation, stored, created = store_received_payload(
             db,
             engine_payload,
             queue_id=queue_id,
             meta_account_id=meta_account_id,
         )
-        if stored:
+        if stored and created and conversation:
+            from app.services.queue_routing import queue_for_conversation
+            actual = queue_for_conversation(db, conversation.id)
+            if not actual or actual.id != queue_id:
+                db.rollback()
+                raise HTTPException(status_code=503, detail="Fila Meta divergente")
+            db.commit()
+            LOG.info("meta_inbound_routed account_id=%s conversation_id=%s queue_id=%s queue_name=%s", meta_account_id, conversation.id, actual.id, actual.name)
             processed += 1
 
     statuses = value.get("statuses") if isinstance(value.get("statuses"), list) else []

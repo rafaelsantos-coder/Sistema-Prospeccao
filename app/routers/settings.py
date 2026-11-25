@@ -30,6 +30,8 @@ from app.timeutils import utcnow
 from app.services.meta_whatsapp import (
     account_webhook_url,
     list_meta_accounts,
+    meta_linked_queues,
+    default_queue_for_meta_account,
     queue_meta_account,
 )
 from app.services.zapi_instances import (
@@ -421,6 +423,8 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
     meta_account_info: dict[int, dict] = {}
     for account in meta_accounts:
         info = {
+            "queues": meta_linked_queues(db, account.id),
+            "destination": default_queue_for_meta_account(db, account.id),
             "connected": None,
             "error": None,
             "phone_label": account.phone_label or "",

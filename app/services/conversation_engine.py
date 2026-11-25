@@ -39,6 +39,8 @@ from app.services.queue_routing import (
     bind_conversation_queue,
     human_online_in_queue,
     queue_for_conversation,
+    get_queue,
+    is_queue_member,
     resolve_queue,
 )
 from app.services.scoring import normalize_phone
@@ -350,7 +352,14 @@ def ensure_open_conversation(
         # essa fila é a fonte oficial do roteamento de entrada. Isso corrige
         # conversas antigas que ainda estavam presas a outra fila.
         explicit_inbound_queue = queue_id if zapi_instance_id and queue_id else None
-        if existing_queue and manually_transferred_to_ai(db, conversation.id):
+        if meta_account_id:
+            queue = get_queue(db, queue_id)
+            if not queue:
+                raise ValueError("Fila Meta indisponível")
+            if conversation.assigned_user_id and not is_queue_member(db, queue.id, conversation.assigned_user_id):
+                conversation.assigned_user_id = None
+                conversation.status = "EM_FILA"
+        elif existing_queue and manually_transferred_to_ai(db, conversation.id):
             queue = existing_queue
             queue_origin = MANUAL_AI_ORIGIN
         else:
@@ -429,13 +438,18 @@ def ensure_open_conversation(
                     lead.assigned_user_id = owner.id
         return conversation
 
-    queue = resolve_queue(
-        db,
-        explicit_queue_id=queue_id,
-        lead_id=lead.id if lead else contact.lead_id,
-        team=team,
-        branch_id=branch_id,
-    )
+    if meta_account_id:
+        queue = get_queue(db, queue_id)
+        if not queue:
+            raise ValueError("Fila Meta indisponível")
+    else:
+        queue = resolve_queue(
+            db,
+            explicit_queue_id=queue_id,
+            lead_id=lead.id if lead else contact.lead_id,
+            team=team,
+            branch_id=branch_id,
+        )
     ai_reserved = _queue_reserved_for_ai(db, queue)
     owner = (
         choose_assignee(db, contact, lead, queue=queue)
