@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead">
+  <span class="eyebrow">WHATSAPP BUSINESS · META OFICIAL</span>
+  <h2>Campanhas Meta Oficial</h2>
+  <p>Ambiente separado da Z-API. Templates e status consultados diretamente na Meta. Respostas na fila Digital.</p>
+</div>
+{% if account %}
+<article class="panel">
+  <h3>Número oficial</h3>
+  <form method="get" action="/meta-campaigns" class="stack-form">
+    <label class="field"><span>Conta oficial · Digital</span><select name="account_id">{% for a in accounts %}<option value="{{ a.id }}" {% if a.id == account.id %}selected{% endif %}>{{ a.name }} · {{ a.phone_label }}</option>{% endfor %}</select></label>
+    <button class="button button-secondary" type="submit">Sincronizar templates</button>
+  </form>
+  {% if meta_error %}<p role="alert">{{ meta_error }}</p>{% endif %}
+</article>
+<article class="panel">
+  <h3>Enviar novo template para aprovação</h3>
+  <form method="post" action="/meta-campaigns/templates" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="account_id" value="{{ account.id }}">
+    <label class="field"><span>Nome técnico (minúsculas, números e _)</span><input name="name" required maxlength="512" placeholder="oferta_fibra"></label>
+    <label class="field"><span>Categoria</span><select name="category"><option value="MARKETING">Marketing</option><option value="UTILITY">Utilidade (não promocional)</option></select></label>
+    <label class="field"><span>Cabeçalho de texto (opcional)</span><input name="header" maxlength="60"></label>
+    <label class="field"><span>Mensagem · Português (Brasil)</span><textarea name="body" required maxlength="1024" rows="5"></textarea></label>
+    <label class="field"><span>Exemplos das variáveis (um por linha, em ordem)</span><textarea name="examples" rows="3"></textarea></label>
+    <label class="field"><span>Rodapé (opcional)</span><input name="footer" maxlength="60"></label>
+    <label class="field"><span>Botões de resposta rápida (até 3, um por linha)</span><textarea name="buttons" rows="3"></textarea></label>
+    <button class="button button-primary" type="submit">Enviar para aprovação da Meta</button>
+  </form>
+</article>
+<article class="panel">
+  <h3>Templates oficiais e aprovação</h3>
+  {% if not templates and not meta_error %}<p>Nenhum template encontrado nesta conta.</p>{% endif %}
+  <table><thead><tr><th>Nome</th><th>Idioma</th><th>Categoria</th><th>Status oficial</th></tr></thead><tbody>
+  {% for t in templates %}<tr><td>{{ t.name }}</td><td>{{ t.language }}</td><td>{{ t.category }}</td><td>{{ t.status }}</td></tr>{% endfor %}
+  </tbody></table>
+  <p>Somente modelos APPROVED poderão ser usados no futuro motor exclusivo. O disparo de campanhas Meta ainda não está habilitado.</p>
+</article>
+{% else %}
+<article class="panel"><p>Nenhuma conta Meta oficial ativa vinculada exclusivamente à fila Digital. Verifique o cadastro do número em Configurações.</p><a href="/settings/whatsapp">Números WhatsApp</a></article>
+{% endif %}
+{% endblock %}

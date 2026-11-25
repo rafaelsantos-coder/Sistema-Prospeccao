@@ -290,6 +290,8 @@ app.include_router(presence.router)
 app.include_router(queues.router)
 app.include_router(settings_router.router)
 app.include_router(zapi.router)
+from app.routers import meta_campaigns
+app.include_router(meta_campaigns.router)
 app.include_router(meta_whatsapp.router)
 app.include_router(telegram_router.router)
 app.include_router(zapsign.router)

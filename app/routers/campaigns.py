@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.responses import RedirectResponse
 
 from app.database import get_db
-from app.models import Branch, Campaign, CampaignQueueLink
+from app.models import Branch, Campaign, CampaignQueueLink, ServiceQueueMetaAccount
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.audit import write_audit
 from app.services.campaign_queue import campaign_queue_counts, enqueue_campaign
@@ -44,7 +44,8 @@ def list_campaigns(request: Request, db: Session = Depends(get_db)):
     campaigns = list(db.scalars(stmt))
     branches = list(db.scalars(select(Branch).where(Branch.active.is_(True)).order_by(Branch.city)))
     queue_counts = {campaign.id: campaign_queue_counts(db, campaign.id) for campaign in campaigns}
-    service_queues = available_queues_for_user(db, user)
+    meta_queue_ids = set(db.scalars(select(ServiceQueueMetaAccount.queue_id)))
+    service_queues = [q for q in available_queues_for_user(db, user) if q.id not in meta_queue_ids]
     campaign_queues = {
         campaign.id: queue_for_campaign(db, campaign.id)
         for campaign in campaigns
@@ -105,6 +106,9 @@ async def create_campaign(
         return RedirectResponse("/campaigns", status_code=303)
     if selected_queue and selected_queue.id not in {item.id for item in available_queues_for_user(db, user)}:
         flash(request, "Você não possui acesso a esta fila.", "error")
+        return RedirectResponse("/campaigns", status_code=303)
+    if selected_queue and db.scalar(select(ServiceQueueMetaAccount.id).where(ServiceQueueMetaAccount.queue_id == selected_queue.id)) is not None:
+        flash(request, "Use Campanhas Meta Oficial para esta fila.", "warning")
         return RedirectResponse("/campaigns", status_code=303)
     if not clean_message:
         flash(request, "Informe a mensagem inicial da campanha.", "warning")
@@ -311,6 +315,10 @@ def enqueue_campaign_recipients(
         return RedirectResponse("/campaigns", status_code=303)
     if not queue_for_campaign(db, campaign.id):
         flash(request, "Defina uma fila de atendimento para esta campanha antes do disparo.", "warning")
+        return RedirectResponse("/campaigns", status_code=303)
+    selected_queue = queue_for_campaign(db, campaign.id)
+    if selected_queue and db.scalar(select(ServiceQueueMetaAccount.id).where(ServiceQueueMetaAccount.queue_id == selected_queue.id)) is not None:
+        flash(request, "Use Campanhas Meta Oficial para esta fila.", "warning")
         return RedirectResponse("/campaigns", status_code=303)
     if campaign.status not in {"APROVADA", "PAUSADA", "ATIVA"}:
         flash(request, "A campanha precisa ser aprovada antes de entrar na fila.", "warning")

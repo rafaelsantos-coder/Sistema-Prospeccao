@@ -73,12 +73,15 @@
       {% endif %}
       {% if 'campaigns.view' in current_user.permissions %}
       <a href="/campaigns" class="nav-item {% if active_nav == 'campaigns' %}active{% endif %}">
-        <span class="nav-icon">◈</span><span>Campanhas</span>
+        <span class="nav-icon">◈</span><span>Campanhas Z-API</span>
       </a>
+      {% endif %}
+      {% if current_user.role in ['ADMIN', 'GESTOR'] %}
+      <a href="/meta-campaigns" class="nav-item {% if active_nav == 'meta_campaigns' %}active{% endif %}"><span class="nav-icon">◈</span><span>Campanhas Meta Oficial</span></a>
       {% endif %}
       {% if 'dispatches.view' in current_user.permissions %}
       <a href="/dispatches" class="nav-item {% if active_nav == 'dispatches' %}active{% endif %}">
-        <span class="nav-icon">➤</span><span>Disparos</span>
+        <span class="nav-icon">➤</span><span>Disparos Z-API / Telegram</span>
       </a>
       {% endif %}
       {% if 'ai.view' in current_user.permissions %}

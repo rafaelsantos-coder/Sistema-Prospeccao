@@ -16,6 +16,7 @@ from app.models import (
     Lead,
     Message,
     ServiceQueue,
+    ServiceQueueMetaAccount,
     User,
 )
 from app.security import get_current_user, require_permission, validate_csrf
@@ -112,7 +113,7 @@ def dispatch_list(request: Request, db: Session = Depends(get_db)):
         dispatches=dispatches,
         counts=counts,
         campaigns=_campaigns(db),
-        service_queues=available_queues_for_user(db, actor),
+        service_queues=[q for q in available_queues_for_user(db, actor) if q.id not in set(db.scalars(select(ServiceQueueMetaAccount.queue_id)))],
         telegram_ready=telegram_configured(),
         format_duration=format_duration,
     )
@@ -184,6 +185,10 @@ def create_dispatch(
         if not queue or queue.id not in allowed_queue_ids:
             flash(request, "Selecione uma fila ativa e permitida.", "warning")
             return RedirectResponse("/dispatches", status_code=303)
+
+    if channel != "TELEGRAM" and db.scalar(select(ServiceQueueMetaAccount.id).where(ServiceQueueMetaAccount.queue_id == queue.id)) is not None:
+        flash(request, "Use Campanhas Meta Oficial para esta fila.", "warning")
+        return RedirectResponse("/dispatches", status_code=303)
 
     interval = max(5, min(int(interval_seconds or 30), 3600))
     limit = max(1, min(int(daily_limit or campaign.daily_limit or 100), 5000))
