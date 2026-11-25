@@ -2385,7 +2385,7 @@ def submit_credit_contestation(
     if redirect:
         return redirect
     validate_csrf(request, csrf_token)
-    require_roles(user, "CONSULTOR", "SUPERVISOR")
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
     conversation = _get_conversation(db, user, conversation_id)
     if conversation is None:
         return _conversation_unavailable(request)
