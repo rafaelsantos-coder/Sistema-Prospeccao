@@ -34,3 +34,35 @@ def test_only_official_digital_accounts(monkeypatch):
     monkeypatch.setattr(meta_campaigns, "default_queue_for_meta_account", lambda db, account_id: Mock())
     monkeypatch.setattr(meta_campaigns, "is_digital_queue", lambda q: True)
     assert meta_campaigns._accounts(None) == [official]
+
+
+def test_validate_waba_matches_phone_and_checks_templates(monkeypatch):
+    account = Mock(phone_number_id="123")
+    calls = []
+    def graph(account, method, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("edge") == "phone_numbers":
+            return {"data": [{"id": "123"}]}
+        return {"data": []}
+    monkeypatch.setattr(meta_campaigns, "_graph", graph)
+    meta_campaigns._validate_waba(account, "456")
+    assert len(calls) == 2
+    assert all(c["waba_id"] == "456" for c in calls)
+
+
+def test_validate_waba_rejects_wrong_phone(monkeypatch):
+    account = Mock(phone_number_id="123")
+    monkeypatch.setattr(meta_campaigns, "_graph", lambda *a, **kw: {"data": [{"id": "999"}]})
+    with pytest.raises(ValueError, match="não contém"):
+        meta_campaigns._validate_waba(account, "456")
+
+
+def test_validate_waba_rejects_failed_template_permission(monkeypatch):
+    account = Mock(phone_number_id="123")
+    def graph(account, method, **kwargs):
+        if kwargs.get("edge") == "phone_numbers":
+            return {"data": [{"id": "123"}]}
+        raise ValueError("sem acesso")
+    monkeypatch.setattr(meta_campaigns, "_graph", graph)
+    with pytest.raises(ValueError, match="sem acesso"):
+        meta_campaigns._validate_waba(account, "456")
