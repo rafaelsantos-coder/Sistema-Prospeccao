@@ -347,3 +347,51 @@ def test_meta_inbound_payload_conversion():
     assert payload["phone"] == "5555999999999"
     assert payload["fromMe"] is False
     assert payload["buttonsResponseMessage"]["message"] == "Quero fibra"
+
+
+def test_meta_inbound_does_not_reuse_other_provider_or_meta_account(monkeypatch):
+    from app.services.conversation_engine import store_received_payload
+    from app.services.meta_whatsapp import conversation_meta_account
+    from app.services.queue_routing import queue_for_conversation
+
+    suffix = uuid4().hex[:8]
+    phone = "55559" + str(int(suffix, 16)).zfill(8)[-8:]
+    with SessionLocal() as db:
+        accounts = []
+        queues = []
+        for idx in range(2):
+            account = create_meta_account(
+                db, name=f"Meta {suffix}-{idx}", phone_label="",
+                phone_number_id=f"pn-{suffix}-{idx}", waba_id="",
+                access_token="test-token", app_secret="", verify_token="",
+                graph_api_version="v27.0", created_by_id=None,
+            )
+            queue = ServiceQueue(
+                name=f"Digital {suffix}-{idx}", code=f"MET-{suffix}-{idx}",
+                team="DIGITAL", routing_strategy="MANUAL", active=True,
+            )
+            db.add(queue)
+            db.flush()
+            bind_queue_meta_account(db, queue.id, account.id)
+            accounts.append(account)
+            queues.append(queue)
+        def receive(message_id, **kwargs):
+            conversation, message, _ = store_received_payload(
+                db, {"phone": phone, "fromMe": False,
+                     "messageId": f"{suffix}-{message_id}",
+                     "text": {"message": "teste"}}, **kwargs,
+            )
+            assert conversation is not None and message is not None
+            return conversation
+        original = receive("other")
+        first = receive("first", queue_id=queues[0].id, meta_account_id=accounts[0].id)
+        second = receive("second", queue_id=queues[1].id, meta_account_id=accounts[1].id)
+        repeated = receive("repeat", queue_id=queues[0].id, meta_account_id=accounts[0].id)
+        assert len({original.id, first.id, second.id}) == 3
+        assert repeated.id == first.id
+        assert conversation_meta_account(db, original.id) is None
+        assert conversation_meta_account(db, first.id).id == accounts[0].id
+        assert conversation_meta_account(db, second.id).id == accounts[1].id
+        assert queue_for_conversation(db, first.id).id == queues[0].id
+        assert queue_for_conversation(db, second.id).id == queues[1].id
+        db.rollback()
