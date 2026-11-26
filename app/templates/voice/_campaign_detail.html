@@ -61,11 +61,28 @@
     <span><strong>Origem:</strong> {{ campaign.sip_account.name }}</span>
     <span><strong>Destino:</strong> {{ (campaign.group.name ~ ' (' ~ campaign.group.target_extension ~ ')') if campaign.group else 'Sem transferência — áudio e encerramento' }}</span>
     <span><strong>Janela:</strong> {{ campaign.window_start }}–{{ campaign.window_end }}</span>
-    <span><strong>Limite:</strong> {{ campaign.daily_limit }}/dia</span>
+    <span><strong>Quantidade configurada:</strong> {{ campaign.daily_limit }}/dia</span>
+    {% if campaign.outbound_routing_mode != 'ACCOUNT' %}
+    <span><strong>Saida Native:</strong>
+      {{ 'Rodizio automatico' if campaign.outbound_routing_mode == 'NATIVE_ROUND_ROBIN' else 'Linha fixa' }}
+      · {{ campaign.native_techprefixes }}</span>
+    <span><strong>DDD local Native:</strong> {{ campaign.native_local_ddd }}</span>
+    {% endif %}
     <span><strong>Formato SIP:</strong> {{ 'DDD + número (sem DDI)' if campaign.dial_format == 'NATIONAL' else 'DDI 55 + DDD + número (E.164)' }}</span>
     <span><strong>Próximo exemplo discado:</strong> {{ sip_preview or 'Importe contatos' }}</span>
   </div>
   
+  {% if campaign.outbound_routing_mode != 'ACCOUNT' %}
+  <div class="voice-native-usage">
+    <div><strong>Origem das chamadas · Native</strong><p class="voice-help">Distribuicao real registrada no banco. O rodizio segue de onde parou na retomada.</p></div>
+    <div class="voice-native-usage-items">
+      {% for code in campaign.native_techprefixes.split(',') if code %}
+      <span><strong>{{ code }}</strong> · (55) 3511-{{ code }}:
+        <b data-voice-native-stat="{{ code }}">{{ report.native_line_counts.get(code, 0) }}</b> tentativa(s)</span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
   <section class="voice-live-monitor" data-voice-campaign="{{ campaign.id }}" data-voice-status-code="{{ campaign.status }}" aria-label="Acompanhamento de {{ campaign.name }}">
     <div class="voice-live-header">
       <div>
@@ -95,7 +112,7 @@
         <div data-voice-attempts>
           {% if report.last_attempts %}
           {% for attempt in report.last_attempts %}
-          <p class="voice-event-line"><strong>{{ attempt.name }}</strong> · final {{ attempt.phone_suffix }} · {{ attempt.status|replace('_',' ') }}{% if attempt.detail %}<small>{{ attempt.detail }}</small>{% endif %}</p>
+          <p class="voice-event-line"><strong>{{ attempt.name }}</strong> · final {{ attempt.phone_suffix }} · {{ attempt.status|replace('_',' ') }}{% if attempt.origin_prefix %} · origem Native {{ attempt.origin_prefix }}{% endif %}{% if attempt.detail %}<small>{{ attempt.detail }}</small>{% endif %}</p>
           {% endfor %}
           {% else %}<p class="voice-help">Nenhuma tentativa registrada.</p>{% endif %}
         </div>
