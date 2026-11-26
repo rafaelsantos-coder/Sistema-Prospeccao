@@ -756,6 +756,45 @@ def exclusive_conversation_access_clause(user: User):
     return Conversation.id.not_in(restricted)
 
 
+def _consultant_digital_membership_clause(user: User):
+    """Fila Digital exige um vínculo ativo, além da atribuição do atendimento.
+
+    Aplica-se SOMENTE ao perfil CONSULTOR. Não muda as regras de supervisor,
+    gestor, administrador ou das demais filas. Usa o mesmo identificador da
+    Fila Digital definido para o número Meta oficial.
+    """
+    digital_queue_ids = select(ServiceQueue.id).where(
+        ServiceQueue.team == "DIGITAL",
+        or_(
+            func.lower(func.trim(ServiceQueue.name)).in_(("digital", "fila digital")),
+            func.upper(func.trim(ServiceQueue.code)).in_(
+                ("DIGITAL", "FILA-DIGITAL", "FILA_DIGITAL")
+            ),
+        ),
+    )
+    digital_conversation_ids = select(ConversationQueueLink.conversation_id).where(
+        ConversationQueueLink.queue_id.in_(digital_queue_ids)
+    )
+    authorized_conversation_ids = (
+        select(ConversationQueueLink.conversation_id)
+        .join(
+            ServiceQueueMember,
+            ServiceQueueMember.queue_id == ConversationQueueLink.queue_id,
+        )
+        .join(ServiceQueue, ServiceQueue.id == ConversationQueueLink.queue_id)
+        .where(
+            ConversationQueueLink.queue_id.in_(digital_queue_ids),
+            ServiceQueue.active.is_(True),
+            ServiceQueueMember.user_id == user.id,
+            ServiceQueueMember.active.is_(True),
+        )
+    )
+    return or_(
+        Conversation.id.not_in(digital_conversation_ids),
+        Conversation.id.in_(authorized_conversation_ids),
+    )
+
+
 def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
     """Restringe as conversas que cada perfil enxerga.
 
@@ -786,10 +825,11 @@ def apply_conversation_scope(stmt, user: User, *, inbox: bool = False):
         return stmt
     if user.role == "CONSULTOR":
         return stmt.where(
+            _consultant_digital_membership_clause(user),
             or_(
                 Conversation.assigned_user_id == user.id,
                 _consultant_manual_queue_waiting(user),
-            )
+            ),
         )
     return stmt.where(Conversation.assigned_user_id == user.id)
 
