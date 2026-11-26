@@ -241,7 +241,7 @@ def update_voice_campaign(campaign_id: int, request: Request,
         return _error(request, "Campanhas sem grupo precisam usar Áudio automático.", f"/voice/campaigns/{campaign_id}/edit")
     if not name.strip() or len(name.strip()) > 180:
         return _error(request, "Informe um nome de até 180 caracteres.", f"/voice/campaigns/{campaign_id}/edit")
-    if not 1 <= daily_limit <= 1_000_000 or not 10 <= interval_seconds <= 3600:
+    if not 1 <= daily_limit <= 2_147_483_647 or not 10 <= interval_seconds <= 3600:
         return _error(request, "Quantidade diaria ou intervalo invalido.", f"/voice/campaigns/{campaign_id}/edit")
     if dial_format not in {"NATIONAL", "E164"}:
         return _error(request, "Formato de discagem SIP inválido.", f"/voice/campaigns/{campaign_id}/edit")
@@ -930,7 +930,7 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
         return _error(request, "Sem transferência, escolha a modalidade Áudio automático.")
     if not name.strip() or len(name.strip()) > 180:
         return _error(request, "Informe o nome da campanha.")
-    if not 1 <= daily_limit <= 1_000_000 or not 10 <= interval_seconds <= 3600:
+    if not 1 <= daily_limit <= 2_147_483_647 or not 10 <= interval_seconds <= 3600:
         return _error(request, "Quantidade diaria ou intervalo invalido.")
     if dial_format not in {"NATIONAL", "E164"}:
         return _error(request, "Formato de discagem invalido.")
