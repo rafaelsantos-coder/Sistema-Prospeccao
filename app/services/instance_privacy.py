@@ -30,10 +30,16 @@ def instance_for_conversation(db: Session, conversation_id: int) -> ZApiInstance
 
 
 def require_conversation_instance_access(db: Session, user: User, conversation_id: int) -> None:
+    conversation = db.get(Conversation, conversation_id)
+    if (
+        conversation is not None
+        and conversation.private_to_assignee
+        and conversation.assigned_user_id != user.id
+    ):
+        raise HTTPException(status_code=404, detail="Conversa indisponivel.")
     instance = instance_for_conversation(db, conversation_id)
     if may_access_instance(user, instance):
         return
-    conversation = db.get(Conversation, conversation_id)
     # Quem já é responsável pelo atendimento mantém acesso à própria conversa.
     if conversation is not None and conversation.assigned_user_id == user.id:
         return
@@ -42,7 +48,7 @@ def require_conversation_instance_access(db: Session, user: User, conversation_i
 
 def visible_message_clause(user: User):
     """Never blend protected messages into another conversation with same phone."""
-    restricted_conversation_ids = (
+    exclusive_restricted = (
         select(ConversationZApiInstance.conversation_id)
         .join(ZApiInstance, ConversationZApiInstance.zapi_instance_id == ZApiInstance.id)
         .join(Conversation, Conversation.id == ConversationZApiInstance.conversation_id)
@@ -60,9 +66,22 @@ def visible_message_clause(user: User):
             ),
         )
     )
-    return Message.conversation_id.not_in(restricted_conversation_ids)
+    private_restricted = select(Conversation.id).where(
+        Conversation.private_to_assignee.is_(True),
+        or_(
+            Conversation.assigned_user_id.is_(None),
+            Conversation.assigned_user_id != user.id,
+        ),
+    )
+    return and_(
+        Message.conversation_id.not_in(exclusive_restricted),
+        Message.conversation_id.not_in(private_restricted),
+    )
 
 
 def protected_conversation(db: Session, conversation_id: int) -> bool:
+    conversation = db.get(Conversation, conversation_id)
+    if conversation is not None and conversation.private_to_assignee:
+        return True
     inst = instance_for_conversation(db, conversation_id)
     return bool(inst and inst.exclusive_access)

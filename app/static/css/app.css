@@ -1025,6 +1025,7 @@ h1, h2, h3, .topbar h1, .page-lead h2, .metric-card > strong, .pipeline-item str
 .status-aguardando_cliente { background: #fff3dd; color: #a76312; }
 .status-follow_up { background: #edf2ff; color: #4866b4; }
 .status-bloqueado, .status-encerrado { background: #f0f1f3; color: #747c84; }
+.status-particular { background: #eef2f6; color: #3d4a57; border: 1px solid #c5ced6; }
 .ai-reply-status { display: inline-block; border-radius: 999px; padding: 3px 7px; font-size: 10px; font-weight: 750; background: #eef1f4; color: #384453; }
 .ai-reply-status[hidden] { display: none; }
 .ai-reply-sent { background: #e9f0ff; color: #284a8c; }

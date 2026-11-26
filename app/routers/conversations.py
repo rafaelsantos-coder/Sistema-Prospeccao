@@ -254,19 +254,27 @@ def _claim_on_human_reply(
     return True
 
 
-def _history_since(db: Session, user: User, conversation: Conversation):
-    """Apos transferencia, vendedor ve so a etapa atual do atendimento.
+_HISTORY_BOUNDARY_EVENTS = ("TRANSFERRED", "REOPENED")
 
-    O historico integral fica reservado ao gestor/administrador nos relatorios.
-    Nao utilizar contact_id ou telefone para ampliar o escopo do inbox.
+
+def _history_since(db: Session, user: User, conversation: Conversation):
+    """Apos transferencia/reabertura por outra pessoa, ve so a etapa atual.
+
+    Conversa particular: o historico integral nao sai do responsavel — nem para
+    gestor/admin na caixa. Nao usar contact_id/telefone para ampliar o escopo.
     """
+    if conversation.private_to_assignee:
+        if conversation.assigned_user_id == user.id:
+            return None
+        # Fail closed: sem dono ou outro usuario nao le o historico particular.
+        return conversation.opened_at or conversation.created_at or utcnow()
     if user.role in {"ADMIN", "GESTOR"}:
         return None
     return db.scalar(
         select(ConversationAssignment.created_at)
         .where(
             ConversationAssignment.conversation_id == conversation.id,
-            ConversationAssignment.event == "TRANSFERRED",
+            ConversationAssignment.event.in_(_HISTORY_BOUNDARY_EVENTS),
         )
         .order_by(
             ConversationAssignment.created_at.desc(),
@@ -279,10 +287,19 @@ def _history_since(db: Session, user: User, conversation: Conversation):
 def _inbox_privacy_cutoffs(
     db: Session, user: User, conversations: list[Conversation],
 ) -> dict[int, object]:
-    """Uma consulta para mascarar previews antigos de conversas transferidas."""
-    if user.role in {"ADMIN", "GESTOR"} or not conversations:
+    """Uma consulta para mascarar previews antigos apos transferencia/reabertura."""
+    if not conversations:
         return {}
-    ids = [item.id for item in conversations]
+    private_cutoffs = {
+        item.id: (item.opened_at or item.created_at or utcnow())
+        for item in conversations
+        if item.private_to_assignee and item.assigned_user_id != user.id
+    }
+    if user.role in {"ADMIN", "GESTOR"}:
+        return private_cutoffs
+    ids = [item.id for item in conversations if item.id not in private_cutoffs]
+    if not ids:
+        return private_cutoffs
     rows = db.execute(
         select(
             ConversationAssignment.conversation_id,
@@ -290,14 +307,18 @@ def _inbox_privacy_cutoffs(
         )
         .where(
             ConversationAssignment.conversation_id.in_(ids),
-            ConversationAssignment.event == "TRANSFERRED",
+            ConversationAssignment.event.in_(_HISTORY_BOUNDARY_EVENTS),
         )
         .group_by(ConversationAssignment.conversation_id)
     )
-    return {conversation_id: cutoff for conversation_id, cutoff in rows}
+    cutoffs = {conversation_id: cutoff for conversation_id, cutoff in rows}
+    cutoffs.update(private_cutoffs)
+    return cutoffs
 
 
 def _private_preview(conversation: Conversation, cutoff=None) -> str:
+    if conversation.private_to_assignee and cutoff is not None:
+        return "Conversa particular; historico restrito ao responsavel"
     if cutoff is not None and (
         conversation.last_message_at is None
         or utc_naive(conversation.last_message_at) < utc_naive(cutoff)
@@ -1422,10 +1443,43 @@ def quick_start_whatsapp_conversation(
                 ConversationZApiInstance.zapi_instance_id == instance.id,
                 ConversationZApiInstance.id.is_(None),
             ),
+            # Particular de outra pessoa: nunca reaproveitar — nova conversa comercial
+            # precisa nascer sem o histórico pessoal.
+            or_(
+                Conversation.private_to_assignee.is_(False),
+                Conversation.assigned_user_id == user.id,
+            ),
         )
         .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
         .limit(1)
     )
+    # No mesmo WhatsApp (instância), não dá para abrir atendimento paralelo a um
+    # chat particular aberto. Em outra instância/fila o comercial nasce limpo.
+    private_blocking = db.scalar(
+        select(Conversation.id)
+        .join(
+            ConversationZApiInstance,
+            ConversationZApiInstance.conversation_id == Conversation.id,
+        )
+        .where(
+            Conversation.contact_id == contact.id,
+            Conversation.source != "TELEGRAM",
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            Conversation.private_to_assignee.is_(True),
+            Conversation.assigned_user_id.is_not(None),
+            Conversation.assigned_user_id != user.id,
+            ConversationZApiInstance.zapi_instance_id == instance.id,
+        )
+        .limit(1)
+    )
+    if private_blocking is not None:
+        db.rollback()
+        return fail(
+            "Este número tem uma conversa particular ativa neste WhatsApp. "
+            "Aguarde o encerramento — o histórico particular não será compartilhado "
+            "quando você iniciar um novo atendimento.",
+            409,
+        )
     if existing and existing.assigned_user_id not in (None, user.id):
         db.rollback()
         return fail(
@@ -2225,6 +2279,41 @@ def update_conversation_status(
     }
     if conversation_status not in allowed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+
+    was_closed = conversation.status in CLOSED_CONVERSATION_STATUSES
+    reopening = was_closed and conversation_status not in CLOSED_CONVERSATION_STATUSES
+    if reopening and conversation.private_to_assignee:
+        if conversation.assigned_user_id not in (None, user.id):
+            flash(
+                request,
+                "Esta conversa é particular de outro atendente. "
+                "Use Nova conversa para um atendimento comercial sem o histórico anterior.",
+                "warning",
+            )
+            return RedirectResponse("/conversations", status_code=303)
+        if conversation.assigned_user_id is None:
+            conversation.assigned_user_id = user.id
+    elif reopening and conversation.assigned_user_id not in (None, user.id):
+        # Outro vendedor reabriu: assume o atendimento e corta o histórico anterior.
+        previous_owner = conversation.assigned_user_id
+        conversation.assigned_user_id = user.id
+        db.add(
+            ConversationAssignment(
+                conversation_id=conversation.id,
+                user_id=user.id,
+                assigned_by_id=user.id,
+                event="REOPENED",
+            )
+        )
+        write_audit(
+            db,
+            user=user,
+            action="CONVERSATION_REOPENED_BOUNDARY",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            payload={"from_user_id": previous_owner, "to_user_id": user.id},
+        )
+
     conversation.status = conversation_status
     conversation.closed_at = utcnow() if conversation_status in CLOSED_CONVERSATION_STATUSES else None
     write_audit(
@@ -2236,6 +2325,73 @@ def update_conversation_status(
         payload={"status": conversation_status},
     )
     db.commit()
+    return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+
+@router.post("/conversations/{conversation_id}/privacy")
+def update_conversation_privacy(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    private: str = Form("1"),
+    db: Session = Depends(get_db),
+):
+    """Marca ou remove o modo particular (só o responsável vê o histórico)."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    make_private = str(private).strip().lower() in {"1", "true", "sim", "on", "yes"}
+    if make_private:
+        if conversation.assigned_user_id not in (None, user.id) and user.role not in {
+            "ADMIN",
+            "GESTOR",
+        }:
+            flash(request, "Só o responsável pode tornar a conversa particular.", "warning")
+            return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+        if conversation.assigned_user_id is None:
+            conversation.assigned_user_id = user.id
+            if conversation.status in {"EM_FILA", "NOVO", "AGUARDANDO_CLIENTE"}:
+                conversation.status = "ATRIBUIDO"
+            db.add(
+                ConversationAssignment(
+                    conversation_id=conversation.id,
+                    user_id=user.id,
+                    assigned_by_id=user.id,
+                    event="CLAIMED_PRIVATE",
+                )
+            )
+        conversation.private_to_assignee = True
+        notice = (
+            "Conversa marcada como particular. Só você vê este histórico na caixa; "
+            "um novo atendimento comercial com o mesmo número nasce sem essas mensagens."
+        )
+    else:
+        if conversation.assigned_user_id != user.id and user.role not in {"ADMIN", "GESTOR"}:
+            flash(request, "Só o responsável pode remover o modo particular.", "warning")
+            return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+        if protected_conversation(db, conversation.id):
+            flash(
+                request,
+                "Esta conversa pertence a um WhatsApp de acesso exclusivo e permanece particular.",
+                "warning",
+            )
+            return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+        conversation.private_to_assignee = False
+        notice = "Modo particular removido. A conversa volta às regras normais da fila."
+    write_audit(
+        db,
+        user=user,
+        action="CONVERSATION_PRIVACY_CHANGED",
+        entity_type="conversation",
+        entity_id=conversation.id,
+        payload={"private_to_assignee": conversation.private_to_assignee},
+    )
+    db.commit()
+    flash(request, notice)
     return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
 
