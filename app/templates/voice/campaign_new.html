@@ -21,8 +21,9 @@
       <label class="field"><span>Intervalo entre tentativas (segundos)</span><input type="number" name="interval_seconds" min="10" max="3600" value="30" required></label>
       <label class="field"><span>Janela de início</span><input type="time" name="window_start" value="09:00" required></label>
       <label class="field"><span>Janela de fim</span><input type="time" name="window_end" value="18:00" required></label>
-      <label class="field field-span-2"><span>Limite diário</span><input type="number" name="daily_limit" min="1" max="300" value="30" required></label>
-      <label class="field field-span-2"><span>Formato do número enviado ao PABX (SIP)</span><select name="dial_format" required><option value="NATIONAL" selected>Nacional — somente DDD + número (sem adicionar DDI 55)</option><option value="E164">Internacional — DDI 55 + DDD + número (E.164)</option></select><small>Padrão: nacional. Exemplo, CSV 55999002508 (DDD 55) será discado 55999002508. Se a operadora SIP exigir DDI, escolha Internacional.</small></label>
+      <label class="field field-span-2"><span>Quantidade maxima de ligacoes por dia (definida pelo administrador)</span><input type="number" name="daily_limit" min="1" max="1000000" value="30" required></label>
+      {% include "voice/_native_route_fields.html" %}
+      <label class="field field-span-2"><span>Formato do número enviado ao PABX (SIP)</span><select name="dial_format" required><option value="NATIONAL" selected>Nacional — somente DDD + número (sem adicionar DDI 55)</option><option value="E164">Internacional — DDI 55 + DDD + número (E.164)</option></select><small>O formato Native possui mascaras proprias; a opcao abaixo vale apenas para a saida SIP padrao. Padrao: nacional. Exemplo, CSV 55999002508 (DDD 55) será discado 55999002508. Se a operadora SIP exigir DDI, escolha Internacional.</small></label>
     </div>
     <button class="button button-primary" type="submit">Criar campanha em rascunho</button>
   </form>
