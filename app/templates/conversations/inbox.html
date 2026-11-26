@@ -824,6 +824,7 @@
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="meta_consent" value="true"> Cliente autorizou contato pelo WhatsApp.</label>
       <small data-meta-note>Selecione um template aprovado para iniciar pela Meta.</small>
     </fieldset>
+    <p data-quick-chat-error role="alert" hidden style="color:#991b1b;background:#fef2f2;border-radius:8px;padding:10px;margin:0;font-size:13px"></p>
     <button class="button button-primary inbox-quick-chat-submit" type="submit" data-quick-chat-submit>Abrir conversa</button>
     <small>A conversa fica vinculada ao canal e ao vendedor responsável.</small>
   </form>
@@ -1139,7 +1140,14 @@
   };
   templateSelect?.addEventListener('change', filterQuickTemplates);
   templateSearch?.addEventListener('input', filterQuickTemplates);
+  const quickError = quickChatDialog?.querySelector('[data-quick-chat-error]');
+  const showQuickError = message => {
+    if (!quickError) return;
+    quickError.textContent = message;
+    quickError.hidden = !message;
+  };
   document.querySelector('[data-quick-chat-open]')?.addEventListener('click', () => {
+    showQuickError('');
     if (templateSearch) templateSearch.value = '';
     if (templateSelect) templateSelect.value = '';
     filterQuickTemplates();
@@ -1149,11 +1157,39 @@
   document.querySelector('[data-quick-chat-close]')?.addEventListener('click', () => {
     quickChatDialog?.close();
   });
-  quickChatDialog?.querySelector('[data-quick-chat-form]')?.addEventListener('submit', () => {
+  quickChatDialog?.querySelector('[data-quick-chat-form]')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
     const btn = quickChatDialog.querySelector('[data-quick-chat-submit]');
+    if (btn?.disabled) return;
+    showQuickError('');
     if (btn) {
       btn.disabled = true;
       btn.textContent = 'Abrindo conversa...';
+    }
+    try {
+      const fields = new FormData(form);
+      const selectedQueue = form.querySelector('[name="queue_id"]')?.selectedOptions[0];
+      if (selectedQueue?.dataset.channel === 'META') fields.delete('template_id');
+      else for (const key of ['meta_template_id', 'meta_parameters', 'meta_consent']) fields.delete(key);
+      const response = await fetch(form.action, {
+        method: 'POST', body: fields, credentials: 'same-origin',
+        headers: {'Accept': 'application/json', 'X-Prospecta-Desktop': '1'}
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.error || (typeof result?.detail === 'string' ? result.detail : 'Não foi possível abrir a conversa. Confira a sessão e a fila escolhida.'));
+      }
+      const id = Number(result.conversation_id);
+      if (!Number.isInteger(id) || id <= 0) throw new Error('O servidor não retornou o atendimento.');
+      window.location.assign('/conversations/' + id + '?quick=1');
+    } catch (error) {
+      showQuickError(error?.message || 'Não foi possível abrir a conversa.');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Abrir conversa';
+      }
     }
   });
   if (new URLSearchParams(window.location.search).get('quick') === '1') {

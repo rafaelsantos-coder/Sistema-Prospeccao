@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from urllib.parse import quote
 
@@ -1352,6 +1353,21 @@ def quick_start_whatsapp_conversation(
     wants_json = "application/json" in request.headers.get("accept", "").lower()
 
     def fail(message: str, code: int = 400):
+        # Keep provider/customer text out of production logs; classify known rejections.
+        reason = (
+            "other_owner" if "outro atendente" in message or "outro vendedor" in message else
+            "blacklist" if "blacklist" in message else
+            "opt_out" if "não autoriza contato" in message else
+            "invalid_phone" if "telefone válido" in message else
+            "binding_conflict" if "inconsistente" in message or "outra fila" in message else
+            "channel_fields" if "não podem ser enviados" in message else
+            "queue_permission" if "fila WhatsApp" in message else
+            "template_or_other"
+        )
+        logging.getLogger(__name__).warning(
+            "manual_start_rejected user_id=%s queue_id=%s status=%s reason=%s",
+            getattr(user, "id", None), queue_id, code, reason,
+        )
         if wants_json:
             return JSONResponse({"ok": False, "error": message}, status_code=code)
         flash(request, message, "warning")
@@ -1378,10 +1394,11 @@ def quick_start_whatsapp_conversation(
     if queue_id not in allowed:
         return fail("Selecione uma fila WhatsApp autorizada para iniciar a conversa.", 403)
     queue, instance = allowed[queue_id]
+    desktop_json = wants_json and request.headers.get("X-Prospecta-Desktop") == "1"
     is_meta = _manual_queue_channel(db, queue.id) == "META"
     if not is_meta:
         require_instance_access(user, instance)
-        if meta_template_id or meta_parameters or meta_consent:
+        if meta_template_id or meta_parameters.strip() not in {"", "[]"} or meta_consent:
             return fail("Templates Meta não podem ser enviados pela Z-API.")
     elif template_id:
         return fail("Templates internos não podem ser enviados pela Meta.")
@@ -1407,9 +1424,13 @@ def quick_start_whatsapp_conversation(
     compose_draft = _quick_compose_draft(
         db, user, template_id=template_id, lead=lead, contact=contact,
     )
+    # Only reuse a conversation whose sending number is explicitly known.
+    # An unbound legacy chat may be from another channel and must not prevent
+    # an authorized seller from opening a conversation on this instance.
+    db.scalar(select(Contact.id).where(Contact.id == contact.id).with_for_update())
     existing = db.scalar(
         select(Conversation)
-        .outerjoin(
+        .join(
             ConversationZApiInstance,
             ConversationZApiInstance.conversation_id == Conversation.id,
         )
@@ -1418,10 +1439,7 @@ def quick_start_whatsapp_conversation(
             Conversation.source != "TELEGRAM",
             Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
             Conversation.id.not_in(select(ConversationMetaAccount.conversation_id)),
-            or_(
-                ConversationZApiInstance.zapi_instance_id == instance.id,
-                ConversationZApiInstance.id.is_(None),
-            ),
+            ConversationZApiInstance.zapi_instance_id == instance.id,
         )
         .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
         .limit(1)
@@ -1472,6 +1490,10 @@ def quick_start_whatsapp_conversation(
             elif send_error:
                 notice = f"{notice} Template não enviado: {send_error}"
             if wants_json:
+                if desktop_json:
+                    if draft_for_client:
+                        request.session["quick_compose_draft"] = draft_for_client
+                    flash(request, notice, "warning" if send_error or not send_status else "success")
                 return JSONResponse(
                     {
                         "ok": True,
@@ -1514,6 +1536,7 @@ def quick_start_whatsapp_conversation(
             db, contact, lead=lead, source="MANUAL",
             queue_id=queue.id, queue_origin="MANUAL_OUTBOUND",
             assign_if_unowned=False, zapi_instance_id=instance.id,
+            allow_unbound_reuse=False,
         )
 
     _assign_quick_start_owner(db, conversation, user)
@@ -1537,6 +1560,13 @@ def quick_start_whatsapp_conversation(
     db.commit()
     draft_for_client = "" if send_status else compose_draft
     if wants_json:
+        if desktop_json:
+            if draft_for_client:
+                request.session["quick_compose_draft"] = draft_for_client
+            if send_error:
+                flash(request, f"Conversa aberta, mas o template não foi enviado: {send_error}", "warning")
+            elif send_status in {"SENT", "PENDING"}:
+                flash(request, "Mensagem enviada." if send_status == "SENT" else "Mensagem enfileirada.", "success")
         payload = {
             "ok": True,
             "conversation_id": conversation.id,
