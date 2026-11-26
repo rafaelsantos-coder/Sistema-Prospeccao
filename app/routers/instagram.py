@@ -9,9 +9,10 @@ import hashlib
 import hmac
 import json
 import os
+from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -21,7 +22,8 @@ from starlette.responses import PlainTextResponse
 from app.database import get_db
 from app.models_instagram import instagram_webhook_events as events
 from app.security import require_permission, require_roles, require_user
-from app.services.secret_store import encrypt_secret
+from app.services.secret_store import SecretStoreError, decrypt_secret, encrypt_secret
+from app.services.instagram_prospecting import preview_comments
 from app.timeutils import utcnow
 
 router = APIRouter()
@@ -173,4 +175,36 @@ def instagram_status(request: Request, check: bool = False, db: Session = Depend
     }
     if check:
         result["meta_account"] = _check_meta_account(account_id)
+    return result
+
+
+@router.get("/settings/instagram/prospecting/preview", include_in_schema=False)
+def instagram_prospecting_preview(
+    request: Request,
+    mode: Literal["commercial", "all"] = "commercial",
+    media_id: str | None = Query(None, pattern=r"^[0-9]{1,80}$"),
+    limit: int = Query(100, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Read-only administrative dry run. No messages, assignments or CRM writes."""
+    user = require_user(request, db)
+    require_roles(user, "ADMIN", "GESTOR")
+    require_permission(user, "settings.connections.view")
+    account_id = _account_id()
+    encrypted = db.execute(
+        select(events.c.payload_encrypted)
+        .where(events.c.account_id == account_id, events.c.event_kind == "changes")
+        .order_by(events.c.received_at.desc(), events.c.event_hash.desc())
+        .limit(limit)
+    ).scalars().all()
+    payloads = []
+    unreadable = 0
+    for item in encrypted:
+        try:
+            payloads.append(json.loads(decrypt_secret(item)))
+        except (SecretStoreError, ValueError):
+            unreadable += 1
+    result = preview_comments(payloads, account_id, mode, media_id)
+    result["rows_scanned"] = len(encrypted)
+    result["unreadable"] = unreadable
     return result
