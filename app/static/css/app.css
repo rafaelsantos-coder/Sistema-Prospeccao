@@ -3058,6 +3058,21 @@ h1, h2, h3, .topbar h1, .page-lead h2, .metric-card > strong, .pipeline-item str
   .voice-campaign-chevron { transition: none; }
 }
 
+/* Indicadores de rodizio Native por campanha. */
+.voice-native-usage {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 11px; padding: 13px 15px;
+  border-radius: 9px; border: 1px solid #d0e4da; background: #f6fbf7;
+  margin: 10px 0 12px;
+}
+.voice-native-usage strong { font-size: 12px; }
+.voice-native-usage p { margin-top: 4px; }
+.voice-native-usage-items { display: flex; flex-wrap: wrap; gap: 6px; }
+.voice-native-usage-items > span {
+  background: white; border: 1px solid #d5e3dc; border-radius: 7px;
+  font-size: 11px; padding: 7px 9px;
+}
+
 /* Native: configuracao de origem SIP, compartilhada por criar/editar campanha. */
 .voice-native-routing {
   display: grid;
