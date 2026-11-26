@@ -62,3 +62,35 @@ Não há evento de novos seguidores autorizado nesta fase. Sem Manychat,
 scraping ou credenciais alternativas. Sem alteração do canal WhatsApp.
 
 Testes: pytest -q tests/test_instagram_prospecting.py tests/test_instagram_webhook_ingress.py
+
+
+## Fase 2B — Instagram – Digital (caixa de entrada inicial)
+
+Flag INSTAGRAM_INBOX_ENABLED desligada por padrão. Não habilitar em produção
+até confirmar eventos reais, política de retenção/exclusão, testes de
+autorização e revisão LGPD. Quando habilitada, mensagens Direct válidas
+da conta configurada recebidas pelo webhook são registradas em três tabelas
+exclusivas; sem criar telefone, contato, fila ou lead do WhatsApp.
+A caixa inicial recebe também Direct orgânico; ainda não atribui origem
+comercial a campanhas. O identificador da conversa e o ID da mensagem são
+hashes, e o texto é criptografado. Não há reprocessamento histórico.
+Mídia aparece como aviso; não há download/visualização ainda.
+
+Rotas independentes: /instagram/inbox e /instagram/members.
+O gestor/administrador com permissão de gestão de usuários concede acesso
+específico para a conta; ninguém é incluído automaticamente. Vendedores
+e supervisores vinculados veem apenas metadados das conversas não atribuídas,
+podem assumir atomicamente uma conversa e só abrem o próprio histórico.
+A administração autorizada pode consultar o histórico. A revogação não
+transfere conversas nem expõe o histórico a outro vendedor; transferência
+e recuperação de conversas órfãs exigem fluxo administrativo posterior.
+Requisições de alteração validam CSRF. A navegação é por rota direta nesta fase.
+
+Não envia mensagens, não registra CRM, não executa SulIA, não usa Manychat
+e não altera arquivos de WhatsApp, Z-API ou suas configurações. A interface
+ainda é inicial. Próximas etapas: autenticação integrada e auditoria de
+membros/assunção em testes, retenção, política de exclusão/edição, associação
+de campanha, outbox e envio oficial com janela validada, CRM autorizado,
+indicadores e menu integrado. Não ativar tráfego real antes dessas validações.
+
+Testes: pytest -q tests/test_instagram_inbox.py tests/test_instagram_webhook_ingress.py tests/test_instagram_prospecting.py
