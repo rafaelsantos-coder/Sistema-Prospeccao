@@ -25,13 +25,13 @@ def test_native_four_masks_for_all_five_origin_numbers():
     for prefix in NATIVE_ORIGIN_NUMBERS:
         assert native_dial_digits("5535118003", prefix) == prefix + "35118003"
         assert native_dial_digits("555535118003", prefix) == prefix + "35118003"
-        assert native_dial_digits("55999912345", prefix) == prefix + "9999912345"
-        assert native_dial_digits("5555999912345", prefix) == prefix + "9999912345"
+        assert native_dial_digits("55999912345", prefix) == prefix + "999912345"
+        assert native_dial_digits("5555999912345", prefix) == prefix + "999912345"
         # DDD 54, fixo e celular.
         assert native_dial_digits("5435118003", prefix) == prefix + "05435118003"
         assert native_dial_digits("555435118003", prefix) == prefix + "05435118003"
-        assert native_dial_digits("54999912345", prefix) == prefix + "0549999912345"
-        assert native_dial_digits("5554999912345", prefix) == prefix + "0549999912345"
+        assert native_dial_digits("54999912345", prefix) == prefix + "054999912345"
+        assert native_dial_digits("5554999912345", prefix) == prefix + "054999912345"
 
 
 def test_native_masks_fail_closed_for_invalid_destinations():
