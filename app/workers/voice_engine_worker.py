@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.database import SessionLocal
@@ -25,11 +25,12 @@ from app.models import (
     VoiceSipAccount, VoiceTestCall, VoiceTransferTest,
 )
 from app.services.global_blacklist import is_globally_blocked
+from app.services.voice_native_routing import NATIVE_ORIGIN_NUMBERS, selected_native_prefix
 from app.services.secret_store import decrypt_secret
 from app.services.voice_pjsua2 import PjSession, VoiceEngineError
 from app.services.voice_runtime import (
     MAX_ACTIVE_CALLS_PER_INSTANCE, outbound_guard, check_campaign_ready,
-    next_attempt_allowed, update_sip_check,
+    make_dial_uri, next_attempt_allowed, update_sip_check,
 )
 from app.services.voice_test import aware
 
@@ -299,6 +300,14 @@ def _claim_recipient() -> int | None:
             VoiceCampaign.status == "EM_EXECUCAO"
         ).order_by(VoiceCampaign.id.asc())))
         for campaign in campaigns:
+            # Serializa a escolha da linha por campanha. Duas instancias nao
+            # podem reservar o mesmo slot do rodizio simultaneamente.
+            campaign = db.scalar(select(VoiceCampaign).where(
+                VoiceCampaign.id == campaign.id,
+                VoiceCampaign.status == "EM_EXECUCAO",
+            ).with_for_update(skip_locked=True))
+            if campaign is None:
+                continue
             # Concluir independentemente da janela, caso a última chamada tenha
             # sido processada. Não concluir enquanto outra ligação estiver ativa.
             pending = db.scalar(select(VoiceRecipient.id).where(
@@ -331,16 +340,40 @@ def _claim_recipient() -> int | None:
                 continue
             try:
                 outbound_guard(db, item.phone)
+                assigned_native = selected_native_prefix(
+                    campaign,
+                    db.scalar(select(func.count(VoiceRecipient.id)).where(
+                        VoiceRecipient.campaign_id == campaign.id,
+                        VoiceRecipient.attempts > 0,
+                        VoiceRecipient.outbound_techprefix != "",
+                    )) or 0,
+                )
+                if assigned_native:
+                    # Validacao da mascara antes de consumir a tentativa.
+                    account = db.get(VoiceSipAccount, campaign.sip_account_id)
+                    if account is None:
+                        raise ValueError("Conta SIP Native nao encontrada.")
+                    make_dial_uri(
+                        account, item.phone, native_techprefix=assigned_native,
+                        native_local_ddd=campaign.native_local_ddd,
+                    )
             except ValueError as exc:
                 item.status = "BLOQUEADA"
                 item.last_error = str(exc)[:200]
                 db.commit()
                 continue
             item.status = "INICIANDO"
+            item.outbound_techprefix = assigned_native or ""
             item.attempts = 1
             item.last_attempt_at = now()
             item.dial_token = uuid4().hex
             campaign.last_call_at = now()
+            if assigned_native:
+                db.add(VoiceCallEvent(
+                    recipient_id=item.id, event_id=uuid4().hex,
+                    event="NATIVE_ROUTE_SELECTED",
+                    detail=f"Techprefix {assigned_native} - origem {NATIVE_ORIGIN_NUMBERS[assigned_native]}",
+                ))
             db.commit()
             return item.id
     return None
@@ -380,6 +413,10 @@ def _run_campaign_call(recipient_id: int) -> None:
             secret = decrypt_secret(account.password_encrypted)
             mode, dtmf, audio_uri = campaign.mode, campaign.dtmf_digit, campaign.audio_uri
             dial_format = campaign.dial_format or "NATIONAL"
+            native_techprefix = item.outbound_techprefix or None
+            native_local_ddd = campaign.native_local_ddd
+            if campaign.outbound_routing_mode != "ACCOUNT" and native_techprefix is None:
+                raise VoiceEngineError("Campanha Native sem linha de saida reservada.")
             aid = account.id
             db.expunge(account)
             if group is not None:
@@ -403,6 +440,7 @@ def _run_campaign_call(recipient_id: int) -> None:
             result = driver.perform_call(
                 phone, mode=mode, group=group,
                 audio_wav=file_path, dtmf_digit=dtmf, dial_format=dial_format,
+                native_techprefix=native_techprefix, native_local_ddd=native_local_ddd,
                 on_status=lambda status, code: _set_recipient(
                     recipient_id, status, code, ""),
                 should_abort=lambda: not campaign_call_permitted(recipient_id),
