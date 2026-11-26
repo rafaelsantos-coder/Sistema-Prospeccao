@@ -43,6 +43,11 @@
         <span class="nav-icon">▢</span><span>Conversas (MVP)</span>
       </a>
       {% endif %}
+      {% if current_user.role in ['ADMIN', 'GESTOR'] and 'settings.connections.view' in current_user.permissions %}
+      <a href="/instagram" class="nav-item">
+        <span class="nav-icon" aria-hidden="true">◎</span><span>Instagram – Digital</span>
+      </a>
+      {% endif %}
       {% if 'blacklist.view' in current_user.permissions %}
       <a href="/blacklist" class="nav-item {% if active_nav == 'blacklist' %}active{% endif %}">
         <span class="nav-icon">⊘</span><span>Blacklist global</span>

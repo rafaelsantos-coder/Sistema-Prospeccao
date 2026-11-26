@@ -94,3 +94,22 @@ de campanha, outbox e envio oficial com janela validada, CRM autorizado,
 indicadores e menu integrado. Não ativar tráfego real antes dessas validações.
 
 Testes: pytest -q tests/test_instagram_inbox.py tests/test_instagram_webhook_ingress.py tests/test_instagram_prospecting.py
+
+
+## Fase 2C — painel e diagnóstico de entrega
+
+Menu Instagram – Digital para ADMIN/GESTOR com settings.connections.view.
+A página /instagram é independente, sem scripts de presença ou chamadas ao
+WhatsApp. Exibe contagens agregadas por tipo de evento e estado da fila, sem
+conteúdo, identificadores ou tokens de clientes. Acesso de vendedores continua
+pela rota de caixa de entrada, somente após ativação e autorização individual.
+O painel não habilita a fila ou os disparos.
+
+Os logs instagram_ingress registram, após commit, somente contagens de entradas,
+conta correspondente, eventos recebidos, persistidos e candidatos a comentários
+ou mensagens, além da quantidade de mensagens incluídas na fila. Um POST 200
+com matching_entries=0 ou stored=0 não prova que o teste real foi armazenado.
+A contagem de comentários/mensagens também não prova origem comercial ou
+permissões de envio. A consulta de conta é somente leitura.
+
+Testes: pytest -q tests/test_instagram_diagnostics.py tests/test_instagram_inbox.py tests/test_instagram_webhook_ingress.py
