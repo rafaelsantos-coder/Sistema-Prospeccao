@@ -186,3 +186,83 @@ def test_admin_creates_native_campaign_with_selected_lines_and_preview():
                 if account:
                     db.delete(account)
                 db.commit()
+
+
+def test_worker_reserves_each_native_line_and_preserves_rotation_after_pause(monkeypatch):
+    """Testa o fluxo de reserva em SQLite isolado, sem PJSIP ou chamada externa."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    import app.workers.voice_engine_worker as worker
+    from app.database import Base
+    from app.models import VoiceCallEvent
+
+    engine = create_engine(
+        "sqlite:///:memory:", poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    local_session = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(worker, "SessionLocal", local_session)
+    monkeypatch.setattr(worker, "CAMPAIGNS_ENABLED", True)
+    monkeypatch.setattr(worker, "outbound_allowed", lambda: True)
+    monkeypatch.setattr(worker, "check_campaign_ready", lambda *_args: [])
+    monkeypatch.setattr(worker, "next_attempt_allowed", lambda *_args: True)
+    monkeypatch.setattr(worker, "outbound_guard", lambda *_args: None)
+    with local_session() as db:
+        account = VoiceSipAccount(
+            name="Native 1804 (CI)", domain="sip.example.com",
+            username="1804", password_encrypted="fake-ci",
+            transport="UDP", active=True,
+        )
+        db.add(account)
+        db.flush()
+        campaign = VoiceCampaign(
+            name="Rodizio Native CI", mode="AUDIO", status="EM_EXECUCAO",
+            sip_account_id=account.id, group_id=None, audio_uri="s3://dummy/audio.wav",
+            window_start="09:00", window_end="18:00",
+            daily_limit=1000, interval_seconds=10,
+            outbound_routing_mode="NATIVE_ROUND_ROBIN",
+            native_techprefixes="8003,8004,8005,8006,8007",
+            native_local_ddd="55", legal_basis_verified=True,
+        )
+        db.add(campaign)
+        db.flush()
+        cid = campaign.id
+        for i in range(6):
+            db.add(VoiceRecipient(
+                campaign_id=cid, name=f"Contato {i}",
+                phone=f"55559999123{i:02d}", attempts=0, status="PENDENTE",
+            ))
+        db.commit()
+
+    claimed = []
+    for idx in range(6):
+        if idx == 3:
+            with local_session() as db:
+                db.get(VoiceCampaign, cid).status = "PAUSADA"
+                db.commit()
+            assert worker._claim_recipient() is None
+            with local_session() as db:
+                db.get(VoiceCampaign, cid).status = "EM_EXECUCAO"
+                db.commit()
+        recipient_id = worker._claim_recipient()
+        assert recipient_id is not None
+        with local_session() as db:
+            row = db.get(VoiceRecipient, recipient_id)
+            claimed.append((row.id, row.outbound_techprefix))
+            assert row.status == "INICIANDO"
+            assert row.attempts == 1
+            assert row.dial_token
+            row.status = "FALHOU"
+            db.commit()
+    assert [prefix for _, prefix in claimed] == ["8003","8004","8005","8006","8007","8003"]
+    assert len({row_id for row_id, _ in claimed}) == 6
+    with local_session() as db:
+        events = list(db.scalars(select(VoiceCallEvent).where(
+            VoiceCallEvent.event == "NATIVE_ROUTE_SELECTED"
+        )))
+        assert len(events) == 6
+        assert all("Techprefix" in event.detail for event in events)
+    engine.dispose()
