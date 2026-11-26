@@ -1,0 +1,44 @@
+{% set native_mode = campaign.outbound_routing_mode if campaign is defined else 'ACCOUNT' %}
+{% set native_lines = campaign.native_techprefixes.split(',') if campaign is defined and campaign.native_techprefixes else ['8003','8004','8005','8006','8007'] %}
+{% set native_fixed_line = native_lines[0] if native_mode == 'NATIVE_FIXED' and native_lines else '8003' %}
+<div class="voice-native-routing field-span-2">
+  <div class="voice-native-heading">
+    <strong>Linhas de origem da chamada — Native (ramal 1804)</strong>
+    <small>Configure por campanha. Nao altera outros cadastros SIP nem campanhas em andamento.</small>
+  </div>
+  <label class="field">
+    <span>Distribuicao dos numeros de origem</span>
+    <select name="outbound_routing_mode">
+      <option value="ACCOUNT" {% if native_mode == 'ACCOUNT' %}selected{% endif %}>Usar saida padrao da conta SIP (sem rodizio)</option>
+      <option value="NATIVE_ROUND_ROBIN" {% if native_mode == 'NATIVE_ROUND_ROBIN' %}selected{% endif %}>Native — rodizio automatico das linhas marcadas</option>
+      <option value="NATIVE_FIXED" {% if native_mode == 'NATIVE_FIXED' %}selected{% endif %}>Native — sempre usar uma unica linha</option>
+    </select>
+    <small>O rodizio grava a linha utilizada em cada tentativa e continua de onde parou depois de pausar.</small>
+  </label>
+  <label class="field">
+    <span>DDD local da conta Native</span>
+    <input name="native_local_ddd" inputmode="numeric" pattern="[0-9]{2}" maxlength="2"
+           value="{{ campaign.native_local_ddd if campaign is defined else '55' }}" required>
+    <small>Para DDD local, liga sem 0/DDD; para outras regioes, usa prefixo + 0 + DDD + numero.</small>
+  </label>
+  <fieldset class="voice-native-lines">
+    <legend>Numeros autorizados para o rodizio</legend>
+    <div class="voice-native-line-options">
+      {% for code in ['8003','8004','8005','8006','8007'] %}
+      <label><input type="checkbox" name="native_techprefixes" value="{{ code }}"
+                    {% if code in native_lines %}checked{% endif %}>
+        <strong>{{ code }}</strong><span>(55) 3511-{{ code }}</span>
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+  <label class="field">
+    <span>Linha especifica (somente quando selecionar Native fixa)</span>
+    <select name="native_fixed_prefix">
+      {% for code in ['8003','8004','8005','8006','8007'] %}
+      <option value="{{ code }}" {% if code == native_fixed_line %}selected{% endif %}>(55) 3511-{{ code }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <p class="voice-help">A operadora Native identifica a origem pelo techprefix, na conta SIP 1804. Os cinco numeros usam as quatro mascaras homologadas: local fixo/celular e DDD fixo/celular. Os contatos e a blacklist nao mudam.</p>
+</div>

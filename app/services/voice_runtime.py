@@ -18,13 +18,18 @@ from app.models import (
     VoiceSipAccount, VoiceTestCall,
 )
 from app.services.global_blacklist import is_globally_blocked
+from app.services.voice_native_routing import (
+    NativeRoutingError, native_dial_digits, native_prefixes_for_campaign,
+    validate_native_campaign,
+)
 from app.services.voice_test import aware, validate_test_phone
 
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 ENGINE_HEARTBEAT_MAX = timedelta(seconds=65)
 SIP_VERIFICATION_MAX = timedelta(hours=1)
-MAX_CALLS_PER_DAY = 100
-MIN_SECONDS_BETWEEN_CALLS = 60
+# As quantidades sao definidas pela campanha, sem teto oculto no worker.
+# O piso tecnicamente suportado continua sendo o declarado na interface.
+MIN_SECONDS_BETWEEN_CALLS = 10
 MAX_ACTIVE_CALLS_PER_INSTANCE = 1
 
 _HOST_RE = re.compile(r"^(?=.{1,190}$)[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$")
@@ -79,13 +84,22 @@ def validate_routing_options(
 
 
 def make_dial_uri(account: VoiceSipAccount, number: str, *,
-                  dial_format: str | None = None) -> str:
+                  dial_format: str | None = None,
+                  native_techprefix: str | None = None,
+                  native_local_ddd: str = "55") -> str:
     """Monta o destino SIP segundo o plano de discagem; nunca duplica DDI.
 
     CRM/CSV guarda E.164 para deduplicacao/blacklist. Campanhas usam NATIONAL
     (DDD+numero) por padrao; testes SIP sem override mantem ajuste da conta.
     """
     clean = validate_test_phone(number)
+    if native_techprefix is not None:
+        # Techprefix Native substitui (nao concatena) o prefixo fixo da conta.
+        # Aplica as quatro mascaras homologadas e nunca duplica o DDI 55.
+        routed = native_dial_digits(clean, native_techprefix, native_local_ddd)
+        host = validate_host(account.dial_domain or account.domain)
+        validate_port(account.sip_port)
+        return f"sip:{routed}@{host}:{account.sip_port};transport={account.transport.lower()}"
     if dial_format is not None:
         if dial_format not in {"NATIONAL", "E164"}:
             raise VoiceReadinessError("Formato de discagem SIP invalido.")
@@ -141,6 +155,17 @@ def check_campaign_ready(db: Session, campaign: VoiceCampaign, at: datetime | No
         errors.append("Conta SIP ausente ou pausada.")
     elif not account.username or not account.domain or not account.password_encrypted:
         errors.append("Conta SIP incompleta: configure usuario, servidor e senha.")
+    # Em modo Native nao existe fallback para o plano de discagem antigo.
+    # Conta SIP e linhas autorizadas precisam passar na verificacao antes do INVITE.
+    try:
+        lines = native_prefixes_for_campaign(campaign)
+        if lines:
+            validate_native_campaign(
+                campaign.outbound_routing_mode, lines, lines[0],
+                campaign.native_local_ddd, account.username if account else "",
+            )
+    except NativeRoutingError as exc:
+        errors.append(str(exc))
     # Nao bloquear pela validade de um REGISTER antigo: o worker executa
     # REGISTER real em cada chamada e exige codigo SIP 200 ANTES do INVITE.
     # Assim, campanhas agendadas para o dia seguinte retomam automaticamente,
@@ -204,7 +229,7 @@ def next_attempt_allowed(db: Session, campaign: VoiceCampaign, at: datetime | No
     now = at or datetime.now(timezone.utc)
     if not within_call_window(campaign, now):
         return False
-    if campaign_daily_count(db, campaign, now) >= min(campaign.daily_limit, MAX_CALLS_PER_DAY):
+    if campaign_daily_count(db, campaign, now) >= campaign.daily_limit:
         return False
     seconds = max(MIN_SECONDS_BETWEEN_CALLS, campaign.interval_seconds)
     return bool(not campaign.last_call_at or (now - aware(campaign.last_call_at)).total_seconds() >= seconds)

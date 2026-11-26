@@ -1349,6 +1349,10 @@ class VoiceCampaign(Base):
     interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
     # Formato de origem da chamada SIP, independente da forma canonica do CRM.
     dial_format: Mapped[str] = mapped_column(String(12), default="NATIONAL")
+    # ACCOUNT (legado), NATIVE_ROUND_ROBIN (rodizio) ou NATIVE_FIXED.
+    outbound_routing_mode: Mapped[str] = mapped_column(String(20), default="ACCOUNT")
+    native_techprefixes: Mapped[str] = mapped_column(String(40), default="")
+    native_local_ddd: Mapped[str] = mapped_column(String(2), default="55")
     window_start: Mapped[str] = mapped_column(String(5), default="09:00")
     window_end: Mapped[str] = mapped_column(String(5), default="18:00")
     legal_basis_verified: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1378,6 +1382,8 @@ class VoiceRecipient(Base):
     phone: Mapped[str] = mapped_column(String(30))
     status: Mapped[str] = mapped_column(String(25), default="PENDENTE")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Linha Native reservada para esta tentativa; persiste na pausa/reinicio.
+    outbound_techprefix: Mapped[str] = mapped_column(String(4), default="")
     dial_token: Mapped[str | None] = mapped_column(String(40), nullable=True, unique=True)
     external_call_id: Mapped[str] = mapped_column(String(120), default="")
     last_event: Mapped[str] = mapped_column(String(40), default="")
