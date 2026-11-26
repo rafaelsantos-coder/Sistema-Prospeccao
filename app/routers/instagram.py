@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 from typing import Literal
 
@@ -20,13 +21,20 @@ from sqlalchemy.orm import Session
 from starlette.responses import PlainTextResponse
 
 from app.database import get_db
-from app.models_instagram import instagram_webhook_events as events
+from app.models_instagram import (
+    instagram_webhook_events as events,
+    instagram_inbox_members as members,
+    instagram_inbox_threads as threads,
+)
 from app.security import require_permission, require_roles, require_user
 from app.services.secret_store import SecretStoreError, decrypt_secret, encrypt_secret
 from app.services.instagram_prospecting import preview_comments
 from app.services import instagram_inbox as inbox
-from app.routers.instagram_inbox import router as inbox_router
+from app.routers.instagram_inbox import manager as inbox_manager, router as inbox_router
 from app.timeutils import utcnow
+from app.web import templates
+
+LOG = logging.getLogger("uvicorn.error")
 
 router = APIRouter()
 router.include_router(inbox_router)
@@ -116,8 +124,23 @@ def receive_instagram(
 ):
     account_id = _account_id()
     insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
-    stored = 0
+    stored = matched = comments = direct_candidates = inbox_added = 0
+    inbox_enabled = inbox.enabled()
+    entries = payload.get("entry")
+    is_instagram = payload.get("object") == "instagram"
+    total_entries = len(entries) if isinstance(entries, list) else 0
+    matching_entries = sum(
+        isinstance(entry, dict) and str(entry.get("id", "")) == account_id
+        for entry in entries
+    ) if is_instagram and isinstance(entries, list) else 0
     for kind, event in _extract_events(payload, account_id):
+        matched += 1
+        if kind == "changes" and event.get("field") in ("comments", "live_comments"):
+            comments += 1
+        if (kind == "messaging" and isinstance(event.get("message"), dict)) or (
+            kind == "changes" and event.get("field") == "messages"
+        ):
+            direct_candidates += 1
         canonical = json.dumps(event, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         event_hash = hashlib.sha256(
             (account_id + ":" + kind + ":" + canonical).encode("utf-8")
@@ -130,9 +153,17 @@ def receive_instagram(
             received_at=utcnow(),
         ).on_conflict_do_nothing(index_elements=["event_hash"])
         stored += max(0, db.execute(stmt).rowcount)
-        if inbox.enabled():
-            inbox.record_inbound(db, account_id, kind, event)
+        if inbox_enabled and inbox.record_inbound(db, account_id, kind, event):
+            inbox_added += 1
     db.commit()
+    # Aggregate diagnostics only: never log identifiers, secrets or message content.
+    LOG.info(
+        "instagram_ingress instagram_object=%s entries=%d matching_entries=%d "
+        "matched=%d stored=%d comments=%d direct_candidates=%d "
+        "inbox_added=%d inbox_enabled=%s",
+        is_instagram, total_entries, matching_entries, matched, stored,
+        comments, direct_candidates, inbox_added, inbox_enabled,
+    )
     # 200 só é devolvido depois da persistência; falhas de banco geram retry da Meta.
     return {"ok": True, "stored": stored}
 
@@ -161,26 +192,65 @@ def _check_meta_account(account_id: str) -> dict:
         return {"ok": False, "reason": "meta_unavailable"}
 
 
-@router.get("/settings/instagram/status", include_in_schema=False)
-def instagram_status(request: Request, check: bool = False, db: Session = Depends(get_db)):
+def _require_instagram_admin(request: Request, db: Session):
     user = require_user(request, db)
     require_roles(user, "ADMIN", "GESTOR")
     require_permission(user, "settings.connections.view")
-    account_id = _account_id()
+    return user
+
+
+def diagnostic_status(db: Session, account_id: str, check: bool = False) -> dict:
     count, latest = db.execute(
         select(func.count(), func.max(events.c.received_at))
         .where(events.c.account_id == account_id)
     ).one()
+    by_kind = dict(db.execute(
+        select(events.c.event_kind, func.count())
+        .where(events.c.account_id == account_id)
+        .group_by(events.c.event_kind)
+    ).all())
+    total_threads, assigned = db.execute(
+        select(func.count(), func.count(threads.c.assigned_user_id))
+        .select_from(threads).where(threads.c.account_id == account_id)
+    ).one()
+    member_count = db.execute(
+        select(func.count()).select_from(members)
+        .where(members.c.account_id == account_id)
+    ).scalar_one()
     result = {
         "channel": "INSTAGRAM",
         "credentials_present": {name: bool(_env(name)) for name in ENV_NAMES},
         "events_stored": count,
         "last_event_at": latest.isoformat() if latest else None,
+        "events_by_kind": {kind: by_kind.get(kind, 0) for kind in ("messaging", "changes", "standby")},
+        "inbox_enabled": inbox.enabled(),
+        "inbox_threads": total_threads,
+        "inbox_pending": total_threads - assigned,
+        "inbox_assigned": assigned,
+        "inbox_members": member_count,
         "commercial_routing_enabled": False,
     }
     if check:
         result["meta_account"] = _check_meta_account(account_id)
     return result
+
+
+@router.get("/settings/instagram/status", include_in_schema=False)
+def instagram_status(request: Request, check: bool = False, db: Session = Depends(get_db)):
+    _require_instagram_admin(request, db)
+    return diagnostic_status(db, _account_id(), check)
+
+
+@router.get("/instagram", include_in_schema=False)
+def instagram_panel(request: Request, check: bool = False, db: Session = Depends(get_db)):
+    user = _require_instagram_admin(request, db)
+    status = diagnostic_status(db, _account_id(), check)
+    # Standalone layout: no WhatsApp presence scripts or requests.
+    return templates.TemplateResponse(
+        request, "instagram/panel.html",
+        {"status": status, "can_manage_members": inbox_manager(user)},
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
 
 
 @router.get("/settings/instagram/prospecting/preview", include_in_schema=False)

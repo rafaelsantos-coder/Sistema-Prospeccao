@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instagram – Digital · Sulnet Prospecta</title>
+  <style>
+    body{font-family:system-ui,sans-serif;background:#f7f8fa;color:#20242b;margin:0}
+    main{max-width:920px;margin:auto;padding:24px}
+    header{border-bottom:3px solid #f36f21;margin-bottom:22px;padding-bottom:12px}
+    h1{margin:12px 0 6px;font-size:1.75rem}
+    h2{font-size:1.15rem}
+    .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+    section,.metric{background:white;border:1px solid #dfe3e8;border-radius:12px;padding:16px;margin-bottom:14px}
+    .metric strong{display:block;font-size:1.65rem}
+    a{color:#9e3e04} li{margin-bottom:5px} .muted{color:#596270}
+  </style>
+</head>
+<body><main>
+<header><a href="/dashboard">Voltar ao Prospecta</a><h1>Instagram – Digital</h1>
+<p class="muted">Painel de integração independente. Nenhum disparo ou contato WhatsApp é acionado aqui.</p></header>
+<section><h2>Estado da operação</h2>
+<p>Fila de atendimento: <strong>{{ "Habilitada" if status.inbox_enabled else "Desativada para validação" }}</strong></p>
+<p>Abordagem comercial automática: <strong>Desativada</strong></p>
+<p>As contagens abaixo podem incluir testes da Meta. Não comprovam que houve uma conversa real.</p>
+{% if status.inbox_enabled %}<p><a href="/instagram/inbox">Abrir caixa de entrada</a>
+{% if can_manage_members %} · <a href="/instagram/members">Gerenciar integrantes</a>{% endif %}</p>{% endif %}
+</section>
+<h2>Eventos armazenados</h2>
+<div class="metrics">
+<div class="metric"><strong>{{ status.events_stored }}</strong>Total de eventos</div>
+<div class="metric"><strong>{{ status.events_by_kind.messaging }}</strong>Eventos de mensagens</div>
+<div class="metric"><strong>{{ status.events_by_kind.changes }}</strong>Eventos de alterações</div>
+<div class="metric"><strong>{{ status.events_by_kind.standby }}</strong>Eventos standby</div>
+</div>
+<p class="muted">Último evento persistido: {{ status.last_event_at or "Nenhum" }} (UTC)</p>
+<h2>Fila de atendimento</h2>
+<div class="metrics">
+<div class="metric"><strong>{{ status.inbox_threads }}</strong>Conversas</div>
+<div class="metric"><strong>{{ status.inbox_pending }}</strong>Aguardando vendedor</div>
+<div class="metric"><strong>{{ status.inbox_assigned }}</strong>Atribuídas</div>
+<div class="metric"><strong>{{ status.inbox_members }}</strong>Vínculos cadastrados</div>
+</div>
+<section><h2>Configuração e testes</h2>
+<ul>{% for name, present in status.credentials_present.items() %}<li>{{ name }}: {{ "Configurado" if present else "Ausente" }}</li>{% endfor %}</ul>
+<p><a href="/instagram?check=true">Consultar conta na Meta (somente leitura)</a> · <a href="/settings/instagram/prospecting/preview">Simular classificação de comentários</a> · <a href="/instagram">Atualizar contagens</a></p>
+{% if status.meta_account is defined %}
+<p>Resultado da consulta Meta: <strong>{{ "Conta confirmada" if status.meta_account.ok else "Não confirmada" }}</strong>.
+{% if status.meta_account.http_status is defined %}HTTP {{ status.meta_account.http_status }}.{% endif %}
+{% if status.meta_account.reason is defined %}{{ status.meta_account.reason }}.{% endif %}</p>
+<p class="muted">A consulta de conta não confirma permissões de envio nem inscrição nos eventos.</p>
+{% endif %}
+</section>
+</main></body></html>
