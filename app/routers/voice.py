@@ -18,10 +18,11 @@ from app.services.dispatch_queue import parse_dispatch_csv
 from app.services.media_storage import MediaStorage
 from app.services.voice_reporting import campaign_operational_report
 from app.services.voice_resend import RESEND_MODES, select_resend_recipients
+from app.services.voice_native_routing import selected_native_prefix, validate_native_campaign
 from app.services.secret_store import encrypt_secret
 from app.services.voice_runtime import (
     check_campaign_ready, validate_routing_options, outbound_guard, make_dial_uri,
-    next_call_window_start, within_call_window, MAX_CALLS_PER_DAY, ENGINE_HEARTBEAT_MAX
+    next_call_window_start, within_call_window, ENGINE_HEARTBEAT_MAX
 )
 from app.services.voice_test import aware
 from datetime import datetime, timezone, timedelta
@@ -208,6 +209,10 @@ def update_voice_campaign(campaign_id: int, request: Request,
                           window_start: str = Form("09:00"), window_end: str = Form("18:00"),
                           daily_limit: int = Form(30), interval_seconds: int = Form(30),
                           dial_format: str = Form("NATIONAL"),
+                          outbound_routing_mode: str = Form("ACCOUNT"),
+                          native_techprefixes: list[str] = Form([]),
+                          native_fixed_prefix: str = Form("8003"),
+                          native_local_ddd: str = Form("55"),
                           db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
     if redirect:
@@ -236,31 +241,40 @@ def update_voice_campaign(campaign_id: int, request: Request,
         return _error(request, "Campanhas sem grupo precisam usar Áudio automático.", f"/voice/campaigns/{campaign_id}/edit")
     if not name.strip() or len(name.strip()) > 180:
         return _error(request, "Informe um nome de até 180 caracteres.", f"/voice/campaigns/{campaign_id}/edit")
-    if not 1 <= daily_limit <= 300 or not 10 <= interval_seconds <= 3600:
-        return _error(request, "Limite diário ou intervalo inválido.", f"/voice/campaigns/{campaign_id}/edit")
+    if not 1 <= daily_limit <= 1_000_000 or not 10 <= interval_seconds <= 3600:
+        return _error(request, "Quantidade diaria ou intervalo invalido.", f"/voice/campaigns/{campaign_id}/edit")
     if dial_format not in {"NATIONAL", "E164"}:
         return _error(request, "Formato de discagem SIP inválido.", f"/voice/campaigns/{campaign_id}/edit")
     try:
         clean_mode = validate_campaign(mode, window_start, window_end, dtmf_digit,
                                       campaign.audio_uri or ("PENDENTE" if mode.upper() == "AUDIO" else ""))
+        route_mode, route_prefixes, route_ddd = validate_native_campaign(
+            outbound_routing_mode, native_techprefixes, native_fixed_prefix,
+            native_local_ddd, account.username,
+        )
     except ValueError as exc:
         return _error(request, str(exc), f"/voice/campaigns/{campaign_id}/edit")
     fields = ("name", "sip_account_id", "group_id", "mode", "dtmf_digit", "window_start",
-              "window_end", "daily_limit", "interval_seconds", "dial_format")
+              "window_end", "daily_limit", "interval_seconds", "dial_format",
+              "outbound_routing_mode", "native_techprefixes", "native_local_ddd")
     previous = {field: getattr(campaign, field) for field in fields}
     changed = {
         "name": name.strip(), "sip_account_id": account.id, "group_id": selected_group_id,
         "mode": clean_mode, "dtmf_digit": dtmf_digit,
         "window_start": window_start, "window_end": window_end,
         "daily_limit": daily_limit, "interval_seconds": interval_seconds,
-        "dial_format": dial_format,
+        "dial_format": dial_format, "outbound_routing_mode": route_mode,
+        "native_techprefixes": route_prefixes, "native_local_ddd": route_ddd,
     }
     if all(previous[key] == value for key, value in changed.items()):
         flash(request, "Nenhuma alteração necessária.")
         return RedirectResponse("/voice/campaigns", status_code=303)
     for field, value in changed.items():
         setattr(campaign, field, value)
-    if any(previous[key] != changed[key] for key in ("sip_account_id", "group_id", "mode", "dial_format")):
+    if any(previous[key] != changed[key] for key in (
+        "sip_account_id", "group_id", "mode", "dial_format",
+        "outbound_routing_mode", "native_techprefixes", "native_local_ddd",
+    )):
         # Mudancas materiais exigem nova verificacao pelo administrador.
         campaign.legal_basis_verified = False
         campaign.approved_at = None
@@ -433,6 +447,9 @@ def voice_campaign_resend(campaign_id: int, request: Request,
         daily_limit=campaign.daily_limit,
         interval_seconds=campaign.interval_seconds,
         dial_format=campaign.dial_format or "NATIONAL",
+        outbound_routing_mode=campaign.outbound_routing_mode,
+        native_techprefixes=campaign.native_techprefixes,
+        native_local_ddd=campaign.native_local_ddd,
         window_start=campaign.window_start,
         window_end=campaign.window_end,
         legal_basis_verified=True,
@@ -564,13 +581,26 @@ def voice_campaign_details(campaign_id: int, request: Request,
     )) or 0
     recipient = db.scalar(select(VoiceRecipient).where(
         VoiceRecipient.campaign_id == campaign.id,
+        VoiceRecipient.status == "PENDENTE",
+        VoiceRecipient.attempts == 0,
     ).order_by(VoiceRecipient.id.asc()).limit(1))
+    if recipient is None:
+        recipient = db.scalar(select(VoiceRecipient).where(
+            VoiceRecipient.campaign_id == campaign.id,
+        ).order_by(VoiceRecipient.id.asc()).limit(1))
     sip_preview = None
     if recipient:
         try:
+            native_count = db.scalar(select(func.count(VoiceRecipient.id)).where(
+                VoiceRecipient.campaign_id == campaign.id,
+                VoiceRecipient.attempts > 0,
+                VoiceRecipient.outbound_techprefix != "",
+            )) or 0
+            origin = selected_native_prefix(campaign, native_count)
             uri = make_dial_uri(
                 campaign.sip_account, recipient.phone,
                 dial_format=campaign.dial_format or "NATIONAL",
+                native_techprefix=origin, native_local_ddd=campaign.native_local_ddd,
             )
             sip_preview = uri.partition("@")[0].removeprefix("sip:")
         except ValueError:
@@ -877,6 +907,10 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
                  window_start: str = Form("09:00"), window_end: str = Form("18:00"),
                  daily_limit: int = Form(30), interval_seconds: int = Form(30),
                  dial_format: str = Form("NATIONAL"),
+                 outbound_routing_mode: str = Form("ACCOUNT"),
+                 native_techprefixes: list[str] = Form([]),
+                 native_fixed_prefix: str = Form("8003"),
+                 native_local_ddd: str = Form("55"),
                  db: Session = Depends(get_db)):
     actor, redirect = _actor(request, db)
     if redirect:
@@ -896,19 +930,25 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
         return _error(request, "Sem transferência, escolha a modalidade Áudio automático.")
     if not name.strip() or len(name.strip()) > 180:
         return _error(request, "Informe o nome da campanha.")
-    if not 1 <= daily_limit <= 300 or not 10 <= interval_seconds <= 3600:
-        return _error(request, "Limite diario ou intervalo invalido.")
+    if not 1 <= daily_limit <= 1_000_000 or not 10 <= interval_seconds <= 3600:
+        return _error(request, "Quantidade diaria ou intervalo invalido.")
     if dial_format not in {"NATIONAL", "E164"}:
         return _error(request, "Formato de discagem invalido.")
     try:
         # AUDIO pode ser criado como rascunho antes do upload, mas nunca aprovado sem WAV.
         clean_mode = validate_campaign(mode, window_start, window_end, dtmf_digit,
                                       "PENDENTE" if mode.upper() == "AUDIO" else "")
+        route_mode, route_prefixes, route_ddd = validate_native_campaign(
+            outbound_routing_mode, native_techprefixes, native_fixed_prefix,
+            native_local_ddd, account.username,
+        )
     except ValueError as exc:
         return _error(request, str(exc))
     campaign = VoiceCampaign(name=name.strip(), mode=clean_mode, sip_account_id=account.id,
                              group_id=selected_group_id, dtmf_digit=dtmf_digit, daily_limit=daily_limit,
                              interval_seconds=interval_seconds, dial_format=dial_format,
+                             outbound_routing_mode=route_mode, native_techprefixes=route_prefixes,
+                             native_local_ddd=route_ddd,
                              window_start=window_start, window_end=window_end,
                              created_by_id=actor.id,
                              status="RASCUNHO", legal_basis_verified=False)
