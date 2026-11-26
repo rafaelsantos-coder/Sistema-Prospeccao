@@ -305,7 +305,7 @@ def _claim_recipient() -> int | None:
             campaign = db.scalar(select(VoiceCampaign).where(
                 VoiceCampaign.id == campaign.id,
                 VoiceCampaign.status == "EM_EXECUCAO",
-            ).with_for_update(skip_locked=True))
+            ).with_for_update(skip_locked=True).execution_options(populate_existing=True))
             if campaign is None:
                 continue
             # Concluir independentemente da janela, caso a última chamada tenha
