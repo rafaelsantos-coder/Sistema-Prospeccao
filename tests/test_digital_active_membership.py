@@ -141,6 +141,11 @@ def test_digital_requires_active_membership_only_for_consultant():
         )
         assert login.status_code == 303
         csrf = _csrf(client.get("/dashboard").text)
+        joined = client.post(
+            "/api/whatsapp-presence/join",
+            data={"csrf_token": csrf},
+        )
+        assert joined.status_code == 200
 
         # Mesmo atribuido ao vendedor e com team=DIGITAL, sem vinculo nao entra.
         blocked = client.get(f"/conversations/{digital_id}", follow_redirects=False)
