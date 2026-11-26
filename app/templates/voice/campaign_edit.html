@@ -51,7 +51,8 @@
       <label class="field"><span>Intervalo entre tentativas (segundos)</span><input type="number" name="interval_seconds" min="10" max="3600" value="{{ campaign.interval_seconds }}" required></label>
       <label class="field"><span>Janela de início</span><input type="time" name="window_start" value="{{ campaign.window_start }}" required></label>
       <label class="field"><span>Janela de fim</span><input type="time" name="window_end" value="{{ campaign.window_end }}" required></label>
-      <label class="field field-span-2"><span>Limite diário</span><input type="number" name="daily_limit" min="1" max="300" value="{{ campaign.daily_limit }}" required></label>
+      <label class="field field-span-2"><span>Quantidade maxima de ligacoes por dia (definida pelo administrador)</span><input type="number" name="daily_limit" min="1" max="1000000" value="{{ campaign.daily_limit }}" required></label>
+      {% include "voice/_native_route_fields.html" %}
       <label class="field field-span-2"><span>Formato do número enviado ao PABX (SIP)</span>
         <select name="dial_format" required>
           <option value="NATIONAL" {% if campaign.dial_format == 'NATIONAL' %}selected{% endif %}>Nacional — DDD + número (sem DDI 55)</option>
