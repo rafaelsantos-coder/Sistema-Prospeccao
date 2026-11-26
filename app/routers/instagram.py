@@ -24,9 +24,12 @@ from app.models_instagram import instagram_webhook_events as events
 from app.security import require_permission, require_roles, require_user
 from app.services.secret_store import SecretStoreError, decrypt_secret, encrypt_secret
 from app.services.instagram_prospecting import preview_comments
+from app.services import instagram_inbox as inbox
+from app.routers.instagram_inbox import router as inbox_router
 from app.timeutils import utcnow
 
 router = APIRouter()
+router.include_router(inbox_router)
 MAX_BODY_BYTES = 1024 * 1024
 ENV_NAMES = (
     "INSTAGRAM_ACCOUNT_ID",
@@ -127,6 +130,8 @@ def receive_instagram(
             received_at=utcnow(),
         ).on_conflict_do_nothing(index_elements=["event_hash"])
         stored += max(0, db.execute(stmt).rowcount)
+        if inbox.enabled():
+            inbox.record_inbound(db, account_id, kind, event)
     db.commit()
     # 200 só é devolvido depois da persistência; falhas de banco geram retry da Meta.
     return {"ok": True, "stored": stored}
