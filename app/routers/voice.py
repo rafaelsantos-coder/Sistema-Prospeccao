@@ -958,7 +958,10 @@ def add_campaign(request: Request, csrf_token: str = Form(...), name: str = Form
                 entity_type="voice_campaign", entity_id=campaign.id,
                 payload={"mode": clean_mode, "group_id": selected_group_id,
                          "without_transfer": selected_group_id is None,
-                         "dial_format": dial_format})
+                         "dial_format": dial_format,
+                         "outbound_routing_mode": route_mode,
+                         "native_techprefixes": route_prefixes,
+                         "native_local_ddd": route_ddd})
     db.commit()
     flash(request, "Campanha criada. Importe os contatos, anexe o áudio e confira o checklist para iniciar.")
     return RedirectResponse("/voice/campaigns", status_code=303)
