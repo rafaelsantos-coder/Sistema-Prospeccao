@@ -3058,6 +3058,40 @@ h1, h2, h3, .topbar h1, .page-lead h2, .metric-card > strong, .pipeline-item str
   .voice-campaign-chevron { transition: none; }
 }
 
+/* Native: configuracao de origem SIP, compartilhada por criar/editar campanha. */
+.voice-native-routing {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
+  grid-column: 1 / -1;
+  margin: 3px 0 5px;
+  padding: 17px;
+  border: 1px solid #d0e4da;
+  border-radius: 12px;
+  background: #f5faf7;
+}
+.voice-native-heading, .voice-native-lines, .voice-native-routing > p {
+  grid-column: 1 / -1;
+}
+.voice-native-heading strong { display: block; font-size: 14px; }
+.voice-native-heading small { display: block; color: #66786b; margin-top: 4px; }
+.voice-native-lines { min-width: 0; padding: 0; border: none; margin: 0; }
+.voice-native-lines legend { padding: 0; margin-bottom: 7px; font-weight: 700; font-size: 12px; }
+.voice-native-line-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.voice-native-line-options label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 9px 11px; border: 1px solid #d4dfd8;
+  background: #fff; border-radius: 9px;
+}
+.voice-native-line-options label span { color: #66776b; }
+.voice-native-line-options input { margin: 0; }
+.voice-native-routing .voice-help { margin: 0; }
+@media (max-width: 700px) {
+  .voice-native-routing { grid-template-columns: 1fr; padding: 12px; }
+  .voice-native-heading, .voice-native-lines, .voice-native-routing > p { grid-column: 1; }
+}
+
 /* Retomada verdadeira: mesma campanha, nenhum contato reprocessado. */
 .voice-campaign-resume-options {
   display: flex;
