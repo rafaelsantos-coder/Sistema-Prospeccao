@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, VoiceCallEvent, VoiceCampaign, VoiceRecipient
+from app.services.voice_native_routing import NATIVE_ORIGIN_NUMBERS
 from app.services.voice_runtime import next_call_window_start, within_call_window
 from app.services.voice_test import aware
 
@@ -82,6 +83,14 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
          "transferred", "failed", "blocked", "audio_completed"), map(int, summary), strict=True,
     ))
 
+    usage_rows = db.execute(select(
+        VoiceRecipient.outbound_techprefix, func.count(VoiceRecipient.id),
+    ).where(
+        VoiceRecipient.campaign_id == campaign.id,
+        VoiceRecipient.outbound_techprefix != "",
+    ).group_by(VoiceRecipient.outbound_techprefix)).all()
+    native_line_counts = {code: int(qty) for code, qty in usage_rows}
+
     attempts = list(db.scalars(select(VoiceRecipient).where(
         VoiceRecipient.campaign_id == campaign.id,
         VoiceRecipient.attempts > 0,
@@ -90,6 +99,8 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
         "name": row.name or "Contato",
         "phone_suffix": (row.phone or "")[-4:].rjust(4, "*"),
         "status": row.status,
+        "origin_prefix": row.outbound_techprefix or "",
+        "origin_number": NATIVE_ORIGIN_NUMBERS.get(row.outbound_techprefix, ""),
         "at": _iso(row.last_attempt_at),
         "detail": row.last_error or row.last_event or "",
     } for row in attempts]
@@ -103,6 +114,8 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
         "contact": recipient.name or "Contato",
         "phone_suffix": (recipient.phone or "")[-4:].rjust(4, "*"),
         "detail": event.detail,
+        "origin_prefix": recipient.outbound_techprefix or "",
+        "origin_number": NATIVE_ORIGIN_NUMBERS.get(recipient.outbound_techprefix, ""),
         "at": _iso(event.created_at),
     } for event, recipient in event_rows]
 
@@ -147,6 +160,8 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
         "outside_call_window": status == "EM_EXECUCAO" and not within_call_window(campaign),
         "readiness": list(reasons),
         "stats": stats,
+        "native_line_counts": native_line_counts,
+        "outbound_routing_mode": campaign.outbound_routing_mode,
         "last_command": _last_command(db, campaign.id),
         "started_at": _iso(campaign.started_at),
         "last_call_at": _iso(campaign.last_call_at),
