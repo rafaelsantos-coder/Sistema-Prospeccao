@@ -110,8 +110,9 @@
         ? entry.name || "Contato" : String(entry.event || "").replaceAll("_", " ");
       line.appendChild(title);
       const suffix = entry.phone_suffix || "****";
+      const origin = entry.origin_prefix ? " · origem Native " + entry.origin_prefix : "";
       const secondary = type === "attempt"
-        ? " · final " + suffix + " · " + String(entry.status || "").replaceAll("_", " ")
+        ? " · final " + suffix + " · " + String(entry.status || "").replaceAll("_", " ") + origin
         : " · " + (entry.contact || "Contato") + " · final " + suffix;
       line.appendChild(document.createTextNode(
         secondary + (when(entry.at) ? " · " + when(entry.at) : "")
@@ -158,6 +159,11 @@
     setText(panel, "[data-voice-last-detail]", command.detail);
     for (const [name, value] of Object.entries(data.stats || {})) {
       setText(panel, '[data-voice-stat="' + name + '"]', value);
+    }
+    const details = panel.closest("[data-voice-campaign-details]");
+    for (const code of ["8003", "8004", "8005", "8006", "8007"]) {
+      if (details) setText(details, '[data-voice-native-stat="' + code + '"]',
+        Number(data.native_line_counts?.[code] || 0));
     }
     const empty = panel.querySelector("[data-voice-no-attempts]");
     if (empty) empty.hidden = Number(data.stats?.attempted || 0) > 0;
