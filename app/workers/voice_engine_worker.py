@@ -144,10 +144,14 @@ def _set_recipient(recipient_id: int, status: str, code: int | None,
                 row.answered_at = now()
             if transferred:
                 row.transferred_at = now()
+            # Preserva o ultimo codigo SIP mesmo com mensagem de encerramento;
+            # anteriormente o texto generico ocultava a resposta da central.
+            # Codigo intermediario 183 representa progresso, nao erro.
+            sip_detail = f" | ultimo SIP {code}" if code is not None else ""
             db.add(VoiceCallEvent(
                 recipient_id=row.id, event_id=uuid4().hex,
                 event=(status or "INDETERMINADO")[:35],
-                detail=(message or f"SIP {code or '-'}")[:180],
+                detail=((message or status or "Resultado da chamada") + sip_detail)[:180],
             ))
             db.commit()
 
