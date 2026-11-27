@@ -1,8 +1,9 @@
 """Isolated Lia Voz pilot. No SIP, CRM or WhatsApp side effects.
 
 PCM contract: mono signed 16-bit little endian, 24000 Hz.
-All protocol and playback methods must run on the same asyncio event loop.
-A future SIP adapter must marshal native media callbacks onto that loop.
+Protocol events run on one asyncio event loop. Playback reads from a native
+media thread are synchronized by RealtimeSession; never use its protocol
+object directly from native callbacks.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import asyncio
 import base64
 import binascii
 import json
+from threading import Lock
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from urllib.parse import urlencode
@@ -190,6 +192,7 @@ class RealtimeSession:
         self._model = model
         self._voice = voice
         self._send_lock = asyncio.Lock()
+        self._playback_lock = Lock()
         self.protocol = RealtimeProtocol()
         self.ready = False
 
@@ -210,7 +213,8 @@ class RealtimeSession:
             await self._send(session_update(self._model, self._voice))
             while True:
                 event = await self._receive()
-                self.protocol.handle(event)
+                with self._playback_lock:
+                    self.protocol.handle(event)
                 if event.get("type") == "session.updated":
                     self.ready = True
                     return
@@ -237,12 +241,19 @@ class RealtimeSession:
         if not self.ready:
             raise LiaVoiceError("Session is not ready")
         event = await self._receive()
-        for outgoing in self.protocol.handle(event):
+        with self._playback_lock:
+            outgoing_events = self.protocol.handle(event)
+        for outgoing in outgoing_events:
             await self._send(outgoing)
         return event.get("type", "")
 
     def pull_pcm(self, size: int) -> bytes:
-        return self.protocol.playback.pull(size)
+        with self._playback_lock:
+            return self.protocol.playback.pull(size)
+
+    def clear_pcm(self) -> None:
+        with self._playback_lock:
+            self.protocol.playback.clear()
 
 
 @asynccontextmanager
@@ -276,4 +287,4 @@ async def open_realtime(*, enabled: bool = False, api_key: str = "",
                 yield session
             finally:
                 session.ready = False
-                session.protocol.playback.clear()
+                session.clear_pcm()

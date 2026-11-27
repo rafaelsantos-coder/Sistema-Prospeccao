@@ -42,3 +42,15 @@ Referencias:
 - https://developers.openai.com/api/docs/guides/realtime-conversations
 - https://developers.openai.com/api/reference/resources/realtime/client-events
 - https://developers.openai.com/api/reference/resources/realtime/server-events
+
+## Fase 2: adaptador nativo isolado
+
+Adicionado MediaBridge e porta AudioMediaPort (24 kHz, mono, 16 bits, 20 ms),
+com fila de entrada limitada a 500 ms e silencio na saida apos fechamento.
+PJSIP faz a conversao do formato da conferencia. Os callbacks nao usam rede.
+O protocolo Realtime sincroniza leitura e interrupcao com a thread de midia.
+O runner encerra as tarefas WebSocket em caso de falha ou fechamento.
+O adaptador ainda nao e chamado por nenhum worker de producao.
+Testes offline com SWIG simulado: python -m pytest -q tests/test_lia_voz_media.py.
+Proximo: testar com wheel PJSUA2 2.15.1.post1 e RTP real de bancada,
+validar cancelamento, desconexao e autorizacao antes de ligar pela Native.
