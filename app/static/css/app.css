@@ -3214,6 +3214,10 @@ h1, h2, h3, .topbar h1, .page-lead h2, .metric-card > strong, .pipeline-item str
 .crm-credit-result-reprovado { background: #fff1f2; border-color: #fecdd3; color: #9f1239; }
 .crm-credit-result-em_analise { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
 .crm-credit-alert { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+.crm-credit-refresh { margin-top: 10px; }
+.crm-credit-section [data-crm-credit-refresh-hint] {
+  display: block; margin-top: 8px; font-size: 10px; line-height: 1.45;
+}
 
 
 /* Contestação de crédito: formulário integrado ao chat e controlado pelo CRM. */

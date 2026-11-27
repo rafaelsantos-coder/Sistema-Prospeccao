@@ -126,12 +126,19 @@ def _request_scope(ctx: ContestedOpportunity) -> dict[str, Any]:
 def _verify_response(ctx: ContestedOpportunity, payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise CRMManualError("CRM retornou resposta inesperada. Nenhuma operação deve ser repetida.")
+    ret_username = str(payload.get("sellerUsername") or "").strip()
+    ret_seller = _as_int(payload.get("assignedUserId"))
+    ret_funnel = _as_int(payload.get("funnelId"))
+    # opportunityId + analysisId + sellerUsername são obrigatórios.
+    # assignedUserId/funnelId só invalidam quando o CRM os envia divergentes
+    # (alguns retornos de credit-status omitem funil e derrubavam o Contestar).
     if (
         _as_int(payload.get("opportunityId")) != ctx.opportunity_id
         or _as_int(payload.get("analysisId")) != ctx.analysis_id
-        or _as_int(payload.get("assignedUserId")) != ctx.seller_user_id
-        or _as_int(payload.get("funnelId")) != ctx.funnel_id
-        or str(payload.get("sellerUsername") or "") != ctx.seller_username
+        or not ret_username
+        or ret_username != ctx.seller_username
+        or (ret_seller is not None and ret_seller != ctx.seller_user_id)
+        or (ret_funnel is not None and ret_funnel != ctx.funnel_id)
     ):
         raise CRMManualError(
             "O CRM não confirmou a mesma análise, vendedor e funil. A operação requer conferência."
