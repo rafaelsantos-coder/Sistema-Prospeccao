@@ -32,6 +32,74 @@ def test_catalog_for_city_lists_only_plans_available_there():
 def test_catalog_for_corporate_and_mobile():
     assert [p["price"] for p in catalog_for("", "Empresa")["plans"]] == [139.00, 169.00, 199.90]
     assert catalog_for("", "MOVEL")["plans"][0]["gb"] == 2
+    assert catalog_for("Santo Cristo", "EMPRESA")["available"] is True
+    outside_corp = catalog_for("Porto Xavier", "EMPRESA")
+    assert outside_corp["available"] is False and outside_corp["plans"] == []
+
+
+def test_out_of_coverage_city_blocks_fiber_after_address_correction():
+    from app.services.ai_sdr_policies import (
+        _apply_out_of_coverage_city_policy,
+        _city_candidate_from_customer_text,
+        _out_of_coverage_city_from_context,
+    )
+
+    assert (
+        _city_candidate_from_customer_text(
+            "RUA MARECHAL FLORIANO PEIXOTO, 810, PORTO XAVIER"
+        )
+        == "Porto Xavier"
+    )
+
+    decision = AIDecision(
+        reply_text="Qual dos planos corporativos apresentados você prefere?",
+        intent="INTEREST",
+        qualification_score=70,
+        temperature="QUENTE",
+        recommended_stage="PROPOSTA",
+        handoff_recommended=False,
+        confidence=0.8,
+        summary="Oferta corp Santo Cristo",
+        next_action="Escolher plano",
+        qualification=QualificationData(customer_type="EMPRESA", city="Santo Cristo"),
+        quick_replies=[],
+    )
+    context = {
+        "latest_customer_message": "RUA MARECHAL FLORIANO PEIXOTO, 810, PORTO XAVIER",
+        "confirmed_facts": {
+            "city": "Santo Cristo",
+            "product_kind": "INTERNET",
+            "customer_type": "EMPRESA",
+        },
+        "history": [
+            {
+                "direction": "OUTBOUND",
+                "body": (
+                    "Em Santo Cristo, estas são as opções de fibra corporativa. "
+                    "Qual plano você prefere?"
+                ),
+            },
+            {
+                "direction": "INBOUND",
+                "body": "RUA MARECHAL FLORIANO PEIXOTO, 810, PORTO XAVIER",
+            },
+        ],
+    }
+
+    assert _out_of_coverage_city_from_context(decision, context) == "Porto Xavier"
+    result = _apply_out_of_coverage_city_policy(decision, context)
+    assert "não tem viabilidade em Porto Xavier" in result.reply_text
+    assert "SEM_COBERTURA" in result.crm_notes
+    assert result.quick_replies == []
+    assert result.followup_needed is False
+    assert result.offer_plan_code is None
+
+    # Cidade atendida no endereço não bloqueia.
+    served_context = {
+        **context,
+        "latest_customer_message": "BR-472 - Santo Cristo, RS, 98960-000, S/N",
+    }
+    assert _out_of_coverage_city_from_context(decision, served_context) == ""
 
 
 def test_search_manual_ranks_relevant_items():

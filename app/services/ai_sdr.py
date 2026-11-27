@@ -51,6 +51,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _apply_existing_customer_plan_change_policy,
     _apply_journey_orchestration_policy,
     _apply_offer_rejection_diagnostic_policy,
+    _apply_out_of_coverage_city_policy,
     _apply_prospecting_entry_policy,
     _apply_router_information_policy,
     _apply_secondary_decline_reengagement_policy,
@@ -1321,6 +1322,8 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
     decision = _apply_journey_orchestration_policy(decision, context)
     decision = _apply_existing_customer_plan_change_policy(decision, context)
     decision = _promote_clear_purchase_to_closing(decision, context)
+    # Depois da jornada: cidade fora da área não pode seguir com oferta de fibra.
+    decision = _apply_out_of_coverage_city_policy(decision, context)
     decision = _sanitize_unconfirmed_customer_facts(decision, context)
     decision = _one_question_per_message(decision)
     decision = _never_hand_to_human(decision, context)
@@ -1364,6 +1367,7 @@ SDR_REWRITE_POLICIES = (
     ("secondary_decline", _apply_secondary_decline_reengagement_policy),
     ("offer_rejection", _apply_offer_rejection_diagnostic_policy),
     ("prospecting_entry", _apply_prospecting_entry_policy),
+    ("out_of_coverage_city", _apply_out_of_coverage_city_policy),
     ("repeated_rejection", _apply_repeated_rejection_policy),
 )
 

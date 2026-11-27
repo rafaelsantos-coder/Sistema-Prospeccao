@@ -396,25 +396,54 @@ def _fold_city(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+def is_service_city(city: str | None) -> bool:
+    """True quando a cidade está na área de atuação FTTH da Sulnet."""
+    city_key = _fold_city(city)
+    if not city_key:
+        return False
+    return city_key in {_fold_city(item) for item in SERVICE_CITIES}
+
+
 def catalog_for(city: str = "", segment: str = "RESIDENCIAL") -> dict:
     """Planos e preços oficiais para uma cidade/segmento (ferramenta do SDR)."""
     catalog = approved_catalog()
     seg = _fold_city(segment).upper()
-    if seg.startswith("EMP") or seg.startswith("CORP") or seg == "PJ":
-        return {
-            "segment": "EMPRESA",
-            "plans": catalog["corporate"],
-            "note": "Catálogo corporativo; não aplicar promoções residenciais.",
-        }
+    city_key = _fold_city(city)
+    known = {_fold_city(item): item for item in catalog["service_cities"]}
     if seg.startswith("MOV") or "SULMOVEL" in seg or "CELULAR" in seg:
         return {
             "segment": "MOVEL",
             "plans": catalog["mobile"],
             "note": "Sulmóvel com área nacional e portabilidade; sem alçada de desconto.",
         }
+    if city_key and city_key not in known:
+        # Fibra (residencial ou corporativa) só nas cidades de atuação.
+        segment_label = (
+            "EMPRESA"
+            if seg.startswith("EMP") or seg.startswith("CORP") or seg == "PJ"
+            else "RESIDENCIAL"
+        )
+        return {
+            "segment": segment_label,
+            "city": city,
+            "available": False,
+            "note": (
+                "Cidade fora da área de atuação da Sulnet; não ofertar fibra "
+                f"{'corporativa' if segment_label == 'EMPRESA' else 'residencial'}."
+            ),
+            "service_cities": catalog["service_cities"],
+            "plans": [],
+        }
+    if seg.startswith("EMP") or seg.startswith("CORP") or seg == "PJ":
+        return {
+            "segment": "EMPRESA",
+            "city": known.get(city_key) if city_key else None,
+            "available": True,
+            "plans": catalog["corporate"],
+            "note": "Catálogo corporativo; não aplicar promoções residenciais.",
+        }
 
     residential = sorted(catalog["residential"], key=lambda row: -int(row["speed"]))
-    city_key = _fold_city(city)
     if not city_key:
         return {
             "segment": "RESIDENCIAL",
@@ -423,16 +452,6 @@ def catalog_for(city: str = "", segment: str = "RESIDENCIAL") -> dict:
             "service_cities": catalog["service_cities"],
             "plans": residential,
             "ftth_rules": catalog["ftth_rules"],
-        }
-    known = {_fold_city(item): item for item in catalog["service_cities"]}
-    if city_key not in known:
-        return {
-            "segment": "RESIDENCIAL",
-            "city": city,
-            "available": False,
-            "note": "Cidade fora da área de atuação da Sulnet; não ofertar fibra residencial.",
-            "service_cities": catalog["service_cities"],
-            "plans": [],
         }
     plans = [
         {key: value for key, value in row.items() if key != "cities"}
@@ -631,6 +650,8 @@ SYSTEM_KNOWLEDGE_ITEMS = [
             "As 20 cidades de atuação são: Santa Rosa, Santo Ângelo, Giruá, Três de Maio, Entre Ijuís, Independência, Cerro Largo, "
             "Guarani das Missões, Sete de Setembro, Caibaté, Mato Queimado, Santo Cristo, Horizontina, Boa Vista do Buricá, "
             "Dr. Maurício Cardoso, Nova Candelária, São José do Inhacorá, Tuparendi, Crissiumal e Senador Salgado Filho. "
+            "Se o cliente informar uma cidade fora dessa lista (ex.: Porto Xavier), diga imediatamente que não há viabilidade "
+            "e NÃO continue oferecendo planos de fibra residencial ou corporativa. "
             "Cidade atendida não garante viabilidade técnica no endereço. Nunca prometer cobertura de endereço sem consulta."
         ),
     },

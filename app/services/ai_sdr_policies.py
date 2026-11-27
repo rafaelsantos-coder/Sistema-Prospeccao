@@ -28,6 +28,7 @@ from app.services.ai_sdr_policy import (
     FTTH_PLANS,
     MOBILE_PLANS,
     SERVICE_CITIES,
+    is_service_city,
 )
 
 
@@ -853,6 +854,201 @@ def _plan_available_in_city(plan: dict, city: str) -> bool:
     if cities == "ALL_20":
         return True
     return city_key in {_normalized_city(str(item)) for item in (cities or [])}
+
+
+_STREET_PREFIXES = (
+    "rua",
+    "av",
+    "avenida",
+    "travessa",
+    "alameda",
+    "rodovia",
+    "estrada",
+    "br",
+    "rs",
+    "cep",
+    "sn",
+    "s n",
+    "numero",
+    "nº",
+    "no",
+)
+
+_CITY_PROMPT_CUES = (
+    "qual e a sua cidade",
+    "qual sua cidade",
+    "em qual cidade",
+    "qual cidade",
+    "nome da cidade",
+    "cidade seria",
+    "cidade da instalacao",
+)
+
+NO_COVERAGE_CRM_NOTE = "SEM_COBERTURA"
+
+
+def _title_city_candidate(value: str) -> str:
+    clean = re.sub(r"\s+", " ", str(value or "").strip(" ,.;:-"))
+    if not clean:
+        return ""
+    return " ".join(part.capitalize() for part in clean.split(" "))
+
+
+def _looks_like_address(value: str | None) -> bool:
+    folded = _fold_sales_text(value)
+    if not folded:
+        return False
+    if re.search(r"\b(?:rua|av|avenida|travessa|alameda|rodovia|estrada)\b", folded):
+        return True
+    if re.search(r"\b(?:br|rs)\s*\d", folded) or re.search(r"\b\d{5}-?\d{3}\b", folded):
+        return True
+    return "," in str(value or "")
+
+
+def _previous_asked_city(context: dict) -> bool:
+    previous = _fold_sales_text(_last_outbound_text(context))
+    return any(cue in previous for cue in _CITY_PROMPT_CUES)
+
+
+def _city_candidate_from_customer_text(value: str | None) -> str:
+    """Extrai candidata a cidade (atendida ou não) de endereço/resposta curta."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    served = _service_city_in_text(raw)
+    if served:
+        return served
+
+    parts = [part.strip() for part in re.split(r"[,|\n]+", raw) if part.strip()]
+    candidates: list[str] = []
+    if parts:
+        candidates.append(parts[-1])
+    if len(parts) >= 2:
+        candidates.append(parts[-2])
+    # Mensagem curta só com o nome da cidade.
+    if len(raw.split()) <= 4:
+        candidates.append(raw)
+
+    for candidate in candidates:
+        cleaned = candidate
+        cleaned = re.sub(
+            r"\b(?:rs|sc|pr|sp|rj|mg|brasil)\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\b\d{5}-?\d{0,3}\b", " ", cleaned)
+        cleaned = re.sub(r"\bs/?n\b", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b\d+\b", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+        folded = _fold_sales_text(cleaned)
+        if not folded or len(folded) < 3:
+            continue
+        if any(folded == prefix or folded.startswith(prefix + " ") for prefix in _STREET_PREFIXES):
+            continue
+        if folded in {_normalized_city(item) for item in SERVICE_CITIES}:
+            for item in SERVICE_CITIES:
+                if _normalized_city(item) == folded:
+                    return item
+            continue
+        # Evita lixo tipo "810" já removido; exige pelo menos uma letra.
+        if not re.search(r"[a-zA-ZÀ-ÿ]", cleaned):
+            continue
+        words = folded.split()
+        if len(words) > 4:
+            continue
+        return _title_city_candidate(cleaned)
+    return ""
+
+
+def _out_of_coverage_city_from_context(
+    decision: AIDecision,
+    context: dict,
+) -> str:
+    """Cidade citada pelo cliente que NÃO está na área de atuação."""
+    # Móvel é nacional — só bloqueia quando o produto em jogo é internet/fibra.
+    product = _journey_product_kind(decision, context)
+    if product == "MOBILE":
+        return ""
+
+    latest = str(context.get("latest_customer_message") or "")
+    latest_candidate = _city_candidate_from_customer_text(latest)
+    if latest_candidate and not is_service_city(latest_candidate):
+        if (
+            _previous_asked_city(context)
+            or _looks_like_address(latest)
+            or _fold_sales_text(latest) == _fold_sales_text(latest_candidate)
+            or re.search(
+                rf"\b(?:em|de|para|pra|cidade)\s+{_fold_sales_text(latest_candidate)}\b",
+                _fold_sales_text(latest),
+            )
+        ):
+            return latest_candidate
+
+    for candidate in (
+        getattr(getattr(decision, "qualification", None), "city", None),
+        (context.get("confirmed_facts") or {}).get("city"),
+    ):
+        city = str(candidate or "").strip()
+        if city and not is_service_city(city):
+            # Só bloqueia se a cidade fora da área veio do turno atual ou
+            # se o cliente acabou de negar/corrigir a cidade atendida anterior.
+            if latest_candidate and _fold_sales_text(latest_candidate) == _fold_sales_text(city):
+                return _title_city_candidate(city)
+            if _looks_like_address(latest) and latest_candidate and not is_service_city(latest_candidate):
+                return latest_candidate
+    return ""
+
+
+def _no_coverage_reply(city: str) -> str:
+    label = city or "essa cidade"
+    return (
+        f"Obrigada por informar! No momento a Sulnet ainda não tem viabilidade em {label} — "
+        "não atendemos essa cidade. Se a instalação for em uma das nossas cidades da região "
+        "(por exemplo Santa Rosa, Santo Ângelo ou Santo Cristo), me chama que eu te ajudo com os planos."
+    )
+
+
+def _apply_out_of_coverage_city_policy(
+    decision: AIDecision,
+    context: dict,
+) -> AIDecision:
+    """Cidade fora da área de atuação: não vender fibra; informar sem viabilidade."""
+    city = _out_of_coverage_city_from_context(decision, context)
+    if not city:
+        return decision
+
+    decision.reply_text = _no_coverage_reply(city)
+    decision.quick_replies = []
+    decision.intent = "NOT_INTERESTED"
+    decision.sales_state = "WAITING_CUSTOMER"
+    decision.handoff_recommended = False
+    decision.handoff_reason = ""
+    decision.handoff_target = "NONE"
+    decision.customer_commitment = False
+    decision.offer_plan_code = None
+    decision.offer_price = None
+    decision.concession_level = 0
+    decision.free_months = 0
+    decision.followup_needed = False
+    decision.temperature = "FRIO"
+    decision.qualification_score = min(int(decision.qualification_score or 0), 20)
+    decision.qualification.city = city
+    decision.journey_state = "DISCOVERY"
+    decision.journey_pending_action = (
+        f"Cliente em {city}, fora da área de atuação; aguardar se mudar de cidade."
+    )
+    decision.next_action = "Encerrar oferta de fibra; cliente pode retornar se mudar de cidade."
+    decision.summary = (
+        f"Cliente informou instalação em {city}, fora das cidades atendidas. "
+        "Informada ausência de viabilidade; planos não foram oferecidos."
+    )
+    decision.proposal_summary = ""
+    notes = [str(item) for item in (decision.crm_notes or []) if str(item).strip()]
+    if NO_COVERAGE_CRM_NOTE not in {item.upper() for item in notes}:
+        notes.append(NO_COVERAGE_CRM_NOTE)
+    decision.crm_notes = notes[:12]
+    return decision
 
 
 def _eligible_plans_for_city(city: str) -> list[dict]:
