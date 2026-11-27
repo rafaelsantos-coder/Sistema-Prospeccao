@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -150,6 +151,8 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
                 driver, phone, config.prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
                 should_abort=abort,
             ))
+        logging.getLogger(__name__).info("Lia Voz teste %d: %s | %s",
+                                         test_id, outcome.status, outcome.message)
         _finish(test_id, outcome.status, outcome.message, outcome.sip_code, register_code)
     except Exception:
         # Never persist raw API/SIP errors, phone, transcript, or secrets.
