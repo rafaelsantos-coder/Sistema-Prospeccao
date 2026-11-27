@@ -150,7 +150,7 @@ def test_same_instance_cannot_be_linked_to_two_queues():
             bind_queue_instance(db, first.id, inst.id)
             try:
                 bind_queue_instance(db, second.id, inst.id)
-                assert False, "must deny same instance on two queues"
+                raise AssertionError("must deny same instance on two queues")
             except SulnetWAError:
                 pass
             db.rollback()
