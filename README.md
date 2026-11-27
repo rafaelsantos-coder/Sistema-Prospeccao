@@ -1,5 +1,10 @@
 # Sulnet Prospecta — CRM interno da Sulnet
 
+> **Repositório movido.** O código canônico está em
+> **[SULNET-TELECOM/sulnet-prospecta](https://github.com/SULNET-TELECOM/sulnet-prospecta)**.
+> Novos PRs, CI e deploys devem usar apenas o repositório da organização.
+> Detalhes: [`docs/MIGRACAO-GITHUB-ORG.md`](docs/MIGRACAO-GITHUB-ORG.md).
+
 Aplicação web interna para centralizar prospecção, CRM, follow-ups, campanhas e indicadores comerciais da Sulnet. Esta entrega foi projetada como uma evolução do repositório `zxmarketingdigital/prospeccao-automatizada`, preservando a integração com seus módulos de Apify, geração de copy e rate limiter quando executada dentro do repositório original.
 
 ## O que já funciona
