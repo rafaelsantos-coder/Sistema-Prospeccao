@@ -1481,7 +1481,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
                          account_id: int = Form(...), phone: str = Form(...),
                          authorized: str = Form(""), mode: str = Form("ia"),
                          route: str = Form("native"), db: Session = Depends(get_db)):
-    from app.services.lia_voz_pilot import PilotConfig, ensure_idle, requested_state, ensure_hourly_quota
+    from app.services.lia_voz_pilot import PilotConfig, ensure_idle, requested_state
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
@@ -1513,10 +1513,8 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
         outbound_guard(db, clean)
     except ValueError as exc:
         return _error(request, str(exc), destination)
-    try:
-        ensure_hourly_quota(db, account.id, now)
-    except ValueError as exc:
-        return _error(request, str(exc), destination)
+    # The single authorized manual pilot has no cooldown or hourly quota.
+    # The active-test guard and SIP slot still serialize all calls.
     test = VoiceTestCall(
         account_id=account.id, account_label=account.name, target_phone=clean,
         status=initial_state,
