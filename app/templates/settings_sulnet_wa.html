@@ -12,11 +12,18 @@
   <article class="panel panel-span-12">
     <div class="panel-header">
       <div><span class="eyebrow">SERVIÇO PRIVADO</span><h3>Estado do motor</h3></div>
-      <span class="connection-status {% if gateway_configured %}on{% endif %}">
-        {{ 'Configuração preparada' if gateway_configured else 'Desativado / configuração pendente' }}
+      <span class="connection-status {% if gateway_reachable %}on{% endif %}">
+        {{ 'Pronto para cadastrar teste' if gateway_reachable else ('Serviço temporariamente indisponível' if gateway_configured else 'Desativado / configuração pendente') }}
       </span>
     </div>
     <p class="panel-note">Z-API e Meta oficial não foram substituídos. Use somente um número de laboratório até a homologação completa. O gateway não recebe as credenciais nem o banco de dados do Prospecta.</p>
+    {% if not gateway_configured %}
+    <p class="panel-note"><strong>Por que não consigo criar?</strong> O serviço privado ainda não foi configurado no Railway. A criação fica bloqueada até a conclusão da configuração.</p>
+    {% elif not gateway_reachable %}
+    <p class="panel-note"><strong>Por que não consigo criar?</strong> O serviço privado não respondeu ao teste de conexão. Nenhum cadastro foi enviado. Verifique a saúde do gateway no Railway.</p>
+    {% elif lab_only %}
+    <p class="panel-note"><strong>Cadastro de teste liberado.</strong> Você pode criar instâncias e gerar QR Code para um número de laboratório. A ativação comercial continua bloqueada.</p>
+    {% endif %}
   </article>
 
   <article class="panel panel-span-12">
@@ -37,7 +44,7 @@
           {% for action, text in [('start', 'Iniciar'), ('stop', 'Parar'), ('activate', 'Ativar'), ('deactivate', 'Desativar')] %}
           <form action="/settings/sulnet-wa/{{ instance.id }}/{{ action }}" method="post" style="display:inline-block">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit" class="button button-secondary" {% if not gateway_configured %}disabled{% endif %}>{{ text }}</button>
+            <button type="submit" class="button button-secondary" {% if (not gateway_reachable and action in ['start', 'stop', 'activate']) or (lab_only and action == 'activate') %}disabled{% endif %}>{{ text }}</button>
           </form>
           {% endfor %}
           <a href="/settings/sulnet-wa/{{ instance.id }}/qr" class="button button-secondary">QR Code</a>
@@ -64,7 +71,10 @@
     <form action="/settings/sulnet-wa/create" method="post" class="stack-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label class="field"><span>Nome da instância</span><input name="name" maxlength="120" required placeholder="Ex.: Teste Sulnet 01"></label>
-      <button class="button button-primary" type="submit" {% if not gateway_configured %}disabled{% endif %}>Criar instância desativada</button>
+      <button class="button button-primary" type="submit" {% if not gateway_reachable %}disabled{% endif %}>Criar instância desativada</button>
+      {% if not gateway_reachable %}
+      <small>Cadastro indisponível: serviço privado não configurado ou sem resposta. A criação será liberada quando o gateway estiver online.</small>
+      {% endif %}
     </form>
   </article>
 </div>

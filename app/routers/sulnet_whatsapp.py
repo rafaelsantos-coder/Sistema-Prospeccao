@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import re
 
@@ -29,6 +30,11 @@ LOG = logging.getLogger("sulnet_wa")
 router = APIRouter()
 
 
+def _commercial_activation_allowed() -> bool:
+    """A ativação comercial exige autorização explícita, além da conexão do gateway."""
+    return os.getenv("SULNET_WA_COMMERCIAL_ENABLED", "false").strip().lower() in {"true", "1", "yes", "on"}
+
+
 def _admin(request: Request, db: Session):
     user = get_current_user(request, db)
     if not user:
@@ -41,9 +47,11 @@ def _page(request: Request, db: Session, user, *, qr=None, qr_instance_id=None):
     config = GatewayConfig.from_env()
     instances = list_instances(db)
     status_by_id = {}
+    gateway_reachable = False
     if config.configured:
         try:
             gateway_sessions = {x["id"]: x for x in GatewayClient(config).list_sessions()}
+            gateway_reachable = True
         except SulnetWAError:
             gateway_sessions = {}
         for inst in instances:
@@ -55,6 +63,8 @@ def _page(request: Request, db: Session, user, *, qr=None, qr_instance_id=None):
         user=user, active_nav="settings", settings_section="sulnet_wa",
         page_title="Motor WhatsApp Sulnet",
         gateway_configured=config.configured,
+        gateway_reachable=gateway_reachable,
+        lab_only=not _commercial_activation_allowed(),
         instances=instances, status_by_id=status_by_id,
         linked_queues={x.id: queue_for_instance(db, x.id) for x in instances},
         qr_data=qr, qr_instance_id=qr_instance_id,
@@ -119,6 +129,8 @@ def session_action(
         elif action == "stop":
             GatewayClient().stop(instance.session_id)
         elif action == "activate":
+            if not _commercial_activation_allowed():
+                raise SulnetWAError("Ativação comercial bloqueada durante a homologação. Use somente um número de teste.")
             current = GatewayClient().status(instance.session_id)
             if current["status"] != "ready" or not current["phone"]:
                 raise SulnetWAError("Pareamento não confirmado. Ativação bloqueada.")
