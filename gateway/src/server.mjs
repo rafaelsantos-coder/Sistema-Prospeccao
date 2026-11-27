@@ -1,14 +1,13 @@
 import http from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import makeWASocket, { DisconnectReason, getContentType } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import { encryptedAuthState, persistedSessionIds } from './auth-state.mjs';
+import { createStorageFromEnv } from './store.mjs';
 import { equalSecret, cryptoKey, signBody, validPhone, validSessionId, encrypt, decrypt } from './security.mjs';
 
-const root = process.env.WA_DATA_DIR || '/data';
+const store = createStorageFromEnv();
 const sharedKey = process.env.WA_API_KEY || '';
 const hookKey = process.env.WA_WEBHOOK_KEY || '';
 const hookURL = process.env.WA_WEBHOOK_URL || '';
@@ -21,43 +20,34 @@ if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error('PORT 
 const gatewaySessions = new Map();
 const logger = pino({ level: 'silent' });
 const MAX_BODY = 8192;
-const queueDir = path.join(root, 'outbox');
+const queuePrefix = 'outbox/';
 let flushingOutbox = false;
 
 async function persistEvent(event) {
-  await fs.mkdir(queueDir, { recursive: true, mode: 0o700 });
-  const file = path.join(queueDir, event.eventId + '.bin');
-  const existing = await fs.stat(file).catch(() => null);
-  if (existing) return;
-  const temp = file + '.' + randomUUID() + '.tmp';
-  try {
-    await fs.writeFile(temp, encrypt(Buffer.from(JSON.stringify(event)), key), { mode: 0o600, flag: 'wx' });
-    await fs.rename(temp, file);
-  } finally {
-    await fs.rm(temp, { force: true }).catch(() => {});
-  }
+  const objectKey = queuePrefix + event.eventId + '.bin';
+  if (await store.get(objectKey) !== null) return;
+  await store.put(objectKey, encrypt(Buffer.from(JSON.stringify(event)), key));
 }
-async function sendEvent(file) {
-  const blob = await fs.readFile(file);
+async function sendEvent(objectKey) {
+  const blob = await store.get(objectKey);
+  if (blob === null) return;
   const body = decrypt(blob, key).toString('utf8');
   const timestamp = Math.floor(Date.now() / 1000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const response = await fetch(hookURL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Sulnet-WA-Timestamp': String(timestamp),
-        'X-Sulnet-WA-Signature': signBody(body, timestamp, hookKey),
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'X-Sulnet-WA-Timestamp':String(timestamp),
+        'X-Sulnet-WA-Signature':signBody(body,timestamp,hookKey),
       },
-      body,
-      signal: controller.signal,
-      redirect: 'error',
+      body, signal:controller.signal, redirect:'error',
     });
-    if (response.ok) await fs.unlink(file);
+    if (response.ok) await store.del(objectKey);
   } catch {
-    // Remain in encrypted outbox; retry later without logging personal data.
+    // Keep encrypted event for retry; never log personal data.
   } finally {
     clearTimeout(timer);
   }
@@ -66,10 +56,10 @@ async function flushOutbox() {
   if (flushingOutbox) return;
   flushingOutbox = true;
   try {
-    const files = await fs.readdir(queueDir).catch(() => []);
-    for (const name of files.filter((n) => /^[a-f0-9]{64}\.bin$/.test(n)).slice(0, 100)) {
-      try { await sendEvent(path.join(queueDir, name)); }
-      catch { /* Keep outbox for later without logging content. */ }
+    const files = await store.list(queuePrefix);
+    for (const name of files.filter((n) => /^outbox\/[a-f0-9]{64}\.bin$/.test(n)).slice(0, 100)) {
+      try { await sendEvent(name); }
+      catch { /* Keep for future retries. */ }
     }
   } finally {
     flushingOutbox = false;
@@ -90,7 +80,7 @@ async function createSession(id) {
     id, status: 'created', socket: null, qr: '', reconnect: null, stopped: true,
     lastError: null, phone: null,
   };
-  await fs.mkdir(path.join(root, 'sessions', id), { recursive: true, mode: 0o700 });
+  await store.put('sessions/' + id + '/created.bin', encrypt(Buffer.from('created'), key));
   gatewaySessions.set(id, record);
   return record;
 }
@@ -100,7 +90,7 @@ async function startSession(id) {
   record.stopped = false;
   record.qr = '';
   record.status = 'initializing';
-  const auth = await encryptedAuthState(root, id, key);
+  const auth = await encryptedAuthState(store, id, key);
   try {
     const socket = makeWASocket({
       auth: auth.state, logger,
@@ -247,8 +237,7 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 503, { error:'operation_unavailable' });
   }
 });
-await fs.mkdir(root, {recursive:true,mode:0o700});
-for (const id of await persistedSessionIds(root)) await createSession(id);
+for (const id of await persistedSessionIds(store)) await createSession(id);
 server.listen(port, '0.0.0.0');
 setInterval(() => { void flushOutbox(); }, 15000).unref();
 if (process.env.WA_AUTOSTART === 'true')
