@@ -2575,8 +2575,11 @@ def test_existing_customer_confirmation_routes_to_mobile_or_new_connection(monke
     ]
 
 
-def test_new_customer_confirmation_routes_to_internet_or_mobile(monkeypatch):
-    monkeypatch.setattr("app.services.ai_campaign_black.black_active", lambda now=None: False)
+def test_new_customer_confirmation_routes_to_internet_or_mobile():
+    """Black desligada: após 'não sou cliente' segue oferta do dia a dia (Internet/Móvel)."""
+    from app.services import ai_campaign_black as black
+
+    assert black.black_active() is False
     decision = _base_prospecting_entry_decision()
     context = {
         "latest_customer_message": "Não",
@@ -2598,6 +2601,7 @@ def test_new_customer_confirmation_routes_to_internet_or_mobile(monkeypatch):
     assert result.qualification.existing_customer == "NAO_CLIENTE"
     assert result.offer_plan_code is None
     assert "planos de internet ou Telefonia Móvel" in result.reply_text
+    assert "Black" not in result.reply_text
     assert [item.label for item in result.quick_replies] == [
         "Internet",
         "Telefonia Móvel",

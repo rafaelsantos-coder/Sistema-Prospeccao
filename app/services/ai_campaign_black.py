@@ -22,6 +22,10 @@ FIRST_DUE_DATE = "10/01/2027"
 VALID_UNTIL_LABEL = "30/11/2026"
 # 30/11/2026 23:59:59 em Brasília (UTC-3)
 _VALID_UNTIL = datetime(2026, 12, 1, 3, 0, 0, tzinfo=timezone.utc) - timedelta(seconds=1)
+# Comercial (26/11/2026): Black encerrada. Volta a oferta do dia a dia
+# (top-down FTTH: 800 Mega R$119,90 → 650 Mega R$99,90 — ai_sdr_policy).
+# Para reativar: True e manter/ajustar _VALID_UNTIL.
+BLACK_CAMPAIGN_ENABLED = False
 
 OFFER_QUESTION = "Quer conhecer nossa promoção Black da Sulnet?"
 OFFER_MARK = "promocao black da sulnet"
@@ -57,6 +61,8 @@ SUMMARY_MARKER = f"[{CAMPAIGN_TAG}]"
 
 
 def black_active(now: datetime | None = None) -> bool:
+    if not BLACK_CAMPAIGN_ENABLED:
+        return False
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
