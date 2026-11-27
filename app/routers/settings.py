@@ -24,6 +24,7 @@ from app.services.access_control import (
 )
 from app.services.origin_campaigns import list_campaigns, validate_campaign_fields
 from app.services.legacy_adapter import legacy_modules_available, rate_status
+from app.services.sulnet_wa import GatewayConfig, list_instances as list_sulnet_wa_instances, queue_instance as sulnet_queue_instance
 from app.services.queue_routing import queue_summary
 from app.services.zapi import ZApiError
 from app.timeutils import utcnow
@@ -275,6 +276,7 @@ def settings_queues_page(request: Request, db: Session = Depends(get_db)):
     queues = _visible_queues(db, user)
     active_zapi_instances = list_zapi_instances(db)
     active_meta_accounts = list_meta_accounts(db)
+    active_sulnet_wa_instances = [x for x in list_sulnet_wa_instances(db) if x.active]
     queue_stats = {item.id: queue_summary(db, item) for item in queues}
     queue_instances = {
         item.id: queue_instance(db, item.id)
@@ -298,6 +300,8 @@ def settings_queues_page(request: Request, db: Session = Depends(get_db)):
         queue_stats=queue_stats,
         queue_instances=queue_instances,
         queue_meta_accounts=queue_meta_accounts,
+        queue_sulnet_wa_instances={item.id: sulnet_queue_instance(db, item.id) for item in queues},
+        active_sulnet_wa_instances=active_sulnet_wa_instances,
         active_zapi_instances=active_zapi_instances,
         active_meta_accounts=active_meta_accounts,
         routing_strategies=_routing_strategies(),
@@ -462,6 +466,7 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
         duplicate_instance_ids=duplicate_instance_ids,
         meta_accounts=meta_accounts,
         meta_account_info=meta_account_info,
+        sulnet_wa_instances=list_sulnet_wa_instances(db),
         app_public_url=settings.app_public_url,
     )
 
@@ -494,6 +499,7 @@ def settings_integrations_page(request: Request, db: Session = Depends(get_db)):
 
     integrations = dict(settings.integrations)
     integrations["zapi"] = bool(list_zapi_instances(db))
+    integrations["sulnet_wa"] = GatewayConfig.from_env().configured
     return render(
         request,
         "settings_integrations.html",

@@ -192,6 +192,8 @@ def bind_queue_meta_account(
     if any(q.id != queue_id for q in meta_linked_queues(db, account.id)):
         raise ValueError("Número Meta já vinculado a outra fila.")
     clear_queue_zapi_binding(db, queue_id)
+    from app.services.sulnet_wa import clear_queue_binding as clear_sulnet_queue_binding
+    clear_sulnet_queue_binding(db, queue_id)
     link = db.scalar(
         select(ServiceQueueMetaAccount).where(ServiceQueueMetaAccount.queue_id == queue_id)
     )

@@ -25,11 +25,14 @@
           {% set qs = queue_stats.get(queue.id, {}) %}
           {% set qi = queue_instances.get(queue.id) %}
           {% set qm = queue_meta_accounts.get(queue.id) %}
+          {% set sw = queue_sulnet_wa_instances.get(queue.id) %}
           <tr>
             <td><strong>{{ queue.name }}</strong><span class="table-subline">{{ queue.code }}</span></td>
             <td>{{ constants.teams.get(queue.team, queue.team) }}<span class="table-subline">{{ queue.branch.city if queue.branch else 'Corporativo / todas' }}</span></td>
             <td>
-              {% if qm %}
+              {% if sw %}
+              <strong>{{ sw.name }}</strong><span class="table-subline">Motor Sulnet · {{ sw.phone_label or '—' }}</span>
+              {% elif qm %}
               <strong>{{ qm.name }}</strong><span class="table-subline">API oficial Meta · {{ qm.phone_label if qm.phone_label else '—' }}</span>
               {% elif qi %}
               <strong>{{ qi.name }}</strong><span class="table-subline">Z-API · {{ qi.phone_label if qi.phone_label else '—' }}</span>
@@ -65,8 +68,9 @@
             <select name="whatsapp_provider" data-provider-select>
               <option value="ZAPI">Z-API</option>
               <option value="META">API oficial Meta</option>
+              <option value="SULNET_WA">Motor WhatsApp Sulnet</option>
             </select>
-            <small>Escolha se a fila usa um número via Z-API ou via Cloud API oficial da Meta.</small>
+            <small>Escolha Z-API, Meta oficial ou nosso motor Sulnet.</small>
           </label>
           <label class="field" data-provider-panel="ZAPI"><span>Instância Z-API</span>
             <select name="zapi_instance_id" data-zapi-select>
@@ -85,6 +89,11 @@
               {% endfor %}
             </select>
             <small>Cadastre o número em Configurações → Números WhatsApp antes de vincular.</small>
+          </label>
+          <label class="field" data-provider-panel="SULNET_WA" hidden><span>Instância Sulnet</span>
+            <select name="sulnet_wa_instance_id" data-sulnet-select><option value="">Selecione a instância</option>
+              {% for instance in active_sulnet_wa_instances %}<option value="{{ instance.id }}">{{ instance.name }} · {{ instance.phone_label or 'Teste' }}</option>{% endfor %}
+            </select><small>Cadastre e valide a instância em Configurações → Motor WhatsApp Sulnet.</small>
           </label>
           <label class="field"><span>Estratégia de distribuição</span><select name="routing_strategy">{% for key, label in routing_strategies.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
           <div class="field field-span-2">
