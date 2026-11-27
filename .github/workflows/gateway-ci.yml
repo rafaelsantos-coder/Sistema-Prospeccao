@@ -33,9 +33,21 @@ jobs:
       - name: Auditar vulnerabilidades da arvore npm
         run: cd gateway && npm audit --audit-level=high
       - name: Verificar digest do runtime distroless
-        run: docker buildx imagetools inspect gcr.io/distroless/nodejs22-debian13:nonroot | head -n 12
+        run: docker buildx imagetools inspect gcr.io/distroless/base-nossl-debian13:nonroot | head -n 12
       - name: Construir container isolado
         run: docker build -f gateway/Dockerfile -t sulnet-wa:ci .
+      - name: Testar runtime real e endpoint de saude
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/node sulnet-wa:ci --version
+          docker run -d --name sulnet-wa-smoke -p 127.0.0.1:30999:3000 \
+            -e WA_API_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            -e WA_WEBHOOK_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            -e WA_WEBHOOK_URL=https://example.invalid/webhooks/sulnet-wa \
+            -e WA_ENCRYPTION_KEY=$(openssl rand -base64 32) \
+            -e WA_DATA_DIR=/tmp/sulnet-wa sulnet-wa:ci
+          sleep 4
+          curl --fail --silent --show-error http://127.0.0.1:30999/healthz
+          docker rm -f sulnet-wa-smoke
       - name: Varredura de container de terceiros
         uses: aquasecurity/trivy-action@v0.36.0
         with:
