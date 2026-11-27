@@ -143,6 +143,9 @@ def test_stale_human_assignment_can_be_reclaimed_only_if_latest_unanswered(monke
             result = recover_reported_unanswered(db, conversation_ids=(conv.id,))
             assert result == {"enqueued": 1}
             assert conv.assigned_user_id == db.get(AIAgentProfile, agent_id).user_id
+            link = db.scalar(select(ConversationQueueLink).where(ConversationQueueLink.conversation_id == conv.id))
+            assert link.queue_id == general
+            assert link.origin == "MANUAL_AI"
             assert db.scalar(select(AIJob.id).where(AIJob.message_id == new_inbound.id))
             db.commit()
     finally:

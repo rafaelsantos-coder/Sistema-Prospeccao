@@ -143,6 +143,14 @@ def _limit_one_unanswered_per_day(
     return due
 
 
+def _outside_fiber_area(db: Session, conversation_id: int) -> bool:
+    from app.services.ai_sdr import _conversation_messages
+    from app.services.ai_sdr_policies import confirmed_out_of_area_city, _confirmed_facts_from_history
+
+    rows = _conversation_messages(db, conversation_id, limit=160)
+    return bool(confirmed_out_of_area_city({"confirmed_facts": _confirmed_facts_from_history(rows)}))
+
+
 def schedule_followup(
     db: Session,
     *,
@@ -159,6 +167,8 @@ def schedule_followup(
         return None
     conversation = db.get(Conversation, conversation_id)
     if not conversation or conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
+        return None
+    if _outside_fiber_area(db, conversation_id):
         return None
     lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
     if lead and (lead.do_not_contact or lead.stage in {"GANHO", "NAO_CONTATAR"}):
@@ -720,6 +730,8 @@ def _followup_allowed(
         return False, "CONVERSA_INEXISTENTE"
     if conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
         return False, "CONVERSA_ENCERRADA"
+    if _outside_fiber_area(db, conversation.id):
+        return False, "CIDADE_SEM_COBERTURA"
     from app.services.global_blacklist import is_globally_blocked  # noqa: PLC0415
     if is_globally_blocked(db, conversation.contact.phone):
         return False, "BLACKLIST_GLOBAL"

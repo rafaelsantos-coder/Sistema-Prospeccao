@@ -217,3 +217,31 @@ def test_migration_sem_fila_nao_cria_fila_nem_autorizacao(monkeypatch):
             assert not list(db.scalars(select(AIQueueBinding)))
     finally:
         engine.dispose()
+
+
+def test_human_message_without_assignment_blocks_general_recovery(monkeypatch):
+    monkeypatch.setenv("AI_QUEUE_MANUAL_CONTROL", "true")
+    engine = _database()
+    try:
+        with Session(engine) as db:
+            _, _, _, general_id = _prepare(db)
+        _apply(engine, monkeypatch)
+        with Session(engine) as db:
+            human = User(
+                name="Vendedor", email="unassigned-human-test@sulnet.local",
+                password_hash="fake", role="CONSULTOR", team="DIGITAL",
+                active=True, must_change_password=False,
+            )
+            db.add(human)
+            db.flush()
+            conversation, inbound = _inbound(db, general_id)
+            db.add(Message(
+                contact_id=conversation.contact_id, conversation_id=conversation.id,
+                direction="OUTBOUND", message_type="TEXT", status="SENT",
+                sender_user_id=human.id, body="O senhor é de qual cidade?",
+            ))
+            db.flush()
+            assert not ai_allowed_for_conversation(db, conversation.id)
+            assert enqueue_ai_job(db, conversation=conversation, message=inbound, takeover=True) is None
+    finally:
+        engine.dispose()

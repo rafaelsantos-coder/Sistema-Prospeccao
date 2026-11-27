@@ -200,7 +200,56 @@ _PRODUCT_LABELS = {
 }
 
 
+def _city_answer_candidate(value: str, previous_outbound: str = "") -> str:
+    """Preserva a cidade declarada mesmo quando não consta no catálogo."""
+    previous = _fold_sales_text(previous_outbound)
+    asks_city = bool(re.search(
+        r"\b(?:qual|que)\b.{0,35}\bcidade\b|\bcidade (?:da|de) instalacao\b|\bnome da cidade\b",
+        previous,
+    ))
+    raw = (value or "").strip().strip(" .,!;")
+    explicit = re.match(
+        r"^(?:sou de|moro em|resido em|minha cidade [ée]|"
+        r"a (?:instala[çc][ãa]o|internet) (?:[ée]|ser[áa]) em|"
+        r"[ée] em|ser[áa] em|vai ser em|na verdade em|na cidade de)\s+(.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if explicit:
+        raw = explicit.group(1).strip()
+    elif not asks_city:
+        return ""
+    raw = re.sub(
+        r"(?:\s*[,/-]\s*|\s+)(?:RS|SC|PR|SP|MG|RJ|ES|MS|MT|GO|DF|BA|SE|AL|PE|PB|RN|CE|PI|MA|TO|PA|AP|AM|RR|RO|AC)$",
+        "", raw, flags=re.IGNORECASE,
+    ).strip()
+    raw = re.sub(r"^(?:em|de|da cidade de)\s+", "", raw, flags=re.IGNORECASE)
+    folded = _fold_sales_text(raw)
+    if not folded or not re.fullmatch(r"[^\W\d_]+(?:[ -][^\W\d_]+){0,6}", raw, flags=re.UNICODE):
+        return ""
+    for city in SERVICE_CITIES:
+        if _fold_sales_text(city) == folded:
+            return city
+    # Não converter respostas comuns, perguntas ou dados de endereço em cidade.
+    if re.search(
+        r"\b(?:sim|nao|sou|moro|resido|quero|queria|gostaria|preciso|"
+        r"cliente|internet|fibra|celular|movel|plano|empresa|casa|"
+        r"obrigad[oa]|oi|ola|bom|tarde|noite|tudo|certo|ok|aqui|ali|"
+        r"sei|outro|outra|mesma|bairro|rua|endereco|cidade|perto|regiao|"
+        r"qual|quanto|onde|instalar|instalacao|atende|atendem|tem|pode)\b",
+        folded,
+    ):
+        return ""
+    if raw.isupper() or raw.islower():
+        raw = " ".join(word if word in {"de", "da", "do", "das", "dos", "e"} else word.title()
+                       for word in raw.lower().split())
+    return raw[:120]
+
+
 def _confirmed_city_from_text(value: str, previous_outbound: str = "") -> str:
+    candidate = _city_answer_candidate(value, previous_outbound)
+    if candidate and not denies_city(value, candidate):
+        return candidate
     folded = _fold_sales_text(value)
     asks_city = bool(re.search(r"\b(?:qual (?:e )?(?:a )?(?:sua )?cidade|nome da cidade)\b", _fold_sales_text(previous_outbound)))
     locations = []
@@ -226,6 +275,66 @@ def _confirmed_city_from_text(value: str, previous_outbound: str = "") -> str:
     if asks_city or re.search(rf"\b(?:em|de|para|pra|cidade) {name}\b", folded):
         return city
     return ""
+
+
+def confirmed_out_of_area_city(context: dict) -> str:
+    """Município confirmado pelo cliente, sem inferir cobertura a partir do CRM."""
+    history = context.get("history") or []
+    facts = context.get("confirmed_facts") or _confirmed_facts_from_history(history)
+    latest = str(context.get("latest_customer_message") or "")
+    previous = _last_outbound_text(context)
+    city = _confirmed_city_from_text(latest, previous) or str(facts.get("city") or "").strip()
+    if not city or context_denies_city(context, city):
+        return ""
+    if _fold_sales_text(city) in {_fold_sales_text(item) for item in SERVICE_CITIES}:
+        return ""
+    kind = _product_kind_from_text(latest, previous_outbound=previous) or facts.get("product_kind")
+    # Sulmóvel tem área própria; uma solicitação de móvel não depende da fibra.
+    if kind == "MOBILE":
+        return ""
+    return city
+
+
+def no_fiber_coverage_decision(context: dict) -> AIDecision | None:
+    city = confirmed_out_of_area_city(context)
+    if not city:
+        return None
+    latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
+    previous = _fold_sales_text(_last_outbound_text(context))
+    # Pedidos explícitos de parada continuam no fluxo de opt-out.
+    if re.search(r"\b(?:pode parar|pare de (?:enviar|mandar)|nao me (?:chame|contate)|nao (?:quero|mande|envie) (?:mais )?mensagens|descadastrar|remova meu numero)\b", latest):
+        return None
+    if "outra cidade" in previous and latest in {"nao", "nao obrigado", "nao obrigada", "somente aqui"}:
+        reply = "Entendi. Obrigado pela informação! No momento não temos cobertura de fibra nesse município."
+    else:
+        reply = (
+            f"Obrigado por informar! No momento, {city} não consta na nossa área de cobertura de fibra. "
+            "A instalação seria em outra cidade?"
+        )
+    facts = context.get("confirmed_facts") or _confirmed_facts_from_history(context.get("history") or [])
+    decision = AIDecision(
+        reply_text=reply,
+        intent="INFORMATION",
+        qualification_score=0,
+        temperature="FRIO",
+        recommended_stage="CONTATO_REALIZADO",
+        handoff_recommended=False,
+        confidence=1.0,
+        summary=f"Município informado pelo cliente fora da área de cobertura de fibra: {city}.",
+        next_action="Aguardar eventual correção da cidade ou solicitação de outro serviço.",
+        qualification=QualificationData(
+            city=city,
+            existing_customer=facts.get("existing_customer") or "NAO_INFORMADO",
+            customer_type=facts.get("customer_type") or "NAO_INFORMADO",
+        ),
+        sales_state="WAITING_CUSTOMER",
+        journey_state="DISCOVERY",
+        journey_pending_action="Sem cobertura de fibra no município informado.",
+        followup_needed=False,
+    )
+    decision._contextual_reply = True
+    decision._timing = {"model_ms": 0, "coverage_gate": "CITY_OUTSIDE_FIBER_AREA"}
+    return decision
 
 
 # Provedores concorrentes: citar um deles como provedor atual = não é cliente Sulnet.
@@ -1682,6 +1791,10 @@ def _apply_prospecting_entry_policy(
 ) -> AIDecision:
     if decision.intent in {"DO_NOT_CONTACT", "HUMAN_REQUEST"} or decision.sales_state == "OPT_OUT":
         return decision
+
+    coverage = no_fiber_coverage_decision(context)
+    if coverage is not None:
+        return coverage
 
     latest_raw = str(context.get("latest_customer_message") or "")
     latest = _fold_sales_text(latest_raw)

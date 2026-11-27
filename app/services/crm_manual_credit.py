@@ -206,3 +206,104 @@ def consult_registered_cpf(
     _audit(db, actor=actor, conversation=conversation, action=ACTION_CREDIT, result=saved)
     LOG.info("crm_manual_credit_registered opportunity=%s decision=%s", opp_id, code)
     return {"already": False, **saved}
+
+
+def refresh_credit_status_from_crm(
+    db: Session,
+    *,
+    conversation: Conversation,
+    actor: User,
+) -> dict[str, Any]:
+    """Atualiza o resultado local com o status atual do CRM (sem nova Serasa).
+
+    Usa POST /webhook/leads/credit-status — somente leitura. Necessário quando a
+    decisão muda depois da consulta (liberação, contestação, taxa etc.).
+    """
+    if not settings.sulnet_crm_manual_credit_enabled:
+        raise CRMManualError("Consulta de CPF ainda não habilitada na integração com o CRM.")
+
+    seller = seller_for_user(conversation.assigned_user)
+    if seller is None:
+        raise CRMManualError("Esta conversa não possui vendedor ativo mapeado no CRM.")
+    if actor.role == "CONSULTOR" and conversation.assigned_user_id != actor.id:
+        raise CRMManualError("Somente o responsável pode atualizar a situação de crédito.")
+
+    _guard_contact_lock(db, conversation.contact_id)
+    registered = registration_status(db, conversation.contact_id, seller.username)
+    opp_id = _as_int(registered.get("opportunityId")) if registered else None
+    if not registered or registered.get("state") != ACTION_REGISTERED or not opp_id:
+        raise CRMManualError(
+            "Primeiro registre nome e telefone no CRM com o vendedor responsável."
+        )
+    registered_funnel = _as_int(registered.get("funnelId")) or seller.funnel_id
+    if not seller_accepts_funnel(seller, registered_funnel):
+        raise CRMManualError(
+            "A oportunidade está em um funil não autorizado para este vendedor."
+        )
+
+    previous = credit_status(db, conversation.contact_id, seller.username, opp_id)
+    if not previous or previous.get("state") != ACTION_CREDIT:
+        raise CRMManualError("Não há consulta confirmada para atualizar. Consulte o CPF primeiro.")
+    analysis_id = _as_int(previous.get("analysisId"))
+    if not analysis_id:
+        raise CRMManualError(
+            "A consulta anterior não tem análise vinculada. Confira a oportunidade no CRM."
+        )
+
+    try:
+        client = SulnetCRMClient.from_settings()
+        payload = client.seller_contestation_status(
+            opportunity_id=opp_id,
+            analysis_id=analysis_id,
+            seller_username=seller.username,
+        )
+    except CRMIntegrationError as exc:
+        LOG.warning(
+            "crm_manual_credit_refresh_failed status=%s code=%s",
+            exc.status_code, exc.error_code,
+        )
+        raise CRMManualError(
+            "Não foi possível atualizar a situação de crédito no CRM. Tente novamente."
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise CRMManualError("O CRM retornou dados inválidos na atualização de crédito.")
+
+    ret_opp = _as_int(payload.get("opportunityId"))
+    ret_analysis = _as_int(payload.get("analysisId"))
+    ret_username = str(payload.get("sellerUsername") or "").strip()
+    ret_seller = _as_int(payload.get("assignedUserId"))
+    ret_funnel = _as_int(payload.get("funnelId"))
+    if (
+        ret_opp != opp_id
+        or ret_analysis != analysis_id
+        or not ret_username
+        or ret_username != seller.username
+        or (ret_seller is not None and ret_seller != seller.user_id)
+        or (ret_funnel is not None and ret_funnel != registered_funnel)
+    ):
+        raise CRMManualError(
+            "O CRM não confirmou a mesma oportunidade, análise e vendedor. Confira no CRM."
+        )
+
+    code, label = _decision(payload)
+    saved = {
+        "opportunityId": opp_id,
+        "sellerUsername": seller.username,
+        "funnelId": ret_funnel if ret_funnel is not None else registered_funnel,
+        "status": code,
+        "statusLabel": label,
+        "analysisId": analysis_id,
+        "protocol": str(previous.get("protocol") or ""),
+        "analysisProtocol": str(previous.get("analysisProtocol") or ""),
+        "outcome": str(payload.get("status") or payload.get("result") or ""),
+        "refreshed": True,
+        "canContest": payload.get("canContest") is True,
+        "managementDecision": str(payload.get("managementDecision") or "")[:120],
+    }
+    _audit(db, actor=actor, conversation=conversation, action=ACTION_CREDIT, result=saved)
+    LOG.info(
+        "crm_manual_credit_refreshed opportunity=%s analysis=%s decision=%s",
+        opp_id, analysis_id, code,
+    )
+    return saved

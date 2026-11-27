@@ -191,3 +191,142 @@ def test_operations_nav_for_admin():
         home = client.get("/dashboard")
         assert home.status_code == 200
         assert 'href="/operations"' in home.text
+
+
+def test_wallboard_survives_invalid_collected_json():
+    db = SessionLocal()
+    try:
+        admin = db.scalar(select(User).where(User.email == "admin@sulnet.local"))
+        assert admin is not None
+        queue = db.scalar(select(ServiceQueue).where(ServiceQueue.code == "WALLBOARD-JSON"))
+        if queue is None:
+            queue = ServiceQueue(name="Fila json", code="WALLBOARD-JSON", team="DIGITAL", active=True)
+            db.add(queue)
+            db.flush()
+        agent = db.scalar(select(AIAgentProfile).where(AIAgentProfile.active.is_(True)))
+        assert agent is not None
+        contact = Contact(name="Cliente JSON", phone="5551999000088")
+        db.add(contact)
+        db.flush()
+        conversation = Conversation(
+            contact_id=contact.id,
+            status="EM_ATENDIMENTO",
+            opened_at=utcnow(),
+            last_message_at=utcnow() - __import__("datetime").timedelta(minutes=40),
+        )
+        db.add(conversation)
+        db.flush()
+        db.add(ConversationQueueLink(conversation_id=conversation.id, queue_id=queue.id, origin="INBOUND"))
+        db.add(
+            Message(
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                direction="INBOUND",
+                message_type="text",
+                body="oi",
+                status="RECEIVED",
+                created_at=utcnow() - __import__("datetime").timedelta(minutes=40),
+            )
+        )
+        db.add(
+            AIClosingState(
+                conversation_id=conversation.id,
+                agent_id=agent.id,
+                step="WAITING_CRM_READY",
+                external_id=f"wallboard-json-{conversation.id}",
+                last_error="falha crm",
+                collected_json="[1,2,3]",
+                updated_at=utcnow(),
+            )
+        )
+        db.commit()
+        snapshot = build_ops_wallboard(db, admin)
+        assert snapshot["kpis"]["stalled_without_sale"] >= 1
+    finally:
+        db.close()
+
+
+def test_wallboard_survives_stuck_sales_without_set_crash():
+    """Regressão do 500 em /operations: stuck_sales são dicts e não podem ir para set."""
+    db = SessionLocal()
+    try:
+        admin = db.scalar(select(User).where(User.email == "admin@sulnet.local"))
+        assert admin is not None
+        queue = db.scalar(select(ServiceQueue).where(ServiceQueue.code == "WALLBOARD-STUCK"))
+        if queue is None:
+            queue = ServiceQueue(name="Fila stuck", code="WALLBOARD-STUCK", team="DIGITAL", active=True)
+            db.add(queue)
+            db.flush()
+
+        agent = db.scalar(select(AIAgentProfile).where(AIAgentProfile.active.is_(True)))
+        if agent is None:
+            agent_user = User(
+                name="Sulia Stuck",
+                email="sulia.stuck@sulnet.local",
+                password_hash="x",
+                role="CONSULTOR",
+                team="DIGITAL",
+                active=True,
+            )
+            db.add(agent_user)
+            db.flush()
+            agent = AIAgentProfile(
+                user_id=agent_user.id,
+                name="Sulia Stuck",
+                slug=f"sulia-stuck-{agent_user.id}",
+                active=True,
+            )
+            db.add(agent)
+            db.flush()
+
+        contact = Contact(name="Cliente Stuck", phone="5551999000099")
+        db.add(contact)
+        db.flush()
+        conversation = Conversation(
+            contact_id=contact.id,
+            status="EM_ATENDIMENTO",
+            unread_count=1,
+            opened_at=utcnow(),
+            last_message_at=utcnow() - __import__("datetime").timedelta(minutes=30),
+        )
+        db.add(conversation)
+        db.flush()
+        db.add(ConversationQueueLink(conversation_id=conversation.id, queue_id=queue.id, origin="INBOUND"))
+        db.add(
+            Message(
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                direction="INBOUND",
+                message_type="text",
+                body="quero fechar",
+                status="RECEIVED",
+                created_at=utcnow() - __import__("datetime").timedelta(minutes=30),
+            )
+        )
+        db.add(
+            AIConversationState(
+                conversation_id=conversation.id,
+                agent_id=agent.id,
+                state="CLOSING",
+            )
+        )
+        db.add(
+            AIClosingState(
+                conversation_id=conversation.id,
+                agent_id=agent.id,
+                step="WAITING_CRM_READY",
+                external_id=f"wallboard-stuck-{conversation.id}",
+                last_error="plano não encontrado no CRM",
+                plan_label="800 Mega",
+                collected_json=json.dumps({"name": "Cliente Stuck"}),
+                updated_at=utcnow(),
+            )
+        )
+        db.commit()
+
+        snapshot = build_ops_wallboard(db, admin)
+        assert snapshot["kpis"]["stalled_without_sale"] >= 1
+        assert any(alert["code"] == "stuck_sale" for alert in snapshot["alerts"])
+        assert any(item["conversation_id"] == conversation.id for item in snapshot["attention"])
+    finally:
+        db.close()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
@@ -12,6 +14,7 @@ from app.services.ops_wallboard import build_ops_wallboard
 from app.web import render
 
 router = APIRouter()
+LOG = logging.getLogger("sulnet_ops_wallboard")
 
 
 def _user_or_redirect(request: Request, db: Session):
@@ -31,7 +34,11 @@ def operations_wallboard(
     if redirect:
         return redirect
     require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR")
-    snapshot = build_ops_wallboard(db, user, queue_id=queue)
+    try:
+        snapshot = build_ops_wallboard(db, user, queue_id=queue)
+    except Exception:
+        LOG.exception("ops_wallboard_page_failed user_id=%s queue=%s", getattr(user, "id", None), queue)
+        raise
     return render(
         request,
         "operations/wallboard.html",
@@ -53,4 +60,8 @@ def operations_wallboard_api(
     if not user:
         return JSONResponse({"detail": "Não autenticado"}, status_code=401)
     require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR")
-    return build_ops_wallboard(db, user, queue_id=queue)
+    try:
+        return build_ops_wallboard(db, user, queue_id=queue)
+    except Exception:
+        LOG.exception("ops_wallboard_api_failed user_id=%s queue=%s", getattr(user, "id", None), queue)
+        raise
