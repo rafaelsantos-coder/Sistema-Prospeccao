@@ -80,6 +80,19 @@ def test_eligibility_only_from_crm_flag_and_matching_identity():
         contest._safe_status(CTX, _identity(
             assignedUserId=24, status="Reprovado", canContest=True,
         ))
+    # Funil/assigned omitidos pelo CRM não derrubam a leitura (só divergência).
+    ok_missing = contest._safe_status(
+        CTX,
+        {
+            "opportunityId": 16976,
+            "analysisId": 3501,
+            "sellerUsername": "fabiano.braga",
+            "status": "Reprovado",
+            "result": "Reprovado",
+            "canContest": True,
+        },
+    )
+    assert ok_missing["canContest"] is True
 
 
 def test_panel_reasons_and_readonly_for_admin(monkeypatch):
