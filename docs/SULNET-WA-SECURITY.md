@@ -30,13 +30,13 @@ Sessões nascem desativadas; precisam ser pareadas e habilitadas.
 Dockerfile: \`gateway/Dockerfile\`. Builder usa \`npm ci --ignore-scripts\` e
 \`package-lock.json\`, imagem com SHA fixado e usuário \`node\` sem privilégios.
 Serviço \`sulnet-wa\`, sem domínio público e sem Docker socket, sem variáveis
-Z-API, Meta, OpenAI, DATABASE_URL ou REDIS_URL. Volume persistente exclusivo.
+Z-API, Meta, OpenAI, DATABASE_URL ou REDIS_URL. Armazenamento persistente exclusivamente em S3 criptografado, sem volumes root.
 
 O gateway exige:
 \`WA_API_KEY\`, \`WA_WEBHOOK_KEY\` (ambos >=40 caracteres aleatórios),
 \`WA_ENCRYPTION_KEY\` (32 bytes base64), \`WA_WEBHOOK_URL\`
 (\`https://<prospecta>/webhooks/sulnet-wa\`),
-\`WA_DATA_DIR=/data\` e \`WA_AUTOSTART=false\`.
+\`WA_STORAGE_BACKEND=S3\` e \`WA_AUTOSTART=false\`.
 
 O Prospecta exige:
 \`SULNET_WA_ENABLED=false\` (trocar para true SOMENTE quando aprovado),
@@ -63,3 +63,6 @@ igual à do gateway.
 **Não existe garantia absoluta de 100% de ausência de malware ou brechas.**
 Implantação do menu com feature flag desativada NÃO significa aprovação
 operacional do motor ou homologação do protocolo.
+
+A inicialização do motor falha sem um backend persistente S3 configurado.
+O backend em memória só funciona com NODE_ENV=test e flag explícita, sem produção.

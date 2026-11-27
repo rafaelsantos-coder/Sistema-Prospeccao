@@ -44,7 +44,8 @@ jobs:
             -e WA_WEBHOOK_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
             -e WA_WEBHOOK_URL=https://example.invalid/webhooks/sulnet-wa \
             -e WA_ENCRYPTION_KEY=$(openssl rand -base64 32) \
-            -e WA_DATA_DIR=/tmp/sulnet-wa sulnet-wa:ci
+            -e NODE_ENV=test -e WA_STORAGE_BACKEND=MEMORY \
+            -e WA_ALLOW_MEMORY_FOR_TESTS=true sulnet-wa:ci
           sleep 4
           curl --fail --silent --show-error http://127.0.0.1:30999/healthz
           docker rm -f sulnet-wa-smoke
