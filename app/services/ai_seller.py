@@ -3505,7 +3505,7 @@ def _interpret_ambiguous(
         output = result.final_output
         return output if isinstance(output, SellerInterpretation) else SellerInterpretation.model_validate(output)
     except Exception:
-        LOG.exception("seller_interpretation_failed step=%s", step)
+        LOG.warning("seller_interpretation_failed")
         return SellerInterpretation()
 
 
