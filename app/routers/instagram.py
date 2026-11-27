@@ -32,7 +32,7 @@ from app.services.instagram_prospecting import preview_comments
 from app.services import instagram_inbox as inbox
 from app.routers.instagram_inbox import manager as inbox_manager, router as inbox_router
 from app.timeutils import utcnow
-from app.web import templates
+from app.web import render
 
 LOG = logging.getLogger("uvicorn.error")
 
@@ -245,12 +245,14 @@ def instagram_status(request: Request, check: bool = False, db: Session = Depend
 def instagram_panel(request: Request, check: bool = False, db: Session = Depends(get_db)):
     user = _require_instagram_admin(request, db)
     status = diagnostic_status(db, _account_id(), check)
-    # Standalone layout: no WhatsApp presence scripts or requests.
-    return templates.TemplateResponse(
-        request, "instagram/panel.html",
-        {"status": status, "can_manage_members": inbox_manager(user)},
-        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    # Shared visual layout; the Instagram nav suppresses WhatsApp presence requests.
+    response = render(
+        request, "instagram/panel.html", user=user, active_nav="instagram",
+        page_title="Instagram – Digital", status=status,
+        can_manage_members=inbox_manager(user),
     )
+    response.headers.update({"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    return response
 
 
 @router.get("/settings/instagram/prospecting/preview", include_in_schema=False)

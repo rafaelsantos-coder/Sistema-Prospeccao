@@ -6,6 +6,7 @@ import logging
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -40,6 +41,7 @@ def test_diagnostics_auth_account_isolation_and_aggregate_logs(monkeypatch, capl
     app = FastAPI()
     app.add_middleware(SessionMiddleware, secret_key="local-test-session-key")
     app.include_router(router)
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
     @app.get("/test-login/{user_id}")
     def login(user_id: int, request: Request):
@@ -90,6 +92,12 @@ def test_diagnostics_auth_account_isolation_and_aggregate_logs(monkeypatch, capl
         assert panel.status_code == 200
         assert panel.headers["cache-control"] == "no-store"
         assert "Instagram" in panel.text
+        assert 'class="app-shell"' in panel.text
+        assert 'id="sidebar"' in panel.text
+        assert 'href="/instagram" class="nav-item active" aria-current="page"' in panel.text
+        assert "/static/css/app.css" in panel.text
+        assert "metric-grid metric-grid-4" in panel.text
+        assert panel.headers["referrer-policy"] == "no-referrer"
         assert "Desativada para validação" in panel.text
         assert "PRIVATE_OWN" not in panel.text
         assert "test-signing-secret" not in panel.text
