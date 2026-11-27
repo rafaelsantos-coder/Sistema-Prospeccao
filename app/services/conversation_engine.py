@@ -1269,8 +1269,6 @@ def store_received_payload(
 
             handle_credit_proof_attachment(db, conversation, message)
         except Exception:  # noqa: BLE001 - o webhook não pode falhar por causa do aviso
-            import logging
-
             logging.getLogger("sulnet_conversation_engine").warning(
                 "credit_proof_hook_failed conversation=%s", conversation.id
             )
