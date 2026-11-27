@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.database import SessionLocal, engine as database_engine
 from app.models import User, VoiceDialerEngine, VoiceSipAccount, VoiceTestCall
 from app.services.lia_voz_call import perform_lia_test
+from app.services.lia_voz_realtime import LiaVoiceError
 from app.services.lia_voz_pilot import ACTIVE, PENDING, RUNNING, PilotConfig, PilotDenied, ensure_idle
 from app.services.voice_execution_slot import slot_healthy
 from app.services.secret_store import decrypt_secret
@@ -122,8 +123,44 @@ def _guard(test_id, phone, account_id):
         return False
 
 
+def _safe_failure_kind(exc):
+    # Do not store raw SIP/WebSocket exceptions (which may contain secrets).
+    if isinstance(exc, TimeoutError):
+        return "tempo limite"
+    if isinstance(exc, OSError):
+        return "falha de rede/SO"
+    if isinstance(exc, LiaVoiceError):
+        return "falha Realtime/midia"
+    if type(exc).__name__ == "InvalidStatus":
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+        return "Realtime HTTP " + str(code) if isinstance(code, int) else "falha HTTP"
+    return "falha interna"
+
+
 def run(test_id, *, refresh_heartbeat=lambda: None):
     register_code = None
+    last_code = None
+    last_stage = "Validando autorizacao e conta SIP."
+
+    def progress(message, sip_code=None):
+        nonlocal last_stage, last_code
+        last_stage = message[:230]
+        if sip_code is not None:
+            last_code = sip_code
+        logging.getLogger(__name__).info("Lia Voz teste %d: %s", test_id, last_stage)
+        # A progress-write failure must not trigger another INVITE. The existing
+        # authorization guard still checks database/engine state before dialing.
+        try:
+            with SessionLocal() as db:
+                row = db.get(VoiceTestCall, test_id)
+                if row is not None and row.status == RUNNING:
+                    row.message = last_stage
+                    row.sip_register_code = register_code
+                    row.sip_invite_code = last_code
+                    db.commit()
+        except Exception:
+            logging.getLogger(__name__).warning("Lia Voz teste %d: progresso indisponivel", test_id)
+
     try:
         with SessionLocal() as db:
             test = db.get(VoiceTestCall, test_id)
@@ -139,22 +176,25 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
             config = PilotConfig.from_env()
             secret = decrypt_secret(account.password_encrypted)
             db.expunge(account)
+        progress("Iniciando registro SIP.")
         with PjSession(account, secret) as driver:
             register_code, _ = driver.wait_for_registration()
             if register_code != 200:
+                progress("Registro SIP falhou: codigo " + str(register_code) + ".")
                 raise ValueError("SIP registration failed")
+            progress("Registro SIP 200 OK.")
             def abort():
                 refresh_heartbeat()
                 return not _guard(test_id, phone, account_id)
 
             outcome = asyncio.run(perform_lia_test(
                 driver, phone, config.prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
-                should_abort=abort,
+                should_abort=abort, on_progress=progress,
             ))
         logging.getLogger(__name__).info("Lia Voz teste %d: %s | %s",
                                          test_id, outcome.status, outcome.message)
         _finish(test_id, outcome.status, outcome.message, outcome.sip_code, register_code)
-    except Exception:
-        # Never persist raw API/SIP errors, phone, transcript, or secrets.
-        _finish(test_id, "LIA_FALHOU", "Teste bloqueado ou falha SIP/Realtime/midia.",
-                register_code=register_code)
+    except Exception as exc:
+        message = ("Falha (" + _safe_failure_kind(exc) + "). Ultima etapa: " + last_stage)[:230]
+        logging.getLogger(__name__).warning("Lia Voz teste %d: %s", test_id, message)
+        _finish(test_id, "LIA_FALHOU", message, sip_code=last_code, register_code=register_code)

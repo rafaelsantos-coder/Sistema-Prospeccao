@@ -67,6 +67,9 @@ class FakeDriver:
             def hangup(self, _params):
                 driver.hangups += 1
 
+            def isActive(self):
+                return self.info.state in (1, 2)
+
         self.pj = SimpleNamespace(
             Call=FakeCall, CallOpParam=lambda *_args: SimpleNamespace(opt=SimpleNamespace()),
             PJSIP_INV_STATE_CONFIRMED=2, PJSIP_INV_STATE_DISCONNECTED=3,
@@ -228,3 +231,75 @@ def test_sip_200_without_bidirectional_audio_is_failure(monkeypatch, audio_statu
     assert "sem audio bidirecional" in outcome.message
     assert driver.invites == 1
     assert not driver.media.connections
+
+
+def test_progress_distinguishes_handshake_failure_before_invite():
+    driver = FakeDriver()
+    milestones = []
+
+    @asynccontextmanager
+    async def unavailable(**_kwargs):
+        raise TimeoutError()
+        yield  # pragma: no cover
+
+    async def run():
+        with pytest.raises(TimeoutError):
+            await lia_voz_call.perform_lia_test(
+                driver, "5555999990000", "8003", "test-key",
+                should_abort=lambda: False, session_factory=unavailable,
+                on_progress=lambda msg, code: milestones.append((msg, code)),
+            )
+
+    asyncio.run(run())
+    assert milestones == [("Conectando ao OpenAI Realtime.", None)]
+    assert driver.invites == 0
+
+
+def test_cleanup_error_reports_last_sip_code(monkeypatch):
+    driver = FakeDriver()
+    milestones = []
+    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
+    original_pump = driver.pump
+
+    def fail_cleanup(ms):
+        if ms == 100:
+            raise RuntimeError("sensitive debug data")
+        original_pump(ms)
+
+    driver.pump = fail_cleanup
+
+    async def run():
+        with pytest.raises(LiaVoiceError, match="Native cleanup failed"):
+            await lia_voz_call.perform_lia_test(
+                driver, "5555999990000", "8003", "test-key",
+                should_abort=lambda: False, session_factory=factory_for(FakeSession()),
+                on_progress=lambda msg, code: milestones.append((msg, code)),
+            )
+
+    asyncio.run(run())
+    assert driver.invites == 1
+    assert milestones[-1][1] == 200
+    assert "Falha ao encerrar SIP/midia" in milestones[-1][0]
+    assert "sensitive debug data" not in str(milestones)
+
+
+def test_invite_setup_failure_never_hangups_unallocated_call(monkeypatch):
+    driver = FakeDriver()
+    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
+
+    def fail_invite(*args, **kwargs):
+        raise RuntimeError("sensitive debug data")
+
+    monkeypatch.setattr(driver.pj.Call, "makeCall", fail_invite)
+
+    async def run():
+        return await lia_voz_call.perform_lia_test(
+            driver, "5555999990000", "8003", "test-key",
+            should_abort=lambda: False, session_factory=factory_for(FakeSession()),
+        )
+
+    outcome = asyncio.run(run())
+    assert outcome.status == "LIA_FALHOU"
+    assert "Falha na etapa: INVITE" in outcome.message
+    assert driver.invites == 0 and driver.hangups == 0
+    assert "sensitive debug data" not in outcome.message
