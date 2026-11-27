@@ -94,3 +94,16 @@ PCM entre duas portas PJSUA2 sem SIP, rede externa ou OpenAI.
 Nenhum segredo ou flag de ativacao foi configurado neste PR. Os contadores de
 quadros e SIP 200 nao comprovam que a pessoa ouviu e respondeu; validar no
 aparelho. Se houver falha de rede ou midia, nao repetir automaticamente.
+
+## Laboratorio Railway independente (sem telefone)
+
+Imagem docker/lia-voz-lab.Dockerfile, processo de execucao unica e politica
+NEVER. O container inclui somente adaptadores de audio e os testes; nao possui
+worker, modelos de banco, cliente CRM ou codigo de discagem. Nao adicionar
+DATABASE_URL, credenciais SIP, dominio publico ou referencias de producao.
+O teste PCM executa automaticamente; a conexao com a OpenAI fica desabilitada
+por padrao. Para o teste sintetico separado, configurar uma chave de projeto
+especifica para homologacao em LIA_VOZ_OPENAI_API_KEY e ativar explicitamente
+LIA_VOZ_LAB_REALTIME_ENABLED=true. O teste solicita somente a saudacao
+sintetica, registra contadores e tempos, sem transcricao ou audio persistido.
+A saida PASS nao equivale a homologacao de uma ligacao real.
