@@ -93,6 +93,7 @@ from app.services.instance_privacy import (
 )
 from app.services.media_processing import MediaProcessingError, normalize_audio
 from app.services.media_storage import MediaStorage, MediaStorageError
+from app.services.meta_images import archive_meta_image, meta_image_ids
 from app.services.metrics import apply_user_scope
 from app.services.pii import redact_pii_text
 from app.services.scoring import normalize_phone
@@ -1133,6 +1134,7 @@ def _render_inbox(
         transfer_history=transfer_history,
         history_timeline=history_timeline,
         location_urls=location_urls_for(db, messages),
+        meta_image_ids=meta_image_ids(db, messages),
         users=users,
         transfer_online_ids=transfer_online_ids,
         ai_transfer_queue=ai_queue,
@@ -2017,10 +2019,13 @@ def conversation_media(
     if user.role == "CONSULTOR" and not is_user_whatsapp_online(db, user.id):
         return RedirectResponse("/dashboard", status_code=303)
     message = db.get(Message, message_id)
-    if not message or not message.media_url:
+    if not message or not _message_visible_in_conversation(db, user, message):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    if not _message_visible_in_conversation(db, user, message):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not message.media_url:
+        # Old Meta messages kept the media ID in the callback, but not the file.
+        if not archive_meta_image(db, message):
+            raise HTTPException(status_code=404, detail="Imagem indisponível ou expirada na Meta.")
+        db.commit()
     try:
         url = MediaStorage().presigned_download_url(
             message.media_url,
@@ -2418,6 +2423,7 @@ def conversation_messages_api(
         mark_conversation_read(db, conversation)
         db.commit()
     location_urls = location_urls_for(db, items)
+    recoverable_images = meta_image_ids(db, items)
     selected_queue = queue_for_conversation(db, conversation.id)
     ai_reply_status = (
         reply_statuses(db, [conversation.id]).get(conversation.id)
@@ -2434,7 +2440,7 @@ def conversation_messages_api(
                 "direction": item.direction,
                 "type": item.message_type,
                 "body": item.body,
-                "media_url": f"/conversations/messages/{item.id}/media" if item.media_url else None,
+                "media_url": f"/conversations/messages/{item.id}/media" if item.media_url or item.id in recoverable_images else None,
                 "mime_type": item.mime_type,
                 "status": item.status,
                 "sender": item.sender_user.name if item.sender_user else ("Cliente" if item.direction == "INBOUND" else "Sulnet"),
