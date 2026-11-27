@@ -120,3 +120,58 @@ def test_explicit_account_route_has_own_persisted_states_and_same_guard():
             requested_state("sip", route)
     with pytest.raises(PilotDenied):
         config().authorize("55 99999-0001", "1804")
+
+
+def test_manual_test_can_follow_immediately_but_hourly_cap_and_overlap_remain():
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.database import Base
+    from app.models import VoiceSipAccount, VoiceTestCall
+    from app.services.lia_voz_pilot import (
+        ensure_hourly_quota, ensure_idle, ACCOUNT_PENDING,
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(timezone.utc)
+    try:
+        with Session(engine) as db:
+            account = VoiceSipAccount(
+                name="Native CI", domain="sip.example.invalid", username="1804",
+                transport="UDP", password_encrypted="not-a-real-secret", active=True,
+            )
+            db.add(account)
+            db.flush()
+            def add_call(status, created_at, finished_at):
+                call = VoiceTestCall(
+                    account_id=account.id, account_label=account.name,
+                    target_phone="5555999990000", status=status,
+                    created_at=created_at, finished_at=finished_at,
+                )
+                db.add(call)
+                db.flush()
+                return call
+
+            add_call("SIP_VALIDADO", now, now)
+            add_call("LIA_FALHOU", now - timedelta(hours=2), now - timedelta(hours=2))
+            add_call("LIA_PROBE_FINALIZADO", now - timedelta(seconds=12), now)
+            # Even a test that finished just now no longer causes a 3min delay.
+            ensure_idle(db, shared=True, admission=True)
+            ensure_hourly_quota(db, account.id, now)
+            pending = add_call(ACCOUNT_PENDING, now, None)
+            # Two recent attempts: quota allows another after completion, but
+            # a duplicate submission while the current test is pending fails.
+            ensure_hourly_quota(db, account.id, now)
+            with pytest.raises(PilotDenied, match="outro teste"):
+                ensure_idle(db, shared=True, admission=True)
+            pending.status = "LIA_FINALIZADA"
+            pending.finished_at = now
+            db.flush()
+            ensure_idle(db, shared=True, admission=True)
+            ensure_hourly_quota(db, account.id, now)
+            add_call("LIA_FINALIZADA", now, now)
+            with pytest.raises(PilotDenied, match="tres testes por hora"):
+                ensure_hourly_quota(db, account.id, now)
+    finally:
+        engine.dispose()

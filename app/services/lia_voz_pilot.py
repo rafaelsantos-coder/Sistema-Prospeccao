@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import VoiceCampaign, VoiceRecipient, VoiceTestCall, VoiceTransferTest
 from app.services.global_blacklist import canonical_phone
@@ -144,3 +145,19 @@ def ensure_idle(db, *, own_test_id: int | None = None, shared: bool = False,
         VoiceTransferTest.result.in_(transfer_states),
     ).limit(1)) is not None:
         raise PilotDenied("Existe teste de transferencia em andamento.")
+
+
+
+def ensure_hourly_quota(db, account_id: int, now) -> None:
+    """Keep the existing hourly cap; no cooldown after a finished manual test.
+
+    The admission guard and account/engine row locks still reject overlapping
+    requests. No change to campaign limits, number authorization or redial.
+    """
+    recent_count = db.scalar(select(func.count(VoiceTestCall.id)).where(
+        VoiceTestCall.account_id == account_id,
+        VoiceTestCall.created_at >= now - timedelta(hours=1),
+        VoiceTestCall.status != "SIP_VALIDADO",
+    ))
+    if recent_count >= 3:
+        raise PilotDenied("Limite de tres testes por hora atingido.")
