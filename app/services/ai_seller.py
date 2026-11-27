@@ -4433,12 +4433,17 @@ def _installation_address_step(db, client, state, collected):
 
     collected.pop("_playbook_question", None)
     current = ", ".join(str(collected.get(k) or "") for k in ("street", "number", "city"))
-    point = feasibility.address_point(db, current, collected.get("city"))
-    state.step = "PLAN_CONFIRM" if _looks_like_full_name(str(collected.get("name") or "")) else "NAME"
-    if not point:
-        collected["fiberFeasibility"] = {"status": "awaiting_pin", "nap": None}
-    reply = _check_fiber_location(db, state, collected, point)
-    collected["_checked_fiber_address"] = current
+    target = ("CPF" if not _credit_is_approved(state, collected) else
+              "PLAN_CONFIRM" if _looks_like_full_name(str(collected.get("name") or "")) else "NAME")
+    state.step = target
+    if collected.get("_checked_fiber_address") == current and collected.get("fiberFeasibility", {}).get("status") == "available":
+        reply = _prompt_for_step(state, collected)
+    else:
+        point = feasibility.address_point(db, current, collected.get("city"))
+        if not point:
+            collected["fiberFeasibility"] = {"status": "awaiting_pin", "nap": None}
+        reply = _check_fiber_location(db, state, collected, point)
+        collected["_checked_fiber_address"] = current
     if state.step == "PLAN_CONFIRM":
         return "Temos disponibilidade de fibra nesse local! " + _advance_with_playbook(
             client, state, collected, fallback_step="PLAN_CONFIRM",
@@ -5024,15 +5029,24 @@ def resume_simplified_mobile_states(db: Session, *, limit: int = 50, since=None)
 
 def _conversation_history_rows(db: Session, conversation_id: int) -> list[dict[str, Any]]:
     rows = db.execute(
-        select(Message.direction, Message.body)
-        .where(Message.conversation_id == conversation_id)
+        select(Message.id, Message.direction, Message.body)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.direction.in_({"INBOUND", "OUTBOUND"}),
+            ~((Message.direction == "OUTBOUND") & Message.status.in_({"PENDING", "SENDING", "FAILED", "UNKNOWN", "CANCELED"})),
+        )
         .order_by(Message.id)
     ).all()
-    return [{"direction": direction, "body": body} for direction, body in rows]
+    return [{"id": mid, "direction": direction, "body": body} for mid, direction, body in rows]
 
 
 def _customer_confirmed_city(history: list[dict[str, Any]]) -> str:
-    """Cidade atendida mais recente confirmada pelo cliente (inclusive áudio)."""
+    """Cidade mais recente confirmada pelo cliente, inclusive fora da cobertura."""
+    from app.services.ai_sdr_policies import _confirmed_facts_from_history
+
+    confirmed = str(_confirmed_facts_from_history(history).get("city") or "")
+    if confirmed:
+        return confirmed
     from app.services.ai_sdr_policies import _service_city_in_text
 
     for row in reversed(history):
@@ -5049,6 +5063,237 @@ def _customer_confirmed_city(history: list[dict[str, Any]]) -> str:
         ):
             return city
     return ""
+
+
+def _historical_closing_fields(history: list[dict[str, Any]], *, after_id: int = 0) -> dict[str, Any]:
+    """Extrai dados declarados na conversa corrente; nunca usa falas de vendedores como fatos."""
+    from app.services.audio_transcription import strip_transcription_prefix
+    from app.services.auto_reply import is_business_auto_reply
+    from app.services.ai_sdr_policies import _confirmed_city_from_text
+
+    facts: dict[str, Any] = {}
+    previous = ""
+    for row in history:
+        direction = str(row.get("direction") or "").upper()
+        body = str(row.get("body") or "")
+        if direction == "OUTBOUND":
+            previous = body
+            continue
+        if direction != "INBOUND" or is_business_auto_reply(body) or int(row.get("id") or 0) <= after_id:
+            continue
+        body = strip_transcription_prefix(body).strip()
+        if not body:
+            continue
+        question = _norm(previous)
+        folded = _norm(body)
+        if "?" in body and not re.search(r"\b(?:cpf|cnpj|cep|bairro|rua)\s*:", body, re.I):
+            continue
+        # Documento só quando identificado como CPF/CNPJ, formatado como documento,
+        # ou em resposta à solicitação correspondente. Não confundir DDD/telefone.
+        document_question = bool(re.search(r"\b(?:cpf|cnpj)\b", question))
+        document = re.search(
+            r"\b(?:cpf|cnpj)(?:\s+(?:[ée]|do titular|novo|correto))?\s*[:=\-]?\s*((?:\d[.\-/ ]?){10,13}\d)(?!\d)",
+            body, re.I,
+        )
+        formatted = re.search(r"(?<!\d)\d{3}\.\d{3}\.\d{3}-\d{2}(?!\d)|(?<!\d)\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}(?!\d)", body)
+        if document or formatted:
+            candidate = _digits((document.group(1) if document else formatted.group(0)))
+        elif document_question and re.fullmatch(r"[\d.\-/ ]+", body):
+            candidate = _digits(body)
+        else:
+            candidate = ""
+        if len(candidate) in (11, 14) and len(set(candidate)) > 1:
+            facts["cpf"] = candidate
+        elif _wants_other_cpf(body):
+            facts["_cpf_change_requested"] = True
+            facts.pop("cpf", None)
+
+        cep_label = re.search(r"\bcep\s*[:=\-]?\s*(\d{5}-?\d{3})(?!\d)", body, re.I)
+        cep_standalone = re.fullmatch(r"\d{5}-?\d{3}", body)
+        if cep_label or cep_standalone:
+            facts["cep"] = _digits((cep_label.group(1) if cep_label else cep_standalone.group(0)))
+        city = _confirmed_city_from_text(body, previous)
+        if city:
+            facts["city"] = city
+        # Endereço completo ou campos rotulados, em qualquer ordem.
+        street = re.search(
+            r"\b((?:rua|avenida|av\.?|travessa|estrada|rodovia|alameda)\s+[^,;\n]+)",
+            body, re.I,
+        )
+        if street:
+            value = re.split(r"\s+(?:n[º°oú]\.?|n[uú]mero|bairro|cep)\s*[:\-]?\s*|\s+\d{1,7}[A-Za-z]?(?=\s*$)", street.group(1), maxsplit=1, flags=re.I)[0].strip()
+            if len(value) >= 4:
+                facts["street"] = value[:180]
+        elif re.search(r"\bqual\b.{0,30}\brua\b", question) and re.fullmatch(r"[^\d?!,;]{3,100}", body) and folded not in {"sim", "nao", "nao sei", "obrigado", "obrigada"}:
+            facts["street"] = body[:180]
+        number = re.search(r"\b(?:n[º°o]\.?|n[uú]mero)\s*[:\-]?\s*(\d{1,7}[A-Za-z]?)(?!\d)", body, re.I)
+        if not number and street:
+            number = re.search(r"(?:,\s*|\s+)(\d{1,7}[A-Za-z]?)(?=\s*(?:[,;]|$))", body[street.start():])
+        if not number and re.search(r"\b(?:numero|n do imovel)\b", question):
+            number = re.fullmatch(r"(\d{1,7}[A-Za-z]?)", body)
+        if number:
+            facts["number"] = number.group(1)
+        neighborhood = re.search(r"\bbairro\s*[:\-]?\s*([^,;\n]+)", body, re.I)
+        if neighborhood:
+            facts["neighborhood"] = neighborhood.group(1).strip()[:160]
+        elif re.search(r"\bqual\b.{0,30}\bbairro\b", question) and re.fullmatch(r"[^\d?!,;]{2,100}", body) and folded not in {"sim", "nao", "nao sei", "obrigado", "obrigada"}:
+            facts["neighborhood"] = body[:160]
+        comp = re.search(r"\b(ap(?:to|artamento)?\.?\s*\w+|bloco\s+\w+|fundos|sala\s+\w+|lote\s+\w+)\b", body, re.I)
+        if comp:
+            facts["complement"] = comp.group(1)[:120]
+        email = _extract_email(body)
+        if email:
+            facts["email"] = email
+        if re.search(r"^(?:meu nome [ée]|nome completo\s*:|nome\s*:)\s*", body, re.I):
+            name = _extract_name(re.sub(r"^nome(?: completo)?\s*:\s*", "", body, flags=re.I))
+        elif re.search(r"\bnome completo\b", question) and re.fullmatch(r"[^\d?!,;]{5,120}", body):
+            name = _extract_name(body)
+        else:
+            name = None
+        if name and re.fullmatch(r"[^\W\d_]+(?:[ '-][^\W\d_]+){1,11}", name, re.UNICODE):
+            facts["name"] = name
+    return facts
+
+
+def _reconcile_closing_history(state, collected, history, *, current_id: int, fresh: bool = False):
+    """Mantém dados, pendências e validações separadas; nova entrada invalida resultado antigo."""
+    scoped = [row for row in history if not row.get("id") or int(row["id"]) <= current_id]
+    after = int(collected.get("_closing_history_cursor") or 0)
+    if not fresh and not after:
+        # Uma venda antiga não deve reimportar CPF/endereço de outro pedido.
+        after = max(0, current_id - 1)
+    facts = _historical_closing_fields(scoped, after_id=after)
+    old_cpf = str(collected.get("cpf") or "")
+    changed_cpf = bool(facts.get("cpf") and old_cpf and facts["cpf"] != old_cpf)
+    if changed_cpf or (facts.get("_cpf_change_requested") and not facts.get("cpf")):
+        _clear_rejected_credit(state, collected)
+        collected.pop("cpf", None)
+        collected.pop("_credit_consulted_cpf", None)
+        collected.pop("_sale_accepted", None)
+        if changed_cpf and not facts.get("name"):
+            collected.pop("name", None)
+    changed_address = any(
+        key in facts and collected.get(key) and str(collected[key]).casefold() != str(facts[key]).casefold()
+        for key in ("cep", "street", "number", "neighborhood", "city")
+    )
+    if changed_address:
+        # CEP diferente não pode herdar rua/número/bairro do imóvel anterior.
+        if facts.get("cep") and str(collected.get("cep") or "") != facts["cep"]:
+            for key in ("street", "number", "neighborhood", "complement", "city", "uf"):
+                if key not in facts:
+                    collected.pop(key, None)
+        for key in ("fiberFeasibility", "_checked_fiber_address", "_confirmed_fiber_nap", "_history_cep_checked"):
+            collected.pop(key, None)
+        collected.pop("_sale_accepted", None)
+    for key, value in facts.items():
+        if not key.startswith("_") and value:
+            collected[key] = value
+    if changed_cpf or (facts.get("_cpf_change_requested") and not facts.get("cpf")):
+        state.step = "CPF"
+    collected["_closing_history_cursor"] = current_id
+    return facts
+
+
+def _credit_is_approved(state, collected) -> bool:
+    status = _norm(str(getattr(state, "credit_status", "") or collected.get("creditStatus") or ""))
+    return bool(collected.get("cpf") and status in {"aprovado", "pre aprovado", "liberado", "approved", "preapproved"})
+
+
+def _consult_known_document(db, client, state, collected, conversation):
+    """Consulta uma vez o documento já fornecido; nunca avança com crédito presumido."""
+    cpf = str(collected.get("cpf") or "")
+    if not cpf:
+        state.step = "CPF"
+        return _prompt_for_step(state, collected)
+    if _credit_is_approved(state, collected):
+        return _after_approved_document(db, client, state, collected)
+    if collected.get("_credit_consulted_cpf") == cpf and state.step in {"CREDIT_REVIEW", "CREDIT_REJECTED"}:
+        return _prompt_for_step(state, collected)
+    if not state.opportunity_id:
+        _save_collected(state, collected)
+        _create_crm_if_ready(db, state=state, conversation=conversation)
+    if not state.opportunity_id:
+        raise CRMIntegrationError("A oportunidade ainda não pôde ser criada no CRM.")
+    credit = client.consult_credit(state.opportunity_id, cpf)
+    collected["_credit_consulted_cpf"] = cpf
+    state.credit_status = str(credit.get("status") or "")
+    state.credit_analysis_id = int(credit.get("analysisId") or 0) or None
+    collected["creditStatus"] = state.credit_status
+    _adopt_name_from_crm(client, state, collected, conversation, credit)
+    if credit.get("approved"):
+        return _after_approved_document(db, client, state, collected)
+    if credit.get("rejected"):
+        state.step = "CREDIT_REJECTED"
+        return _prompt_for_step(state, collected)
+    state.step = "CREDIT_REVIEW"
+    return "Sua consulta ficou em análise. Vou manter a contratação aberta e sigo assim que o CRM liberar o resultado."
+
+
+def _sync_known_address(client, state, collected):
+    if not state.opportunity_id:
+        return
+    patch = {key: collected[key] for key in ("cep", "street", "neighborhood", "city", "uf", "complement", "email") if collected.get(key)}
+    if collected.get("number"):
+        patch["addressNumber"] = collected["number"]
+    if patch:
+        client.update_opportunity(state.opportunity_id, patch)
+
+
+def _after_approved_document(db, client, state, collected):
+    if _fiber_sale(state, collected):
+        _sync_known_address(client, state, collected)
+        if collected.get("cep") or all(collected.get(k) for k in ("street", "number", "neighborhood", "city")):
+            return _installation_address_step(db, client, state, collected)
+    if not _fiber_sale(state, collected) and not _looks_like_full_name(str(collected.get("name") or "")):
+        state.step = "NAME"
+        return _prompt_for_step(state, collected)
+    return _advance_with_playbook(client, state, collected, fallback_step="CEP")
+
+
+def _advance_known_fiber_intake(db, client, state, collected, conversation, *, has_new_data=False):
+    """Continua a etapa real de cadastro com os fatos já disponíveis."""
+    if not _fiber_sale(state, collected) or state.step not in {
+        "CPF", "CEP", "ADDRESS_DETAILS", "ADDRESS_NUMBER", "FIBER_LOCATION",
+    }:
+        return None
+    if not has_new_data:
+        return None
+    cep = str(collected.get("cep") or "")
+    if cep and collected.get("_history_cep_checked") != cep:
+        address = client.lookup_cep(cep) or {}
+        for key in ("street", "neighborhood", "city", "uf"):
+            if address.get(key) and not collected.get(key):
+                collected[key] = address[key]
+        if address.get("city"):
+            collected["city"] = address["city"]
+        collected["_history_cep_checked"] = cep
+    city = str(collected.get("city") or "").strip()
+    if city and _service_city_for_label(city) is None:
+        collected["fiberFeasibility"] = {"status": "out_of_coverage", "nap": None, "city": city}
+        state.step = "COMPLETED"
+        state.completed_at = utcnow()
+        return f"No momento, não temos cobertura de fibra da Sulnet em {city}. Não consigo seguir com a contratação nesse endereço."
+    # Se já recebeu endereço/CEP, respeitar esse caminho e conferir viabilidade
+    # antes de solicitar CPF. Se só recebeu documento, consultar crédito primeiro.
+    address_present = bool(cep or collected.get("street"))
+    if address_present and not _credit_is_approved(state, collected):
+        _sync_known_address(client, state, collected)
+        if not city:
+            state.step = "ADDRESS_DETAILS"
+            collected.update(_playbook_code="city", _playbook_step="ADDRESS_DETAILS", _playbook_question="Qual é a cidade da instalação?")
+            return collected["_playbook_question"]
+        prompt = _installation_address_step(db, client, state, collected)
+        if state.step != "CPF":
+            return prompt
+        if collected.get("cpf"):
+            return _consult_known_document(db, client, state, collected, conversation)
+        return prompt
+    if collected.get("cpf") and not _credit_is_approved(state, collected):
+        return _consult_known_document(db, client, state, collected, conversation)
+    if _credit_is_approved(state, collected) and address_present:
+        _sync_known_address(client, state, collected)
+        return _installation_address_step(db, client, state, collected)
+    return None
 
 
 def _recall_offer_accepted(history: list[dict[str, Any]]) -> bool:
@@ -5257,8 +5502,10 @@ def start_closing_from_sdr(
         has_crm_lead = bool(
             state.opportunity_id or prospect_sync.synced_opportunity_id(db, conversation.id)
         )
-        # CPF primeiro: o nome completo vem do CRM pela consulta cadastral.
+        # CPF primeiro quando ainda não existe endereço informado.
         state.step = "CPF" if (fiber_entry or collected.get("name") or has_crm_lead) else "NAME"
+        _reconcile_closing_history(state, collected, customer_history, current_id=job.message_id, fresh=True)
+        _save_collected(state, collected)
     conversation.assigned_user_id = closer.user_id
     conversation.status = "EM_ATENDIMENTO"
     if conversation.lead:
@@ -5323,6 +5570,12 @@ def start_closing_from_sdr(
 
     prompt = ""
     try:
+        if fiber_entry:
+            prompt = _advance_known_fiber_intake(
+                db, SulnetCRMClient.from_settings(), state, collected, conversation,
+                has_new_data=bool(collected.get("cpf") or collected.get("cep") or collected.get("street")),
+            ) or ""
+            _save_collected(state, collected)
         if not fiber_entry:
             _create_crm_if_ready(db, state=state, conversation=conversation)
         if state.opportunity_id and not plan_change and not fiber_entry:
@@ -5614,6 +5867,13 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
     }
 
     try:
+        history_facts = {}
+        if not audio_unreadable and _fiber_sale(state, collected) and state.step in {
+            "CPF", "CEP", "ADDRESS_DETAILS", "ADDRESS_NUMBER", "FIBER_LOCATION", "CREDIT_REJECTED", "CREDIT_REVIEW",
+        }:
+            history_facts = _reconcile_closing_history(
+                state, collected, _conversation_history_rows(db, conversation.id), current_id=message.id,
+            )
         contract_knowledge_reply = "" if audio_unreadable else _seller_contract_knowledge_reply(
             state,
             collected,
@@ -5691,6 +5951,12 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 conversation.lead.stage = "GANHO"
                 conversation.lead.next_action_at = None
 
+        elif (history_reply := _advance_known_fiber_intake(
+            db, client, state, collected, conversation,
+            has_new_data=any(key in history_facts for key in ("cpf", "cep", "street", "number", "neighborhood", "city")),
+        )) is not None:
+            reply = history_reply
+
         elif state.step == "NAME":
             name = _extract_name(text)
             if not name:
@@ -5753,6 +6019,7 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     state.credit_status = str(credit.get("status") or "")
                     state.credit_analysis_id = int(credit.get("analysisId") or 0) or None
                     collected["creditStatus"] = state.credit_status
+                    collected["_credit_consulted_cpf"] = cpf
                     _adopt_name_from_crm(client, state, collected, conversation, credit)
                     _save_collected(state, collected)
                     if credit.get("approved") and not _fiber_sale(state, collected) and not _looks_like_full_name(str(collected.get("name") or "")):
@@ -5760,12 +6027,7 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                         state.step = "NAME"
                         reply = _prompt_for_step(state, collected)
                     elif credit.get("approved"):
-                        reply = _advance_with_playbook(
-                            client,
-                            state,
-                            collected,
-                            fallback_step="CEP",
-                        )
+                        reply = _after_approved_document(db, client, state, collected)
                     elif credit.get("rejected"):
                         state.step = "CREDIT_REJECTED"
                         reply = _prompt_for_step(state, collected)
@@ -5897,7 +6159,8 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     patch["addressNumber"] = str(number)
                     collected["number"] = str(number)
                 collected.update({key: value for key, value in patch.items() if key != "addressNumber"})
-                client.update_opportunity(state.opportunity_id or 0, patch)
+                if state.opportunity_id:
+                    client.update_opportunity(state.opportunity_id, patch)
                 _save_collected(state, collected)
                 if _fiber_sale(state, collected):
                     reply = _installation_address_step(db, client, state, collected)
@@ -5919,10 +6182,8 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     flags=re.I,
                 ).strip() or value
                 collected["street"] = value[:180]
-                client.update_opportunity(
-                    state.opportunity_id or 0,
-                    {"street": collected["street"]},
-                )
+                if state.opportunity_id:
+                    client.update_opportunity(state.opportunity_id, {"street": collected["street"]})
                 reply = (_installation_address_step(db, client, state, collected) if _fiber_sale(state, collected)
                          else _advance_with_playbook(client, state, collected, fallback_step="ADDRESS_NUMBER"))
             elif playbook_code in {"neighborhood", "bairro"}:
@@ -5933,10 +6194,8 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                     flags=re.I,
                 ).strip() or value
                 collected["neighborhood"] = value[:160]
-                client.update_opportunity(
-                    state.opportunity_id or 0,
-                    {"neighborhood": collected["neighborhood"]},
-                )
+                if state.opportunity_id:
+                    client.update_opportunity(state.opportunity_id, {"neighborhood": collected["neighborhood"]})
                 reply = (_installation_address_step(db, client, state, collected) if _fiber_sale(state, collected)
                          else _advance_with_playbook(client, state, collected, fallback_step="ADDRESS_NUMBER"))
             else:
@@ -5954,10 +6213,11 @@ def _process_seller_job(db: Session, job: AIJob, agent: AIAgentProfile) -> str:
                 collected["number"] = number
                 if complement:
                     collected["complement"] = complement
-                client.update_opportunity(state.opportunity_id or 0, {
-                    "addressNumber": number,
-                    "complement": complement,
-                })
+                if state.opportunity_id:
+                    client.update_opportunity(state.opportunity_id, {
+                        "addressNumber": number,
+                        "complement": complement,
+                    })
                 _save_collected(state, collected)
                 if _fiber_sale(state, collected):
                     reply = _installation_address_step(db, client, state, collected)
