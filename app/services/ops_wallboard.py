@@ -355,7 +355,7 @@ def safe_build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = 
             queue_id,
         )
         return empty_ops_snapshot(
-            error=f"{type(exc).__name__}: {exc}",
+            error="Falha interna ao carregar métricas. Detalhes no log do servidor.",
             queue_id=queue_id,
         )
 
