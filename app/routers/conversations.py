@@ -63,6 +63,7 @@ from app.services.conversation_engine import (
     conversation_visible_to_user,
     ensure_contact,
     ensure_open_conversation,
+    find_scoped_whatsapp_alias,
     mark_conversation_read,
     register_message,
 )
@@ -1409,12 +1410,27 @@ def quick_start_whatsapp_conversation(
     if is_globally_blocked(db, normalized):
         return fail("Este contato está na blacklist e não pode receber mensagens.", 403)
 
+    # Match the alternate Brazilian mobile format only inside the selected
+    # provider and queue. The existing owner check below remains mandatory.
+    alias_chat = find_scoped_whatsapp_alias(
+        db, normalized, queue_id=queue.id,
+        meta_account_id=instance.id if is_meta else None,
+        zapi_instance_id=None if is_meta else instance.id,
+        for_inbound=True,
+    )
     existing_contact = db.scalar(select(Contact).where(Contact.phone == normalized))
     lead = db.scalar(select(Lead).where(Lead.phone == normalized).limit(1))
     if not lead and existing_contact and existing_contact.lead_id:
         lead = db.get(Lead, existing_contact.lead_id)
     if lead and (lead.do_not_contact or lead.stage == "NAO_CONTATAR"):
         return fail("Este cliente não autoriza contato por WhatsApp.", 403)
+    if alias_chat:
+        normalized = alias_chat.contact.phone
+        if is_globally_blocked(db, normalized):
+            return fail("Este contato está na blacklist e não pode receber mensagens.", 403)
+        lead = alias_chat.lead or alias_chat.contact.lead
+        if lead and (lead.do_not_contact or lead.stage == "NAO_CONTATAR"):
+            return fail("Este cliente não autoriza contato por WhatsApp.", 403)
 
     contact = ensure_contact(db, normalized, lead=lead)
     if is_meta:
@@ -1428,7 +1444,7 @@ def quick_start_whatsapp_conversation(
     # An unbound legacy chat may be from another channel and must not prevent
     # an authorized seller from opening a conversation on this instance.
     db.scalar(select(Contact.id).where(Contact.id == contact.id).with_for_update())
-    existing = db.scalar(
+    existing = alias_chat or db.scalar(
         select(Conversation)
         .join(
             ConversationZApiInstance,
