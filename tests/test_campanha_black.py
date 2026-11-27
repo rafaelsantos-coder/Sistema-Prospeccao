@@ -7,7 +7,15 @@ def _h(*pairs):
     return [{"direction": d, "body": b} for d, b in pairs]
 
 
-def test_validade_ate_30_de_novembro_de_2026():
+def test_black_encerrada_volta_oferta_do_dia_a_dia():
+    """Comercial encerrou a Black: oferta volta ao top-down 800/650 do catálogo."""
+    assert black.BLACK_CAMPAIGN_ENABLED is False
+    assert not black.black_active()
+    assert not black.black_active(datetime(2026, 11, 30, 20, 0, tzinfo=timezone.utc))
+
+
+def test_validade_ate_30_de_novembro_de_2026_quando_reativada(monkeypatch):
+    monkeypatch.setattr(black, "BLACK_CAMPAIGN_ENABLED", True)
     assert black.black_active(datetime(2026, 11, 30, 20, 0, tzinfo=timezone.utc))
     assert not black.black_active(datetime(2026, 12, 1, 4, 0, tzinfo=timezone.utc))
 
@@ -47,9 +55,10 @@ def test_marcador_do_resumo_e_idempotente():
     assert black.with_marker(once) == once
 
 
-def test_guardiao_aprova_textos_fixos_da_black():
+def test_guardiao_aprova_textos_fixos_da_black(monkeypatch):
     from app.services.ai_guardian import GuardianReview, _apply_guardrails
 
+    monkeypatch.setattr(black, "BLACK_CAMPAIGN_ENABLED", True)
     for text in (black.OFFER_QUESTION, black.OPTIONS_TEXT):
         result = _apply_guardrails(
             None,
