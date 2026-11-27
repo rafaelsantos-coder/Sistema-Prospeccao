@@ -11,7 +11,7 @@ from collections import deque
 from contextlib import contextmanager
 from threading import Lock
 
-from app.services.lia_voz_realtime import LiaVoiceError, PCM_RATE
+from app.services.lia_voz_realtime import LiaVoiceError, PCM_RATE, safe_realtime_failure
 
 FRAME_MS = 20
 FRAME_BYTES = PCM_RATE * 2 * FRAME_MS // 1000
@@ -240,13 +240,21 @@ async def run_media_bridge(session, bridge: MediaBridge, *, greet: bool = True):
         for task in done:
             task.result()
         if bridge.failure:
-            raise LiaVoiceError(bridge.failure)
+            reason = {
+                "Native audio input overrun": "native_input_overrun",
+                "Invalid native input frame": "native_input_invalid",
+                "Unexpected native input frame size": "native_input_invalid",
+                "Native audio output failed": "native_output_failed",
+                "Unexpected native output frame size": "native_output_failed",
+            }.get(bridge.failure, "native_callback_failed")
+            raise LiaVoiceError(bridge.failure, diagnostic=reason)
         if not bridge.closed:
-            raise LiaVoiceError("Audio bridge stopped unexpectedly")
+            raise LiaVoiceError("Audio bridge stopped unexpectedly", diagnostic="media_bridge_stopped")
     except LiaVoiceError:
         raise
-    except Exception:
-        raise LiaVoiceError("Realtime media transport failed") from None
+    except Exception as exc:
+        raise LiaVoiceError("Realtime media transport failed",
+                            diagnostic=safe_realtime_failure(exc)) from None
     finally:
         bridge.close()
         for task in tasks:
