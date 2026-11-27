@@ -149,6 +149,6 @@ class OpenWAClient:
         state = payload.get("status")
         return {
             "session": self.config.session_id,
-            "status": state if state in _STATUSES else "desconhecido",
+            "status": state if isinstance(state, str) and state in _STATUSES else "desconhecido",
             "engine_loaded": payload.get("engineLoaded") is True,
         }

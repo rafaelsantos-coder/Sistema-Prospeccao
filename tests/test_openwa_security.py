@@ -109,3 +109,17 @@ def test_http_error_does_not_expose_credentials():
         OpenWAClient(_config(), transport=transport).status()
     assert "secret credentials" not in str(error.value)
     assert "owa_k1" not in str(error.value)
+
+
+def test_untrusted_status_type_is_sanitized():
+    transport = httpx.MockTransport(lambda _: httpx.Response(
+        200, json={"id": "sessao-teste-01", "status": ["ready"],
+                   "engineLoaded": "true", "privateKey": "sensitive"}
+    ))
+    result = OpenWAClient(_config(), transport=transport).status()
+    assert result == {
+        "session": "sessao-teste-01",
+        "status": "desconhecido",
+        "engine_loaded": False,
+    }
+    assert "privateKey" not in result
