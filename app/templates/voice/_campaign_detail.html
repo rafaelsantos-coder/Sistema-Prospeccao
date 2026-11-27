@@ -98,13 +98,41 @@
       <p data-voice-last-detail>{{ report.last_command.detail }}</p>
     </div>
     <div class="voice-monitor-metrics">
-      {% for key, label in [('total','Contatos'), ('pending','Pendentes'), ('attempted','Tentativas'), ('in_progress','Em andamento'), ('answered','Atendidas'), ('transferred','Transferidas'), ('audio_completed','Áudios concluídos'), ('failed','Falhas'), ('blocked','Bloqueadas')] %}
+      {% for key, label in [('total','Contatos'), ('pending','Pendentes'), ('attempted','Tentativas'), ('in_progress','Em andamento'), ('answered','Atendidas'), ('transferred','Transferidas'), ('audio_completed','Áudios informativos concluídos'), ('no_answer','Não atendidas'), ('busy','Ocupadas'), ('failed','Falhas técnicas'), ('without_dtmf','Sem confirmação DTMF'), ('blocked','Bloqueadas')] %}
       <div class="voice-monitor-metric">
         <strong data-voice-stat="{{ key }}">{{ report.stats[key] }}</strong>
         <span>{{ label }}</span>
       </div>
       {% endfor %}
     </div>
+    <div class="voice-result-diagnostics" aria-label="Diagnóstico dos resultados das chamadas">
+      <h5>Diagnóstico por resultado registrado</h5>
+      <p class="voice-help">Não atendida não é falha técnica. SIP 183 significa progresso da chamada, não atendimento confirmado. As contagens abaixo são calculadas pelos registros persistidos de cada contato.</p>
+      <div class="voice-result-breakdown" data-voice-result-breakdown>
+        {% for entry in report.result_breakdown %}
+        <span class="voice-result-tag"><strong>{{ entry.label }}:</strong> {{ entry.count }}</span>
+        {% else %}
+        <span class="voice-help">Nenhuma chamada processada.</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% if campaign.mode == 'AUDIO' or campaign.group_id %}
+    <div class="voice-result-stages">
+      <h5>Onde a chamada parou após o atendimento</h5>
+      <div class="voice-result-breakdown">
+        {% if campaign.mode == 'AUDIO' %}
+        <span class="voice-result-tag"><strong>Reprodução de áudio iniciada:</strong> <b data-voice-stat="audio_started">{{ report.stats.audio_started }}</b></span>
+        {% endif %}
+        {% if campaign.group_id and campaign.mode == 'AUDIO' %}
+        <span class="voice-result-tag"><strong>Tecla DTMF confirmada:</strong> <b data-voice-stat="dtmf_confirmed">{{ report.stats.dtmf_confirmed }}</b></span>
+        {% endif %}
+        {% if campaign.group_id %}
+        <span class="voice-result-tag"><strong>Transferência solicitada ao PABX:</strong> <b data-voice-stat="transfer_requested">{{ report.stats.transfer_requested }}</b></span>
+        {% endif %}
+      </div>
+      <p class="voice-help">A reprodução iniciada indica envio local do áudio ao RTP, não comprova que o aparelho ouviu. Em campanhas com confirmação DTMF, o áudio pode tocar sem o contato terminar com status ÁUDIO_CONCLUÍDO.</p>
+    </div>
+    {% endif %}
     <p class="voice-no-attempts" data-voice-no-attempts {% if report.stats.attempted %}hidden{% endif %}>Nenhuma tentativa de discagem foi registrada para esta campanha.</p>
     <div class="voice-monitor-timeline">
       <div>

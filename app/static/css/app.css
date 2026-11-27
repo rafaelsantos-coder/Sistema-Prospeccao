@@ -3058,6 +3058,33 @@ h1, h2, h3, .topbar h1, .page-lead h2, .metric-card > strong, .pipeline-item str
   .voice-campaign-chevron { transition: none; }
 }
 
+/* Resultado SIP: separar ausencia de resposta de falha tecnica, sem esconder
+   os estados de encerramento da campanha. */
+.voice-result-diagnostics {
+  margin: 12px 0 16px;
+  border: 1px solid #dbe2eb;
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fff;
+}
+.voice-result-diagnostics h5, .voice-result-stages h5 { margin: 0 0 5px; font-size: 13px; }
+.voice-result-stages { margin: 10px 0 16px; border: 1px solid #dbe2eb; border-radius: 10px; padding: 12px 14px; background: #f9fbff; }
+.voice-result-stages .voice-help { margin: 8px 0 0; }
+.voice-result-diagnostics .voice-help { margin: 0 0 10px; }
+.voice-result-breakdown {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.voice-result-tag {
+  background: #f4f7fb;
+  border: 1px solid #e0e7f1;
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 /* Indicadores de rodizio Native por campanha. */
 .voice-native-usage {
   display: flex; align-items: center; justify-content: space-between;

@@ -126,6 +126,28 @@
     });
   }
 
+  function fillResultBreakdown(root, entries) {
+    const target = root.querySelector("[data-voice-result-breakdown]");
+    if (!target) return;
+    target.replaceChildren();
+    if (!Array.isArray(entries) || !entries.length) {
+      const empty = document.createElement("span");
+      empty.className = "voice-help";
+      empty.textContent = "Nenhuma chamada processada.";
+      target.appendChild(empty);
+      return;
+    }
+    for (const entry of entries) {
+      const pill = document.createElement("span");
+      pill.className = "voice-result-tag";
+      const label = document.createElement("strong");
+      label.textContent = String(entry.label || entry.status || "Resultado") + ": ";
+      pill.appendChild(label);
+      pill.appendChild(document.createTextNode(String(entry.count ?? 0)));
+      target.appendChild(pill);
+    }
+  }
+
   function fillReadiness(root, reasons) {
     const target = root.closest("[data-voice-campaign-details]")?.querySelector("[data-voice-readiness]");
     if (!target) return;
@@ -169,6 +191,7 @@
     if (empty) empty.hidden = Number(data.stats?.attempted || 0) > 0;
     fillHistory(panel, "[data-voice-attempts]", data.last_attempts, "attempt");
     fillHistory(panel, "[data-voice-events]", data.events, "event");
+    fillResultBreakdown(panel, data.result_breakdown);
     fillReadiness(panel, data.readiness);
     setText(panel, "[data-voice-updated]",
       "Atualizado às " + formatter.format(new Date()) + " · atualização automática a cada 10 segundos");
