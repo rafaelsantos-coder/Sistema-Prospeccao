@@ -21,6 +21,7 @@ from app.models import (
     ConversationQueueLink,
     ConversationMetaAccount,
     ConversationZApiInstance,
+    ConversationSulnetWAInstance,
     ZApiInstance,
     Lead,
     Message,
@@ -354,15 +355,16 @@ def ensure_open_conversation(
     assign_if_unowned: bool = True,
     zapi_instance_id: int | None = None,
     meta_account_id: int | None = None,
+    sulnet_wa_instance_id: int | None = None,
     allow_unbound_reuse: bool = True,
     preferred_conversation_id: int | None = None,
 ) -> Conversation:
     # Canais não se misturam: Telegram só reaproveita conversa Telegram, e o
     # restante nunca cai numa conversa de Telegram (a resposta sairia no canal errado).
-    if source == "TELEGRAM":
-        channel_filter = Conversation.source == "TELEGRAM"
+    if source in {"TELEGRAM", "SULNET_WA"}:
+        channel_filter = Conversation.source == source
     else:
-        channel_filter = Conversation.source != "TELEGRAM"
+        channel_filter = Conversation.source.not_in({"TELEGRAM", "SULNET_WA"})
     if preferred_conversation_id is not None:
         channel_filter = and_(channel_filter, Conversation.id == preferred_conversation_id)
     if source == "TELEGRAM":
@@ -372,6 +374,20 @@ def ensure_open_conversation(
                 Conversation.contact_id == contact.id,
                 Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
                 channel_filter,
+            )
+            .order_by(Conversation.updated_at.desc())
+            .limit(1)
+        )
+    elif sulnet_wa_instance_id:
+        conversation = db.scalar(
+            select(Conversation)
+            .join(ConversationSulnetWAInstance,
+                  ConversationSulnetWAInstance.conversation_id == Conversation.id)
+            .where(
+                Conversation.contact_id == contact.id,
+                Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+                channel_filter,
+                ConversationSulnetWAInstance.instance_id == sulnet_wa_instance_id,
             )
             .order_by(Conversation.updated_at.desc())
             .limit(1)
@@ -453,6 +469,9 @@ def ensure_open_conversation(
     if conversation:
         if zapi_instance_id:
             bind_conversation_instance(db, conversation.id, zapi_instance_id)
+        if sulnet_wa_instance_id:
+            from app.services.sulnet_wa import bind_conversation_instance as bind_sulnet_conversation
+            bind_sulnet_conversation(db, conversation.id, sulnet_wa_instance_id)
         if lead and not conversation.lead_id:
             conversation.lead_id = lead.id
             conversation.branch_id = lead.branch_id
@@ -463,7 +482,17 @@ def ensure_open_conversation(
         # essa fila é a fonte oficial do roteamento de entrada. Isso corrige
         # conversas antigas que ainda estavam presas a outra fila.
         explicit_inbound_queue = queue_id if zapi_instance_id and queue_id else None
-        if meta_account_id:
+        if sulnet_wa_instance_id:
+            from app.services.sulnet_wa import queue_instance as sulnet_queue_instance
+            if not queue_id or not sulnet_queue_instance(db, queue_id) or sulnet_queue_instance(db, queue_id).id != sulnet_wa_instance_id:
+                raise ValueError("Fila Sulnet WhatsApp indisponível ou incorreta")
+            queue = get_queue(db, queue_id)
+            if not queue:
+                raise ValueError("Fila Sulnet WhatsApp indisponível")
+            if conversation.assigned_user_id and not is_queue_member(db, queue.id, conversation.assigned_user_id):
+                conversation.assigned_user_id = None
+                conversation.status = "EM_FILA"
+        elif meta_account_id:
             queue = get_queue(db, queue_id)
             if not queue:
                 raise ValueError("Fila Meta indisponível")
@@ -549,7 +578,12 @@ def ensure_open_conversation(
                     lead.assigned_user_id = owner.id
         return conversation
 
-    if meta_account_id:
+    if sulnet_wa_instance_id:
+        from app.services.sulnet_wa import queue_instance as sulnet_queue_instance
+        if not queue_id or not sulnet_queue_instance(db, queue_id) or sulnet_queue_instance(db, queue_id).id != sulnet_wa_instance_id:
+            raise ValueError("Fila Sulnet WhatsApp indisponível ou incorreta")
+        queue = get_queue(db, queue_id)
+    elif meta_account_id:
         queue = get_queue(db, queue_id)
         if not queue:
             raise ValueError("Fila Meta indisponível")
@@ -586,6 +620,9 @@ def ensure_open_conversation(
 
     if zapi_instance_id:
         bind_conversation_instance(db, conversation.id, zapi_instance_id)
+    if sulnet_wa_instance_id:
+        from app.services.sulnet_wa import bind_conversation_instance as bind_sulnet_conversation
+        bind_sulnet_conversation(db, conversation.id, sulnet_wa_instance_id)
     if meta_account_id:
         from app.services.meta_whatsapp import bind_conversation_meta_account
 
