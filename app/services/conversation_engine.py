@@ -463,7 +463,7 @@ def ensure_open_conversation(
         # essa fila é a fonte oficial do roteamento de entrada. Isso corrige
         # conversas antigas que ainda estavam presas a outra fila.
         explicit_inbound_queue = queue_id if zapi_instance_id and queue_id else None
-        elif meta_account_id:
+        if meta_account_id:
             queue = get_queue(db, queue_id)
             if not queue:
                 raise ValueError("Fila Meta indisponível")
@@ -549,7 +549,7 @@ def ensure_open_conversation(
                     lead.assigned_user_id = owner.id
         return conversation
 
-    elif meta_account_id:
+    if meta_account_id:
         queue = get_queue(db, queue_id)
         if not queue:
             raise ValueError("Fila Meta indisponível")
