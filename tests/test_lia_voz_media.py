@@ -205,3 +205,21 @@ def test_overrun_during_test_is_reported_and_tasks_are_joined():
             await asyncio.wait_for(task, 1)
         assert session.cleared and not session.receiving
     asyncio.run(run())
+
+
+def test_disconnect_race_after_remote_bye_preserves_result():
+    class GonePort(Port):
+        def stopTransmit(self, _target):
+            raise RuntimeError("remote conference port removed")
+    for remote_ended in (True, False):
+        bridge = MediaBridge(Session())
+        call_audio = GonePort()
+        if remote_ended:
+            with attach_pj_media(PJ, call_audio, bridge, enabled=True,
+                                 remote_ended=lambda: True):
+                pass
+        else:
+            with pytest.raises(LiaVoiceError, match="Native audio disconnect failed"):
+                with attach_pj_media(PJ, call_audio, bridge, enabled=True):
+                    pass
+        assert bridge.closed

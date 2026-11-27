@@ -13,7 +13,19 @@ from app.services.voice_test import validate_test_phone
 
 PENDING = "LIA_PENDENTE"
 RUNNING = "LIA_EXECUTANDO"
-ACTIVE = {PENDING, RUNNING}
+PROBE_PENDING = "LIA_PROBE_PENDENTE"
+PROBE_RUNNING = "LIA_PROBE_EXECUTANDO"
+PENDING_STATES = {PENDING, PROBE_PENDING}
+RUNNING_STATES = {RUNNING, PROBE_RUNNING}
+ACTIVE = PENDING_STATES | RUNNING_STATES
+
+
+def requested_state(mode: str) -> str:
+    if mode == "ia":
+        return PENDING
+    if mode == "sip":
+        return PROBE_PENDING
+    raise PilotDenied("Modo de homologacao invalido.")
 OTHER_TESTS = {
     "PENDENTE", "REGISTRANDO", "REGISTRADO", "PENDENTE_PJSIP",
     "REGISTRANDO_PJSIP", "CHAMANDO", "TOCANDO", "ATENDIDA",

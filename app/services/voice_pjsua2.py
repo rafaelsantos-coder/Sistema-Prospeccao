@@ -200,6 +200,7 @@ class PjSession:
         dial_format: str | None = None,
         native_techprefix: str | None = None,
         native_local_ddd: str = "55",
+        probe_hold_seconds: int = 1,
         on_status: Callable[[str, int | None], None] | None = None,
         should_abort: Callable[[], bool] | None = None,
     ) -> VoiceCallResult:
@@ -210,6 +211,8 @@ class PjSession:
         call_mode = mode.upper()
         if call_mode not in {"DIRECT", "AUDIO", "PROBE"}:
             raise VoiceEngineError("Modo de chamada invalido.")
+        if call_mode == "PROBE" and not 1 <= probe_hold_seconds <= 15:
+            raise VoiceEngineError("Duracao do teste SIP invalida.")
         if call_mode == "DIRECT" and group is None:
             raise VoiceEngineError("A transferencia direta exige grupo de destino.")
         if call_mode == "AUDIO" and (not audio_wav or not Path(audio_wav).is_file()):
@@ -352,7 +355,7 @@ class PjSession:
                 if call.answered:
                     if answered_at is None:
                         answered_at = time.monotonic()
-                    if call_mode == "PROBE" and time.monotonic() - answered_at >= 1:
+                    if call_mode == "PROBE" and time.monotonic() - answered_at >= probe_hold_seconds:
                         return VoiceCallResult("ATENDIDA", call.sip_code, False,
                                                "Chamada atendida, sem transferencia.",
                                                True, call.media_active)

@@ -1477,8 +1477,9 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
 @router.post("/lia-voz/test")
 def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
                          account_id: int = Form(...), phone: str = Form(...),
-                         authorized: str = Form(""), db: Session = Depends(get_db)):
-    from app.services.lia_voz_pilot import PENDING, PilotConfig, ensure_idle
+                         authorized: str = Form(""), mode: str = Form("ia"),
+                         db: Session = Depends(get_db)):
+    from app.services.lia_voz_pilot import PilotConfig, ensure_idle, requested_state
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
@@ -1504,6 +1505,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
     if not account or not account.active:
         return _error(request, "Conta SIP indisponivel.", destination)
     try:
+        initial_state = requested_state(mode)
         clean = config.authorize(phone, account.username)
         ensure_idle(db, shared=config.shared, admission=True)
         outbound_guard(db, clean)
@@ -1518,14 +1520,16 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
         return _error(request, "Aguarde o intervalo minimo de tres minutos; limite de tres testes por hora.", destination)
     test = VoiceTestCall(
         account_id=account.id, account_label=account.name, target_phone=clean,
-        status=PENDING, message="Teste individual Lia Voz autorizado; aguardando vez no motor.",
+        status=initial_state,
+        message=("Teste SIP sem IA autorizado; aguardando vez no motor." if mode == "sip"
+                 else "Teste individual Lia Voz autorizado; aguardando vez no motor."),
         initiator_user_id=actor.id, created_at=now,
     )
     db.add(test)
     db.flush()
     write_audit(db, user=actor, action="LIA_VOZ_TEST_REQUESTED",
                 entity_type="voice_test_call", entity_id=test.id,
-                payload={"account_id": account.id, "target_last4": clean[-4:]})
+                payload={"account_id": account.id, "target_last4": clean[-4:], "mode": mode})
     db.commit()
     flash(request, "Teste individual solicitado. Nenhuma campanha foi iniciada.")
     return RedirectResponse(destination, status_code=303)

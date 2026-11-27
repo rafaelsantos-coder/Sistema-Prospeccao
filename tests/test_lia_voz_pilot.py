@@ -87,3 +87,16 @@ def test_shared_execution_checks_active_calls_not_running_campaign():
     assert len(db.queries) == 3
     with pytest.raises(PilotDenied):
         ensure_idle(DB(active=True), shared=True, own_test_id=1)
+
+
+def test_probe_is_explicit_and_shares_active_states():
+    from app.services.lia_voz_pilot import (
+        requested_state, PENDING, PROBE_PENDING, PROBE_RUNNING, ACTIVE,
+        PENDING_STATES, RUNNING_STATES,
+    )
+    assert requested_state("ia") == PENDING
+    assert requested_state("sip") == PROBE_PENDING
+    assert PROBE_PENDING in PENDING_STATES and PROBE_RUNNING in RUNNING_STATES
+    assert {PROBE_PENDING, PROBE_RUNNING} <= ACTIVE
+    with pytest.raises(PilotDenied):
+        requested_state("campaign")
