@@ -699,6 +699,21 @@
     {% if 'conversations.transfer' in current_user.permissions %}
     <div class="context-section conversation-transfer-section">
       <div class="context-title">Transferir atendimento</div>
+      {% if human_takeover_active %}
+      <div class="info-box compact" role="status">
+        <strong>Atendimento humano · IA pausada</strong>
+        <p>A SulIA não responde nem faz follow-up nesta conversa até que você clique em Passar para a IA.</p>
+      </div>
+      {% endif %}
+      {% if conversation.status not in ['RESOLVIDO', 'ENCERRADO', 'BLOQUEADO'] and 'conversations.reply' in current_user.permissions %}
+      {% if not human_takeover_active or conversation.assigned_user_id != current_user.id %}
+      <form action="/conversations/{{ conversation.id }}/takeover-human" method="post" class="stack-form compact">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-secondary full-width conversation-transfer-button" type="submit">Assumir atendimento</button>
+        <small class="transfer-help">Você assume esta conversa e pausa somente a IA deste atendimento, mantendo a fila e o WhatsApp original.</small>
+      </form>
+      {% endif %}
+      {% endif %}
       {% if ai_transfer_queue %}
       <form action="/conversations/{{ conversation.id }}/transfer-ai" method="post" class="stack-form compact">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
