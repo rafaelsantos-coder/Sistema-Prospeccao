@@ -5398,7 +5398,12 @@ def start_closing_from_sdr(
     black_combo = False
     # Rechamada com mensalidades grátis: a tag da Black tem prioridade no CRM e
     # trocaria o contrato prometido, então a Black não entra nesta venda.
-    if not dispatch_sale and not recall_campaign.has_marker(state.handoff_summary) and _black_campaign_accepted(db, conversation.id):
+    if (
+        black_campaign.black_active()
+        and not dispatch_sale
+        and not recall_campaign.has_marker(state.handoff_summary)
+        and _black_campaign_accepted(db, conversation.id)
+    ):
         state.handoff_summary = black_campaign.with_marker(state.handoff_summary)[-5000:]
         black_combo = _black_campaign_choice(db, conversation.id) == "COMBO"
 

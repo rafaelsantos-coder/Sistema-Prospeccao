@@ -39,12 +39,17 @@
       <a href="/conversations" class="nav-item {% if active_nav == 'conversations' %}active{% endif %}">
         <span class="nav-icon">◌</span><span>Conversas</span>
       </a>
+      {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] and 'reports.view' in current_user.permissions %}
+      <a href="/operations" class="nav-item {% if active_nav == 'operations' %}active{% endif %}">
+        <span class="nav-icon">▦</span><span>Painel operacional</span>
+      </a>
+      {% endif %}
       <a href="/conversas" class="nav-item" title="Atendimento web simplificado">
         <span class="nav-icon">▢</span><span>Conversas (MVP)</span>
       </a>
       {% endif %}
       {% if current_user.role in ['ADMIN', 'GESTOR'] and 'settings.connections.view' in current_user.permissions %}
-      <a href="/instagram" class="nav-item">
+      <a href="/instagram" class="nav-item {% if active_nav == 'instagram' %}active{% endif %}"{% if active_nav == 'instagram' %} aria-current="page"{% endif %}>
         <span class="nav-icon" aria-hidden="true">◎</span><span>Instagram – Digital</span>
       </a>
       {% endif %}
@@ -196,7 +201,7 @@
           <button type="button" class="button button-secondary crm-manual-topbar-button" disabled title="Atribua a conversa a um vendedor cadastrado no CRM">Registrar CRM</button>
           {% endif %}
         {% endif %}
-        {% if 'conversations.view' in current_user.permissions %}
+        {% if 'conversations.view' in current_user.permissions and active_nav != 'instagram' %}
         <div class="whatsapp-presence-control" data-whatsapp-presence data-csrf="{{ csrf_token }}" data-role="{{ current_user.role }}">
           <span class="whatsapp-presence-dot" data-whatsapp-dot></span>
           <div class="whatsapp-presence-copy">

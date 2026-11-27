@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from datetime import timedelta
@@ -70,6 +71,99 @@ def find_lead_by_phone(db: Session, phone: str | None) -> Lead | None:
         return lead
     suffix = normalized[-10:]
     return db.scalar(select(Lead).where(Lead.phone.endswith(suffix)).limit(1))
+
+
+def whatsapp_mobile_alias(phone: str | None) -> str | None:
+    """Only Brazilian mobile variants; never prepend a 9 to a landline."""
+    normalized = normalize_phone(phone)
+    if not normalized:
+        return None
+    if len(normalized) == 13 and normalized[4] == "9" and normalized[5] in "6789":
+        return normalized[:4] + normalized[5:]
+    if len(normalized) == 12 and normalized[4] in "6789":
+        return normalized[:4] + "9" + normalized[4:]
+    return None
+
+
+def find_scoped_whatsapp_alias(
+    db: Session,
+    phone: str,
+    *,
+    queue_id: int | None,
+    zapi_instance_id: int | None = None,
+    meta_account_id: int | None = None,
+    for_inbound: bool = False,
+) -> Conversation | None:
+    """Find the alternate-number chat only when provider and queue prove its scope.
+
+    Exact chats take precedence if both have ownership or outbound history.
+    An inbound-only orphan from the old bug may yield to the unique active
+    outbound chat; do not move existing messages or mix owners.
+    """
+    normalized = normalize_phone(phone)
+    alternate = whatsapp_mobile_alias(normalized)
+    if not alternate or not queue_id or bool(zapi_instance_id) == bool(meta_account_id):
+        return None
+    stmt = (
+        select(Conversation)
+        .join(Contact, Contact.id == Conversation.contact_id)
+        .join(ConversationQueueLink, ConversationQueueLink.conversation_id == Conversation.id)
+        .where(
+            Contact.phone.in_([normalized, alternate]),
+            Conversation.source != "TELEGRAM",
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            ConversationQueueLink.queue_id == queue_id,
+        )
+    )
+    if meta_account_id:
+        stmt = stmt.join(ConversationMetaAccount, ConversationMetaAccount.conversation_id == Conversation.id).where(
+            ConversationMetaAccount.meta_account_id == meta_account_id,
+            ~exists().where(ConversationZApiInstance.conversation_id == Conversation.id),
+            ~exists().where(
+                Message.conversation_id == Conversation.id,
+                Message.created_at < ConversationMetaAccount.created_at,
+                or_(Message.provider_message_id.is_(None), ~Message.provider_message_id.like("wamid.%")),
+            ),
+        )
+    else:
+        stmt = stmt.join(ConversationZApiInstance, ConversationZApiInstance.conversation_id == Conversation.id).where(
+            ConversationZApiInstance.zapi_instance_id == zapi_instance_id,
+            ~exists().where(ConversationMetaAccount.conversation_id == Conversation.id),
+        )
+    candidates = list(db.scalars(stmt))
+    aliases = [c for c in candidates if c.contact.phone == alternate]
+    exact = [c for c in candidates if c.contact.phone == normalized]
+    if len(aliases) != 1:
+        return None
+    candidate = aliases[0]
+    if not exact:
+        return candidate
+    if not for_inbound or len(exact) != 1:
+        return None
+    orphan = exact[0]
+    if orphan.assigned_user_id is not None:
+        return None
+    # Preserve transferred/private conversations even if currently unassigned.
+    if db.scalar(select(ConversationAssignment.id).where(
+        ConversationAssignment.conversation_id == orphan.id,
+        ConversationAssignment.user_id.is_not(None),
+    ).limit(1)):
+        return None
+    if db.scalar(select(Message.id).where(
+        Message.conversation_id == orphan.id, Message.direction == "OUTBOUND",
+    ).limit(1)):
+        return None
+    # Prefer the original outbound conversation only when evidence is clear.
+    if not db.scalar(select(Message.id).where(
+        Message.conversation_id == candidate.id, Message.direction == "OUTBOUND",
+        Message.status.in_(["SENT", "DELIVERED", "READ", "PLAYED", "RECEIVED"]),
+    ).limit(1)):
+        return None
+    logging.getLogger(__name__).info(
+        "whatsapp_alias_preferred conversation_id=%s orphan_id=%s queue_id=%s",
+        candidate.id, orphan.id, queue_id,
+    )
+    return candidate
 
 
 def ensure_contact(
@@ -261,6 +355,7 @@ def ensure_open_conversation(
     zapi_instance_id: int | None = None,
     meta_account_id: int | None = None,
     allow_unbound_reuse: bool = True,
+    preferred_conversation_id: int | None = None,
 ) -> Conversation:
     # Canais não se misturam: Telegram só reaproveita conversa Telegram, e o
     # restante nunca cai numa conversa de Telegram (a resposta sairia no canal errado).
@@ -268,6 +363,8 @@ def ensure_open_conversation(
         channel_filter = Conversation.source == "TELEGRAM"
     else:
         channel_filter = Conversation.source != "TELEGRAM"
+    if preferred_conversation_id is not None:
+        channel_filter = and_(channel_filter, Conversation.id == preferred_conversation_id)
     if source == "TELEGRAM":
         conversation = db.scalar(
             select(Conversation)
@@ -1093,7 +1190,19 @@ def store_received_payload(
     if not body and message_type == "UNKNOWN":
         return None, None, False
 
-    lead = find_lead_by_phone(db, normalized)
+    matching = find_scoped_whatsapp_alias(
+        db, normalized, queue_id=queue_id, zapi_instance_id=zapi_instance_id,
+        meta_account_id=meta_account_id, for_inbound=not payload_from_me(payload),
+    )
+    if matching:
+        normalized = matching.contact.phone
+        lead = matching.lead or matching.contact.lead
+        logging.getLogger(__name__).info(
+            "whatsapp_alias_matched conversation_id=%s queue_id=%s provider=%s",
+            matching.id, queue_id, "META" if meta_account_id else "ZAPI",
+        )
+    else:
+        lead = find_lead_by_phone(db, normalized)
     sender_name = str(payload.get("senderName") or payload.get("chatName") or "").strip()
     if payload_from_me(payload) and sender_name.casefold() in {"eu", "me", "você", "you"}:
         # O nome do próprio remetente não pode renomear o cliente.
@@ -1114,6 +1223,7 @@ def store_received_payload(
         queue_origin="META_INSTANCE" if meta_account_id else ("ZAPI_INSTANCE" if zapi_instance_id else "INBOUND"),
         zapi_instance_id=zapi_instance_id,
         meta_account_id=meta_account_id,
+        preferred_conversation_id=matching.id if matching else None,
     )
 
     from_me = payload_from_me(payload)
@@ -1159,8 +1269,6 @@ def store_received_payload(
 
             handle_credit_proof_attachment(db, conversation, message)
         except Exception:  # noqa: BLE001 - o webhook não pode falhar por causa do aviso
-            import logging
-
             logging.getLogger("sulnet_conversation_engine").warning(
                 "credit_proof_hook_failed conversation=%s", conversation.id
             )

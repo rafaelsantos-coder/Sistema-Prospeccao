@@ -1,0 +1,395 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="ops-wallboard" data-ops-wallboard data-refresh="{{ snapshot.refresh_seconds }}" data-queue="{{ selected_queue or '' }}">
+  <header class="ops-wallboard-header">
+    <div>
+      <span class="eyebrow">GESTÃO EM TEMPO REAL</span>
+      <h2>Painel operacional</h2>
+      <p>Visão consolidada de todas as filas: conversas, vendedores, funil do dia e alertas que pedem ação.</p>
+    </div>
+    <div class="ops-wallboard-actions">
+      <form method="get" action="/operations" class="ops-wallboard-filter" data-ops-queue-filter>
+        <label>
+          <span>Fila</span>
+          <select name="queue" data-ops-queue-select>
+            <option value="">Todas as filas</option>
+            {% for item in snapshot.filters.queues %}
+            <option value="{{ item.id }}" {% if selected_queue == item.id %}selected{% endif %}>{{ item.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </form>
+      <div class="ops-wallboard-live">
+        <i data-ops-live-dot></i>
+        <span>Atualiza a cada {{ snapshot.refresh_seconds }}s</span>
+        <time data-ops-generated datetime="{{ snapshot.generated_at }}">{{ snapshot.generated_at }}</time>
+      </div>
+      <a class="button button-secondary" href="/reports/whatsapp">Relatório histórico</a>
+      <a class="button button-secondary" href="/conversations-intelligence">Inteligência comercial</a>
+    </div>
+  </header>
+
+  <div class="ops-alert-strip" data-ops-alerts>
+    {% if snapshot.alerts %}
+      {% for alert in snapshot.alerts %}
+      <article class="ops-alert ops-alert-{{ alert.severity|lower }}">
+        <strong>{{ alert.title }}</strong>
+        <span>{{ alert.detail }}</span>
+      </article>
+      {% endfor %}
+    {% else %}
+      <article class="ops-alert ops-alert-ok">
+        <strong>Operação estável</strong>
+        <span>Nenhum alerta crítico no momento. Continue acompanhando fila e respostas pendentes.</span>
+      </article>
+    {% endif %}
+  </div>
+
+  <div class="ops-kpi-grid" data-ops-kpis>
+    <article><span>Abertas agora</span><strong data-kpi="open">{{ snapshot.kpis.open }}</strong><small>Em atendimento em todas as filas</small></article>
+    <article><span>Iniciadas hoje</span><strong data-kpi="started_today">{{ snapshot.kpis.started_today }}</strong><small>Novas conversas no dia</small></article>
+    <article class="{% if snapshot.kpis.pending_reply %}ops-kpi-warn{% endif %}"><span>Aguardando resposta</span><strong data-kpi="pending_reply">{{ snapshot.kpis.pending_reply }}</strong><small>Cliente falou e ainda não respondemos</small></article>
+    <article class="{% if snapshot.kpis.waiting_queue %}ops-kpi-warn{% endif %}"><span>Sem responsável</span><strong data-kpi="waiting_queue">{{ snapshot.kpis.waiting_queue }}</strong><small>Na fila, sem vendedor</small></article>
+    <article><span>Com a IA</span><strong data-kpi="ai_active">{{ snapshot.kpis.ai_active }}</strong><small>Ativas ou em fechamento</small></article>
+    <article><span>Com humano</span><strong data-kpi="human_active">{{ snapshot.kpis.human_active }}</strong><small>Vendedor interagindo</small></article>
+    <article class="ops-kpi-good"><span>Vendas hoje</span><strong data-kpi="won_today">{{ snapshot.kpis.won_today }}</strong><small>Assinadas e confirmadas</small></article>
+    <article class="{% if snapshot.kpis.stalled_without_sale %}ops-kpi-danger{% endif %}"><span>Paradas sem venda</span><strong data-kpi="stalled_without_sale">{{ snapshot.kpis.stalled_without_sale }}</strong><small>Erro, silêncio ou risco</small></article>
+    <article class="{% if snapshot.kpis.failed_ai %}ops-kpi-danger{% endif %}"><span>Falhas IA</span><strong data-kpi="failed_ai">{{ snapshot.kpis.failed_ai }}</strong><small>Job falhou sem resposta</small></article>
+    <article><span>Vendedores online</span><strong><span data-kpi="sellers_online">{{ snapshot.kpis.sellers_online }}</span>/<span data-kpi="sellers_total">{{ snapshot.kpis.sellers_total }}</span></strong><small>Presença na operação</small></article>
+  </div>
+
+  <div class="ops-main-grid">
+    <section class="ops-panel">
+      <header>
+        <div>
+          <span class="eyebrow">FUNIL DO DIA</span>
+          <h3>Da conversa à venda</h3>
+        </div>
+        <a href="/ai/quality">Qualidade IA</a>
+      </header>
+      <ol class="ops-funnel" data-ops-funnel>
+        <li><span>Atendidos</span><strong data-funnel="attended">{{ snapshot.funnel_today.attended }}</strong></li>
+        <li><span>Entraram em contratação</span><strong data-funnel="closing_started">{{ snapshot.funnel_today.closing_started }}</strong></li>
+        <li><span>Contrato enviado</span><strong data-funnel="contract_sent">{{ snapshot.funnel_today.contract_sent }}</strong></li>
+        <li><span>Venda assinada</span><strong data-funnel="won">{{ snapshot.funnel_today.won }}</strong></li>
+        <li><span>Crédito reprovado</span><strong data-funnel="credit_rejected">{{ snapshot.funnel_today.credit_rejected }}</strong></li>
+        <li><span>Opt-out</span><strong data-funnel="opt_out">{{ snapshot.funnel_today.opt_out }}</strong></li>
+      </ol>
+      <div class="ops-status-bars" data-ops-status>
+        {% for row in snapshot.by_status %}
+        <div class="ops-status-row">
+          <span>{{ row.label }}</span>
+          <i><b style="width: {% if row.count > 12 %}100{% else %}{{ row.count * 8 }}{% endif %}%"></b></i>
+          <strong>{{ row.count }}</strong>
+        </div>
+        {% else %}
+        <p class="ops-empty">Nenhuma conversa aberta no recorte.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="ops-panel">
+      <header>
+        <div>
+          <span class="eyebrow">FILAS</span>
+          <h3>Saúde por fila</h3>
+        </div>
+      </header>
+      <div class="table-wrap">
+        <table class="ops-table" data-ops-queues>
+          <thead>
+            <tr>
+              <th>Fila</th>
+              <th>Abertas</th>
+              <th>Espera</th>
+              <th>Pendentes</th>
+              <th>IA</th>
+              <th>Online</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in snapshot.queues %}
+            <tr class="{% if row.pending or row.waiting %}is-hot{% endif %}">
+              <td><a href="/operations?queue={{ row.id }}">{{ row.name }}</a></td>
+              <td>{{ row.open }}</td>
+              <td>{{ row.waiting }}</td>
+              <td>{{ row.pending }}</td>
+              <td>{{ row.ai_active }}</td>
+              <td>{{ row.online }}/{{ row.members }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">Nenhuma fila visível.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="ops-main-grid">
+    <section class="ops-panel">
+      <header>
+        <div>
+          <span class="eyebrow">EQUIPE</span>
+          <h3>Quem está interagindo</h3>
+        </div>
+      </header>
+      <div class="table-wrap">
+        <table class="ops-table" data-ops-sellers>
+          <thead>
+            <tr>
+              <th>Pessoa</th>
+              <th>Status</th>
+              <th>Abertas</th>
+              <th>Pendentes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in snapshot.sellers %}
+            <tr>
+              <td>
+                {{ row.name }}
+                {% if row.is_ai %}<em class="ops-ai-tag">IA</em>{% endif %}
+              </td>
+              <td><span class="ops-presence {% if row.online %}is-on{% else %}is-off{% endif %}">{% if row.online %}Online{% else %}Offline{% endif %}</span></td>
+              <td>{{ row.open }}</td>
+              <td>{{ row.pending }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">Nenhum vendedor no recorte.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="ops-panel">
+      <header>
+        <div>
+          <span class="eyebrow">AÇÃO</span>
+          <h3>Precisa de atenção agora</h3>
+        </div>
+        <a href="/conversations?view=unread">Abrir caixa</a>
+      </header>
+      <ul class="ops-attention" data-ops-attention>
+        {% for row in snapshot.attention %}
+        <li>
+          <a href="{{ row.href }}">
+            <strong>#{{ row.conversation_id }} · {{ row.contact_name }}</strong>
+            <span>{{ row.owner }} · {{ row.status_label }}{% if row.unread %} · {{ row.unread }} não lida(s){% endif %}</span>
+            <em>{{ row.reasons|join(' · ') }}</em>
+          </a>
+        </li>
+        {% else %}
+        <li class="ops-empty">Nenhuma conversa crítica no momento.</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+</section>
+
+<style>
+.ops-wallboard{display:grid;gap:16px;max-width:1280px;margin:0 auto}
+.ops-wallboard-header{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}
+.ops-wallboard-header h2{margin:4px 0 6px;font-size:24px}
+.ops-wallboard-header p{margin:0;max-width:640px;color:#64748b;font-size:13px;line-height:1.5}
+.ops-wallboard-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;align-items:flex-end}
+.ops-wallboard-filter label{display:grid;gap:4px;font-size:11px;font-weight:700;color:#64748b}
+.ops-wallboard-filter select{min-width:180px;height:36px;border:1px solid #d1d5db;border-radius:8px;padding:0 10px}
+.ops-wallboard-live{display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid #e5e7eb;border-radius:999px;background:#fff;font-size:11px;color:#64748b}
+.ops-wallboard-live i{width:8px;height:8px;border-radius:50%;background:#16a34a;display:inline-block}
+.ops-wallboard-live.is-stale i{background:#dc2626}
+.ops-wallboard-live time{color:#94a3b8}
+.ops-alert-strip{display:grid;gap:8px}
+.ops-alert{padding:12px 14px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;display:grid;gap:2px}
+.ops-alert strong{font-size:13px}
+.ops-alert span{font-size:12px;color:#64748b}
+.ops-alert-critical{border-color:#fecaca;background:#fef2f2}
+.ops-alert-warning{border-color:#fde68a;background:#fffbeb}
+.ops-alert-info{border-color:#bfdbfe;background:#eff6ff}
+.ops-alert-ok{border-color:#bbf7d0;background:#f0fdf4}
+.ops-kpi-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.ops-kpi-grid article{padding:14px;border:1px solid #e5e7eb;border-radius:12px;background:#fff;display:grid;gap:4px;min-height:96px}
+.ops-kpi-grid span{font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.ops-kpi-grid strong{font-size:26px;line-height:1.05;color:#0f172a}
+.ops-kpi-grid small{font-size:11px;color:#94a3b8}
+.ops-kpi-warn{border-color:#fde68a;background:#fffbeb}
+.ops-kpi-danger{border-color:#fecaca;background:#fef2f2}
+.ops-kpi-good{border-color:#bbf7d0;background:#f0fdf4}
+.ops-main-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:14px}
+.ops-panel{padding:16px;border:1px solid #e5e7eb;border-radius:14px;background:#fff;min-width:0}
+.ops-panel > header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
+.ops-panel h3{margin:3px 0 0;font-size:16px}
+.ops-panel > header a{font-size:11px;font-weight:700;color:#c45e20}
+.ops-funnel{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.ops-funnel li{padding:10px;border:1px solid #eef2f7;border-radius:10px;display:grid;gap:4px}
+.ops-funnel span{font-size:11px;color:#64748b}
+.ops-funnel strong{font-size:20px}
+.ops-status-bars{margin-top:14px;display:grid;gap:8px}
+.ops-status-row{display:grid;grid-template-columns:130px 1fr 36px;gap:8px;align-items:center}
+.ops-status-row span{font-size:12px;color:#475569}
+.ops-status-row i{display:block;height:7px;border-radius:999px;background:#f1f5f9;overflow:hidden}
+.ops-status-row b{display:block;height:100%;background:#f36f21;min-width:2px}
+.ops-status-row strong{font-size:12px;text-align:right}
+.ops-table{width:100%;border-collapse:collapse;font-size:12px}
+.ops-table th{text-align:left;padding:8px;background:#f8fafc;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:11px}
+.ops-table td{padding:9px 8px;border-bottom:1px solid #f1f5f9}
+.ops-table tr.is-hot td{background:#fff7ed}
+.ops-presence{font-weight:700}
+.ops-presence.is-on{color:#15803d}
+.ops-presence.is-off{color:#94a3b8}
+.ops-ai-tag{margin-left:6px;font-style:normal;font-size:10px;font-weight:800;color:#c45e20;border:1px solid #fdba74;border-radius:999px;padding:1px 6px}
+.ops-attention{list-style:none;margin:0;padding:0;display:grid;gap:8px;max-height:420px;overflow:auto}
+.ops-attention a{display:grid;gap:2px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:10px;text-decoration:none;color:inherit}
+.ops-attention a:hover{border-color:#fdba74;background:#fff7ed}
+.ops-attention strong{font-size:13px}
+.ops-attention span,.ops-attention em{font-size:12px;color:#64748b;font-style:normal}
+.ops-empty{color:#94a3b8;font-size:12px;padding:8px 0}
+@media(max-width:1100px){.ops-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-main-grid{grid-template-columns:1fr}.ops-wallboard-header{display:block}}
+@media(max-width:640px){.ops-funnel{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-status-row{grid-template-columns:100px 1fr 28px}}
+</style>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+  const root = document.querySelector("[data-ops-wallboard]");
+  if (!root) return;
+  const refreshMs = (Number(root.dataset.refresh) || 20) * 1000;
+  const queue = root.dataset.queue || "";
+  const live = root.querySelector(".ops-wallboard-live");
+
+  function setText(sel, value) {
+    const el = root.querySelector(sel);
+    if (el) el.textContent = value;
+  }
+
+  function renderAlerts(alerts) {
+    const box = root.querySelector("[data-ops-alerts]");
+    if (!box) return;
+    if (!alerts.length) {
+      box.innerHTML = '<article class="ops-alert ops-alert-ok"><strong>Operação estável</strong><span>Nenhum alerta crítico no momento. Continue acompanhando fila e respostas pendentes.</span></article>';
+      return;
+    }
+    box.innerHTML = alerts.map(function (alert) {
+      return '<article class="ops-alert ops-alert-' + String(alert.severity || "info").toLowerCase() + '"><strong>' +
+        escapeHtml(alert.title) + '</strong><span>' + escapeHtml(alert.detail) + '</span></article>';
+    }).join("");
+  }
+
+  function renderQueues(rows) {
+    const tbody = root.querySelector("[data-ops-queues] tbody");
+    if (!tbody) return;
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="6">Nenhuma fila visível.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(function (row) {
+      const hot = (row.pending || row.waiting) ? " is-hot" : "";
+      return '<tr class="' + hot + '"><td><a href="/operations?queue=' + row.id + '">' + escapeHtml(row.name) +
+        '</a></td><td>' + row.open + '</td><td>' + row.waiting + '</td><td>' + row.pending +
+        '</td><td>' + row.ai_active + '</td><td>' + row.online + '/' + row.members + '</td></tr>';
+    }).join("");
+  }
+
+  function renderSellers(rows) {
+    const tbody = root.querySelector("[data-ops-sellers] tbody");
+    if (!tbody) return;
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="4">Nenhum vendedor no recorte.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(function (row) {
+      const ai = row.is_ai ? ' <em class="ops-ai-tag">IA</em>' : "";
+      return '<tr><td>' + escapeHtml(row.name) + ai + '</td><td><span class="ops-presence ' +
+        (row.online ? "is-on" : "is-off") + '">' + (row.online ? "Online" : "Offline") +
+        '</span></td><td>' + row.open + '</td><td>' + row.pending + '</td></tr>';
+    }).join("");
+  }
+
+  function renderAttention(rows) {
+    const list = root.querySelector("[data-ops-attention]");
+    if (!list) return;
+    if (!rows.length) {
+      list.innerHTML = '<li class="ops-empty">Nenhuma conversa crítica no momento.</li>';
+      return;
+    }
+    list.innerHTML = rows.map(function (row) {
+      const unread = row.unread ? " · " + row.unread + " não lida(s)" : "";
+      return '<li><a href="' + escapeHtml(row.href) + '"><strong>#' + row.conversation_id +
+        " · " + escapeHtml(row.contact_name) + "</strong><span>" + escapeHtml(row.owner) +
+        " · " + escapeHtml(row.status_label) + unread + "</span><em>" +
+        escapeHtml((row.reasons || []).join(" · ")) + "</em></a></li>";
+    }).join("");
+  }
+
+  function renderStatus(rows) {
+    const box = root.querySelector("[data-ops-status]");
+    if (!box) return;
+    if (!rows.length) {
+      box.innerHTML = '<p class="ops-empty">Nenhuma conversa aberta no recorte.</p>';
+      return;
+    }
+    box.innerHTML = rows.map(function (row) {
+      const width = Math.min(row.count * 8, 100);
+      return '<div class="ops-status-row"><span>' + escapeHtml(row.label) +
+        '</span><i><b style="width:' + width + '%"></b></i><strong>' + row.count + '</strong></div>';
+    }).join("");
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function applySnapshot(data) {
+    const k = data.kpis || {};
+    ["open", "started_today", "pending_reply", "waiting_queue", "ai_active", "human_active",
+     "won_today", "stalled_without_sale", "failed_ai", "sellers_online", "sellers_total"].forEach(function (key) {
+      setText('[data-kpi="' + key + '"]', k[key] == null ? "0" : k[key]);
+    });
+    const f = data.funnel_today || {};
+    ["attended", "closing_started", "contract_sent", "won", "credit_rejected", "opt_out"].forEach(function (key) {
+      setText('[data-funnel="' + key + '"]', f[key] == null ? "0" : f[key]);
+    });
+    renderAlerts(data.alerts || []);
+    renderQueues(data.queues || []);
+    renderSellers(data.sellers || []);
+    renderAttention(data.attention || []);
+    renderStatus(data.by_status || []);
+    const stamp = root.querySelector("[data-ops-generated]");
+    if (stamp && data.generated_at) {
+      stamp.setAttribute("datetime", data.generated_at);
+      stamp.textContent = data.generated_at.replace("T", " ").slice(0, 19);
+    }
+    if (live) live.classList.remove("is-stale");
+  }
+
+  async function tick() {
+    try {
+      const url = "/api/operations/wallboard" + (queue ? ("?queue=" + encodeURIComponent(queue)) : "");
+      const res = await fetch(url, { headers: { Accept: "application/json" }, credentials: "same-origin" });
+      if (!res.ok) throw new Error("fail");
+      applySnapshot(await res.json());
+    } catch (err) {
+      if (live) live.classList.add("is-stale");
+    }
+  }
+
+  const stamp = root.querySelector("[data-ops-generated]");
+  if (stamp && stamp.getAttribute("datetime")) {
+    stamp.textContent = stamp.getAttribute("datetime").replace("T", " ").slice(0, 19);
+  }
+  const filterForm = root.querySelector("[data-ops-queue-filter]");
+  const filterSelect = root.querySelector("[data-ops-queue-select]");
+  if (filterForm && filterSelect) {
+    filterSelect.addEventListener("change", function () {
+      filterForm.submit();
+    });
+  }
+  setInterval(tick, refreshMs);
+})();
+</script>
+{% endblock %}

@@ -1,54 +1,114 @@
-<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Instagram – Digital · Sulnet Prospecta</title>
-  <style>
-    body{font-family:system-ui,sans-serif;background:#f7f8fa;color:#20242b;margin:0}
-    main{max-width:920px;margin:auto;padding:24px}
-    header{border-bottom:3px solid #f36f21;margin-bottom:22px;padding-bottom:12px}
-    h1{margin:12px 0 6px;font-size:1.75rem}
-    h2{font-size:1.15rem}
-    .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
-    section,.metric{background:white;border:1px solid #dfe3e8;border-radius:12px;padding:16px;margin-bottom:14px}
-    .metric strong{display:block;font-size:1.65rem}
-    a{color:#9e3e04} li{margin-bottom:5px} .muted{color:#596270}
-  </style>
-</head>
-<body><main>
-<header><a href="/dashboard">Voltar ao Prospecta</a><h1>Instagram – Digital</h1>
-<p class="muted">Painel de integração independente. Nenhum disparo ou contato WhatsApp é acionado aqui.</p></header>
-<section><h2>Estado da operação</h2>
-<p>Fila de atendimento: <strong>{{ "Habilitada" if status.inbox_enabled else "Desativada para validação" }}</strong></p>
-<p>Abordagem comercial automática: <strong>Desativada</strong></p>
-<p>As contagens abaixo podem incluir testes da Meta. Não comprovam que houve uma conversa real.</p>
-{% if status.inbox_enabled %}<p><a href="/instagram/inbox">Abrir caixa de entrada</a>
-{% if can_manage_members %} · <a href="/instagram/members">Gerenciar integrantes</a>{% endif %}</p>{% endif %}
-</section>
-<h2>Eventos armazenados</h2>
-<div class="metrics">
-<div class="metric"><strong>{{ status.events_stored }}</strong>Total de eventos</div>
-<div class="metric"><strong>{{ status.events_by_kind.messaging }}</strong>Eventos de mensagens</div>
-<div class="metric"><strong>{{ status.events_by_kind.changes }}</strong>Eventos de alterações</div>
-<div class="metric"><strong>{{ status.events_by_kind.standby }}</strong>Eventos standby</div>
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead">
+  <div>
+    <span class="eyebrow">META OFICIAL · INSTAGRAM</span>
+    <h2>Central Instagram – Digital</h2>
+    <p>Acompanhe a integração, os eventos recebidos e a fila exclusiva do Instagram.</p>
+  </div>
+  <a class="button button-secondary" href="/instagram">Atualizar contagens</a>
 </div>
-<p class="muted">Último evento persistido: {{ status.last_event_at or "Nenhum" }} (UTC)</p>
-<h2>Fila de atendimento</h2>
-<div class="metrics">
-<div class="metric"><strong>{{ status.inbox_threads }}</strong>Conversas</div>
-<div class="metric"><strong>{{ status.inbox_pending }}</strong>Aguardando vendedor</div>
-<div class="metric"><strong>{{ status.inbox_assigned }}</strong>Atribuídas</div>
-<div class="metric"><strong>{{ status.inbox_members }}</strong>Vínculos cadastrados</div>
+
+<div class="dashboard-grid">
+  <section class="panel panel-span-12" aria-labelledby="instagram-operation-title">
+    <div class="panel-header">
+      <div>
+        <span class="eyebrow">OPERAÇÃO DO CANAL</span>
+        <h3 id="instagram-operation-title">Estado da operação</h3>
+      </div>
+      <span class="environment-badge">{{ 'FILA HABILITADA' if status.inbox_enabled else 'EM VALIDAÇÃO' }}</span>
+    </div>
+    <div class="pipeline-row">
+      <div class="pipeline-item">
+        <small>Fila de atendimento</small>
+        <p><span class="status-pill {{ 'ok' if status.inbox_enabled else 'muted' }}"><i></i>{{ "Habilitada" if status.inbox_enabled else "Desativada para validação" }}</span></p>
+      </div>
+      <div class="pipeline-item">
+        <small>Abordagem comercial automática</small>
+        <p><span class="status-pill muted"><i></i>Desativada</span></p>
+      </div>
+    </div>
+    <p class="panel-note">Canal independente do WhatsApp. Nenhum disparo ou contato WhatsApp é acionado aqui. As contagens podem incluir testes da Meta e não comprovam uma conversa real.</p>
+    {% if status.inbox_enabled %}
+    <div class="status-pills">
+      <a class="button button-primary" href="/instagram/inbox">Abrir caixa de entrada</a>
+      {% if can_manage_members %}<a class="button button-secondary" href="/instagram/members">Gerenciar integrantes</a>{% endif %}
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-span-12" aria-labelledby="instagram-events-title">
+    <div class="panel-header">
+      <div><span class="eyebrow">WEBHOOK · META</span><h3 id="instagram-events-title">Eventos armazenados</h3></div>
+    </div>
+    <div class="metric-grid metric-grid-4">
+      {% for label, value, symbol in [
+        ('Total de eventos', status.events_stored, '▦'),
+        ('Eventos de mensagens', status.events_by_kind.messaging, '◌'),
+        ('Eventos de alterações', status.events_by_kind.changes, '↻'),
+        ('Eventos standby', status.events_by_kind.standby, '◷')
+      ] %}
+      <article class="metric-card{% if loop.first %} featured{% endif %}">
+        <div class="metric-label"><span>{{ label }}</span><span class="metric-icon" aria-hidden="true">{{ symbol }}</span></div>
+        <strong>{{ value }}</strong>
+      </article>
+      {% endfor %}
+    </div>
+    <p class="panel-note">Último evento persistido: {{ status.last_event_at or "Nenhum" }} (UTC)</p>
+  </section>
+
+  <section class="panel panel-span-12" aria-labelledby="instagram-inbox-title">
+    <div class="panel-header">
+      <div><span class="eyebrow">ATENDIMENTO DIGITAL</span><h3 id="instagram-inbox-title">Fila de atendimento</h3></div>
+      <span class="status-pill {{ 'ok' if status.inbox_enabled else 'muted' }}"><i></i>{{ 'Habilitada' if status.inbox_enabled else 'Desativada' }}</span>
+    </div>
+    <div class="metric-grid metric-grid-4">
+      {% for label, value, symbol in [
+        ('Conversas', status.inbox_threads, '◌'),
+        ('Aguardando vendedor', status.inbox_pending, '◷'),
+        ('Atribuídas', status.inbox_assigned, '✓'),
+        ('Vínculos cadastrados', status.inbox_members, '◎')
+      ] %}
+      <article class="metric-card">
+        <div class="metric-label"><span>{{ label }}</span><span class="metric-icon" aria-hidden="true">{{ symbol }}</span></div>
+        <strong>{{ value }}</strong>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel panel-span-12" aria-labelledby="instagram-config-title">
+    <div class="panel-header">
+      <div><span class="eyebrow">INTEGRAÇÃO E DIAGNÓSTICO</span><h3 id="instagram-config-title">Configuração e testes</h3></div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th scope="col">Configuração</th><th scope="col">Status</th></tr></thead>
+        <tbody>
+          {% for name, present in status.credentials_present.items() %}
+          <tr>
+            <td>{{ name }}</td>
+            <td><span class="status-pill {{ 'ok' if present else 'muted' }}"><i></i>{{ "Configurado" if present else "Ausente" }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="panel-note">Somente o estado da configuração é exibido; os valores e credenciais permanecem protegidos.</p>
+    <div class="status-pills">
+      <a class="button button-primary" href="/instagram?check=true">Consultar conta na Meta</a>
+      <a class="button button-secondary" href="/settings/instagram/prospecting/preview">Simular classificação de comentários</a>
+    </div>
+    {% if status.meta_account is defined %}
+    <div class="pipeline-item" role="status">
+      <p>Resultado da consulta Meta:
+        <span class="status-pill {{ 'ok' if status.meta_account.ok else 'muted' }}"><i></i>{{ "Conta confirmada" if status.meta_account.ok else "Não confirmada" }}</span>
+        {% if status.meta_account.http_status is defined %}HTTP {{ status.meta_account.http_status }}.{% endif %}
+        {% if status.meta_account.reason is defined %}{{ status.meta_account.reason }}.{% endif %}
+      </p>
+      <small>A consulta é somente leitura e não confirma permissões de envio nem inscrição nos eventos.</small>
+    </div>
+    {% endif %}
+  </section>
 </div>
-<section><h2>Configuração e testes</h2>
-<ul>{% for name, present in status.credentials_present.items() %}<li>{{ name }}: {{ "Configurado" if present else "Ausente" }}</li>{% endfor %}</ul>
-<p><a href="/instagram?check=true">Consultar conta na Meta (somente leitura)</a> · <a href="/settings/instagram/prospecting/preview">Simular classificação de comentários</a> · <a href="/instagram">Atualizar contagens</a></p>
-{% if status.meta_account is defined %}
-<p>Resultado da consulta Meta: <strong>{{ "Conta confirmada" if status.meta_account.ok else "Não confirmada" }}</strong>.
-{% if status.meta_account.http_status is defined %}HTTP {{ status.meta_account.http_status }}.{% endif %}
-{% if status.meta_account.reason is defined %}{{ status.meta_account.reason }}.{% endif %}</p>
-<p class="muted">A consulta de conta não confirma permissões de envio nem inscrição nos eventos.</p>
-{% endif %}
-</section>
-</main></body></html>
+{% endblock %}
