@@ -134,6 +134,25 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
         for code in sorted(status_counts, key=lambda status: (-status_counts[status], status))
     ]
 
+    # Os eventos abaixo continuam disponiveis mesmo quando o status final
+    # e FINALIZADA/SEM_INTERESSE. Mostram onde a jornada apos atendimento parou.
+    media_rows = db.execute(select(
+        VoiceCallEvent.event, func.count(func.distinct(VoiceCallEvent.recipient_id)),
+    ).join(VoiceRecipient, VoiceCallEvent.recipient_id == VoiceRecipient.id)
+     .where(
+         VoiceRecipient.campaign_id == campaign.id,
+         VoiceCallEvent.event.in_((
+             "REPRODUZINDO_AUDIO", "CONFIRMADO_DTMF", "TRANSFERINDO",
+         )),
+     ).group_by(VoiceCallEvent.event)).all()
+    media_counts = {str(event): int(count) for event, count in media_rows}
+    stats.update({
+        # Sinalizacao de envio local, nao prova de que o cliente ouviu.
+        "audio_started": media_counts.get("REPRODUZINDO_AUDIO", 0),
+        "dtmf_confirmed": media_counts.get("CONFIRMADO_DTMF", 0),
+        "transfer_requested": media_counts.get("TRANSFERINDO", 0),
+    })
+
     usage_rows = db.execute(select(
         VoiceRecipient.outbound_techprefix, func.count(VoiceRecipient.id),
     ).where(
