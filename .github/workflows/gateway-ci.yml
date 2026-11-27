@@ -1,0 +1,44 @@
+name: Sulnet WhatsApp Gateway - Testes e Seguranca
+on:
+  push:
+    branches: [main, feat/openwa-security-gated-20261127]
+    paths:
+      - "gateway/**"
+      - ".github/workflows/gateway-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "gateway/**"
+      - ".github/workflows/gateway-ci.yml"
+permissions:
+  contents: read
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.19.0'
+          cache: npm
+          cache-dependency-path: gateway/package-lock.json
+      - name: Instalar somente dependencias bloqueadas
+        run: cd gateway && npm ci --ignore-scripts --no-fund
+      - name: Testar seguranca e validar sintaxe
+        run: |
+          cd gateway
+          npm test
+          node --check src/server.mjs
+          node --check src/auth-state.mjs
+      - name: Auditar vulnerabilidades da arvore npm
+        run: cd gateway && npm audit --audit-level=high
+      - name: Construir container isolado
+        run: docker build -f gateway/Dockerfile -t sulnet-wa:ci .
+      - name: Varredura de container de terceiros
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: sulnet-wa:ci
+          format: table
+          exit-code: '1'
+          ignore-unfixed: false
+          severity: CRITICAL,HIGH
