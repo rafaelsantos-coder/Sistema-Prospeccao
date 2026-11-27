@@ -3067,7 +3067,9 @@ h1, h2, h3, .topbar h1, .page-lead h2, .metric-card > strong, .pipeline-item str
   padding: 12px 14px;
   background: #fff;
 }
-.voice-result-diagnostics h5 { margin: 0 0 5px; font-size: 13px; }
+.voice-result-diagnostics h5, .voice-result-stages h5 { margin: 0 0 5px; font-size: 13px; }
+.voice-result-stages { margin: 10px 0 16px; border: 1px solid #dbe2eb; border-radius: 10px; padding: 12px 14px; background: #f9fbff; }
+.voice-result-stages .voice-help { margin: 8px 0 0; }
 .voice-result-diagnostics .voice-help { margin: 0 0 10px; }
 .voice-result-breakdown {
   display: flex;
