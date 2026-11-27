@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -142,6 +142,11 @@ def test_call_event_keeps_last_sip_code_on_final_message():
             VoiceRecipient.status == "PENDENTE",
         ))
         rid = row.id
+        db.add(VoiceCallEvent(
+            recipient_id=rid, event_id=uuid4().hex, event="CHAMANDO",
+            detail="SIP -", created_at=datetime.now(timezone.utc) - timedelta(seconds=6),
+        ))
+        db.commit()
     _set_recipient(
         rid, "SEM_ATENDIMENTO", 487,
         "Chamada encerrada pelo destino ou pela central.", final=True,
@@ -152,6 +157,8 @@ def test_call_event_keeps_last_sip_code_on_final_message():
             VoiceCallEvent.recipient_id == rid,
         )))
         assert row.status == "SEM_ATENDIMENTO"
-        assert len(events) == 1
-        assert "ultimo SIP 487" in events[0].detail
-        assert "Chamada encerrada" in events[0].detail
+        assert len(events) == 2
+        completed = next(event for event in events if event.event == "SEM_ATENDIMENTO")
+        assert "ultimo SIP 487" in completed.detail
+        assert "Chamada encerrada" in completed.detail
+        assert "chamada " in completed.detail
