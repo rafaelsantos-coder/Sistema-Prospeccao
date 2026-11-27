@@ -148,6 +148,16 @@ def _set_recipient(recipient_id: int, status: str, code: int | None,
             # anteriormente o texto generico ocultava a resposta da central.
             # Codigo intermediario 183 representa progresso, nao erro.
             sip_detail = f" | ultimo SIP {code}" if code is not None else ""
+            if final:
+                # Relogio real desde o evento CHAMANDO (depois do SIP INVITE),
+                # sem incluir o tempo anterior gasto em REGISTER.
+                dial_at = db.scalar(select(VoiceCallEvent.created_at).where(
+                    VoiceCallEvent.recipient_id == row.id,
+                    VoiceCallEvent.event == "CHAMANDO",
+                ).order_by(VoiceCallEvent.id.desc()).limit(1))
+                if dial_at is not None:
+                    elapsed = max(0, round((now() - aware(dial_at)).total_seconds()))
+                    sip_detail += f" | chamada {elapsed}s"
             db.add(VoiceCallEvent(
                 recipient_id=row.id, event_id=uuid4().hex,
                 event=(status or "INDETERMINADO")[:35],
