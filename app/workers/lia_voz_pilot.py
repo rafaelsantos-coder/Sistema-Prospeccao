@@ -84,9 +84,16 @@ def claim():
             return None
         try:
             ensure_idle(db, own_test_id=row.id, shared=config.shared)
-        except PilotDenied:
+        except PilotDenied as exc:
+            # Surface the reason to the administrator without leaking a number
+            # or polling logs. The request stays pending until safe or expired.
+            message = str(exc)[:200] + " Aguardando vaga."
+            if row.message != message:
+                row.message = message
+                db.commit()
             return None
         row.status = RUNNING
+        row.message = "Motor reservado; iniciando homologacao SIP/Realtime."
         row.started_at = _now()
         db.commit()
         return row.id
