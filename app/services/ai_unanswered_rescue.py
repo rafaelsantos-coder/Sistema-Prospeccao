@@ -18,7 +18,7 @@ from app.models import (
     AIAgentProfile, AIConversationState, AIJob, AIReplyDelivery,
     AuditLog, Conversation, ConversationQueueLink, Message,
 )
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_queue_enabled, is_general_commercial_queue
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_queue_enabled, human_takeover_locked, is_general_commercial_queue
 from app.services.ai_sdr import (
     AI_INBOUND_MESSAGE_TYPES, HUMAN_HANDOFF_STATES,
     binding_for_conversation, enqueue_ai_job, reclaim_conversation_for_ai,
@@ -81,6 +81,9 @@ def recover_reported_unanswered(
             continue
         # Só o resgate pontual dos IDs solicitados pode registrar uma delegação
         # explícita. Não permitir esse caminho se a fila estiver desautorizada.
+        if human_takeover_locked(db, cid):
+            counts["human_takeover"] += 1
+            continue
         needs_delegation = not ai_allowed_for_conversation(db, cid)
         if needs_delegation and not (
             is_general_commercial_queue(queue)
