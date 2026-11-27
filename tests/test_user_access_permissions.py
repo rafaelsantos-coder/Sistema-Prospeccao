@@ -206,6 +206,8 @@ def test_delegated_voice_and_dispatch_access_without_sip_administration():
         assert client.get("/voice/campaigns/new", follow_redirects=False).status_code == 200
         assert client.get("/dispatches", follow_redirects=False).status_code == 200
         assert client.get("/voice/accounts", follow_redirects=False).status_code == 403
+        assert 'href="/voice/lia-voz"' not in client.get("/voice").text
+        assert client.get("/voice/lia-voz", follow_redirects=False).status_code == 403
         assert client.get("/ai", follow_redirects=False).status_code == 403
         assert client.get("/settings/users", follow_redirects=False).status_code == 403
 

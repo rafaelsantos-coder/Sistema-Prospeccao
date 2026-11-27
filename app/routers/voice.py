@@ -1465,7 +1465,7 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
                   and datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX
                   and not engine.campaign_runtime_enabled and not engine.test_runtime_enabled)
     return render(
-        request, "voice/lia_voz.html", user=actor, active_nav="voice",
+        request, "voice/lia_voz.html", user=actor, active_nav="voice", voice_section="lia_voz",
         page_title="Lia Voz · Ambiente de testes", accounts=accounts, tests=tests,
         configured=config.configured, engine_ready=online,
     )
