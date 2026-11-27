@@ -154,3 +154,39 @@ def test_same_instance_cannot_be_linked_to_two_queues():
             except SulnetWAError:
                 pass
             db.rollback()
+
+
+
+def test_activation_is_blocked_during_homologation(monkeypatch):
+    """Mesmo uma requisição POST direta não pode ativar uma instância comercial."""
+    monkeypatch.delenv("SULNET_WA_COMMERCIAL_ENABLED", raising=False)
+    with TestClient(app) as client:
+        csrf = _login(client)
+        suffix = uuid4().hex[:10]
+        with SessionLocal() as db:
+            instance = SulnetWAInstance(
+                name="Teste de ativação bloqueada " + suffix,
+                session_id="lab-" + suffix,
+                active=False,
+            )
+            db.add(instance)
+            db.commit()
+            instance_id = instance.id
+        response = client.post(
+            f"/settings/sulnet-wa/{instance_id}/activate",
+            data={"csrf_token": csrf},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        with SessionLocal() as db:
+            assert db.get(SulnetWAInstance, instance_id).active is False
+
+
+def test_disabled_gateway_explains_why_create_does_not_work(monkeypatch):
+    monkeypatch.delenv("SULNET_WA_ENABLED", raising=False)
+    with TestClient(app) as client:
+        _login(client)
+        page = client.get("/settings/sulnet-wa")
+        assert page.status_code == 200
+        assert "Por que não consigo criar?" in page.text
+        assert "Cadastro indisponível" in page.text
