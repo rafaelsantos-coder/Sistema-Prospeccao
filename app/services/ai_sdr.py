@@ -100,7 +100,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _show_corporate_differentials,
 )
 from app.services.ai_sdr_policy import MAX_AI_REPLIES_PER_HOUR, SULIA_SYSTEM_PROMPT, UNTRUSTED_INPUT_NOTICE
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, is_dedicated_ai_queue, is_general_commercial_queue, manual_ai_handoff_authorized, manual_queue_control_enabled
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, dedicated_queue_only, is_dedicated_ai_queue, is_general_commercial_queue, manual_ai_handoff_authorized, manual_queue_control_enabled
 from app.services.audit import write_audit
 from app.services.queue_routing import (
     AI_WHEN_HUMAN_IDLE,
@@ -127,7 +127,7 @@ DEFAULT_SYSTEM_PROMPT = SULIA_SYSTEM_PROMPT
 
 
 def queue_ai_binding(db: Session, queue_id: int | None) -> AIQueueBinding | None:
-    if not queue_id or not ai_allowed_for_queue(queue_id):
+    if not queue_id or not ai_allowed_for_queue(queue_id, db=db):
         return None
     stmt = (
         select(AIQueueBinding)
@@ -186,6 +186,8 @@ def _test_phone_binding(db: Session, conversation_id: int, queue) -> Any | None:
 
 def is_human_only_queue(queue: ServiceQueue | None) -> bool:
     """Respeita as filas configuradas exclusivamente para humanos."""
+    if dedicated_queue_only():
+        return not is_dedicated_ai_queue(queue)
     return bool(
         queue and (
             (not manual_queue_control_enabled() and queue.name.strip().casefold() == "natine")

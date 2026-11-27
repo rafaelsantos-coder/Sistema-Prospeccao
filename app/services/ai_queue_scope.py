@@ -1,9 +1,8 @@
 """Politicas de autorizacao da IA por fila.
 
-AI_QUEUE_MANUAL_CONTROL=true: todas as filas ficam configuraveis, porem
-somente vinculos ativos com aprovacao explicita do gestor podem atender.
-As demais permanecem humanas. A flag legado AI_EXCLUSIVE_QUEUE_ID so vale
-quando o modo manual estiver desligado.
+Em producao a SulIA atua exclusivamente na Fila IA, sem excecoes por
+origem manual, posse anterior, fila de job ou configuracao legada.
+A ativacao do vinculo dedicado continua sob controle do gestor.
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ from app.models import (
     ServiceQueue,
 )
 from app.services.audit import write_audit
+from app.config import settings
 
 LOG = logging.getLogger("sulnet_ai_queue_scope")
 
@@ -66,8 +66,28 @@ def is_general_commercial_queue(queue: ServiceQueue | None) -> bool:
     )
 
 
+def dedicated_queue_only() -> bool:
+    """Regra obrigatoria em producao; opt-in para simulacoes locais."""
+    return (
+        settings.is_production
+        or os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip().lower() == "production"
+        or os.getenv("AI_DEDICATED_QUEUE_ONLY", "false").strip().lower() in {"1", "true", "yes", "on"}
+    )
+
+
+def dedicated_ai_queue(db: Session) -> ServiceQueue | None:
+    """Resolve a unica Fila IA ativa; preferir o nome operacional ao codigo legado."""
+    queues = list(db.scalars(select(ServiceQueue).where(ServiceQueue.active.is_(True))))
+    by_name = [
+        queue for queue in queues
+        if " ".join(str(queue.name or "").replace("-", " ").replace("_", " ").casefold().split()) == "fila ia"
+    ]
+    candidates = by_name or [queue for queue in queues if is_dedicated_ai_queue(queue)]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def manual_queue_control_enabled() -> bool:
-    return os.getenv("AI_QUEUE_MANUAL_CONTROL", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return dedicated_queue_only() or os.getenv("AI_QUEUE_MANUAL_CONTROL", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def exclusive_ai_queue_id() -> int | None:
@@ -83,8 +103,13 @@ def exclusive_ai_queue_id() -> int | None:
     return parsed if parsed > 0 else 0
 
 
-def ai_allowed_for_queue(queue_id: int | None) -> bool:
-    """Fila pode ser configurada; envio real tambem requer ai_queue_enabled."""
+def ai_allowed_for_queue(queue_id: int | None, *, db: Session | None = None) -> bool:
+    """Fila elegivel; em producao exige identificacao positiva no banco."""
+    if dedicated_queue_only():
+        if not queue_id or db is None:
+            return False
+        target = dedicated_ai_queue(db)
+        return bool(target and target.id == queue_id)
     if manual_queue_control_enabled():
         return queue_id is not None and int(queue_id) > 0
     exclusive = exclusive_ai_queue_id()
@@ -93,7 +118,7 @@ def ai_allowed_for_queue(queue_id: int | None) -> bool:
 
 def ai_queue_enabled(db: Session, queue_id: int | None) -> bool:
     """Autorizacao efetiva por vinculo ativo e aprovado pelo gestor."""
-    if not ai_allowed_for_queue(queue_id):
+    if not ai_allowed_for_queue(queue_id, db=db):
         return False
     if not manual_queue_control_enabled():
         return True
@@ -133,6 +158,8 @@ def manual_ai_handoff_authorized(db: Session, conversation_id: int) -> bool:
     queue = db.get(ServiceQueue, link.queue_id)
     if not queue or not queue.active:
         return False
+    if dedicated_queue_only():
+        return ai_queue_enabled(db, link.queue_id)
     from app.services.queue_routing import ai_transfer_queue  # noqa: PLC0415
 
     return ai_transfer_queue(db) is not None
@@ -144,6 +171,15 @@ def ai_allowed_for_conversation(
     *,
     fallback_queue_id: int | None = None,
 ) -> bool:
+    if dedicated_queue_only():
+        # Nunca confiar no queue_id antigo do job nem na marca MANUAL_AI.
+        # Ler o vinculo corrente, mesmo apos transferencias durante o processamento.
+        current = db.scalar(
+            select(ConversationQueueLink.queue_id).where(
+                ConversationQueueLink.conversation_id == conversation_id
+            )
+        )
+        return ai_queue_enabled(db, current) if current is not None else False
     # Doubles simples de testes antigos não expõem toda a interface de Session.
     # Em produção, Session real sempre executa o bloqueio por fila abaixo.
     if (
@@ -195,22 +231,38 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
     removidos, jobs pendentes cancelados e conversas de posse da IA são
     devolvidas à fila humana. Operação idempotente e auditável.
     """
-    if manual_queue_control_enabled():
-        return {"enabled": False, "mode": "manual_queue_control"}
-    target_id = exclusive_ai_queue_id()
-    if target_id is None:
-        return {"enabled": False}
-    target = db.get(ServiceQueue, target_id) if target_id > 0 else None
+    strict = dedicated_queue_only()
+    if strict:
+        target = dedicated_ai_queue(db)
+        target_id = target.id if target is not None else 0
+    else:
+        if manual_queue_control_enabled():
+            return {"enabled": False, "mode": "manual_queue_control"}
+        target_id = exclusive_ai_queue_id()
+        if target_id is None:
+            return {"enabled": False}
+        target = db.get(ServiceQueue, target_id) if target_id > 0 else None
 
     removed_ids: list[int] = []
     target_changed = False
     for binding in list(db.scalars(select(AIQueueBinding))):
         if binding.queue_id != target_id:
-            removed_ids.append(binding.queue_id)
-            db.delete(binding)
+            if strict:
+                # Preserva cadastro e auditoria, mas remove toda autorizacao indevida.
+                if binding.active or binding.manual_authorized or binding.handling_mode != "HUMAN":
+                    removed_ids.append(binding.queue_id)
+                    binding.active = False
+                    binding.manual_authorized = False
+                    binding.handling_mode = "HUMAN"
+            else:
+                removed_ids.append(binding.queue_id)
+                db.delete(binding)
 
     target_ready = bool(target and target.active)
-    if target_ready:
+    if strict:
+        # Nunca reativar um agente/fila pausado pelo gestor.
+        target_ready = bool(target_ready and ai_queue_enabled(db, target_id))
+    elif target_ready:
         existing = db.scalar(
             select(AIQueueBinding).where(AIQueueBinding.queue_id == target_id)
         )
@@ -271,10 +323,20 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
     not_target = or_(
         ConversationQueueLink.queue_id != target_id,
         ConversationQueueLink.queue_id.is_(None),
-    ) & or_(
-        ConversationQueueLink.origin != "MANUAL_AI",
-        ConversationQueueLink.origin.is_(None),
     )
+    if not strict:
+        not_target = not_target & or_(
+            ConversationQueueLink.origin != "MANUAL_AI",
+            ConversationQueueLink.origin.is_(None),
+        )
+    revoked_delegations = 0
+    if strict:
+        for link in db.scalars(select(ConversationQueueLink).where(
+            ConversationQueueLink.queue_id != target_id,
+            ConversationQueueLink.origin == "MANUAL_AI",
+        )):
+            link.origin = "MANUAL_TRANSFER"
+            revoked_delegations += 1
     cancelled_jobs = 0
     jobs = list(
         db.scalars(
@@ -343,7 +405,7 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
 
     changed = bool(
         removed_ids or cancelled_jobs or cancelled_followups or released_conversations
-        or target_changed
+        or target_changed or revoked_delegations
     )
     summary = {
         "enabled": True,
@@ -353,6 +415,8 @@ def enforce_exclusive_ai_queue(db: Session) -> dict[str, object]:
         "jobs_cancelled": cancelled_jobs,
         "followups_cancelled": cancelled_followups,
         "conversations_released": released_conversations,
+        "delegations_revoked": revoked_delegations,
+        "dedicated_only": strict,
     }
     # Registrar somente quando houve alteração operacional; chamadas repetidas
     # não devem encher a auditoria nem alterar a fila permitida.

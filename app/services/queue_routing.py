@@ -20,7 +20,7 @@ from app.models import (
     ServiceQueueMember,
     User,
 )
-from app.services.ai_queue_scope import ai_allowed_for_queue, ai_queue_enabled, manual_queue_control_enabled
+from app.services.ai_queue_scope import ai_allowed_for_queue, ai_queue_enabled, dedicated_ai_queue, dedicated_queue_only, manual_queue_control_enabled
 from app.services.whatsapp_presence import online_user_ids
 from app.timeutils import utcnow
 
@@ -492,6 +492,11 @@ MANUAL_AI_ORIGIN = "MANUAL_AI"
 
 
 def manually_transferred_to_ai(db: Session, conversation_id: int) -> bool:
+    if dedicated_queue_only():
+        link = db.scalar(select(ConversationQueueLink).where(
+            ConversationQueueLink.conversation_id == conversation_id
+        ))
+        return bool(link and link.origin == MANUAL_AI_ORIGIN and ai_allowed_for_queue(link.queue_id, db=db))
     return db.scalar(select(ConversationQueueLink.origin).where(
         ConversationQueueLink.conversation_id == conversation_id
     )) == MANUAL_AI_ORIGIN
@@ -529,7 +534,7 @@ def ai_queue_ids(db: Session) -> set[int]:
 
 def ai_transfer_queue(db: Session) -> ServiceQueue | None:
     """Destino de atendimento autônomo, independentemente da fila de origem."""
-    queue = db.scalar(
+    queue = dedicated_ai_queue(db) if dedicated_queue_only() else db.scalar(
         select(ServiceQueue).where(ServiceQueue.code == "FILA-IA", ServiceQueue.active.is_(True))
     )
     return queue if queue and usable_ai_binding(db, queue.id) else None
@@ -539,6 +544,10 @@ def ai_owns_conversation(db: Session, conversation_id: int | None) -> bool:
     """A IA já começou este atendimento (SDR ou Vendedor IA) e segue até o fim."""
     if not conversation_id:
         return False
+    if dedicated_queue_only():
+        from app.services.ai_queue_scope import ai_allowed_for_conversation
+        if not ai_allowed_for_conversation(db, conversation_id):
+            return False
     state = db.scalar(
         select(AIConversationState.state).where(
             AIConversationState.conversation_id == conversation_id

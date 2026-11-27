@@ -110,7 +110,7 @@
 <section class="panel top-space">
   <div class="panel-header">
     <div><span class="eyebrow">FILAS</span><h3>Onde o SulIA atua</h3></div>
-    <span class="panel-note">{% if manual_queue_control_enabled %}Todas as filas disponíveis · IA desligada por padrão · ativação individual pelo gestor{% elif exclusive_ai_queue_id is not none %}Atendimento IA restrito à fila autorizada.{% else %}Modo de atendimento conforme vínculo da fila.{% endif %}</span>
+    <span class="panel-note">{% if dedicated_queue_only %}SulIA exclusiva da Fila IA · demais filas somente humanas{% elif manual_queue_control_enabled %}Todas as filas disponíveis · IA desligada por padrão · ativação individual pelo gestor{% elif exclusive_ai_queue_id is not none %}Atendimento IA restrito à fila autorizada.{% else %}Modo de atendimento conforme vínculo da fila.{% endif %}</span>
   </div>
   <div class="data-table-wrap">
     <table class="data-table">
@@ -119,7 +119,7 @@
       {% for queue in queues %}
         {% set binding = bindings_by_queue.get(queue.id) %}
         {% set qi = queue_instances.get(queue.id) %}
-        {% set eligible = manual_queue_control_enabled or exclusive_ai_queue_id is none or queue.id == exclusive_ai_queue_id %}
+        {% set eligible = queue.id in ai_queue_eligible_ids %}
         {% set enabled = queue.active and binding and binding.active and binding.handling_mode != 'HUMAN' and eligible and queue.id in ai_queue_enabled_ids %}
         <tr>
           <td><strong>{{ queue.name }}</strong><span class="table-subline">{{ queue.code }}</span></td>
@@ -147,7 +147,7 @@
     </table>
   </div>
 
-  {% if unlinked_zapi_instances %}
+  {% if unlinked_zapi_instances and not dedicated_queue_only %}
   <div class="info-box top-space">
     <strong>Conexões WhatsApp que ainda não possuem fila operacional</strong>
     <p>Estas conexões Z-API também estão disponíveis no seletor abaixo. Ao salvar a configuração, a fila operacional será criada sem ativar a IA. Antes de usá-la para atendimento humano, configure os membros da fila.</p>
@@ -172,17 +172,17 @@
       <label class="field"><span>Fila</span><select name="queue_id" required>
         <option value="">Selecione</option>
         {% for queue in queues %}
-          {% if manual_queue_control_enabled or exclusive_ai_queue_id is none or queue.id == exclusive_ai_queue_id %}
+          {% if queue.id in ai_queue_eligible_ids %}
             {% set qi = queue_instances.get(queue.id) %}
             <option value="{{ queue.id }}" {% if not queue.active %}disabled{% endif %}>{{ queue.name }} · WhatsApp: {{ qi.name if qi else 'sem instância' }} · {{ constants.teams.get(queue.team, queue.team) }}{% if not queue.active %} (inativa){% endif %}</option>
           {% endif %}
         {% endfor %}
-        {% if manual_queue_control_enabled %}
+        {% if manual_queue_control_enabled and not dedicated_queue_only %}
           {% for instance in unlinked_zapi_instances %}
             <option value="zapi:{{ instance.id }}">{{ instance.name }} · Z-API: {{ instance.phone_label or 'sem telefone confirmado' }} · criar fila ao salvar (IA desativada)</option>
           {% endfor %}
         {% endif %}
-      </select><small>Exibe filas operacionais e conexões Z-API ainda não vinculadas. Salvar não ativa a IA.</small></label>
+      </select><small>{% if dedicated_queue_only %}Somente a Fila IA pode ser configurada. Salvar não ativa a IA.{% else %}Exibe filas operacionais e conexões Z-API ainda não vinculadas. Salvar não ativa a IA.{% endif %}</small></label>
       <label class="field"><span>Agente</span><select name="agent_id" required>{% for agent in agents %}<option value="{{ agent.id }}">{{ agent.name }}</option>{% endfor %}</select></label>
       <label class="field"><span>Modo da fila</span><select name="handling_mode">{% for key, label in handling_modes.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
       <label class="queue-check"><input type="checkbox" name="fallback_to_human" value="true" checked><span>Usar humano como fallback</span></label>

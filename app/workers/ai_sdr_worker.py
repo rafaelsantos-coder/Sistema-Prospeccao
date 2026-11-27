@@ -14,7 +14,7 @@ from app.database import Base, SessionLocal, engine
 from app.models import AIAgentProfile, AIFollowupJob, AIClosingState, AIConversationState, AIJob, AIQueueBinding, AIRun, AuditLog, Conversation, ConversationQueueLink, Message
 from app.services.ai_followups import claim_followup_job, process_followup_job, schedule_followup
 from app.services.ai_pending_scope import UNREAD_RECOVERY_SINCE_UTC, in_unread_recovery_window
-from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, ai_queue_enabled, is_dedicated_ai_queue, manual_queue_control_enabled, enforce_exclusive_ai_queue, exclusive_ai_queue_id
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_allowed_for_queue, ai_queue_enabled, dedicated_queue_only, is_dedicated_ai_queue, manual_queue_control_enabled, enforce_exclusive_ai_queue, exclusive_ai_queue_id
 from app.services.ai_queue_coverage import (
     COVERAGE_ACTION,
     COVERAGE_CAMPAIGN_KEY,
@@ -1333,8 +1333,8 @@ def run() -> None:
 
     if not settings.is_production:
         Base.metadata.create_all(bind=engine)
-    # Conciliar escopo legado somente quando modo manual de filas estiver desligado.
-    if exclusive_ai_queue_id() is not None:
+    # Bloquear e reconciliar as filas humanas antes de processar qualquer job.
+    if dedicated_queue_only() or exclusive_ai_queue_id() is not None:
         with SessionLocal() as scope_db:
             scope_result = enforce_exclusive_ai_queue(scope_db)
             scope_db.commit()
@@ -1379,7 +1379,7 @@ def run() -> None:
         for queue in general_queues:
             binding = queue_ai_binding(readiness_db, queue.id)
             enabled = ai_queue_enabled(readiness_db, queue.id)
-            level = LOG.info if enabled else LOG.error
+            level = LOG.error if (enabled if dedicated_queue_only() else not enabled) else LOG.info
             level(
                 "sulia_general_commercial_ready queue=%s enabled=%s mode=%s "
                 "manual_control=%s",
@@ -1532,7 +1532,7 @@ def run() -> None:
         missing_key_logged = False
 
         now_mono = time.monotonic()
-        if exclusive_ai_queue_id() is not None and now_mono - last_scope_enforcement >= 60:
+        if (dedicated_queue_only() or exclusive_ai_queue_id() is not None) and now_mono - last_scope_enforcement >= 60:
             try:
                 with SessionLocal() as scope_db:
                     enforce_exclusive_ai_queue(scope_db)
