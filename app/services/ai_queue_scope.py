@@ -12,7 +12,7 @@ import logging
 import os
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -161,6 +161,28 @@ def ai_allowed_for_conversation(
     queue = db.get(ServiceQueue, queue_id) if queue_id and hasattr(db, "get") else None
     if manual_ai_handoff_authorized(db, conversation_id):
         return True
+    # Na Geral Comercial, uma fala humana recente protege a conversa sem
+    # posse efetiva de IA. Uma conversa já entregue à IA não volta à triagem
+    # por causa de uma fala humana anterior à entrega.
+    if is_general_commercial_queue(queue):
+        from app.services.ai_sdr import human_stepped_in, human_is_attending
+
+        conversation = db.get(Conversation, conversation_id)
+        if conversation is not None:
+            if human_is_attending(db, conversation):
+                return False
+            if human_stepped_in(db, conversation, window=timedelta(hours=24)):
+                state = db.scalar(select(AIConversationState).where(
+                    AIConversationState.conversation_id == conversation_id
+                ))
+                owner = db.get(AIAgentProfile, state.agent_id) if state and state.agent_id else None
+                owned = bool(
+                    state and state.state in {"AI_ACTIVE", "CLOSING"}
+                    and owner and owner.active and owner.user_id
+                    and owner.user_id == conversation.assigned_user_id
+                )
+                if not owned:
+                    return False
     if not manual_queue_control_enabled() and exclusive_ai_queue_id() is None:
         return True
     return ai_queue_enabled(db, queue_id) if manual_queue_control_enabled() else ai_allowed_for_queue(queue_id)

@@ -16,9 +16,9 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     AIAgentProfile, AIConversationState, AIJob, AIReplyDelivery,
-    AuditLog, Conversation, Message,
+    AuditLog, Conversation, ConversationQueueLink, Message,
 )
-from app.services.ai_queue_scope import ai_allowed_for_conversation
+from app.services.ai_queue_scope import ai_allowed_for_conversation, ai_queue_enabled, is_general_commercial_queue
 from app.services.ai_sdr import (
     AI_INBOUND_MESSAGE_TYPES, HUMAN_HANDOFF_STATES,
     binding_for_conversation, enqueue_ai_job, reclaim_conversation_for_ai,
@@ -26,7 +26,7 @@ from app.services.ai_sdr import (
 from app.services.auto_reply import is_automatic_inbound
 from app.services.audit import write_audit
 from app.services.ops_alerts import unanswered_customers
-from app.services.queue_routing import queue_for_conversation
+from app.services.queue_routing import queue_for_conversation, ai_transfer_queue, MANUAL_AI_ORIGIN
 from app.timeutils import utc_naive, utcnow
 
 
@@ -79,7 +79,14 @@ def recover_reported_unanswered(
         ):
             counts["do_not_contact"] += 1
             continue
-        if not ai_allowed_for_conversation(db, cid):
+        # Só o resgate pontual dos IDs solicitados pode registrar uma delegação
+        # explícita. Não permitir esse caminho se a fila estiver desautorizada.
+        needs_delegation = not ai_allowed_for_conversation(db, cid)
+        if needs_delegation and not (
+            is_general_commercial_queue(queue)
+            and ai_queue_enabled(db, queue.id)
+            and ai_transfer_queue(db) is not None
+        ):
             counts["not_authorized"] += 1
             continue
 
@@ -141,8 +148,30 @@ def recover_reported_unanswered(
             counts["job_already_active"] += 1
             continue
 
+        # A recuperação autorizada é individual, após verificar a última
+        # mensagem, ausência de entrega, recusa e estado terminal.
+        # A fila e o número de origem não mudam.
+        delegated_link = None
+        former_origin = None
+        if needs_delegation:
+            received = utc_naive(latest.created_at)
+            if not received or utcnow() - received < timedelta(minutes=10):
+                counts["not_authorized"] += 1
+                continue
+            delegated_link = db.scalar(select(ConversationQueueLink).where(
+                ConversationQueueLink.conversation_id == cid
+            ))
+            if not delegated_link:
+                counts["not_authorized"] += 1
+                continue
+            former_origin = delegated_link.origin
+            delegated_link.origin = MANUAL_AI_ORIGIN
+            db.flush()
+
         binding = binding_for_conversation(db, cid)
         if not binding or not binding.agent or not binding.agent.active:
+            if delegated_link is not None:
+                delegated_link.origin = former_origin
             counts["no_agent"] += 1
             continue
 
@@ -154,6 +183,8 @@ def recover_reported_unanswered(
         if state and state.state in HUMAN_HANDOFF_STATES:
             if not reclaim_conversation_for_ai(db, conversation, state):
                 conversation.assigned_user_id = former_owner
+                if delegated_link is not None:
+                    delegated_link.origin = former_origin
                 counts["handoff_not_reclaimable"] += 1
                 continue
 
@@ -161,6 +192,8 @@ def recover_reported_unanswered(
             agent = db.get(AIAgentProfile, state.agent_id)
             if not agent or not agent.active or agent.role_type != "CLOSER":
                 conversation.assigned_user_id = former_owner
+                if delegated_link is not None:
+                    delegated_link.origin = former_origin
                 counts["closer_unavailable"] += 1
                 continue
         else:
@@ -179,6 +212,8 @@ def recover_reported_unanswered(
             job = enqueue_ai_job(db, conversation=conversation, message=latest, takeover=True)
             if not job:
                 conversation.assigned_user_id = former_owner
+                if delegated_link is not None:
+                    delegated_link.origin = former_origin
                 counts["enqueue_blocked"] += 1
                 continue
             job.available_at = utcnow()
@@ -197,6 +232,7 @@ def recover_reported_unanswered(
                 "agent_id": agent.id,
                 "job_id": job.id,
                 "previous_owner": former_owner,
+                "explicit_delegation": needs_delegation,
             },
         )
         db.flush()
