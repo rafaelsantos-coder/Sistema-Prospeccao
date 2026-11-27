@@ -9,8 +9,8 @@ RUN npm ci --omit=dev --ignore-scripts --no-fund \
 
 # The "nossl" base avoids libssl3t64's unpatched CVEs present in the full
 # Debian 13 distroless image. Node has its own bundled crypto implementation.
-# Digest will be frozen after the security scan and runtime smoke test.
-FROM gcr.io/distroless/base-nossl-debian13:nonroot
+# Digest pinned after Trivy, npm audit and real runtime smoke tests.
+FROM gcr.io/distroless/base-nossl-debian13:nonroot@sha256:4006ac92504be607b70de01d1f64f38288c69fcd8faa820f6d3aed266ea32ac5
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 LD_LIBRARY_PATH=/node-libs
 COPY --from=dependencies /usr/local/bin/node /usr/local/bin/node
