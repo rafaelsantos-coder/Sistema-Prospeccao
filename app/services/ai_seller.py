@@ -3448,7 +3448,8 @@ def _seller_question_reply(
             else SellerKnowledgeAnswer.model_validate(output)
         )
     except Exception:
-        LOG.exception("seller_question_answer_failed step=%s", state.step)
+        # Do not write the exception text, traceback, or customer context to logs.
+        LOG.warning("seller_question_answer_failed")
         return None
     if answer.human_requested:
         return None
@@ -3505,7 +3506,8 @@ def _interpret_ambiguous(
         output = result.final_output
         return output if isinstance(output, SellerInterpretation) else SellerInterpretation.model_validate(output)
     except Exception:
-        LOG.exception("seller_interpretation_failed step=%s", step)
+        # Provider exceptions can include customer or billing data; log only the event.
+        LOG.warning("seller_interpretation_failed")
         return SellerInterpretation()
 
 
