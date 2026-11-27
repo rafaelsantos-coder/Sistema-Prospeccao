@@ -4,7 +4,7 @@ set -euo pipefail
 # Publica o Sulnet Prospecta em um repositório privado do GitHub e cria um
 # projeto Railway com serviço web + PostgreSQL. Requer git, gh e railway.
 
-GITHUB_OWNER="${GITHUB_OWNER:-rafaelsantos-coder}"
+GITHUB_OWNER="${GITHUB_OWNER:-SULNET-TELECOM}"
 GITHUB_REPO="${GITHUB_REPO:-sulnet-prospecta}"
 REPO_SLUG="${GITHUB_OWNER}/${GITHUB_REPO}"
 RAILWAY_PROJECT_NAME="${RAILWAY_PROJECT_NAME:-Sulnet Prospecta}"
