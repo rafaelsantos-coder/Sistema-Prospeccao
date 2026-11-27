@@ -24,7 +24,7 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
     Own the native endpoint on this thread; no automatic retry/transfer.
     SIP 200 or RTP alone is not proof of a successful conversation.
     """
-    if not api_key or should_abort():
+    if not api_key or driver._registration != 200 or should_abort():
         raise LiaVoiceError("Lia Voz pilot not authorized")
     pj = driver.pj
     call = None
@@ -34,8 +34,8 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
 
     async with session_factory(enabled=True, api_key=api_key, max_seconds=155) as session:
         # Realtime handshake precedes the only INVITE.
-        if should_abort():
-            raise LiaVoiceError("Lia Voz pilot authorization revoked")
+        if not session.ready or should_abort():
+            raise LiaVoiceError("Lia Voz pilot authorization revoked or session unavailable")
 
         class PilotCall(pj.Call):
             def __init__(self, account):

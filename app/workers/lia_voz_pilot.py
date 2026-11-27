@@ -63,7 +63,9 @@ def claim():
     if not _enabled():
         return None
     with SessionLocal() as db:
-        engine = db.get(VoiceDialerEngine, 1)
+        engine = db.scalar(select(VoiceDialerEngine).where(
+            VoiceDialerEngine.id == 1
+        ).with_for_update())
         if not engine or not engine.enabled:
             return None
         row = db.scalar(select(VoiceTestCall).where(

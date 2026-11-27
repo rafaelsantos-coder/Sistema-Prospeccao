@@ -1458,7 +1458,7 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
         VoiceSipAccount.username == "1804", VoiceSipAccount.active.is_(True)
     )))
     tests = list(db.scalars(select(VoiceTestCall).where(
-        VoiceTestCall.status.startswith("LIA_")
+        VoiceTestCall.status.startswith("LIA_", autoescape=True)
     ).order_by(VoiceTestCall.id.desc()).limit(20)))
     engine = db.get(VoiceDialerEngine, 1)
     online = bool(engine and engine.enabled and engine.heartbeat_at

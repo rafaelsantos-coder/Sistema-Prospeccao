@@ -87,6 +87,10 @@ VOICE_ENGINE_WORKER_ENABLED, manter VOICE_CAMPAIGN_OUTBOUND_ENABLED e
 VOICE_TRANSFER_TESTS_ENABLED desabilitados, configurar LIA_VOZ_OPENAI_API_KEY
 via segredo separado e liberar a trava geral apenas no ambiente de teste.
 
+Testes adicionados para handshake, revogacao de autorizacao, registro SIP e
+encerramento remoto simulado. O CI de imagem nativa tambem executa o benchmark
+PCM entre duas portas PJSUA2 sem SIP, rede externa ou OpenAI.
+
 Nenhum segredo ou flag de ativacao foi configurado neste PR. Os contadores de
 quadros e SIP 200 nao comprovam que a pessoa ouviu e respondeu; validar no
 aparelho. Se houver falha de rede ou midia, nao repetir automaticamente.
