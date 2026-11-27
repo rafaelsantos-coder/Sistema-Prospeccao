@@ -341,3 +341,38 @@ def test_silence_is_not_successful_ai_conversation(monkeypatch):
     result = asyncio.run(run())
     assert result.status == "LIA_FALHOU"
     assert "TX nao silencioso=0" in result.message
+
+
+def test_account_probe_uses_previous_campaign_national_format():
+    driver = FakeDriver()
+    options = []
+    def perform(phone, **kwargs):
+        options.append((phone, kwargs))
+        return SimpleNamespace(status="SEM_ATENDIMENTO", sip_code=480,
+                               answered=False, media_active=False)
+    driver.perform_call = perform
+    result = lia_voz_call.perform_native_probe(
+        driver, "5555999990000", None, should_abort=lambda: False)
+    assert len(options) == 1
+    assert options[0][0] == "5555999990000"
+    assert options[0][1]["dial_format"] == "NATIONAL"
+    assert "native_techprefix" not in options[0][1]
+    assert result.status == "LIA_PROBE_SEM_ATENDIMENTO"
+
+
+def test_account_route_ai_also_uses_national_format(monkeypatch):
+    driver = FakeDriver()
+    options = []
+    def uri(_account, phone, **kwargs):
+        options.append((phone, kwargs))
+        return "sip:fake.invalid"
+    monkeypatch.setattr(lia_voz_call, "make_dial_uri", uri)
+
+    async def run():
+        return await lia_voz_call.perform_lia_test(
+            driver, "5555999990000", None, "test-key",
+            should_abort=lambda: False, session_factory=factory_for(FakeSession()))
+
+    asyncio.run(run())
+    assert options == [("5555999990000", {"dial_format": "NATIONAL"})]
+    assert driver.invites == 1

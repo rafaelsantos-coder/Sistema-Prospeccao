@@ -15,17 +15,36 @@ PENDING = "LIA_PENDENTE"
 RUNNING = "LIA_EXECUTANDO"
 PROBE_PENDING = "LIA_PROBE_PENDENTE"
 PROBE_RUNNING = "LIA_PROBE_EXECUTANDO"
-PENDING_STATES = {PENDING, PROBE_PENDING}
-RUNNING_STATES = {RUNNING, PROBE_RUNNING}
+ACCOUNT_PENDING = "LIA_ACC_PENDENTE"
+ACCOUNT_RUNNING = "LIA_ACC_EXECUTANDO"
+ACCOUNT_PROBE_PENDING = "LIA_ACC_PROBE_PENDENTE"
+ACCOUNT_PROBE_RUNNING = "LIA_ACC_PROBE_EXECUTANDO"
+CLAIM_STATES = {
+    PENDING: RUNNING,
+    PROBE_PENDING: PROBE_RUNNING,
+    ACCOUNT_PENDING: ACCOUNT_RUNNING,
+    ACCOUNT_PROBE_PENDING: ACCOUNT_PROBE_RUNNING,
+}
+PENDING_STATES = set(CLAIM_STATES)
+RUNNING_STATES = set(CLAIM_STATES.values())
+PROBE_STATES = {PROBE_RUNNING, ACCOUNT_PROBE_RUNNING}
+ACCOUNT_STATES = {ACCOUNT_RUNNING, ACCOUNT_PROBE_RUNNING}
 ACTIVE = PENDING_STATES | RUNNING_STATES
 
 
-def requested_state(mode: str) -> str:
-    if mode == "ia":
-        return PENDING
-    if mode == "sip":
-        return PROBE_PENDING
-    raise PilotDenied("Modo de homologacao invalido.")
+def requested_state(mode: str, route: str = "native") -> str:
+    # Persist the explicitly selected route as part of the queued state, not
+    # mutable message text or environment. Never fallback/retry automatically.
+    states = {
+        ("ia", "native"): PENDING,
+        ("sip", "native"): PROBE_PENDING,
+        ("ia", "account"): ACCOUNT_PENDING,
+        ("sip", "account"): ACCOUNT_PROBE_PENDING,
+    }
+    if (mode, route) not in states:
+        raise PilotDenied("Modo ou rota de homologacao invalida.")
+    return states[mode, route]
+
 OTHER_TESTS = {
     "PENDENTE", "REGISTRANDO", "REGISTRADO", "PENDENTE_PJSIP",
     "REGISTRANDO_PJSIP", "CHAMANDO", "TOCANDO", "ATENDIDA",

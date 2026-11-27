@@ -13,8 +13,8 @@ from app.models import User, VoiceDialerEngine, VoiceSipAccount, VoiceTestCall
 from app.services.lia_voz_call import perform_lia_test, perform_native_probe
 from app.services.lia_voz_realtime import LiaVoiceError
 from app.services.lia_voz_pilot import (
-    ACTIVE, PENDING_STATES, RUNNING_STATES, PROBE_PENDING, PROBE_RUNNING,
-    RUNNING, PilotConfig, PilotDenied, ensure_idle,
+    ACTIVE, PENDING_STATES, RUNNING_STATES, CLAIM_STATES, PROBE_STATES,
+    ACCOUNT_STATES, PilotConfig, PilotDenied, ensure_idle,
 )
 from app.services.voice_execution_slot import slot_healthy
 from app.services.secret_store import decrypt_secret
@@ -97,10 +97,12 @@ def claim():
                 row.message = message
                 db.commit()
             return None
-        probe = row.status == PROBE_PENDING
-        row.status = PROBE_RUNNING if probe else RUNNING
-        row.message = ("Motor reservado; iniciando teste da rota sem IA." if probe
-                       else "Motor reservado; iniciando homologacao SIP/Realtime.")
+        row.status = CLAIM_STATES[row.status]
+        route_label = "NATIONAL" if row.status in ACCOUNT_STATES else config.prefix
+        row.message = (route_label + " | " +
+                       ("Motor reservado; iniciando teste da rota sem IA."
+                        if row.status in PROBE_STATES
+                        else "Motor reservado; iniciando homologacao SIP/Realtime."))
         row.started_at = _now()
         db.commit()
         return row.id
@@ -146,10 +148,11 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
     register_code = None
     last_code = None
     last_stage = "Validando autorizacao e conta SIP."
+    route_label = ""
 
     def progress(message, sip_code=None):
         nonlocal last_stage, last_code
-        last_stage = message[:230]
+        last_stage = ((route_label + " | " if route_label else "") + message)[:230]
         if sip_code is not None:
             last_code = sip_code
         logging.getLogger(__name__).info("Lia Voz teste %d: %s", test_id, last_stage)
@@ -171,7 +174,8 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
             test = db.get(VoiceTestCall, test_id)
             if not test or test.status not in RUNNING_STATES or not test.account_id:
                 return
-            probe = test.status == PROBE_RUNNING
+            probe = test.status in PROBE_STATES
+            account_route = test.status in ACCOUNT_STATES
             account = db.get(VoiceSipAccount, test.account_id)
             phone = test.target_phone
             account_id = test.account_id
@@ -180,6 +184,8 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
             if not _guard(test_id, phone, account_id):
                 raise ValueError("Pilot blocked")
             config = PilotConfig.from_env()
+            prefix = None if account_route else config.prefix
+            route_label = "NATIONAL" if account_route else config.prefix
             secret = decrypt_secret(account.password_encrypted)
             db.expunge(account)
         progress("Iniciando registro SIP.")
@@ -194,16 +200,17 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
                 return not _guard(test_id, phone, account_id)
 
             if probe:
-                outcome = perform_native_probe(driver, phone, config.prefix,
+                outcome = perform_native_probe(driver, phone, prefix,
                                                should_abort=abort, on_progress=progress)
             else:
                 outcome = asyncio.run(perform_lia_test(
-                    driver, phone, config.prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
+                    driver, phone, prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
                     should_abort=abort, on_progress=progress,
                 ))
         logging.getLogger(__name__).info("Lia Voz teste %d: %s | %s",
                                          test_id, outcome.status, outcome.message)
-        _finish(test_id, outcome.status, outcome.message, outcome.sip_code, register_code)
+        _finish(test_id, outcome.status, (route_label + " | " + outcome.message)[:230],
+                outcome.sip_code, register_code)
     except Exception as exc:
         message = ("Falha (" + _safe_failure_kind(exc) + "). Ultima etapa: " + last_stage)[:230]
         logging.getLogger(__name__).warning("Lia Voz teste %d: %s", test_id, message)

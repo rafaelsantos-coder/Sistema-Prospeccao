@@ -1448,7 +1448,7 @@ def request_native_sip_test(account_id: int, request: Request,
 
 @router.get("/lia-voz")
 def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
-    from app.services.lia_voz_pilot import PilotConfig
+    from app.services.lia_voz_pilot import PilotConfig, ACTIVE
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
@@ -1469,6 +1469,8 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
         request, "voice/lia_voz.html", user=actor, active_nav="voice", voice_section="lia_voz",
         page_title="Lia Voz · Ambiente de testes", accounts=accounts, tests=tests,
         configured=config.configured, engine_ready=online, shared_engine=config.shared,
+        test_active=any(item.status in ACTIVE for item in tests),
+        native_prefix=config.prefix if config.configured else "",
         runtime_ready=bool(engine and engine.lia_runtime_enabled),
         config_enabled=config.enabled, external_sip_confirmed=config.exclusive,
     )
@@ -1478,7 +1480,7 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
 def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
                          account_id: int = Form(...), phone: str = Form(...),
                          authorized: str = Form(""), mode: str = Form("ia"),
-                         db: Session = Depends(get_db)):
+                         route: str = Form("native"), db: Session = Depends(get_db)):
     from app.services.lia_voz_pilot import PilotConfig, ensure_idle, requested_state
     actor, redirect = _actor(request, db)
     if redirect:
@@ -1505,7 +1507,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
     if not account or not account.active:
         return _error(request, "Conta SIP indisponivel.", destination)
     try:
-        initial_state = requested_state(mode)
+        initial_state = requested_state(mode, route)
         clean = config.authorize(phone, account.username)
         ensure_idle(db, shared=config.shared, admission=True)
         outbound_guard(db, clean)
@@ -1521,15 +1523,17 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
     test = VoiceTestCall(
         account_id=account.id, account_label=account.name, target_phone=clean,
         status=initial_state,
-        message=("Teste SIP sem IA autorizado; aguardando vez no motor." if mode == "sip"
-                 else "Teste individual Lia Voz autorizado; aguardando vez no motor."),
+        message=(("NATIONAL" if route == "account" else config.prefix) + " | "
+                 + ("Teste SIP sem IA autorizado; aguardando vez no motor." if mode == "sip"
+                    else "Teste individual Lia Voz autorizado; aguardando vez no motor.")),
         initiator_user_id=actor.id, created_at=now,
     )
     db.add(test)
     db.flush()
     write_audit(db, user=actor, action="LIA_VOZ_TEST_REQUESTED",
                 entity_type="voice_test_call", entity_id=test.id,
-                payload={"account_id": account.id, "target_last4": clean[-4:], "mode": mode})
+                payload={"account_id": account.id, "target_last4": clean[-4:], "mode": mode,
+                         "route": route, "native_prefix": config.prefix if route == "native" else None})
     db.commit()
     flash(request, "Teste individual solicitado. Nenhuma campanha foi iniciada.")
     return RedirectResponse(destination, status_code=303)
