@@ -138,8 +138,6 @@ def bind_queue_instance(
     from app.services.meta_whatsapp import clear_queue_meta_binding
 
     clear_queue_meta_binding(db, queue_id)
-    from app.services.sulnet_wa import clear_queue_binding as clear_sulnet_queue_binding
-    clear_sulnet_queue_binding(db, queue_id)
     link = db.scalar(
         select(ServiceQueueZApiInstance).where(
             ServiceQueueZApiInstance.queue_id == queue_id
@@ -202,10 +200,6 @@ def _service_for_queue_connection(db: Session, queue_id: int):
     """Resolve Z-API ou Meta a partir do vínculo atual da fila."""
     from app.services.meta_whatsapp import queue_meta_account, service_for_meta_account
 
-    from app.services.sulnet_wa import queue_instance as own_queue_instance, SulnetWAService
-    own = own_queue_instance(db, queue_id)
-    if own:
-        return SulnetWAService(own)
     instance = queue_instance(db, queue_id)
     if instance:
         return service_for_instance(instance)
@@ -243,18 +237,7 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
 
     conversation = db.get(Conversation, conversation_id)
     if conversation is not None and conversation.source == "SULNET_WA":
-        from app.services.sulnet_wa import (
-            conversation_instance as own_conversation_instance,
-            queue_instance as own_queue_instance, SulnetWAService,
-        )
-        queue = queue_for_conversation(db, conversation_id)
-        original = own_conversation_instance(db, conversation_id)
-        selected = own_queue_instance(db, queue.id) if queue else None
-        if (not queue or not original or not selected or original.id != selected.id
-                or conversation_instance(db, conversation_id)
-                or queue_meta_account(db, queue.id)):
-            raise ZApiNotConfigured("Vínculo do motor Sulnet inválido. Envio bloqueado.")
-        return SulnetWAService(original)  # type: ignore[return-value]
+        raise ZApiNotConfigured("Conexão experimental removida. Envio por outro provedor bloqueado.")
     if conversation is not None and conversation.source == "TELEGRAM":
         # Conversa do canal Telegram: mesma interface de envio, outro remetente.
         from app.services.telegram import service_for_telegram_conversation
@@ -278,10 +261,6 @@ def service_for_conversation(db: Session, conversation_id: int) -> ZApiService:
         return service_for_meta_account(meta)  # type: ignore[return-value]
 
     queue = queue_for_conversation(db, conversation_id)
-    if queue:
-        from app.services.sulnet_wa import queue_instance as own_queue_instance
-        if own_queue_instance(db, queue.id):
-            raise ZApiNotConfigured("Conversa de outro provedor não pode usar motor Sulnet.")
     if queue and queue_meta_account(db, queue.id) and conversation_instance(db, conversation_id):
         raise ZApiNotConfigured("Conversa Z-API não pode utilizar um número oficial Meta.")
 
