@@ -1481,7 +1481,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
                          account_id: int = Form(...), phone: str = Form(...),
                          authorized: str = Form(""), mode: str = Form("ia"),
                          route: str = Form("native"), db: Session = Depends(get_db)):
-    from app.services.lia_voz_pilot import PilotConfig, ensure_idle, requested_state
+    from app.services.lia_voz_pilot import PilotConfig, ensure_idle, requested_state, ensure_hourly_quota
     actor, redirect = _actor(request, db)
     if redirect:
         return redirect
@@ -1513,13 +1513,10 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
         outbound_guard(db, clean)
     except ValueError as exc:
         return _error(request, str(exc), destination)
-    recent = list(db.scalars(select(VoiceTestCall).where(
-        VoiceTestCall.account_id == account.id,
-        VoiceTestCall.created_at >= now - timedelta(hours=1),
-        VoiceTestCall.status != "SIP_VALIDADO",
-    )))
-    if len(recent) >= 3 or any(now - aware(t.created_at) < timedelta(minutes=3) for t in recent):
-        return _error(request, "Aguarde o intervalo minimo de tres minutos; limite de tres testes por hora.", destination)
+    try:
+        ensure_hourly_quota(db, account.id, now)
+    except ValueError as exc:
+        return _error(request, str(exc), destination)
     test = VoiceTestCall(
         account_id=account.id, account_label=account.name, target_phone=clean,
         status=initial_state,
