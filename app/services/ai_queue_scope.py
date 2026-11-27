@@ -24,6 +24,7 @@ from app.models import (
     AIJob,
     AIQueueBinding,
     Conversation,
+    ConversationAssignment,
     ConversationQueueLink,
     ServiceQueue,
 )
@@ -138,6 +139,26 @@ def manual_ai_handoff_authorized(db: Session, conversation_id: int) -> bool:
     return ai_transfer_queue(db) is not None
 
 
+HUMAN_TAKEOVER_EVENT = "HUMAN_TAKEOVER"
+AI_RESUMED_EVENT = "AI_RESUMED"
+
+
+def human_takeover_locked(db: Session, conversation_id: int) -> bool:
+    """A explicit human takeover lasts until the same conversation is returned to AI."""
+    if not hasattr(db, "scalar"):
+        return False
+    latest = db.scalar(
+        select(ConversationAssignment.event)
+        .where(
+            ConversationAssignment.conversation_id == conversation_id,
+            ConversationAssignment.event.in_((HUMAN_TAKEOVER_EVENT, AI_RESUMED_EVENT)),
+        )
+        .order_by(ConversationAssignment.id.desc())
+        .limit(1)
+    )
+    return latest == HUMAN_TAKEOVER_EVENT
+
+
 def ai_allowed_for_conversation(
     db: Session,
     conversation_id: int,
@@ -152,6 +173,8 @@ def ai_allowed_for_conversation(
         and (not hasattr(db, "scalar") or not hasattr(db, "get"))
     ):
         return True
+    if human_takeover_locked(db, conversation_id):
+        return False
     current = db.scalar(
         select(ConversationQueueLink.queue_id).where(
             ConversationQueueLink.conversation_id == conversation_id

@@ -1206,7 +1206,7 @@ def _review_yesterday_and_today_fila_ia() -> dict[str, int]:
                 # Fila IA é de atendimento automatizado. Mensagem manual
                 # anterior não bloqueia resposta ao novo INBOUND, mas um humano
                 # com conversa realmente atribuída e ativa continua protegido.
-                if human_is_attending(db, conversation):
+                if not ai_allowed_for_conversation(db, conversation.id) or human_is_attending(db, conversation):
                     counts["human_owned"] += 1
                     continue
                 state = db.scalar(select(AIConversationState).where(

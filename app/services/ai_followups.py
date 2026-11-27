@@ -1156,6 +1156,10 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         from app.services.conversation_engine import register_message
         from app.services.zapi_instances import service_for_conversation
 
+        if not ai_allowed_for_conversation(db, conversation.id, fallback_queue_id=job.queue_id):
+            job.status = "CANCELADO"
+            job.error = "Atendimento humano ou IA nao autorizada."
+            return "cancelled"
         zapi = service_for_conversation(db, conversation.id)
         quick_replies = quick_replies_for_message(
             decision.reply_text,

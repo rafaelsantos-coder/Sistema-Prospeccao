@@ -14,6 +14,9 @@ from app.database import get_db
 from app.models import (
     Activity,
     AIAgentProfile,
+    AIConversationState,
+    AIJob,
+    AIReplyDelivery,
     AIRun,
     Contact,
     Conversation,
@@ -31,7 +34,10 @@ from app.models import (
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.access_control import has_permission
 from app.services.ai_reply_delivery import reply_statuses
-from app.services.ai_queue_scope import is_dedicated_ai_queue
+from app.services.ai_queue_scope import (
+    AI_RESUMED_EVENT, HUMAN_TAKEOVER_EVENT, human_takeover_locked, is_dedicated_ai_queue,
+)
+from app.services.ai_followups import cancel_pending_followups
 from app.services.ai_sdr import AI_INBOUND_MESSAGE_TYPES, enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
 from app.services.campaign_queue import (
@@ -471,7 +477,7 @@ def _move_conversation_to_queue(
     result = {"ai_job": None, "assigned": None, "pending_message": None}
     ai_queue = ai_transfer_queue(db) if reason == "AI" else None
     binding = usable_ai_binding(db, ai_queue.id if ai_queue else queue.id) if (ai_queue or reason != "AI") else None
-    if binding:
+    if binding and not human_takeover_locked(db, conversation.id):
         message = _pending_inbound_message(db, conversation)
         result["pending_message"] = message
         if message:
@@ -1139,6 +1145,7 @@ def _render_inbox(
             for item in conversations
         },
         conversation=selected,
+        human_takeover_active=bool(selected and human_takeover_locked(db, selected.id)),
         messages=messages,
         transfer_history=transfer_history,
         history_timeline=history_timeline,
@@ -2209,6 +2216,89 @@ def transfer_conversation_queue(
     return _after_queue_transfer_redirect(user, conversation)
 
 
+@router.post("/conversations/{conversation_id}/takeover-human")
+def takeover_conversation_human(
+    conversation_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    if not has_permission(user, "conversations.transfer") or not has_permission(user, "conversations.reply"):
+        raise HTTPException(status_code=403)
+    conversation = _get_conversation(db, user, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404)
+    if protected_conversation(db, conversation.id) and conversation.assigned_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Instancia de atendimento exclusivo.")
+    if conversation.status in CLOSED_CONVERSATION_STATUSES:
+        flash(request, "Este atendimento está encerrado.", "warning")
+        return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+    if db.scalar(select(AIAgentProfile.id).where(AIAgentProfile.user_id == user.id).limit(1)):
+        raise HTTPException(status_code=403, detail="Somente um operador humano pode assumir.")
+
+    previous = conversation.assigned_user_id
+    # Registro persistente por conversa: não depende de horário ou da fila.
+    db.add(ConversationAssignment(
+        conversation_id=conversation.id, user_id=user.id,
+        assigned_by_id=user.id, event=HUMAN_TAKEOVER_EVENT,
+    ))
+    conversation.assigned_user_id = user.id
+    conversation.status = "EM_ATENDIMENTO"
+    if conversation.lead:
+        conversation.lead.assigned_user_id = user.id
+    link = db.scalar(select(ConversationQueueLink).where(
+        ConversationQueueLink.conversation_id == conversation.id
+    ))
+    if link and link.origin == MANUAL_AI_ORIGIN:
+        link.origin = MANUAL_TRANSFER_ORIGIN
+    state = db.scalar(select(AIConversationState).where(
+        AIConversationState.conversation_id == conversation.id
+    ))
+    if state and state.state not in {"OPT_OUT", "COMPLETED"}:
+        state.state = "HUMAN_ACTIVE"
+        state.handoff_at = utcnow()
+
+    jobs = list(db.scalars(select(AIJob).where(
+        AIJob.conversation_id == conversation.id,
+        AIJob.status.in_(("PENDENTE", "PROCESSANDO")),
+    )))
+    for job in jobs:
+        job.status = "CANCELADO"
+        job.locked_at = None
+        job.error = "Atendimento assumido por operador humano."
+    followups = cancel_pending_followups(db, conversation.id, reason="HUMAN_TAKEOVER")
+    # Não alterar entregas já em trânsito ou confirmadas pelo provedor.
+    pending_replies = list(db.scalars(
+        select(Message)
+        .join(AIReplyDelivery, AIReplyDelivery.outbound_message_id == Message.id)
+        .where(
+            Message.conversation_id == conversation.id,
+            Message.status.in_(("PENDING", "FAILED", "ERROR")),
+            Message.provider_message_id.is_(None),
+            Message.provider_zaap_id.is_(None),
+            Message.sent_at.is_(None),
+            Message.delivered_at.is_(None),
+        )
+    ))
+    for reply in pending_replies:
+        reply.status = "CANCELED"
+    write_audit(
+        db, user=user, action="CONVERSATION_HUMAN_TAKEOVER",
+        entity_type="conversation", entity_id=conversation.id,
+        payload={"from_user_id": previous, "to_user_id": user.id,
+                 "jobs_cancelled": len(jobs), "followups_cancelled": followups,
+                 "replies_cancelled": len(pending_replies)},
+    )
+    db.commit()
+    flash(request, "Você assumiu o atendimento. A IA está pausada somente nesta conversa.")
+    return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+
+
 @router.post("/conversations/{conversation_id}/transfer-ai")
 def transfer_conversation_to_ai(
     conversation_id: int,
@@ -2235,6 +2325,14 @@ def transfer_conversation_to_ai(
         flash(request, "A conversa precisa estar vinculada a uma fila de origem.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
 
+    if human_takeover_locked(db, conversation.id):
+        db.add(ConversationAssignment(
+            conversation_id=conversation.id, user_id=None,
+            assigned_by_id=user.id, event=AI_RESUMED_EVENT,
+        ))
+        db.flush()
+        write_audit(db, user=user, action="CONVERSATION_AI_RESUMED",
+                    entity_type="conversation", entity_id=conversation.id)
     result = _move_conversation_to_queue(
         db,
         actor=user,

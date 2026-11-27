@@ -3660,6 +3660,7 @@ def _send_text(
             allow_resolved=allow_resolved,
         )
 
+    _assert_closer_owns_conversation(db, conversation=conversation, agent=agent, handoff_notice=handoff_notice)
     zapi = service_for_conversation(db, conversation.id)
     if len(fixed_buttons) >= 2:
         result = zapi.send_button_list(
@@ -3945,6 +3946,7 @@ def _send_step_message(
             allow_resolved=allow_resolved,
         )
 
+    _assert_closer_owns_conversation(db, conversation=conversation, agent=agent, handoff_notice=state.step == "ESCALATED")
     zapi = service_for_conversation(db, conversation.id)
     result = zapi.send_button_list(
         phone=phone,
