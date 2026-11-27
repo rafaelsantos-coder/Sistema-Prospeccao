@@ -31,7 +31,7 @@ from app.models import (
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.access_control import has_permission
 from app.services.ai_reply_delivery import reply_statuses
-from app.services.ai_queue_scope import is_dedicated_ai_queue
+from app.services.ai_queue_scope import dedicated_queue_only, is_dedicated_ai_queue
 from app.services.ai_sdr import AI_INBOUND_MESSAGE_TYPES, enqueue_ai_job, latest_run_for_conversation
 from app.services.audit import write_audit
 from app.services.campaign_queue import (
@@ -457,6 +457,10 @@ def _move_conversation_to_queue(
     """Transfere fila ou delega uma conversa a IA sem trocar seu numero de saida."""
     previous_queue = queue_for_conversation(db, conversation.id)
     previous_user_id = conversation.assigned_user_id
+    if reason == "AI" and dedicated_queue_only():
+        allowed_queue = ai_transfer_queue(db)
+        if not allowed_queue or queue.id != allowed_queue.id:
+            raise HTTPException(status_code=409, detail="A SulIA atende somente na Fila IA.")
     if reason == "AI" and previous_queue and not conversation_instance(db, conversation.id):
         instance = queue_instance(db, previous_queue.id)
         if instance:
@@ -2228,12 +2232,21 @@ def transfer_conversation_to_ai(
     if not ai_queue:
         flash(request, "A SulIA precisa estar ativa e autorizada para receber o atendimento.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
-    # A transferencia e de responsabilidade, NAO de fila. A saida continua
-    # no mesmo WhatsApp usado para falar com o cliente.
     queue = queue_for_conversation(db, conversation.id)
     if not queue:
         flash(request, "A conversa precisa estar vinculada a uma fila de origem.", "warning")
         return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+    if dedicated_queue_only():
+        # Delegacao manual explicita move a conversa para Fila IA, preservando
+        # o numero Z-API original. Nunca deslocar o canal oficial da Meta.
+        if protected_conversation(db, conversation.id) or _has_meta_link(db, conversation) or queue_meta_account(db, queue.id):
+            raise HTTPException(status_code=409, detail="Este canal deve permanecer na fila humana de origem.")
+        if queue.id != ai_queue.id and not (
+            conversation_instance(db, conversation.id) or queue_instance(db, queue.id)
+        ):
+            flash(request, "Não foi possível confirmar o WhatsApp original. A conversa não foi transferida.", "warning")
+            return RedirectResponse(f"/conversations/{conversation.id}", status_code=303)
+        queue = ai_queue
 
     result = _move_conversation_to_queue(
         db,

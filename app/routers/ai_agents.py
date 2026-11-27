@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.security import get_current_user, require_roles, validate_csrf
 from app.services.access_control import has_permission
-from app.services.ai_queue_scope import ai_allowed_for_queue, exclusive_ai_queue_id, manual_queue_control_enabled, ai_queue_enabled
+from app.services.ai_queue_scope import ai_allowed_for_queue, dedicated_queue_only, exclusive_ai_queue_id, manual_queue_control_enabled, ai_queue_enabled
 from app.services.ai_sdr import ai_metrics
 from app.services.audit import write_audit
 from app.services.zapi_instances import bind_queue_instance, list_zapi_instances, queue_instance
@@ -188,6 +188,8 @@ def ai_dashboard(request: Request, db: Session = Depends(get_db)):
         exclusive_ai_queue_id=exclusive_ai_queue_id(),
         manual_queue_control_enabled=manual_queue_control_enabled(),
         ai_queue_enabled_ids={queue.id for queue in queues if ai_queue_enabled(db, queue.id)},
+        dedicated_queue_only=dedicated_queue_only(),
+        ai_queue_eligible_ids={queue.id for queue in queues if ai_allowed_for_queue(queue.id, db=db)},
     )
 
 
@@ -843,7 +845,7 @@ def bind_queue(
     if selected.startswith("zapi:"):
         # Só o gestor, ao salvar expressamente, pode transformar uma conexão
         # sem fila operacional numa fila configurável. Não ativa IA.
-        if not manual_queue_control_enabled():
+        if dedicated_queue_only() or not manual_queue_control_enabled():
             flash(request, "A configuração individual de filas está desativada.", "warning")
             return RedirectResponse("/ai", status_code=303)
         try:
@@ -898,7 +900,7 @@ def bind_queue(
     if not queue or not queue.active:
         flash(request, "Fila inválida ou inativa.", "warning")
         return RedirectResponse("/ai", status_code=303)
-    if not ai_allowed_for_queue(queue.id):
+    if not ai_allowed_for_queue(queue.id, db=db):
         flash(request, "Esta fila não está autorizada pela política de IA.", "warning")
         return RedirectResponse("/ai", status_code=303)
     binding = db.scalar(
@@ -968,7 +970,7 @@ def toggle_queue_binding(
     )
     if not binding:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    if not ai_allowed_for_queue(queue_id):
+    if not ai_allowed_for_queue(queue_id, db=db):
         flash(request, "A fila não é elegível para IA pela política atual.", "warning")
         return RedirectResponse("/ai", status_code=303)
     queue = db.get(ServiceQueue, queue_id)

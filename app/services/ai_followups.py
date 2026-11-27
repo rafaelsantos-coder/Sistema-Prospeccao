@@ -27,7 +27,7 @@ from app.services.ai_sales_protocol import (
     coaching_for_context,
     requested_return_not_before,
 )
-from app.services.ai_queue_scope import is_dedicated_ai_queue
+from app.services.ai_queue_scope import ai_allowed_for_conversation, dedicated_queue_only, is_dedicated_ai_queue
 from app.services.queue_routing import queue_for_conversation
 from app.services.ai_quick_replies import QuickReply, quick_replies_for_message
 from app.services.ai_sdr_policy import SYSTEM_KNOWLEDGE_ITEMS, SULIA_SYSTEM_PROMPT, followup_spec
@@ -728,6 +728,8 @@ def _followup_allowed(
     conversation = db.get(Conversation, job.conversation_id)
     if not conversation:
         return False, "CONVERSA_INEXISTENTE"
+    if dedicated_queue_only() and not ai_allowed_for_conversation(db, job.conversation_id):
+        return False, "FILA_SEM_IA"
     if conversation.status in {"RESOLVIDO", "ENCERRADO", "BLOQUEADO"}:
         return False, "CONVERSA_ENCERRADA"
     if _outside_fiber_area(db, conversation.id):
@@ -1156,6 +1158,10 @@ def process_followup_job(db: Session, job: AIFollowupJob) -> str:
         from app.services.conversation_engine import register_message
         from app.services.zapi_instances import service_for_conversation
 
+        if dedicated_queue_only() and not ai_allowed_for_conversation(db, conversation.id):
+            job.status = "CANCELADO"
+            job.error = "FILA_SEM_IA"
+            return "cancelled"
         zapi = service_for_conversation(db, conversation.id)
         quick_replies = quick_replies_for_message(
             decision.reply_text,

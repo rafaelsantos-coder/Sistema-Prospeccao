@@ -3448,7 +3448,8 @@ def _seller_question_reply(
             else SellerKnowledgeAnswer.model_validate(output)
         )
     except Exception:
-        LOG.exception("seller_question_answer_failed step=%s", state.step)
+        # O provedor pode incluir dados privados no texto da excecao.
+        LOG.warning("seller_question_answer_failed")
         return None
     if answer.human_requested:
         return None
@@ -3660,6 +3661,9 @@ def _send_text(
             allow_resolved=allow_resolved,
         )
 
+    from app.services.ai_queue_scope import ai_allowed_for_conversation, dedicated_queue_only
+    if dedicated_queue_only() and not ai_allowed_for_conversation(db, conversation.id):
+        raise CRMIntegrationError("Fila nao autorizada para o Vendedor IA.")
     zapi = service_for_conversation(db, conversation.id)
     if len(fixed_buttons) >= 2:
         result = zapi.send_button_list(
