@@ -566,41 +566,6 @@ class ConversationZApiInstance(Base):
     zapi_instance: Mapped[ZApiInstance] = relationship()
 
 
-class SulnetWAInstance(Base):
-    """Sessao do motor proprio, sem segredos no banco principal."""
-
-    __tablename__ = "sulnet_wa_instances"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(120))
-    session_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
-    phone_label: Mapped[str] = mapped_column(String(32), default="")
-    active: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class ServiceQueueSulnetWAInstance(Base):
-    __tablename__ = "service_queue_sulnet_wa_instances"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    queue_id: Mapped[int] = mapped_column(ForeignKey("service_queues.id", ondelete="CASCADE"), unique=True)
-    instance_id: Mapped[int] = mapped_column(ForeignKey("sulnet_wa_instances.id", ondelete="RESTRICT"), unique=True)
-
-
-class ConversationSulnetWAInstance(Base):
-    __tablename__ = "conversation_sulnet_wa_instances"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), unique=True)
-    instance_id: Mapped[int] = mapped_column(ForeignKey("sulnet_wa_instances.id", ondelete="RESTRICT"))
-
-
-class SulnetWAReceipt(Base):
-    """Evento de entrada processado uma unica vez."""
-
-    __tablename__ = "sulnet_wa_receipts"
-    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    instance_id: Mapped[int] = mapped_column(ForeignKey("sulnet_wa_instances.id", ondelete="CASCADE"))
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
 class MetaWhatsAppAccount(Base):
     """Número WhatsApp cadastrado via Cloud API oficial da Meta."""
 
