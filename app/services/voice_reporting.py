@@ -18,11 +18,39 @@ from app.services.voice_test import aware
 
 
 ACTIVE_CALL_STATES = ("INICIANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERINDO")
-FAILED_CALL_STATES = (
-    "FALHOU", "FALHA_TRANSFERENCIA", "TIMEOUT", "SEM_ATENDIMENTO",
-    "SEM_RESPOSTA", "OCUPADO", "INTERROMPIDA", "ERRO",
-    "FALHA_AUDIO", "AUDIO_INTERROMPIDO",
+# Não confundir chamadas que não foram atendidas com defeitos da central.
+# FALHA_AUDIO e FALHA_TRANSFERENCIA são falhas técnicas; tocar e não atender
+# ou desligar são resultados de ligação, não erros de infraestrutura.
+TECHNICAL_FAILURE_STATES = (
+    "FALHOU", "FALHA_TRANSFERENCIA", "FALHA_AUDIO", "ERRO",
 )
+NO_ANSWER_STATES = ("SEM_ATENDIMENTO", "SEM_RESPOSTA")
+INTERRUPTED_STATES = ("INTERROMPIDA", "AUDIO_INTERROMPIDO")
+VOICE_RESULT_LABELS = {
+    "SEM_ATENDIMENTO": "Sem atendimento",
+    "SEM_RESPOSTA": "Sem resposta",
+    "OCUPADO": "Linha ocupada",
+    "FALHOU": "Falha de chamada / SIP",
+    "FALHA_TRANSFERENCIA": "Erro na transferência",
+    "FALHA_AUDIO": "Erro na reprodução de áudio",
+    "ERRO": "Erro de execução",
+    "TIMEOUT": "Tempo de chamada esgotado",
+    "INTERROMPIDA": "Interrompida pelo administrador",
+    "AUDIO_INTERROMPIDO": "Áudio interrompido antes do fim",
+    "INDETERMINADO": "Resultado indeterminado após reinício",
+    "SEM_INTERESSE": "Sem confirmação DTMF",
+    "FINALIZADA": "Atendida e encerrada sem transferência",
+    "TRANSFERIDA": "Transferida",
+    "AUDIO_CONCLUIDO": "Áudio concluído",
+    "ATENDIDA": "Atendida",
+    "INICIANDO": "Iniciando chamada",
+    "CHAMANDO": "Chamando",
+    "TOCANDO": "Tocando",
+    "TRANSFERINDO": "Transferindo",
+    "REPRODUZINDO_AUDIO": "Reproduzindo áudio",
+    "CONFIRMADO_DTMF": "DTMF confirmado",
+    "BLOQUEADA": "Bloqueada",
+}
 COMMAND_LABELS = {
     "VOICE_CAMPAIGN_START_BLOCKED": "Tentativa de início bloqueada",
     "VOICE_CAMPAIGN_STARTED": "Início autorizado pelo administrador",
@@ -74,7 +102,7 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
         func.count(VoiceRecipient.id).filter(VoiceRecipient.status.in_(ACTIVE_CALL_STATES)),
         func.count(VoiceRecipient.id).filter(VoiceRecipient.answered_at.is_not(None)),
         func.count(VoiceRecipient.id).filter(VoiceRecipient.transferred_at.is_not(None)),
-        func.count(VoiceRecipient.id).filter(VoiceRecipient.status.in_(FAILED_CALL_STATES)),
+        func.count(VoiceRecipient.id).filter(VoiceRecipient.status.in_(TECHNICAL_FAILURE_STATES)),
         func.count(VoiceRecipient.id).filter(VoiceRecipient.status == "BLOQUEADA"),
         func.count(VoiceRecipient.id).filter(VoiceRecipient.status == "AUDIO_CONCLUIDO"),
     ).where(VoiceRecipient.campaign_id == campaign.id)).one()
@@ -82,6 +110,29 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
         ("total", "pending", "attempted", "in_progress", "answered",
          "transferred", "failed", "blocked", "audio_completed"), map(int, summary), strict=True,
     ))
+
+    # Diagnóstico histórico: agrupamento por resultado persistido, inclusive
+    # campanhas já pausadas. Não depende dos logs efêmeros do Railway.
+    status_rows = db.execute(select(
+        VoiceRecipient.status, func.count(VoiceRecipient.id),
+    ).where(
+        VoiceRecipient.campaign_id == campaign.id,
+        VoiceRecipient.attempts > 0,
+    ).group_by(VoiceRecipient.status)).all()
+    status_counts = {str(code): int(count) for code, count in status_rows}
+    stats.update({
+        "no_answer": sum(status_counts.get(code, 0) for code in NO_ANSWER_STATES),
+        "busy": status_counts.get("OCUPADO", 0),
+        "timeout": status_counts.get("TIMEOUT", 0),
+        "without_dtmf": status_counts.get("SEM_INTERESSE", 0),
+        "interrupted": sum(status_counts.get(code, 0) for code in INTERRUPTED_STATES),
+        "indeterminate": status_counts.get("INDETERMINADO", 0),
+    })
+    result_breakdown = [
+        {"status": code, "label": VOICE_RESULT_LABELS.get(code, code.replace("_", " ").title()),
+         "count": status_counts[code]}
+        for code in sorted(status_counts, key=lambda status: (-status_counts[status], status))
+    ]
 
     usage_rows = db.execute(select(
         VoiceRecipient.outbound_techprefix, func.count(VoiceRecipient.id),
@@ -160,6 +211,7 @@ def campaign_operational_report(db: Session, campaign: VoiceCampaign,
         "outside_call_window": status == "EM_EXECUCAO" and not within_call_window(campaign),
         "readiness": list(reasons),
         "stats": stats,
+        "result_breakdown": result_breakdown,
         "native_line_counts": native_line_counts,
         "outbound_routing_mode": campaign.outbound_routing_mode,
         "last_command": _last_command(db, campaign.id),
