@@ -1444,7 +1444,7 @@ def quick_start_whatsapp_conversation(
     # An unbound legacy chat may be from another channel and must not prevent
     # an authorized seller from opening a conversation on this instance.
     db.scalar(select(Contact.id).where(Contact.id == contact.id).with_for_update())
-    existing = db.scalar(
+    existing = alias_chat or db.scalar(
         select(Conversation)
         .join(
             ConversationZApiInstance,
