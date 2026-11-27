@@ -306,15 +306,24 @@
         <div class="crm-manual-readonly">{% if crm_ai_owner %}{{ conversation.assigned_user.name }} — atendimento automático{% else %}{{ conversation.assigned_user.name }} ({{ crm_manual_seller.username }}){% endif %}</div>
         <label>Funil comercial</label>
         <div class="crm-manual-readonly">{% if crm_ai_owner %}SDR IA — INÍCIO{% else %}{{ crm_manual_seller.funnel_name }} — INÍCIO{% endif %}</div>
+        {% if crm_ai_owner %}
         <label>Origem</label>
         <div class="crm-manual-readonly">{{ crm_origin_label }}</div>
+        {% else %}
+        <label for="crm-manual-origin">Origem</label>
+        <select id="crm-manual-origin" name="origin_id" required disabled data-catalog-url="/conversations/{{ conversation.id }}/crm-origins">
+          <option value="">Carregando origens do CRM...</option>
+        </select>
+        <p class="crm-manual-hint" id="crm-origin-status" role="status" aria-live="polite"></p>
+        <button type="button" class="button button-secondary" id="crm-origin-retry" hidden>Recarregar origens</button>
         {% if crm_origin_match %}
-        <p class="crm-manual-hint">Identificada pela campanha <strong>{{ crm_origin_match.campaign_name }}</strong> (texto padrão da mensagem inicial).</p>
+        <p class="crm-manual-hint">Sugestão identificada pela campanha <strong>{{ crm_origin_match.campaign_name }}</strong>. Você pode alterar a origem.</p>
+        {% endif %}
         {% endif %}
         <p class="crm-manual-hint">{% if crm_ai_owner %}A IA usa a oportunidade da conversa, sem gerar outra consulta de crédito ou contato pelo WhatsApp.{% else %}O sistema busca uma oportunidade aberta deste vendedor pelo telefone antes de criar uma nova.{% endif %}</p>
         <div class="crm-manual-dialog-actions">
           <button type="button" class="button button-secondary" data-crm-manual-close>Cancelar</button>
-          <button type="submit" class="button button-primary" data-crm-manual-submit>Confirmar registro</button>
+          <button type="submit" class="button button-primary" data-crm-manual-submit {% if not crm_ai_owner %}disabled{% endif %}>Confirmar registro</button>
         </div>
       </form>
     </dialog>
@@ -1298,9 +1307,54 @@
   const crmOpen = document.querySelector('[data-crm-manual-open]');
   const crmClose = document.querySelector('[data-crm-manual-close]');
   const crmSubmit = document.querySelector('[data-crm-manual-submit]');
-  crmOpen?.addEventListener('click', () => crmDialog?.showModal());
+  const crmOrigin = document.getElementById('crm-manual-origin');
+  const crmOriginStatus = document.getElementById('crm-origin-status');
+  const crmOriginRetry = document.getElementById('crm-origin-retry');
+  let catalogRequest = 0;
+  async function loadCrmOrigins() {
+    if (!crmOrigin || !crmSubmit) return;
+    const requestId = ++catalogRequest;
+    crmOrigin.disabled = true;
+    crmSubmit.disabled = true;
+    crmOrigin.replaceChildren(new Option('Carregando origens do CRM...', ''));
+    if (crmOriginStatus) crmOriginStatus.textContent = '';
+    if (crmOriginRetry) crmOriginRetry.hidden = true;
+    try {
+      const response = await fetch(crmOrigin.dataset.catalogUrl, {
+        credentials: 'same-origin', cache: 'no-store', headers: {Accept: 'application/json'}
+      });
+      if (!response.ok) throw new Error('catalog unavailable');
+      const payload = await response.json();
+      if (requestId !== catalogRequest) return;
+      if (!Array.isArray(payload.origins) || !payload.origins.length) throw new Error('empty catalog');
+      crmOrigin.replaceChildren(new Option('Selecione a origem', ''));
+      for (const row of payload.origins) crmOrigin.add(new Option(row.name, String(row.id)));
+      crmOrigin.value = payload.defaultId == null ? '' : String(payload.defaultId);
+      if (crmOrigin.selectedIndex < 0) crmOrigin.selectedIndex = 0;
+      crmOrigin.disabled = false;
+      crmSubmit.disabled = !crmOrigin.value;
+      if (crmOriginStatus) crmOriginStatus.textContent = 'Origens disponíveis no CRM Comercial.';
+    } catch (_) {
+      if (requestId !== catalogRequest) return;
+      crmOrigin.replaceChildren(new Option('Origens indisponíveis', ''));
+      if (crmOriginStatus) crmOriginStatus.textContent = 'Não foi possível carregar as origens. Tente novamente.';
+      if (crmOriginRetry) crmOriginRetry.hidden = false;
+    }
+  }
+  crmOrigin?.addEventListener('change', () => {
+    if (crmSubmit) crmSubmit.disabled = crmOrigin.disabled || !crmOrigin.value;
+  });
+  crmOriginRetry?.addEventListener('click', loadCrmOrigins);
+  crmOpen?.addEventListener('click', () => {
+    crmDialog?.showModal();
+    loadCrmOrigins();
+  });
   crmClose?.addEventListener('click', () => crmDialog?.close());
-  crmDialog?.querySelector('form')?.addEventListener('submit', () => {
+  crmDialog?.querySelector('form')?.addEventListener('submit', (event) => {
+    if (crmOrigin && (crmOrigin.disabled || !crmOrigin.value)) {
+      event.preventDefault();
+      return;
+    }
     if (crmSubmit) {
       crmSubmit.disabled = true;
       crmSubmit.textContent = 'Registrando...';
