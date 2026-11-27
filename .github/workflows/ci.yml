@@ -175,5 +175,5 @@ jobs:
             echo "Redeploy de produção disparado via Deploy Hook."
             exit 0
           fi
-          echo "::warning::Configure o secret RAILWAY_TOKEN (project token) ou RAILWAY_DEPLOY_HOOK_URL no repositório. Redeploy automático pulado."
-          exit 0
+          echo "::error::Configure o secret RAILWAY_TOKEN (project token) ou RAILWAY_DEPLOY_HOOK_URL no repositório. Redeploy de produção NÃO rodou — código novo não chega ao Railway."
+          exit 1

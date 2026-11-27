@@ -20,7 +20,7 @@ from app.models import (
     ServiceQueue,
     User,
 )
-from app.services.ops_wallboard import build_ops_wallboard
+from app.services.ops_wallboard import build_ops_wallboard, safe_build_ops_wallboard
 from app.timeutils import utcnow
 
 
@@ -191,6 +191,42 @@ def test_operations_nav_for_admin():
         home = client.get("/dashboard")
         assert home.status_code == 200
         assert 'href="/operations"' in home.text
+
+
+def test_safe_build_never_raises(monkeypatch):
+    db = SessionLocal()
+    try:
+        admin = db.scalar(select(User).where(User.email == "admin@sulnet.local"))
+        assert admin is not None
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("falha simulada do wallboard")
+
+        monkeypatch.setattr("app.services.ops_wallboard.build_ops_wallboard", boom)
+        snapshot = safe_build_ops_wallboard(db, admin)
+        assert snapshot["kpis"]["open"] == 0
+        assert any(alert["code"] == "wallboard_error" for alert in snapshot["alerts"])
+    finally:
+        db.close()
+
+
+def test_operations_page_survives_total_failure(monkeypatch):
+    with TestClient(app) as client:
+        _login(client)
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("falha total")
+
+        monkeypatch.setattr("app.services.ops_wallboard.build_ops_wallboard", boom)
+        page = client.get("/operations")
+        assert page.status_code == 200
+        assert "Painel operacional" in page.text
+        assert "Falha ao carregar métricas" in page.text
+        assert page.headers.get("X-Ops-Revision")
+
+        rev = client.get("/api/operations/revision")
+        assert rev.status_code == 200
+        assert "revision" in rev.json()
 
 
 def test_wallboard_survives_invalid_collected_json():
