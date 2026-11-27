@@ -33,11 +33,13 @@ from app.services.voice_runtime import (
     make_dial_uri, next_attempt_allowed, update_sip_check,
 )
 from app.services.voice_test import aware
+from app.services.voice_execution_slot import voice_execution_slot, slot_active, slot_healthy
 
 LOG = logging.getLogger(__name__)
 WORKER_ID = f"{socket.gethostname()}-{uuid4().hex[:9]}"[:120]
 CAMPAIGNS_ENABLED = os.getenv("VOICE_CAMPAIGN_OUTBOUND_ENABLED", "").lower() == "true"
 TRANSFER_TESTS_ENABLED = os.getenv("VOICE_TRANSFER_TESTS_ENABLED", "").lower() == "true"
+_LAST_BEAT = 0.0
 
 
 def now() -> datetime:
@@ -45,6 +47,8 @@ def now() -> datetime:
 
 
 def heartbeat(error: str = "") -> None:
+    global _LAST_BEAT
+    from app.workers.lia_voz_pilot import runtime_ready
     with SessionLocal() as db:
         engine = db.get(VoiceDialerEngine, 1)
         if engine is None:
@@ -54,8 +58,15 @@ def heartbeat(error: str = "") -> None:
         engine.backend = "PJSUA2"
         engine.campaign_runtime_enabled = CAMPAIGNS_ENABLED
         engine.test_runtime_enabled = TRANSFER_TESTS_ENABLED
+        engine.lia_runtime_enabled = runtime_ready()
         engine.last_error = (error or "")[:200]
         db.commit()
+    _LAST_BEAT = time.monotonic()
+
+
+def refresh_heartbeat():
+    if time.monotonic() - _LAST_BEAT >= 8:
+        heartbeat()
 
 
 def engine_enabled() -> bool:
@@ -66,6 +77,10 @@ def engine_enabled() -> bool:
 
 def outbound_allowed() -> bool:
     """Emergency switch is read between calls; no automatic retries."""
+    if not slot_healthy():
+        return False
+    if slot_active():
+        refresh_heartbeat()
     return engine_enabled()
 
 
@@ -489,30 +504,35 @@ def main() -> None:
         raise SystemExit("VOICE_ENGINE_WORKER_ENABLED=false: motor de campanhas permanece desativado.")
     LOG.info("Prospecta VOZ PJSUA2 iniciado. Campanhas=%s, testes de transferencia=%s.",
              CAMPAIGNS_ENABLED, TRANSFER_TESTS_ENABLED)
-    _expire_crashed_calls()
     from app.workers import lia_voz_pilot
-    lia_voz_pilot.expire_stale()
-    last_beat = 0.0
+    recovered = False
+    last_recovery = 0.0
     while True:
         try:
-            t = time.monotonic()
-            if t - last_beat >= 8:
+            refresh_heartbeat()
+            worked = False
+            with voice_execution_slot() as acquired:
+                if acquired:
+                    if not recovered:
+                        _expire_crashed_calls()
+                        recovered = True
+                    if time.monotonic() - last_recovery >= 30:
+                        lia_voz_pilot.expire_stale()
+                        last_recovery = time.monotonic()
+                    if (lia_id := lia_voz_pilot.claim()) is not None:
+                        lia_voz_pilot.run(lia_id, refresh_heartbeat=refresh_heartbeat)
+                        worked = True
+                    elif (native_id := _claim_native_test()) is not None:
+                        _run_native_test(native_id)
+                        worked = True
+                    elif (test_id := _claim_transfer_test()) is not None:
+                        _run_transfer_test(test_id)
+                        worked = True
+                    elif (recipient_id := _claim_recipient()) is not None:
+                        _run_campaign_call(recipient_id)
+                        worked = True
+            if worked:
                 heartbeat()
-                last_beat = t
-            if (lia_id := lia_voz_pilot.claim()) is not None:
-                lia_voz_pilot.run(lia_id)
-                last_beat = 0
-                continue
-            native_id = _claim_native_test()
-            if native_id is not None:
-                _run_native_test(native_id)
-                last_beat = 0
-            elif (test_id := _claim_transfer_test()) is not None:
-                _run_transfer_test(test_id)
-                last_beat = 0
-            elif (recipient_id := _claim_recipient()) is not None:
-                _run_campaign_call(recipient_id)
-                last_beat = 0
             else:
                 time.sleep(2)
         except Exception as exc:

@@ -1463,11 +1463,14 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
     engine = db.get(VoiceDialerEngine, 1)
     online = bool(engine and engine.enabled and engine.heartbeat_at
                   and datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX
-                  and not engine.campaign_runtime_enabled and not engine.test_runtime_enabled)
+                  and engine.lia_runtime_enabled
+                  and (config.shared or (not engine.campaign_runtime_enabled and not engine.test_runtime_enabled)))
     return render(
         request, "voice/lia_voz.html", user=actor, active_nav="voice", voice_section="lia_voz",
         page_title="Lia Voz · Ambiente de testes", accounts=accounts, tests=tests,
-        configured=config.configured, engine_ready=online,
+        configured=config.configured, engine_ready=online, shared_engine=config.shared,
+        runtime_ready=bool(engine and engine.lia_runtime_enabled),
+        config_enabled=config.enabled, external_sip_confirmed=config.exclusive,
     )
 
 
@@ -1489,18 +1492,20 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
         VoiceDialerEngine.id == 1
     ).with_for_update())
     now = datetime.now(timezone.utc)
+    config = PilotConfig.from_env()
     if not (engine and engine.enabled and engine.heartbeat_at
             and now - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX
-            and not engine.campaign_runtime_enabled and not engine.test_runtime_enabled):
-        return _error(request, "Motor isolado indisponivel ou campanhas/testes legados habilitados.", destination)
+            and engine.lia_runtime_enabled
+            and (config.shared or (not engine.campaign_runtime_enabled and not engine.test_runtime_enabled))):
+        return _error(request, "Motor Lia Voz indisponivel ou ainda nao configurado.", destination)
     account = db.scalar(select(VoiceSipAccount).where(
         VoiceSipAccount.id == account_id
     ).with_for_update())
     if not account or not account.active:
         return _error(request, "Conta SIP indisponivel.", destination)
     try:
-        clean = PilotConfig.from_env().authorize(phone, account.username)
-        ensure_idle(db)
+        clean = config.authorize(phone, account.username)
+        ensure_idle(db, shared=config.shared, admission=True)
         outbound_guard(db, clean)
     except ValueError as exc:
         return _error(request, str(exc), destination)
@@ -1513,7 +1518,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
         return _error(request, "Aguarde o intervalo minimo de tres minutos; limite de tres testes por hora.", destination)
     test = VoiceTestCall(
         account_id=account.id, account_label=account.name, target_phone=clean,
-        status=PENDING, message="Teste individual Lia Voz autorizado; aguardando motor isolado.",
+        status=PENDING, message="Teste individual Lia Voz autorizado; aguardando vez no motor.",
         initiator_user_id=actor.id, created_at=now,
     )
     db.add(test)

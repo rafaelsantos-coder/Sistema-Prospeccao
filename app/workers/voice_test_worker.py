@@ -20,6 +20,7 @@ from app.services.secret_store import SecretStoreError, decrypt_secret
 from app.services.voice_sip_probe import SipDiagnostic, SipProbe, SipProbeError
 from app.services.voice_test import aware, now_utc, REQUEST_MAX_AGE
 from app.services.voice_runtime import outbound_guard, update_sip_check
+from app.services.voice_execution_slot import voice_execution_slot, slot_healthy
 
 logger = logging.getLogger(__name__)
 WORKER_ID = (socket.gethostname() + "-" + uuid4().hex[:8])[:120]
@@ -113,6 +114,9 @@ def run_one(test_id: int, account_id: int, phone: str) -> None:
             notify=lambda status, register, invite, message:
                 _record(test_id, status, register, invite, message),
         )
+        if not slot_healthy():
+            _record(test_id, "FALHOU", None, None, "Trava de execucao SIP indisponivel.", True)
+            return
         result: SipDiagnostic = probe.run_registration_only() if is_register_only else probe.run()
         if result.register_code is not None:
             with SessionLocal() as db:
@@ -168,13 +172,15 @@ def main() -> None:
             if moment - last_heartbeat > 5:
                 heartbeat()
                 last_heartbeat = moment
-            if moment - last_recovery > 30:
-                expire_stale()
-                last_recovery = moment
-            item = claim_next()
-            if item:
-                run_one(*item)
-                last_heartbeat = 0
+            with voice_execution_slot() as acquired:
+                if acquired:
+                    if moment - last_recovery > 30:
+                        expire_stale()
+                        last_recovery = moment
+                    item = claim_next()
+                    if item:
+                        run_one(*item)
+                        last_heartbeat = 0
         except Exception:
             logger.exception("Erro no loop isolado de testes SIP")
         time.sleep(2)

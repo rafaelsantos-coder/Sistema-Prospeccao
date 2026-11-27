@@ -2448,3 +2448,33 @@ def test_seed_gives_closer_its_own_knowledge_base():
             assert "Formas de pagamento e fatura no canal digital" in titles
         finally:
             db.close()
+
+
+def test_seller_runtime_failures_do_not_log_customer_context(monkeypatch, caplog):
+    from app.services import ai_runtime, ai_seller
+
+    private_marker = "PRIVATE_TEST_PAYLOAD"
+    def failing_run(agent, prompt):
+        raise RuntimeError(private_marker)
+
+    monkeypatch.setattr(ai_runtime, "run_agent_sync", failing_run)
+    monkeypatch.setattr(ai_seller, "_seller_knowledge", lambda db, agent, query="": "- item")
+    monkeypatch.setattr(ai_seller, "settings", replace(ai_seller.settings, openai_api_key="sk-test"))
+    agent = SimpleNamespace(name="Vendedor", system_prompt="", model="m", reasoning_effort="low")
+    state = _phase4_state(step="BILLING")
+
+    with caplog.at_level("WARNING", logger=ai_seller.LOG.name):
+        result = ai_seller._interpret_ambiguous(
+            None, agent=agent, step=private_marker, message="resposta", plan_label="Fibra",
+        )
+        assert isinstance(result, ai_seller.SellerInterpretation)
+        assert ai_seller._seller_question_reply(
+            None, agent=agent, state=state, collected={}, text="Quanto tempo demora a instalação?",
+        ) is None
+
+    records = [record for record in caplog.records if record.name == ai_seller.LOG.name]
+    messages = [record.getMessage() for record in records]
+    assert "seller_interpretation_failed" in messages
+    assert "seller_question_answer_failed" in messages
+    assert private_marker not in caplog.text
+    assert all(not record.exc_info for record in records)

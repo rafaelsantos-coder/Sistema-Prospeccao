@@ -7,10 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from app.database import SessionLocal
+from app.database import SessionLocal, engine as database_engine
 from app.models import User, VoiceDialerEngine, VoiceSipAccount, VoiceTestCall
 from app.services.lia_voz_call import perform_lia_test
-from app.services.lia_voz_pilot import ACTIVE, PENDING, RUNNING, PilotConfig, ensure_idle
+from app.services.lia_voz_pilot import ACTIVE, PENDING, RUNNING, PilotConfig, PilotDenied, ensure_idle
+from app.services.voice_execution_slot import slot_healthy
 from app.services.secret_store import decrypt_secret
 from app.services.voice_pjsua2 import PjSession
 from app.services.voice_runtime import outbound_guard
@@ -21,15 +22,14 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def _enabled():
-    # Never run in the same engine while commercial calling or legacy tests
-    # are enabled. Other services/projects must also be isolated operationally.
-    return (
-        PilotConfig.from_env().configured
-        and os.getenv("VOICE_CAMPAIGN_OUTBOUND_ENABLED", "").lower() != "true"
-        and os.getenv("VOICE_TRANSFER_TESTS_ENABLED", "").lower() != "true"
-        and bool(os.getenv("LIA_VOZ_OPENAI_API_KEY", "").strip())
-    )
+def runtime_ready():
+    config = PilotConfig.from_env()
+    if not config.configured or not os.getenv("LIA_VOZ_OPENAI_API_KEY", "").strip():
+        return False
+    if config.shared:
+        return database_engine.dialect.name == "postgresql"
+    return (os.getenv("VOICE_CAMPAIGN_OUTBOUND_ENABLED", "").lower() != "true"
+            and os.getenv("VOICE_TRANSFER_TESTS_ENABLED", "").lower() != "true")
 
 
 def _finish(test_id, status, message, sip_code=None, register_code=None):
@@ -52,7 +52,9 @@ def expire_stale():
             VoiceTestCall.status.in_(ACTIVE)
         ).with_for_update(skip_locked=True))
         for row in rows:
-            if _now() - aware(row.created_at) > timedelta(minutes=4):
+            base = row.started_at if row.status == RUNNING else row.created_at
+            limit = 240 if row.status == RUNNING else PilotConfig.from_env().request_seconds
+            if base and _now() - aware(base) > timedelta(seconds=limit):
                 row.status = "LIA_INDETERMINADO" if row.status == RUNNING else "LIA_EXPIRADO"
                 row.finished_at = _now()
                 row.message = "Teste expirado; nao repetir automaticamente."
@@ -60,7 +62,7 @@ def expire_stale():
 
 
 def claim():
-    if not _enabled():
+    if not runtime_ready() or not slot_healthy(required=True):
         return None
     with SessionLocal() as db:
         engine = db.scalar(select(VoiceDialerEngine).where(
@@ -73,11 +75,16 @@ def claim():
         ).order_by(VoiceTestCall.id).with_for_update(skip_locked=True).limit(1))
         if row is None:
             return None
-        if _now() - aware(row.created_at) > timedelta(seconds=90):
+        config = PilotConfig.from_env()
+        if _now() - aware(row.created_at) > timedelta(seconds=config.request_seconds):
             row.status = "LIA_EXPIRADO"
             row.finished_at = _now()
             row.message = "Solicitacao de teste expirou."
             db.commit()
+            return None
+        try:
+            ensure_idle(db, own_test_id=row.id, shared=config.shared)
+        except PilotDenied:
             return None
         row.status = RUNNING
         row.started_at = _now()
@@ -86,7 +93,7 @@ def claim():
 
 
 def _guard(test_id, phone, account_id):
-    if not _enabled():
+    if not runtime_ready() or not slot_healthy(required=True):
         return False
     try:
         with SessionLocal() as db:
@@ -100,14 +107,14 @@ def _guard(test_id, phone, account_id):
                     and test.target_phone == phone):
                 return False
             PilotConfig.from_env().authorize(phone, account.username)
-            ensure_idle(db, own_test_id=test_id)
+            ensure_idle(db, own_test_id=test_id, shared=PilotConfig.from_env().shared)
             outbound_guard(db, phone)
         return True
     except Exception:
         return False
 
 
-def run(test_id):
+def run(test_id, *, refresh_heartbeat=lambda: None):
     register_code = None
     try:
         with SessionLocal() as db:
@@ -128,9 +135,13 @@ def run(test_id):
             register_code, _ = driver.wait_for_registration()
             if register_code != 200:
                 raise ValueError("SIP registration failed")
+            def abort():
+                refresh_heartbeat()
+                return not _guard(test_id, phone, account_id)
+
             outcome = asyncio.run(perform_lia_test(
                 driver, phone, config.prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
-                should_abort=lambda: not _guard(test_id, phone, account_id),
+                should_abort=abort,
             ))
         _finish(test_id, outcome.status, outcome.message, outcome.sip_code, register_code)
     except Exception:
