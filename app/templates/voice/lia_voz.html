@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% set test_active = tests and tests[0].status in ['LIA_PENDENTE', 'LIA_EXECUTANDO', 'LIA_PROBE_PENDENTE', 'LIA_PROBE_EXECUTANDO'] %}
 {% block content %}
 <div class="page-lead split">
   <div><span class="eyebrow">PROSPECTA VOZ · SDRIA</span><h2>Lia Voz</h2>
@@ -33,8 +32,14 @@
       </select></label>
       <label class="field"><span>Telefone de teste com DDD</span><input type="tel" name="phone" maxlength="24" autocomplete="off" required {% if not configured or not engine_ready or test_active %}disabled{% endif %}></label>
     </div>
+    <label class="field"><span>Rota de discagem para este teste</span>
+      <select name="route" required {% if not configured or not engine_ready or test_active %}disabled{% endif %}>
+        <option value="account" selected>Rota padrão da conta (DDD + número)</option>
+        <option value="native">Rota Native (prefixo {{ native_prefix }})</option>
+      </select>
+    </label>
     <label class="voice-test-confirm"><input type="checkbox" name="authorized" value="sim" required {% if not configured or not engine_ready or test_active %}disabled{% endif %}>Confirmo que o número é meu ou está autorizado para este teste individual.</label>
-    <p class="voice-help">Para verificar se a operadora entrega a chamada, use "Testar ligação sem IA": mesma rota e número autorizado, sem fala, por até 40 segundos. Confirme se o aparelho tocou.</p>
+    <p class="voice-help">Para verificar a entrega da chamada, selecione a rota padrão da conta, utilizada anteriormente nas campanhas, e use "Testar ligação sem IA". Um único teste autorizado, sem fala, por até 40 segundos. Confirme se o aparelho tocou antes de testar com Lia Voz. Não há alternância automática de rotas.</p>
     <div class="voice-actions"><button class="button button-primary" type="submit" name="mode" value="ia" {% if not configured or not engine_ready or not accounts or test_active %}disabled{% endif %}>Conversar com Lia Voz</button>
       <button class="button button-secondary" type="submit" name="mode" value="sip" {% if not configured or not engine_ready or not accounts or test_active %}disabled{% endif %}>Testar ligação sem IA</button>
       <a class="button button-secondary" href="/voice/lia-voz">Atualizar resultado</a></div>

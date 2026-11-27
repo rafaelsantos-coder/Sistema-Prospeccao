@@ -100,3 +100,23 @@ def test_probe_is_explicit_and_shares_active_states():
     assert {PROBE_PENDING, PROBE_RUNNING} <= ACTIVE
     with pytest.raises(PilotDenied):
         requested_state("campaign")
+
+
+def test_explicit_account_route_has_own_persisted_states_and_same_guard():
+    from app.services.lia_voz_pilot import (
+        requested_state, ACCOUNT_PENDING, ACCOUNT_RUNNING,
+        ACCOUNT_PROBE_PENDING, ACCOUNT_PROBE_RUNNING,
+        ACTIVE, ACCOUNT_STATES, PROBE_STATES, CLAIM_STATES,
+    )
+    assert requested_state("ia", "account") == ACCOUNT_PENDING
+    assert requested_state("sip", "account") == ACCOUNT_PROBE_PENDING
+    assert CLAIM_STATES[ACCOUNT_PENDING] == ACCOUNT_RUNNING
+    assert CLAIM_STATES[ACCOUNT_PROBE_PENDING] == ACCOUNT_PROBE_RUNNING
+    assert ACCOUNT_RUNNING in ACCOUNT_STATES
+    assert ACCOUNT_PROBE_RUNNING in ACCOUNT_STATES & PROBE_STATES
+    assert all(len(state) <= 30 for state in ACTIVE)
+    for route in ("", "8004", "auto", "fallback"):
+        with pytest.raises(PilotDenied):
+            requested_state("sip", route)
+    with pytest.raises(PilotDenied):
+        config().authorize("55 99999-0001", "1804")
