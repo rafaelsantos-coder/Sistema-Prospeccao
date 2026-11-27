@@ -9,10 +9,16 @@
   <div class="panel-header"><div><span class="eyebrow">HOMOLOGAÇÃO INDIVIDUAL</span><h3>Conversar com Lia Voz</h3></div>
     <span class="voice-pill {{ 'is-ready' if configured and engine_ready else 'is-paused' }}">
       {{ 'Ambiente configurado' if configured and engine_ready else 'Homologação bloqueada' }}</span></div>
-  <p class="voice-help">Um único número previamente autorizado, conta Native 1804 isolada, até 90 segundos após atendimento. Não há transferência, consulta de CPF, gravação ou CRM neste piloto.</p>
+  <p class="voice-help">Um único número previamente autorizado, conta Native 1804, até 90 segundos após atendimento. Não há transferência, consulta de CPF, gravação ou CRM neste piloto.</p>
   {% if not configured or not engine_ready %}
-  <div class="voice-notice"><strong>Teste indisponível</strong><p>A liberação depende da confirmação de exclusividade SIP, configuração de destino permitido, motor disponível e campanhas/testes legados desligados. A conexão Realtime ainda será validada pelo worker antes da discagem.</p></div>
+  <div class="voice-notice"><strong>Teste indisponível</strong>
+    {% if not config_enabled %}<p>Homologação ainda não habilitada.</p>{% endif %}
+    {% if not external_sip_confirmed %}<p>Exclusividade externa do ramal ainda não confirmada.</p>{% endif %}
+    {% if config_enabled and external_sip_confirmed and not configured %}<p>Destino de teste ou rota Native não configurados.</p>{% endif %}
+    {% if not runtime_ready %}<p>Motor ainda não confirmou configuração da Lia Voz e credencial Realtime.</p>{% elif not engine_ready %}<p>Motor de voz offline, pausado ou indisponível para teste.</p>{% endif %}
+  </div>
   {% endif %}
+  {% if shared_engine %}<p class="voice-help">Fila compartilhada: o teste aguarda a ligação atual terminar e as campanhas retomam em seguida. Se não iniciar em até 10 minutos, o teste expira sem rediscagem.</p>{% endif %}
   <form method="post" action="/voice/lia-voz/test" class="stack-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">

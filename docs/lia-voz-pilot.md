@@ -107,3 +107,25 @@ especifica para homologacao em LIA_VOZ_OPENAI_API_KEY e ativar explicitamente
 LIA_VOZ_LAB_REALTIME_ENABLED=true. O teste solicita somente a saudacao
 sintetica, registra contadores e tempos, sem transcricao ou audio persistido.
 A saida PASS nao equivale a homologacao de uma ligacao real.
+
+
+## Modo de fila compartilhada (opt-in)
+
+A nova opcao LIA_VOZ_TEST_SHARED_ENGINE=true permite enfileirar um teste
+individual sem alterar o status das campanhas. Os workers nativo e legado
+adquirem a mesma trava advisory PostgreSQL antes de reservar e executar
+qualquer chamada/registro. A Lia Voz tem prioridade na proxima vaga,
+sem interromper a chamada atual. O teste expira em 10 minutos e permanece
+limitado a 90 segundos apos atendimento, sem rediscagem. O heartbeat
+informa readiness do worker sem enviar chave para o web.
+
+Antes de ativar: publicar e verificar ambos os workers, a migracao 0044,
+a interface e o pacote websockets. Confirmar ausencia de outro dispositivo
+ou projeto usando o ramal 1804 fora deste banco. Usar PostgreSQL direto
+ou pool em modo session; advisory locks nao sao seguros em pool de
+transacoes. Manter uma replica do motor. O flag EXCLUSIVE_SIP continua
+exigindo essa confirmacao externa. Definir a mesma configuracao de teste
+em web e worker (habilitacao, compartilhado, exclusividade, destino
+autorizado e techprefix); a chave Realtime fica apenas no worker.
+O flag nao confirma por si so acesso real a API. Primeiro validar
+a saudacao sintetica no laboratorio. Nenhuma flag foi ativada neste PR.

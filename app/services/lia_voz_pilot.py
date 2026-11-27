@@ -34,6 +34,7 @@ class PilotConfig:
     exclusive: bool
     allowed_phone: str
     prefix: str
+    shared: bool = False
 
     @classmethod
     def from_env(cls):
@@ -42,13 +43,18 @@ class PilotConfig:
             exclusive=os.getenv("LIA_VOZ_TEST_EXCLUSIVE_SIP", "").lower() == "true",
             allowed_phone=os.getenv("LIA_VOZ_TEST_PHONE", ""),
             prefix=os.getenv("LIA_VOZ_TEST_NATIVE_PREFIX", ""),
+            shared=os.getenv("LIA_VOZ_TEST_SHARED_ENGINE", "").lower() == "true",
         )
+
+    @property
+    def request_seconds(self) -> int:
+        return 600 if self.shared else 90
 
     def authorize(self, phone: str, username: str) -> str:
         if not self.enabled or not self.exclusive:
-            raise PilotDenied("Homologacao Lia Voz bloqueada: ambiente SIP isolado nao confirmado.")
+            raise PilotDenied("Homologacao Lia Voz bloqueada: exclusividade externa do ramal SIP nao confirmada.")
         if username != NATIVE_ACCOUNT_USERNAME:
-            raise PilotDenied("O piloto exige uma conta Native 1804 isolada e autorizada.")
+            raise PilotDenied("O piloto exige a conta Native 1804 autorizada.")
         try:
             expected = canonical_phone(validate_test_phone(self.allowed_phone))
             actual = canonical_phone(validate_test_phone(phone))
@@ -68,22 +74,30 @@ class PilotConfig:
             return False
 
 
-def ensure_idle(db, *, own_test_id: int | None = None) -> None:
+def ensure_idle(db, *, own_test_id: int | None = None, shared: bool = False,
+                admission: bool = False) -> None:
     """Fail closed if any other voice work could use the isolated account.
 
     This checks persisted operations; it does NOT prove exclusive registration
     across Railway projects or external devices. Explicit staging isolation
     remains a prerequisite before enabling the pilot.
     """
+    # Submission can wait behind existing calls; only duplicate Lia tests block it.
+    # Execution happens inside the global SIP slot, and rejects stale active rows.
+    other = OTHER_TESTS
+    if shared:
+        other = set() if admission else OTHER_TESTS - {"PENDENTE", "PENDENTE_PJSIP"}
     tests = select(VoiceTestCall.id).where(
         VoiceTestCall.finished_at.is_(None),
-        VoiceTestCall.status.in_(ACTIVE | OTHER_TESTS),
+        VoiceTestCall.status.in_(ACTIVE | other),
     )
     if own_test_id is not None:
         tests = tests.where(VoiceTestCall.id != own_test_id)
     if db.scalar(tests.limit(1)) is not None:
         raise PilotDenied("Existe outro teste de telefonia pendente ou em andamento.")
-    if db.scalar(select(VoiceCampaign.id).where(
+    if shared and admission:
+        return
+    if not shared and db.scalar(select(VoiceCampaign.id).where(
         VoiceCampaign.status == "EM_EXECUCAO"
     ).limit(1)) is not None:
         raise PilotDenied("Pause as campanhas de voz antes da homologacao isolada.")
@@ -91,9 +105,11 @@ def ensure_idle(db, *, own_test_id: int | None = None) -> None:
         VoiceRecipient.status.in_(CALLS_IN_FLIGHT)
     ).limit(1)) is not None:
         raise PilotDenied("Existe chamada de campanha em andamento.")
+    transfer_states = {"REGISTRANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERINDO"}
+    if not shared:
+        transfer_states.add("PENDENTE")
     if db.scalar(select(VoiceTransferTest.id).where(
         VoiceTransferTest.finished_at.is_(None),
-        VoiceTransferTest.result.in_({"PENDENTE", "REGISTRANDO", "CHAMANDO",
-                                      "TOCANDO", "ATENDIDA", "TRANSFERINDO"}),
+        VoiceTransferTest.result.in_(transfer_states),
     ).limit(1)) is not None:
         raise PilotDenied("Existe teste de transferencia em andamento.")
