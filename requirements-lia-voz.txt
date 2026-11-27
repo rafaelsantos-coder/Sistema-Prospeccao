@@ -1,0 +1,2 @@
+# Optional internal pilot dependency; not installed by existing production workers.
+websockets>=15,<16

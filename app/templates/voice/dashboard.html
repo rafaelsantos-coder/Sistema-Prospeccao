@@ -17,6 +17,13 @@
   Somente o administrador pode configurar e autorizar chamadas.</p>
 </div>
 
+{% if current_user and current_user.role == "ADMIN" %}
+<section class="panel voice-panel">
+  <div class="panel-header"><div><span class="eyebrow">SDRIA · LIA VOZ</span><h3>Ambiente de homologação</h3><p>Teste individual de conversação por inteligência artificial, separado das campanhas e do WhatsApp.</p></div>
+    <a class="button button-secondary" href="/voice/lia-voz">Abrir Lia Voz</a></div>
+</section>
+{% endif %}
+
 <div class="voice-metrics" aria-label="Indicadores do Prospecta VOZ">
   <div class="voice-metric"><span>Contas SIP</span><strong>{{ stats.accounts }}</strong><small>{{ stats.accounts_active }} ativas para cadastro · {{ stats.accounts_paused }} pausadas</small></div>
   <div class="voice-metric"><span>Grupos de ramais</span><strong>{{ stats.groups }}</strong><small>{{ stats.groups_active }} disponíveis para configurar</small></div>

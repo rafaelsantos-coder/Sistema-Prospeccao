@@ -490,6 +490,8 @@ def main() -> None:
     LOG.info("Prospecta VOZ PJSUA2 iniciado. Campanhas=%s, testes de transferencia=%s.",
              CAMPAIGNS_ENABLED, TRANSFER_TESTS_ENABLED)
     _expire_crashed_calls()
+    from app.workers import lia_voz_pilot
+    lia_voz_pilot.expire_stale()
     last_beat = 0.0
     while True:
         try:
@@ -497,6 +499,10 @@ def main() -> None:
             if t - last_beat >= 8:
                 heartbeat()
                 last_beat = t
+            if (lia_id := lia_voz_pilot.claim()) is not None:
+                lia_voz_pilot.run(lia_id)
+                last_beat = 0
+                continue
             native_id = _claim_native_test()
             if native_id is not None:
                 _run_native_test(native_id)

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div><span class="eyebrow">PROSPECTA VOZ · SDRIA</span><h2>Lia Voz</h2>
+    <p>Ambiente de testes de conversação em tempo real. Nenhuma campanha comercial é iniciada aqui.</p></div>
+  <a class="button button-secondary" href="/voice">Voltar ao Prospecta VOZ</a>
+</div>
+<section class="panel voice-panel">
+  <div class="panel-header"><div><span class="eyebrow">HOMOLOGAÇÃO INDIVIDUAL</span><h3>Conversar com Lia Voz</h3></div>
+    <span class="voice-pill {{ 'is-ready' if configured and engine_ready else 'is-paused' }}">
+      {{ 'Ambiente configurado' if configured and engine_ready else 'Homologação bloqueada' }}</span></div>
+  <p class="voice-help">Um único número previamente autorizado, conta Native 1804 isolada, até 90 segundos após atendimento. Não há transferência, consulta de CPF, gravação ou CRM neste piloto.</p>
+  {% if not configured or not engine_ready %}
+  <div class="voice-notice"><strong>Teste indisponível</strong><p>A liberação depende da confirmação de exclusividade SIP, configuração de destino permitido, motor disponível e campanhas/testes legados desligados. A conexão Realtime ainda será validada pelo worker antes da discagem.</p></div>
+  {% endif %}
+  <form method="post" action="/voice/lia-voz/test" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="field"><span>Conta SIP</span><select name="account_id" required {% if not configured or not engine_ready %}disabled{% endif %}>
+        {% for account in accounts %}<option value="{{ account.id }}">{{ account.name }} · {{ account.username }}</option>{% endfor %}
+      </select></label>
+      <label class="field"><span>Telefone de teste com DDD</span><input type="tel" name="phone" maxlength="24" autocomplete="off" required {% if not configured or not engine_ready %}disabled{% endif %}></label>
+    </div>
+    <label class="voice-test-confirm"><input type="checkbox" name="authorized" value="sim" required {% if not configured or not engine_ready %}disabled{% endif %}>Confirmo que o número é meu ou está autorizado para este teste individual.</label>
+    <div class="voice-actions"><button class="button button-primary" type="submit" {% if not configured or not engine_ready or not accounts %}disabled{% endif %}>Conversar com Lia Voz</button>
+      <a class="button button-secondary" href="/voice/lia-voz">Atualizar resultado</a></div>
+  </form>
+</section>
+<section class="panel voice-panel">
+  <span class="eyebrow">TESTES DA LIA VOZ</span><h3>Histórico de homologação</h3>
+  {% if tests %}
+  <div class="voice-table-wrap"><table class="voice-table"><thead><tr><th>Teste</th><th>Estado</th><th>SIP</th><th>Detalhes</th></tr></thead><tbody>
+    {% for item in tests %}<tr><td>#{{ item.id }} · final {{ item.target_phone[-4:] }}</td><td>{{ item.status }}</td><td>{{ item.sip_invite_code if item.sip_invite_code is not none else '—' }}</td><td>{{ item.message }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}<div class="voice-empty">Nenhum teste da Lia Voz realizado.</div>{% endif %}
+</section>
+{% endblock %}
