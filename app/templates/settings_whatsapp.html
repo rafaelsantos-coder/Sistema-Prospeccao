@@ -6,7 +6,7 @@
   <div>
     <span class="eyebrow">CONFIGURAÇÕES · WHATSAPP</span>
     <h2>Números e conexões</h2>
-    <p>Cadastre números via Z-API ou pela API oficial do Meta e vincule-os às filas de atendimento. OpenWA está disponível apenas para homologação isolada.</p>
+    <p>Cadastre números via Z-API ou pela API oficial do Meta e vincule-os às filas de atendimento. O motor próprio Sulnet também está disponível para homologação.</p>
   </div>
   <a class="button button-secondary" href="/settings">← Configurações</a>
 </div>
@@ -207,9 +207,10 @@
     </div>
   </article>
   <article class="panel panel-span-12">
-    <div class="panel-header"><div><span class="eyebrow">PROVEDOR EXPERIMENTAL</span><h3>OpenWA · Teste de segurança</h3></div></div>
-    <p class="panel-note">Integração mantida fora das filas e do envio de mensagens até passar na auditoria.</p>
-    <a class="button button-secondary" href="/settings/openwa">Abrir homologação OpenWA</a>
+    <div class="panel-header"><div><span class="eyebrow">NOSSO MOTOR</span><h3>WhatsApp Sulnet · Instâncias próprias</h3></div></div>
+    <p class="panel-note">Controle sessões e QR Code no ambiente da Sulnet, sem misturar Z-API ou Meta oficial.</p>
+    <span class="count-badge">{{ sulnet_wa_instances|length }} instâncias</span>
+    <a class="button button-secondary" href="/settings/sulnet-wa">Gerenciar instâncias Sulnet</a>
   </article>
 </div>
 {% endblock %}

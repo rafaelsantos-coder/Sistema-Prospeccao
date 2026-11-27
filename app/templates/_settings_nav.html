@@ -4,7 +4,7 @@
   <a href="/settings/whatsapp" class="{% if settings_section == 'whatsapp' %}active{% endif %}">Números WhatsApp</a>
   {% endif %}
   {% if current_user.role in ['ADMIN', 'GESTOR'] %}
-  <a href="/settings/openwa" class="{% if settings_section == 'openwa' %}active{% endif %}">OpenWA · Homologação</a>
+  <a href="/settings/sulnet-wa" class="{% if settings_section == 'sulnet_wa' %}active{% endif %}">Motor WhatsApp Sulnet</a>
   {% endif %}
   {% if 'settings.queues.view' in current_user.permissions %}
   <a href="/settings/queues" class="{% if settings_section == 'queues' %}active{% endif %}">Filas</a>
