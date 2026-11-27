@@ -7,7 +7,7 @@ import logging
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import PlainTextResponse, RedirectResponse
@@ -34,6 +34,7 @@ from app.services.meta_whatsapp import (
     verify_webhook_signature,
 )
 from app.services.secret_store import decrypt_secret, encrypt_secret
+from app.services.meta_images import archive_meta_image_task
 from app.services.zapi import ZApiError
 from app.web import flash
 
@@ -54,6 +55,7 @@ def _process_meta_value(
     db: Session,
     queue_id: int | None,
     meta_account_id: int | None,
+    background_tasks: BackgroundTasks | None = None,
 ) -> dict[str, Any]:
     contacts = value.get("contacts") if isinstance(value.get("contacts"), list) else []
     wa_by_id: dict[str, str] = {}
@@ -92,6 +94,8 @@ def _process_meta_value(
                 db.rollback()
                 raise HTTPException(status_code=503, detail="Fila Meta divergente")
             db.commit()
+            if stored.message_type == "IMAGE" and background_tasks is not None:
+                background_tasks.add_task(archive_meta_image_task, stored.id)
             LOG.info("meta_inbound_routed account_id=%s conversation_id=%s queue_id=%s queue_name=%s", meta_account_id, conversation.id, actual.id, actual.name)
             processed += 1
 
@@ -133,6 +137,7 @@ def meta_webhook_verify(
 async def meta_webhook_receive(
     webhook_key: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     account = account_by_webhook_key(db, webhook_key)
@@ -183,6 +188,7 @@ async def meta_webhook_receive(
                 db=db,
                 queue_id=queue_id,
                 meta_account_id=account.id,
+                background_tasks=background_tasks,
             )
             total += int(result.get("processed") or 0)
     return {"ok": True, "processed": total}

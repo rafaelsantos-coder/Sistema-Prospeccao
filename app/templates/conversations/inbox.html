@@ -349,9 +349,10 @@
           <div class="message-bubble">
             <div class="message-sender">{{ item.sender_user.name if item.sender_user else ('Cliente' if item.direction == 'INBOUND' else 'Sulnet') }}</div>
             {% if item.message_type != 'TEXT' %}<span class="message-type">{{ item.message_type }}</span>{% endif %}
-            {% if item.media_url and item.message_type == 'IMAGE' %}
+            {% if (item.media_url or item.id in meta_image_ids) and item.message_type == 'IMAGE' %}
               <a class="message-media-preview image" href="/conversations/messages/{{ item.id }}/media" target="_blank" rel="noopener">
-                <img src="/conversations/messages/{{ item.id }}/media" alt="{{ item.body or 'Imagem' }}" loading="lazy">
+                <img src="/conversations/messages/{{ item.id }}/media" alt="Abrir imagem recebida" loading="lazy">
+                <span>Abrir imagem ↗</span>
               </a>
               {% if item.body and item.body != '[Imagem]' %}<p>{{ item.body }}</p>{% endif %}
             {% elif item.media_url and item.message_type == 'VIDEO' %}
