@@ -99,9 +99,12 @@
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <button class="button button-ghost" type="submit">Atualizar webhook</button>
                 </form>
-                <form action="/settings/zapi/instances/{{ instance.id }}/clear-queue" method="post" onsubmit="return confirm('Limpar a fila nativa da Z-API desta instância? Mensagens pendentes não serão enviadas.');">
+                <form action="/settings/zapi/instances/{{ instance.id }}/clear-queue" method="post" class="stack-form compact">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                  <input type="hidden" name="confirm" value="sim">
+                  <label class="field">
+                    <span class="table-subline">Confirmar limpeza da fila nativa</span>
+                    <input type="checkbox" name="confirm" value="sim" required aria-label="Confirmar limpeza da fila nativa da Z-API na instância {{ instance.name }}">
+                  </label>
                   <button class="button button-danger" type="submit"{% if not zi.get('native_queue_pending') %} title="Fila aparentemente vazia"{% endif %}>Limpar fila Z-API</button>
                 </form>
                 {% if instance.source_type != 'ENV' %}
