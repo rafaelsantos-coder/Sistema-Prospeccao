@@ -25,6 +25,7 @@ from app.models import (
     VoiceSipAccount, VoiceTestCall, VoiceTransferTest,
 )
 from app.services.global_blacklist import is_globally_blocked
+from app.services.lia_voz_pilot import CALLS_IN_FLIGHT, OTHER_TESTS
 from app.services.voice_native_routing import NATIVE_ORIGIN_NUMBERS, selected_native_prefix
 from app.services.secret_store import decrypt_secret
 from app.services.voice_pjsua2 import PjSession, VoiceEngineError
@@ -485,30 +486,52 @@ def _run_campaign_call(recipient_id: int) -> None:
 
 
 def _expire_crashed_calls() -> None:
-    """Never redial calls that might have been placed before a worker restart."""
+    """Reconcile stale call states only while holding the shared SIP slot.
+
+    A crashed/old worker may leave an intermediate audio or DTMF state.
+    Never reset attempts, erase history, or put such calls back in the queue.
+    Recent records remain untouched as a conservative grace period.
+    """
+    if not slot_healthy(required=True):
+        return
+    recovered_at = now()
+    cutoff = recovered_at - timedelta(minutes=3)
     with SessionLocal() as db:
         for test in db.scalars(select(VoiceTestCall).where(
-            VoiceTestCall.status.in_(["REGISTRANDO_PJSIP", "PENDENTE_PJSIP"])
+            VoiceTestCall.finished_at.is_(None),
+            VoiceTestCall.status.in_(OTHER_TESTS - {"PENDENTE"}),
+            func.coalesce(VoiceTestCall.started_at, VoiceTestCall.created_at) < cutoff,
         )):
-            if now() - aware(test.created_at) > timedelta(minutes=3):
-                test.status = "INDETERMINADO"
-                test.message = "Worker reiniciou; teste nativo nao sera repetido."
-                test.finished_at = now()
+            test.status = "INDETERMINADO"
+            test.message = "Estado antigo sem execucao ativa; teste nao sera repetido."
+            test.finished_at = recovered_at
         for row in db.scalars(select(VoiceTransferTest).where(
+            VoiceTransferTest.finished_at.is_(None),
             VoiceTransferTest.result.in_([
                 "REGISTRANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERINDO",
-            ])
+            ]),
+            VoiceTransferTest.created_at < cutoff,
         )):
-            if now() - aware(row.created_at) > timedelta(minutes=3):
-                row.result = "INDETERMINADO"
-                row.message = "Worker reiniciou; nao repetir ligacao automaticamente."
-                row.finished_at = now()
+            row.result = "INDETERMINADO"
+            row.message = "Estado antigo sem execucao ativa; nao repetir ligacao automaticamente."
+            row.finished_at = recovered_at
         for row in db.scalars(select(VoiceRecipient).where(
-            VoiceRecipient.status.in_(["INICIANDO", "CHAMANDO", "TOCANDO", "ATENDIDA", "TRANSFERINDO"])
+            VoiceRecipient.status.in_(CALLS_IN_FLIGHT),
+            func.coalesce(VoiceRecipient.last_attempt_at, VoiceRecipient.created_at) < cutoff,
         )):
-            if row.last_attempt_at and now() - aware(row.last_attempt_at) > timedelta(minutes=3):
-                row.status = "INDETERMINADO"
-                row.last_error = "Estado apos falha do worker. Sem rediscagem automatica."
+            previous = row.status
+            row.status = "INDETERMINADO"
+            row.last_event = "RECUPERACAO_ESTADO"
+            row.last_error = "Estado antigo sem execucao ativa. Sem rediscagem automatica."
+            db.add(VoiceCallEvent(
+                recipient_id=row.id, event_id=uuid4().hex,
+                event="RECUPERACAO_ESTADO",
+                detail=f"Estado anterior {previous}; recuperado sem rediscagem.",
+            ))
+        # Refuse to commit if the lock session was lost during reconciliation.
+        if not slot_healthy(required=True):
+            db.rollback()
+            return
         db.commit()
 
 
@@ -519,18 +542,15 @@ def main() -> None:
     LOG.info("Prospecta VOZ PJSUA2 iniciado. Campanhas=%s, testes de transferencia=%s.",
              CAMPAIGNS_ENABLED, TRANSFER_TESTS_ENABLED)
     from app.workers import lia_voz_pilot
-    recovered = False
-    last_recovery = 0.0
+    last_recovery = -30.0
     while True:
         try:
             refresh_heartbeat()
             worked = False
             with voice_execution_slot() as acquired:
                 if acquired:
-                    if not recovered:
-                        _expire_crashed_calls()
-                        recovered = True
                     if time.monotonic() - last_recovery >= 30:
+                        _expire_crashed_calls()
                         lia_voz_pilot.expire_stale()
                         last_recovery = time.monotonic()
                     if (lia_id := lia_voz_pilot.claim()) is not None:
