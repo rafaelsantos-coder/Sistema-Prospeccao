@@ -231,6 +231,12 @@ def test_settings_origin_campaigns_crud_and_crm_register_uses_match(monkeypatch)
     class FakeCRM:
         bearer_token = "read-only-credential"
 
+        def list_active_origins(self):
+            return [
+                {"id": 101, "name": DEFAULT_CRM_ORIGIN},
+                {"id": 102, "name": "Facebook Ads · CRM Register Teste"},
+            ]
+
         def find_opportunities_by_phone(self, phone):
             return {"items": []}
 
@@ -305,14 +311,18 @@ def test_settings_origin_campaigns_crud_and_crm_register_uses_match(monkeypatch)
 
         detail = client.get(f"/conversations/{conversation_id}")
         assert detail.status_code == 200
-        assert "Facebook Ads · CRM Register Teste" in detail.text
         assert "Campanha CRM Register Teste" in detail.text
+        catalog = client.get(f"/conversations/{conversation_id}/crm-origins")
+        assert catalog.status_code == 200
+        assert catalog.json()["defaultId"] == 102
+        assert {"id": 102, "name": "Facebook Ads · CRM Register Teste"} in catalog.json()["origins"]
 
         registered = client.post(
             f"/conversations/{conversation_id}/register-crm",
             data={
                 "csrf_token": _csrf(detail.text),
                 "client_name": "Brunna Cilios",
+                "origin_id": "102",
             },
             follow_redirects=False,
         )
@@ -327,6 +337,12 @@ def test_crm_register_keeps_default_origin_without_match(monkeypatch):
 
     class FakeCRM:
         bearer_token = "read-only-credential"
+
+        def list_active_origins(self):
+            return [
+                {"id": 101, "name": DEFAULT_CRM_ORIGIN},
+                {"id": 102, "name": "Facebook Ads · CRM Register Teste"},
+            ]
 
         def find_opportunities_by_phone(self, phone):
             return {"items": []}
@@ -373,12 +389,15 @@ def test_crm_register_keeps_default_origin_without_match(monkeypatch):
             conversation_id = conversation.id
 
         detail = client.get(f"/conversations/{conversation_id}")
-        assert DEFAULT_CRM_ORIGIN in detail.text
+        catalog = client.get(f"/conversations/{conversation_id}/crm-origins")
+        assert catalog.status_code == 200
+        assert catalog.json()["defaultId"] == 101
         registered = client.post(
             f"/conversations/{conversation_id}/register-crm",
             data={
                 "csrf_token": _csrf(detail.text),
                 "client_name": "Cliente Avulso",
+                "origin_id": "101",
             },
             follow_redirects=False,
         )
