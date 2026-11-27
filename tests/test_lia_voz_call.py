@@ -9,6 +9,11 @@ from app.services import lia_voz_call
 from app.services.lia_voz_realtime import LiaVoiceError
 
 
+class FakeVector(list):
+    def size(self):
+        return len(self)
+
+
 class FakeMedia:
     def __init__(self):
         self.connections = []
@@ -34,6 +39,9 @@ class FakeDriver:
         self.hangups = 0
         self.steps = 0
         self.call = None
+        self.audio_status = 1
+        self.emit_pcm = True
+        self.invite_params = None
         self.media = FakeMedia()
         driver = self
 
@@ -42,7 +50,7 @@ class FakeDriver:
                 driver.call = self
                 self.info = SimpleNamespace(
                     state=0, lastStatusCode=100,
-                    media=[SimpleNamespace(type=1, status=1)],
+                    media=[SimpleNamespace(type=1, status=driver.audio_status, index=4)],
                 )
 
             def getInfo(self):
@@ -50,28 +58,42 @@ class FakeDriver:
 
             def makeCall(self, _target, _params):
                 driver.invites += 1
+                driver.invite_params = _params
 
-            def getAudioMedia(self, _index):
+            def getAudioMedia(self, index):
+                assert index == 4
                 return driver.media
 
             def hangup(self, _params):
                 driver.hangups += 1
 
         self.pj = SimpleNamespace(
-            Call=FakeCall, CallOpParam=lambda *_args: SimpleNamespace(),
+            Call=FakeCall, CallOpParam=lambda *_args: SimpleNamespace(opt=SimpleNamespace()),
             PJSIP_INV_STATE_CONFIRMED=2, PJSIP_INV_STATE_DISCONNECTED=3,
             PJMEDIA_TYPE_AUDIO=1, PJSUA_CALL_MEDIA_ACTIVE=1,
             AudioMediaPort=FakePort, MediaFormatAudio=SimpleNamespace,
-            ByteVector=list, PJMEDIA_FORMAT_PCM=0,
+            ByteVector=FakeVector, PJMEDIA_FORMAT_PCM=0,
             PJMEDIA_FRAME_TYPE_AUDIO=1, PJMEDIA_FRAME_TYPE_NONE=0,
         )
 
     def pump(self, _ms):
         self.steps += 1
         if self.call and self.steps == 1:
+            self.call.info.state = 1
+            self.call.info.lastStatusCode = 180
+            self.call.onCallState(None)
+        elif self.call and self.steps == 2:
             self.call.info.state = 2
             self.call.info.lastStatusCode = 200
             self.call.onCallState(None)
+            self.call.onCallMediaState(None)
+        elif self.call and self.steps == 4 and self.emit_pcm and self.media.connections:
+            port = self.media.connections[0]
+            from app.services.lia_voz_media import FRAME_BYTES
+            port.onFrameReceived(SimpleNamespace(type=1, size=FRAME_BYTES,
+                                                buf=FakeVector([1] * FRAME_BYTES)))
+            frame = SimpleNamespace(size=FRAME_BYTES, buf=FakeVector(), type=0)
+            port.onFrameRequested(frame)
         elif self.call and self.steps == 7:
             self.call.info.state = 3
             self.call.onCallState(None)
@@ -176,6 +198,33 @@ def test_confirmed_sip_media_and_remote_hangup(monkeypatch):
     assert outcome.sip_code == 200
     assert "Validar a conversa" in outcome.message
     assert driver.invites == 1 and driver.hangups == 0
+    assert driver.invite_params.opt.audioCount == 1
+    assert driver.invite_params.opt.videoCount == 0
+    assert "SIP 180/200" in outcome.message
+    assert "quadros RX/TX=1/1" in outcome.message
     assert targets[0][1]["native_techprefix"] == "8003"
     assert session.greeted and session.cleared
+    assert not driver.media.connections
+
+
+@pytest.mark.parametrize("audio_status,emit_pcm", [(0, False), (1, False)])
+def test_sip_200_without_bidirectional_audio_is_failure(monkeypatch, audio_status, emit_pcm):
+    driver = FakeDriver()
+    driver.audio_status = audio_status
+    driver.emit_pcm = emit_pcm
+    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *args, **kw: "sip:fake.invalid")
+
+    async def run():
+        return await asyncio.wait_for(lia_voz_call.perform_lia_test(
+            driver, "5555999990000", "8003", "test-key",
+            should_abort=lambda: False, session_factory=factory_for(FakeSession()),
+        ), timeout=2)
+
+    outcome = asyncio.run(run())
+    assert outcome.status == "LIA_FALHOU"
+    assert outcome.sip_code == 200
+    assert "SIP 180/200" in outcome.message
+    assert "quadros RX/TX=0/0" in outcome.message
+    assert "sem audio bidirecional" in outcome.message
+    assert driver.invites == 1
     assert not driver.media.connections
