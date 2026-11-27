@@ -1,12 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { initAuthCreds, BufferJSON, proto } from '@whiskeysockets/baileys';
 import { encrypt, decrypt, validSessionId } from './security.mjs';
 
 async function safeWrite(file, bytes) {
   const dir = path.dirname(file);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-  const tmp = file + '.' + process.pid + '.' + Date.now() + '.tmp';
+  const tmp = file + '.' + randomUUID() + '.tmp';
   try {
     await fs.writeFile(tmp, bytes, { mode: 0o600, flag: 'wx' });
     await fs.rename(tmp, file);

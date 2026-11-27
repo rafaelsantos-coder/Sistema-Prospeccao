@@ -22,7 +22,7 @@ from app.models import (
     ConversationSulnetWAInstance, ServiceQueue, ServiceQueueMetaAccount,
     ServiceQueueSulnetWAInstance, ServiceQueueZApiInstance, SulnetWAInstance,
 )
-from app.services.zapi import ZApiError, ZApiNotConfigured
+from app.services.zapi import ZApiError, ZApiNotConfigured, ZApiBlacklistedRecipient
 
 PROVIDER_SULNET_WA = "SULNET_WA"
 _SESSION_PATTERN = re.compile(r"^[A-Za-z0-9-]{3,80}$")
@@ -91,15 +91,18 @@ class GatewayClient:
         try:
             with httpx.Client(timeout=httpx.Timeout(9.0, connect=3.0),
                               follow_redirects=False, trust_env=False, transport=self.transport) as client:
-                response = client.request(method, base + path,
-                                          headers={"Authorization": "Bearer " + self.config.api_key,
-                                                   "Accept": "application/json"},
-                                          json=payload)
-                if response.status_code not in (200, 201):
-                    raise SulnetWAError("Gateway recusou a operação.")
-                if len(response.content) > 48_000:
-                    raise SulnetWAError("Resposta do motor acima do limite.")
-                data = response.json()
+                with client.stream(method, base + path,
+                                   headers={"Authorization": "Bearer " + self.config.api_key,
+                                            "Accept": "application/json"},
+                                   json=payload) as response:
+                    if response.status_code not in (200, 201):
+                        raise SulnetWAError("Gateway recusou a operação.")
+                    raw = bytearray()
+                    for chunk in response.iter_bytes():
+                        if len(raw) + len(chunk) > 48_000:
+                            raise SulnetWAError("Resposta do motor acima do limite.")
+                        raw.extend(chunk)
+                    data = json.loads(raw)
         except (httpx.HTTPError, ValueError) as exc:
             raise SulnetWAError("Motor Sulnet WhatsApp indisponível.") from exc
         if not isinstance(data, (dict, list)):
@@ -163,7 +166,7 @@ def sanitize_session(value):
     status = value.get("status")
     return {
         "id": str(value.get("id") or "")[:80],
-        "status": status if status in {"created", "initializing", "qr_ready", "authenticating",
+        "status": status if isinstance(status, str) and status in {"created", "initializing", "qr_ready", "authenticating",
                                       "ready", "disconnected", "action_required", "failed"} else "unknown",
         "phone": str(value.get("phone") or "")[:20],
         "engineLoaded": value.get("engineLoaded") is True,
@@ -246,7 +249,11 @@ def bind_conversation_instance(db: Session, conversation_id: int, instance_id: i
 
 def bind_queue_instance(db: Session, queue_id: int, instance_id: int):
     instance = db.get(SulnetWAInstance, instance_id)
-    if not instance or not instance.active or not queue_for_instance(db, instance_id) in (None, db.get(ServiceQueue, queue_id)):
+    existing_binding = db.scalar(select(ServiceQueueSulnetWAInstance).where(
+        ServiceQueueSulnetWAInstance.instance_id == instance_id
+    ))
+    if (not instance or not instance.active
+            or (existing_binding is not None and existing_binding.queue_id != queue_id)):
         raise SulnetWAError("Instância inválida ou já vinculada a outra fila.")
     db.execute(delete(ServiceQueueMetaAccount).where(ServiceQueueMetaAccount.queue_id == queue_id))
     db.execute(delete(ServiceQueueZApiInstance).where(ServiceQueueZApiInstance.queue_id == queue_id))
@@ -275,8 +282,13 @@ class SulnetWAService:
         return self.instance.active and GatewayConfig.from_env().configured
 
     def send_text(self, *, phone, message):
-        from app.services.global_blacklist import assert_outbound_permitted
-        assert_outbound_permitted(phone)
+        from app.services.global_blacklist import (
+            assert_outbound_permitted, BlacklistedRecipientError, BlacklistPhoneError,
+        )
+        try:
+            assert_outbound_permitted(phone)
+        except (BlacklistedRecipientError, BlacklistPhoneError) as exc:
+            raise ZApiBlacklistedRecipient(str(exc)) from exc
         if not self.instance.active:
             raise ZApiNotConfigured("Instância Sulnet WhatsApp desativada.")
         return GatewayClient().send_text(self.instance.session_id, phone=phone, message=message)

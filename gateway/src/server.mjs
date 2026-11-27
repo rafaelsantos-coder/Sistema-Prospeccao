@@ -2,7 +2,6 @@ import http from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import makeWASocket, { DisconnectReason, getContentType } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -23,6 +22,7 @@ const gatewaySessions = new Map();
 const logger = pino({ level: 'silent' });
 const MAX_BODY = 8192;
 const queueDir = path.join(root, 'outbox');
+let flushingOutbox = false;
 
 async function persistEvent(event) {
   await fs.mkdir(queueDir, { recursive: true, mode: 0o700 });
@@ -63,9 +63,16 @@ async function sendEvent(file) {
   }
 }
 async function flushOutbox() {
-  const files = await fs.readdir(queueDir).catch(() => []);
-  for (const name of files.filter((n) => /^[a-f0-9]{64}\.bin$/.test(n)).slice(0, 100)) {
-    await sendEvent(path.join(queueDir, name));
+  if (flushingOutbox) return;
+  flushingOutbox = true;
+  try {
+    const files = await fs.readdir(queueDir).catch(() => []);
+    for (const name of files.filter((n) => /^[a-f0-9]{64}\.bin$/.test(n)).slice(0, 100)) {
+      try { await sendEvent(path.join(queueDir, name)); }
+      catch { /* Keep outbox for later without logging content. */ }
+    }
+  } finally {
+    flushingOutbox = false;
   }
 }
 async function queueEvent(sessionId, messageId, from, text, kind) {
@@ -83,6 +90,7 @@ async function createSession(id) {
     id, status: 'created', socket: null, qr: '', reconnect: null, stopped: true,
     lastError: null, phone: null,
   };
+  await fs.mkdir(path.join(root, 'sessions', id), { recursive: true, mode: 0o700 });
   gatewaySessions.set(id, record);
   return record;
 }
@@ -105,7 +113,13 @@ async function startSession(id) {
     record.socket = socket;
     socket.ev.on('creds.update', async () => {
       try { await auth.saveCreds(); }
-      catch { record.status = 'failed'; record.lastError = 'credentials-write'; }
+      catch {
+        record.stopped = true;
+        record.socket = null;
+        record.status = 'failed';
+        record.lastError = 'credentials-write';
+        try { socket.end(undefined); } catch { /* fail closed */ }
+      }
     });
     socket.ev.on('connection.update', ({ connection, qr, lastDisconnect }) => {
       if (record.stopped || record.socket !== socket) return;
