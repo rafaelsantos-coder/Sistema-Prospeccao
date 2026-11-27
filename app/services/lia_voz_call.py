@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 
 from app.services.lia_voz_media import MediaBridge, attach_pj_media, run_media_bridge
-from app.services.lia_voz_realtime import LiaVoiceError, open_realtime
+from app.services.lia_voz_realtime import LiaVoiceError, open_realtime, safe_realtime_failure
 from app.services.voice_runtime import make_dial_uri
 
 
@@ -111,6 +111,20 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
             nonlocal last_outcome
             last_outcome = PilotOutcome(status, call.sip_code if call else None,
                                         (message + " " + diagnostic())[:230])
+            # Metrics only, without recording, transcript or personal details.
+            # Keep the final status/diagnostic as the last progress message.
+            snapshot = getattr(session, "quality_snapshot", None)
+            if bridge is not None and callable(snapshot):
+                q = snapshot()
+                on_progress(
+                    "Qualidade voz: fala inicio/fim=" + str(q["speech_starts"]) + "/" + str(q["speech_ends"])
+                    + "; interrupcoes=" + str(q["interruptions"])
+                    + "; respostas com audio=" + str(q["audio_responses"])
+                    + "; concluidas=" + str(q["completed_responses"])
+                    + "; geracao ms media/max=" + str(q["generation_avg_ms"]) + "/" + str(q["generation_max_ms"])
+                    + "; amostras=" + str(q["generation_samples"]) + ".",
+                    last_outcome.sip_code,
+                )
             on_progress(last_outcome.message, last_outcome.sip_code)
             return last_outcome
 
@@ -202,10 +216,12 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
                             return result("LIA_FALHOU", "Limite atingido sem quadros bidirecionais.")
                         return result("LIA_FINALIZADA", "Limite atingido; validar voz no aparelho.")
                 await asyncio.sleep(0.01)
-        except Exception:
-            # Stage names and numeric SIP/media counters only. Never expose raw
-            # exceptions, SDP, SIP URIs, credentials or conversation content.
-            return result("LIA_FALHOU", "Falha na etapa: " + stage + ".")
+        except Exception as exc:
+            # Stage names, fixed failure categories and numeric counters only.
+            # Never expose raw exceptions, SDP, SIP URIs or conversation content.
+            detail = (" [" + safe_realtime_failure(exc) + "]"
+                      if stage in {"transporte Realtime", "audio Realtime"} else "")
+            return result("LIA_FALHOU", "Falha na etapa: " + stage + detail + ".")
         finally:
             # Do not erase SIP diagnostics when a native cleanup operation races
             # with remote BYE or an unsuccessful makeCall. Endpoint destruction in

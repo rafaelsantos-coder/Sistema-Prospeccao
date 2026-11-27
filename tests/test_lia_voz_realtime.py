@@ -174,3 +174,49 @@ def test_connection_requires_explicit_opt_in_and_key(kwargs, reason):
             async with open_realtime(**kwargs):
                 pytest.fail("must not connect")
     asyncio.run(run())
+
+
+def test_provider_errors_are_diagnostic_but_never_expose_raw_payload():
+    from app.services.lia_voz_realtime import safe_realtime_failure
+    for code, expected in [
+        ("rate_limit_exceeded", "provider:rate_limit_exceeded"),
+        ("private-value-123", "provider_error"),
+    ]:
+        with pytest.raises(LiaVoiceError) as raised:
+            RealtimeProtocol().handle({
+                "type": "error", "error": {"code": code, "message": "private customer content"}
+            })
+        assert safe_realtime_failure(raised.value) == expected
+        assert "private" not in str(raised.value)
+    with pytest.raises(LiaVoiceError) as raised:
+        RealtimeProtocol().handle({
+            "type": "response.done",
+            "response": {"id": "r1", "status": "incomplete",
+                         "status_details": {"reason": "max_output_tokens"}},
+        })
+    assert safe_realtime_failure(raised.value) == "provider:max_output_tokens"
+
+
+def test_quality_metrics_for_turns_interruption_and_generation(monkeypatch):
+    from app.services import lia_voz_realtime
+    clock = iter([10.0, 10.35, 11.0, 11.5])
+    monkeypatch.setattr(lia_voz_realtime.time, "monotonic", lambda: next(clock))
+    p = RealtimeProtocol()
+    p.handle(SPEECH)
+    p.handle({"type": "input_audio_buffer.speech_stopped"})
+    p.handle(created())
+    p.handle(delta())
+    p.handle(delta())
+    p.handle(SPEECH)
+    p.handle(delta())  # cancelled response, no additional audio or latency
+    p.handle({"type": "response.done", "response": {"id": "r1", "status": "cancelled"}})
+    p.handle({"type": "input_audio_buffer.speech_stopped"})
+    p.handle(created("r2"))
+    p.handle(delta("r2", "i2"))
+    p.handle({"type": "response.done", "response": {"id": "r2", "status": "completed"}})
+    assert p.quality_snapshot() == {
+        "speech_starts": 2, "speech_ends": 2, "interruptions": 1,
+        "completed_responses": 1, "audio_responses": 2,
+        "generation_samples": 2, "generation_avg_ms": 425,
+        "generation_max_ms": 500,
+    }

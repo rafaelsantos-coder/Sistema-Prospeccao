@@ -376,3 +376,36 @@ def test_account_route_ai_also_uses_national_format(monkeypatch):
     asyncio.run(run())
     assert options == [("5555999990000", {"dial_format": "NATIONAL"})]
     assert driver.invites == 1
+
+
+def test_call_reports_sanitized_realtime_failure_and_turn_metrics(monkeypatch):
+    driver = FakeDriver()
+    progress = []
+    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
+
+    class FailedSession(FakeSession):
+        async def receive_once(self):
+            raise LiaVoiceError("private raw content", diagnostic="provider:rate_limit_exceeded")
+
+        def quality_snapshot(self):
+            return {
+                "speech_starts": 2, "speech_ends": 1, "interruptions": 1,
+                "audio_responses": 1, "completed_responses": 0,
+                "generation_samples": 1, "generation_avg_ms": 450,
+                "generation_max_ms": 450,
+            }
+
+    async def run():
+        return await lia_voz_call.perform_lia_test(
+            driver, "5555999990000", None, "test-key",
+            should_abort=lambda: False, session_factory=factory_for(FailedSession()),
+            on_progress=lambda message, code: progress.append(message),
+        )
+
+    outcome = asyncio.run(run())
+    assert outcome.status == "LIA_FALHOU"
+    assert "provider:rate_limit_exceeded" in outcome.message
+    assert "private raw content" not in str(progress)
+    assert any("Qualidade voz: fala inicio/fim=2/1" in m for m in progress)
+    assert progress[-1] == outcome.message
+    assert driver.invites == 1

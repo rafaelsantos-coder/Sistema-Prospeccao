@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.database import SessionLocal, engine as database_engine
 from app.models import User, VoiceDialerEngine, VoiceSipAccount, VoiceTestCall
 from app.services.lia_voz_call import perform_lia_test, perform_native_probe
-from app.services.lia_voz_realtime import LiaVoiceError
+from app.services.lia_voz_realtime import LiaVoiceError, safe_realtime_failure
 from app.services.lia_voz_pilot import (
     ACTIVE, PENDING_STATES, RUNNING_STATES, CLAIM_STATES, PROBE_STATES,
     ACCOUNT_STATES, PilotConfig, PilotDenied, ensure_idle,
@@ -137,7 +137,7 @@ def _safe_failure_kind(exc):
     if isinstance(exc, OSError):
         return "falha de rede/SO"
     if isinstance(exc, LiaVoiceError):
-        return "falha Realtime/midia"
+        return "falha Realtime/midia: " + safe_realtime_failure(exc)
     if type(exc).__name__ == "InvalidStatus":
         code = getattr(getattr(exc, "response", None), "status_code", None)
         return "Realtime HTTP " + str(code) if isinstance(code, int) else "falha HTTP"

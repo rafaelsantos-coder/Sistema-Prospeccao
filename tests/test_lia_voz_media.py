@@ -223,3 +223,20 @@ def test_disconnect_race_after_remote_bye_preserves_result():
                 with attach_pj_media(PJ, call_audio, bridge, enabled=True):
                     pass
         assert bridge.closed
+
+
+def test_transport_failure_preserves_safe_category():
+    from app.services.lia_voz_realtime import safe_realtime_failure
+    class BrokenSession(Session):
+        async def receive_once(self):
+            raise TimeoutError("never log this content")
+
+    async def run():
+        session = BrokenSession()
+        bridge = MediaBridge(session)
+        with pytest.raises(LiaVoiceError) as raised:
+            await asyncio.wait_for(run_media_bridge(session, bridge), 1)
+        assert safe_realtime_failure(raised.value) == "transport_timeout"
+        assert "never log" not in str(raised.value)
+        assert bridge.closed
+    asyncio.run(run())

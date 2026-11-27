@@ -11,6 +11,7 @@ import asyncio
 import base64
 import binascii
 import json
+import time
 from threading import Lock
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -27,7 +28,10 @@ VOICE = "marin"
 PILOT_INSTRUCTIONS = (
     "Voce e Lia Voz, assistente virtual comercial da Sulnet. "
     "Converse em portugues brasileiro, com frases curtas e naturais. "
-    "Identifique-se como assistente virtual. Escute antes de responder. "
+    "Identifique-se como assistente virtual. Use uma ou duas frases por vez. "
+    "Escute ate a pessoa terminar; se houver interrupcao, pare e ouca. "
+    "Nao repita a saudacao. Se nao compreender, peca uma confirmacao curta. "
+    "Faca somente uma pergunta por vez. Evite enumeracoes longas. "
     "Este e um ambiente interno de homologacao: nao prometa contratacao, "
     "precos, cobertura, transferencia ou consulta ao CRM. Nao solicite "
     "CPF, senhas, dados financeiros ou outros dados pessoais. "
@@ -37,6 +41,63 @@ PILOT_INSTRUCTIONS = (
 
 class LiaVoiceError(RuntimeError):
     """Sanitized error; never include API keys, audio or transcript."""
+
+    def __init__(self, message: str, *, diagnostic: str = "realtime_unspecified"):
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+# Never copy arbitrary provider messages, event IDs, parameters or raw payloads.
+_PROVIDER_CODES = {
+    "rate_limit_exceeded", "insufficient_quota", "server_error",
+    "invalid_request_error", "invalid_value", "invalid_event",
+    "invalid_audio", "audio_buffer_commit_empty", "response_cancel_not_active",
+    "conversation_item_not_found", "response_already_in_progress",
+    "session_expired", "authentication_error", "permission_error",
+    "max_output_tokens", "max_tokens", "content_filter",
+    "turn_detected", "client_cancelled",
+}
+_LOCAL_CODES = {
+    "realtime_unspecified", "invalid_pcm", "overlapping_audio_items",
+    "output_buffer_exceeded", "invalid_audio_encoding", "invalid_event",
+    "response_failed", "response_incomplete", "provider_error",
+    "native_input_overrun", "native_input_invalid", "native_output_failed",
+    "native_callback_failed", "media_bridge_stopped", "socket_closed",
+    "transport_timeout", "transport_network", "transport_other",
+}
+
+
+def _provider_diagnostic(error, fallback):
+    if isinstance(error, dict):
+        for field in ("code", "type", "reason"):
+            code = error.get(field)
+            if isinstance(code, str) and code in _PROVIDER_CODES:
+                return "provider:" + code
+    return fallback
+
+
+def safe_realtime_failure(exc):
+    """A fixed category, known API error code or numeric WebSocket close code."""
+    if isinstance(exc, LiaVoiceError):
+        code = exc.diagnostic
+        if isinstance(code, str) and (
+            code in _LOCAL_CODES
+            or (code.startswith("provider:") and code[9:] in _PROVIDER_CODES)
+            or (code.startswith("socket_closed:") and code[14:].isdigit()
+                and len(code[14:]) == 4 and 1000 <= int(code[14:]) <= 4999)
+        ):
+            return code
+        return "realtime_unspecified"
+    if type(exc).__name__ in {"ConnectionClosed", "ConnectionClosedError", "ConnectionClosedOK"}:
+        code = getattr(getattr(exc, "rcvd", None), "code", None)
+        if isinstance(code, int) and 1000 <= code <= 4999:
+            return "socket_closed:" + str(code)
+        return "socket_closed"
+    if isinstance(exc, TimeoutError):
+        return "transport_timeout"
+    if isinstance(exc, OSError):
+        return "transport_network"
+    return "transport_other"
 
 
 def session_update(model: str = MODEL, voice: str = VOICE) -> dict:
@@ -96,14 +157,14 @@ class Playback:
 
     def push(self, item: AudioItem, pcm: bytes) -> None:
         if not pcm or len(pcm) % 2:
-            raise LiaVoiceError("Invalid PCM output")
+            raise LiaVoiceError("Invalid PCM output", diagnostic="invalid_pcm")
         if item != self.item:
             if self.pending:
-                raise LiaVoiceError("Overlapping output audio items")
+                raise LiaVoiceError("Overlapping output audio items", diagnostic="overlapping_audio_items")
             self.item = item
             self.played_bytes = 0
         if len(self.pending) + len(pcm) > MAX_BUFFER_BYTES:
-            raise LiaVoiceError("Output audio buffer exceeded")
+            raise LiaVoiceError("Output audio buffer exceeded", diagnostic="output_buffer_exceeded")
         self.pending.extend(pcm)
 
     def pull(self, size: int) -> bytes:
@@ -144,33 +205,76 @@ class RealtimeProtocol:
         self.playback = Playback()
         self.active_response: str | None = None
         self.discarded_responses: set[str] = set()
+        self.speech_starts = 0
+        self.speech_ends = 0
+        self.interruptions = 0
+        self.completed_responses = 0
+        self.audio_responses: set[str] = set()
+        self.speech_ended_at = None
+        self.generation_latencies_ms: list[int] = []
+
+    def quality_snapshot(self) -> dict:
+        samples = self.generation_latencies_ms
+        return {
+            "speech_starts": self.speech_starts,
+            "speech_ends": self.speech_ends,
+            "interruptions": self.interruptions,
+            "completed_responses": self.completed_responses,
+            "audio_responses": len(self.audio_responses),
+            "generation_samples": len(samples),
+            "generation_avg_ms": round(sum(samples) / len(samples)) if samples else None,
+            "generation_max_ms": max(samples) if samples else None,
+        }
 
     def handle(self, event: dict) -> list[dict]:
         kind = event.get("type")
         if kind == "error":
             self.playback.clear()
-            raise LiaVoiceError("Realtime reported an error")
+            raise LiaVoiceError("Realtime reported an error", diagnostic=_provider_diagnostic(
+                event.get("error"), "provider_error"
+            ))
         if kind == "response.created":
             self.active_response = event["response"]["id"]
         elif kind == "response.done":
             response = event["response"]
             if response.get("id") == self.active_response:
                 self.active_response = None
-            if response.get("status") in {"failed", "incomplete"}:
+            status = response.get("status")
+            if status == "completed":
+                self.completed_responses += 1
+            if status in {"failed", "incomplete"}:
                 self.playback.clear()
-                raise LiaVoiceError("Realtime response did not complete")
+                details = response.get("status_details")
+                details = details if isinstance(details, dict) else {}
+                fallback = "response_failed" if status == "failed" else "response_incomplete"
+                code = _provider_diagnostic(details.get("error"), _provider_diagnostic(details, fallback))
+                raise LiaVoiceError("Realtime response did not complete", diagnostic=code)
         elif kind == "response.output_audio.delta":
             response_id = event["response_id"]
             if response_id in self.discarded_responses:
                 return []
             try:
                 pcm = base64.b64decode(event["delta"], validate=True)
-            except (ValueError, binascii.Error) as exc:
-                raise LiaVoiceError("Invalid audio encoding") from None
+            except (ValueError, binascii.Error):
+                raise LiaVoiceError("Invalid audio encoding", diagnostic="invalid_audio_encoding") from None
             self.playback.push(
                 AudioItem(response_id, event["item_id"], event["content_index"]), pcm
             )
+            if response_id not in self.audio_responses:
+                self.audio_responses.add(response_id)
+                if self.speech_ended_at is not None:
+                    self.generation_latencies_ms.append(max(0, round(
+                        (time.monotonic() - self.speech_ended_at) * 1000
+                    )))
+                    self.speech_ended_at = None
+        elif kind == "input_audio_buffer.speech_stopped":
+            self.speech_ends += 1
+            self.speech_ended_at = time.monotonic()
         elif kind == "input_audio_buffer.speech_started":
+            self.speech_starts += 1
+            self.speech_ended_at = None
+            if self.active_response or self.playback.pending:
+                self.interruptions += 1
             if self.active_response:
                 self.discarded_responses.add(self.active_response)
             if self.playback.item:
@@ -254,6 +358,10 @@ class RealtimeSession:
     def clear_pcm(self) -> None:
         with self._playback_lock:
             self.protocol.playback.clear()
+
+    def quality_snapshot(self) -> dict:
+        with self._playback_lock:
+            return self.protocol.quality_snapshot()
 
 
 @asynccontextmanager
