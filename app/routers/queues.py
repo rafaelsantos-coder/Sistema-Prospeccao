@@ -21,12 +21,6 @@ from app.services.meta_whatsapp import (
     queue_meta_account,
 )
 from app.services.queue_routing import queue_summary
-from app.services.sulnet_wa import (
-    PROVIDER_SULNET_WA, GatewayConfig, SulnetWAError,
-    bind_queue_instance as bind_sulnet_queue_instance,
-    list_instances as list_sulnet_wa_instances,
-    queue_instance as sulnet_queue_instance,
-)
 from app.services.zapi_instances import (
     bind_queue_instance,
     get_zapi_instance,
@@ -45,7 +39,6 @@ ROUTING_STRATEGIES = {
 WHATSAPP_PROVIDERS = {
     PROVIDER_ZAPI: "Z-API",
     PROVIDER_META: "API oficial Meta",
-    PROVIDER_SULNET_WA: "Motor WhatsApp Sulnet",
 }
 
 
@@ -142,20 +135,9 @@ def _bind_queue_whatsapp(
     provider: str,
     zapi_instance_id: int | None,
     meta_account_id: int | None,
-    sulnet_wa_instance_id: int | None = None,
 ) -> tuple[str, int] | None:
     """Vincula somente um provedor por fila, sem fallback entre canais."""
     clean_provider = (provider or PROVIDER_ZAPI).strip().upper()
-    if clean_provider == PROVIDER_SULNET_WA:
-        from app.models import SulnetWAInstance
-        inst = db.get(SulnetWAInstance, sulnet_wa_instance_id)
-        if not inst or not inst.active or not GatewayConfig.from_env().configured:
-            return None
-        try:
-            bind_sulnet_queue_instance(db, queue.id, inst.id)
-        except (ValueError, SulnetWAError):
-            return None
-        return PROVIDER_SULNET_WA, inst.id
     if clean_provider == PROVIDER_META:
         account = get_meta_account(db, meta_account_id)
         if not account or not account.active:
@@ -188,7 +170,6 @@ def create_queue(
     whatsapp_provider: str = Form(PROVIDER_ZAPI),
     zapi_instance_id: str = Form(""),
     meta_account_id: str = Form(""),
-    sulnet_wa_instance_id: str = Form(""),
     member_user_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
@@ -230,7 +211,6 @@ def create_queue(
         provider=whatsapp_provider,
         zapi_instance_id=_parse_optional_id(zapi_instance_id),
         meta_account_id=_parse_optional_id(meta_account_id),
-        sulnet_wa_instance_id=_parse_optional_id(sulnet_wa_instance_id),
     )
     if not binding:
         db.rollback()
@@ -295,9 +275,7 @@ def queue_detail(
     )
     selected_zapi = queue_instance(db, queue.id)
     selected_meta = queue_meta_account(db, queue.id)
-    selected_sulnet = sulnet_queue_instance(db, queue.id)
-    selected_provider = (PROVIDER_SULNET_WA if selected_sulnet else
-                         PROVIDER_META if selected_meta else PROVIDER_ZAPI)
+    selected_provider = PROVIDER_META if selected_meta else PROVIDER_ZAPI
     return render(
         request,
         "queue_detail.html",
@@ -313,8 +291,6 @@ def queue_detail(
         ai_binding=queue_ai_binding(db, queue.id),
         zapi_instances=list_zapi_instances(db),
         meta_accounts=list_meta_accounts(db),
-        sulnet_wa_instances=[item for item in list_sulnet_wa_instances(db) if item.active],
-        selected_sulnet_wa_instance=selected_sulnet,
         selected_zapi_instance=selected_zapi,
         selected_meta_account=selected_meta,
         selected_whatsapp_provider=selected_provider,
@@ -337,7 +313,6 @@ def update_queue(
     whatsapp_provider: str = Form(PROVIDER_ZAPI),
     zapi_instance_id: str = Form(""),
     meta_account_id: str = Form(""),
-    sulnet_wa_instance_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     actor, redirect = _actor(request, db)
@@ -358,7 +333,6 @@ def update_queue(
         provider=whatsapp_provider,
         zapi_instance_id=_parse_optional_id(zapi_instance_id),
         meta_account_id=_parse_optional_id(meta_account_id),
-        sulnet_wa_instance_id=_parse_optional_id(sulnet_wa_instance_id),
     )
     if not binding:
         flash(
