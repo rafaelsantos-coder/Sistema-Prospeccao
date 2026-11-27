@@ -79,6 +79,22 @@ def _campaign_for_diagnosis() -> int:
 def test_no_answer_does_not_inflate_technical_failures():
     cid = _campaign_for_diagnosis()
     with SessionLocal() as db:
+        for status in ("FINALIZADA", "SEM_INTERESSE", "FALHA_TRANSFERENCIA"):
+            recipient = db.scalar(select(VoiceRecipient).where(
+                VoiceRecipient.campaign_id == cid, VoiceRecipient.status == status,
+            ))
+            db.add(VoiceCallEvent(
+                recipient_id=recipient.id, event_id=uuid4().hex,
+                event="REPRODUZINDO_AUDIO", detail="SIP 200",
+            ))
+            if status == "FALHA_TRANSFERENCIA":
+                for event in ("CONFIRMADO_DTMF", "TRANSFERINDO"):
+                    db.add(VoiceCallEvent(
+                        recipient_id=recipient.id, event_id=uuid4().hex,
+                        event=event, detail="SIP 200",
+                    ))
+        db.commit()
+    with SessionLocal() as db:
         camp = db.get(VoiceCampaign, cid)
         report = campaign_operational_report(db, camp, [])
         stats = report["stats"]
@@ -92,6 +108,9 @@ def test_no_answer_does_not_inflate_technical_failures():
         assert stats["timeout"] == 1
         assert stats["without_dtmf"] == 1
         assert stats["interrupted"] == 2
+        assert stats["audio_started"] == 3
+        assert stats["dtmf_confirmed"] == 1
+        assert stats["transfer_requested"] == 1
         assert sum(item["count"] for item in report["result_breakdown"]) == 12
         by_status = {row["status"]: row for row in report["result_breakdown"]}
         assert by_status["SEM_ATENDIMENTO"]["count"] == 3
