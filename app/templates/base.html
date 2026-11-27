@@ -39,6 +39,11 @@
       <a href="/conversations" class="nav-item {% if active_nav == 'conversations' %}active{% endif %}">
         <span class="nav-icon">◌</span><span>Conversas</span>
       </a>
+      {% if current_user.role in ['ADMIN', 'GESTOR', 'SUPERVISOR'] and 'reports.view' in current_user.permissions %}
+      <a href="/operations" class="nav-item {% if active_nav == 'operations' %}active{% endif %}">
+        <span class="nav-icon">▦</span><span>Painel operacional</span>
+      </a>
+      {% endif %}
       <a href="/conversas" class="nav-item" title="Atendimento web simplificado">
         <span class="nav-icon">▢</span><span>Conversas (MVP)</span>
       </a>
