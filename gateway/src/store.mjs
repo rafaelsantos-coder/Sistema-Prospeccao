@@ -52,7 +52,8 @@ export function createStorageFromEnv(env=process.env) {
     throw new Error('S3 credentials or bucket missing');
   }
   const client = new S3Client({
-    endpoint, region: env.WA_S3_REGION || 'auto', forcePathStyle: true,
+    endpoint, region: env.WA_S3_REGION || 'auto',
+    forcePathStyle: env.WA_S3_URL_STYLE === 'path',
     maxAttempts: 2,
     credentials: { accessKeyId:keyId, secretAccessKey:secret },
   });
