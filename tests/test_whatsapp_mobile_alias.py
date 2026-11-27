@@ -125,3 +125,13 @@ def test_fixed_number_never_treated_as_mobile_alias():
     assert whatsapp_mobile_alias("555533331234") is None
     assert whatsapp_mobile_alias("5555981244083") == "555581244083"
     assert whatsapp_mobile_alias("555581244083") == "5555981244083"
+
+
+def test_existing_assigned_duplicate_is_not_silently_combined(session):
+    scope = setup_provider(session, "ZAPI")
+    original = start(session, "5555981244083", scope, "ZAPI")
+    other = start(session, "555581244083", scope, "ZAPI")
+    reply, _ = receive(session, other.contact.phone, scope, "ZAPI")
+    assert original.id != other.id
+    assert reply.id == other.id
+    assert find_scoped_whatsapp_alias(session, other.contact.phone, **scope, for_inbound=True) is None
