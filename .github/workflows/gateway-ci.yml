@@ -32,6 +32,8 @@ jobs:
           node --check src/auth-state.mjs
       - name: Auditar vulnerabilidades da arvore npm
         run: cd gateway && npm audit --audit-level=high
+      - name: Verificar digest do runtime distroless
+        run: docker buildx imagetools inspect gcr.io/distroless/nodejs22-debian13:nonroot | head -n 12
       - name: Construir container isolado
         run: docker build -f gateway/Dockerfile -t sulnet-wa:ci .
       - name: Varredura de container de terceiros
