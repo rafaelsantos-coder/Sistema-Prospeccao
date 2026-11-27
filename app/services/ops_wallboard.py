@@ -71,10 +71,18 @@ def _is_ai_user(ai_user_ids: set[int], user_id: int | None) -> bool:
     return bool(user_id) and user_id in ai_user_ids
 
 
+def _naive(value):
+    """Normaliza datetime aware/naive para comparação UTC sem tzinfo."""
+    if value is None:
+        return None
+    return value.replace(tzinfo=None) if getattr(value, "tzinfo", None) else value
+
+
 def _won_today(state: AIClosingState, day_start) -> bool:
     if state.step != "COMPLETED" or not state.completed_at:
         return False
-    if state.completed_at < day_start:
+    completed = _naive(state.completed_at)
+    if completed is None or completed < day_start:
         return False
     try:
         collected = json.loads(state.collected_json or "{}")
@@ -185,7 +193,11 @@ def build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = None)
         elif item.assigned_user_id and not _is_ai_user(ai_user_ids, item.assigned_user_id):
             human_active += 1
 
-    stalled_without_sale = len({*stuck_sales, *silent_closings} | set(risk_tags["conversation_ids"]))
+    stalled_without_sale = len(
+        {item["conversation_id"] for item in stuck_sales}
+        | set(silent_closings)
+        | set(risk_tags["conversation_ids"])
+    )
 
     sellers = _seller_rows(db, user, online, ai_user_ids, open_conversations, queue_ids)
     queue_rows = _queue_rows(db, queues, open_conversations, ai_states, online, ai_user_ids)
@@ -351,12 +363,6 @@ def _today_funnel(
         "credit_rejected": credit_rejected,
         "opt_out": opt_out,
     }
-
-
-def _naive(value):
-    if value is None:
-        return None
-    return value.replace(tzinfo=None) if getattr(value, "tzinfo", None) else value
 
 
 def _failed_ai_jobs(db: Session, now, queue_ids: list[int] | None) -> list[dict[str, Any]]:
