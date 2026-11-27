@@ -24,6 +24,7 @@
         <i data-ops-live-dot></i>
         <span>Atualiza a cada {{ snapshot.refresh_seconds }}s</span>
         <time data-ops-generated datetime="{{ snapshot.generated_at }}">{{ snapshot.generated_at }}</time>
+        <span class="ops-revision" title="Revisão do deploy">rev {{ snapshot.revision or 'unknown' }}</span>
       </div>
       <a class="button button-secondary" href="/reports/whatsapp">Relatório histórico</a>
       <a class="button button-secondary" href="/conversations-intelligence">Inteligência comercial</a>

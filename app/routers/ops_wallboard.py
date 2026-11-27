@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.security import get_current_user, require_roles
-from app.services.ops_wallboard import build_ops_wallboard
+from app.services.ops_wallboard import build_revision, safe_build_ops_wallboard
 from app.web import render
 
 router = APIRouter()
@@ -34,12 +34,8 @@ def operations_wallboard(
     if redirect:
         return redirect
     require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR")
-    try:
-        snapshot = build_ops_wallboard(db, user, queue_id=queue)
-    except Exception:
-        LOG.exception("ops_wallboard_page_failed user_id=%s queue=%s", getattr(user, "id", None), queue)
-        raise
-    return render(
+    snapshot = safe_build_ops_wallboard(db, user, queue_id=queue)
+    response = render(
         request,
         "operations/wallboard.html",
         user=user,
@@ -48,6 +44,8 @@ def operations_wallboard(
         snapshot=snapshot,
         selected_queue=queue,
     )
+    response.headers["X-Ops-Revision"] = str(snapshot.get("revision") or build_revision())
+    return response
 
 
 @router.get("/api/operations/wallboard")
@@ -60,8 +58,14 @@ def operations_wallboard_api(
     if not user:
         return JSONResponse({"detail": "Não autenticado"}, status_code=401)
     require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR")
-    try:
-        return build_ops_wallboard(db, user, queue_id=queue)
-    except Exception:
-        LOG.exception("ops_wallboard_api_failed user_id=%s queue=%s", getattr(user, "id", None), queue)
-        raise
+    snapshot = safe_build_ops_wallboard(db, user, queue_id=queue)
+    return JSONResponse(
+        snapshot,
+        headers={"X-Ops-Revision": str(snapshot.get("revision") or build_revision())},
+    )
+
+
+@router.get("/api/operations/revision")
+def operations_revision():
+    """Endpoint leve para confirmar se o deploy chegou na produção."""
+    return {"revision": build_revision()}

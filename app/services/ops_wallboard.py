@@ -307,11 +307,65 @@ def _safe_call(label: str, fn, *, default):
         return default
 
 
+def build_revision() -> str:
+    """Identifica o deploy em produção (Railway costuma injetar RAILWAY_GIT_COMMIT_SHA)."""
+    import os  # noqa: PLC0415
+
+    for key in (
+        "RAILWAY_GIT_COMMIT_SHA",
+        "RAILWAY_GIT_COMMIT",
+        "GITHUB_SHA",
+        "COMMIT_SHA",
+    ):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value[:12]
+    return "unknown"
+
+
+def empty_ops_snapshot(*, error: str | None = None, queue_id: int | None = None) -> dict[str, Any]:
+    now = utcnow()
+    day_start = local_day_start_utc()
+    payload = _empty_payload(now, day_start)
+    payload["filters"]["queue_id"] = queue_id
+    payload["revision"] = build_revision()
+    if error:
+        payload["alerts"] = [
+            {
+                "severity": "CRITICAL",
+                "code": "wallboard_error",
+                "title": "Falha ao carregar métricas",
+                "detail": error[:280],
+                "count": 1,
+            }
+        ]
+    return payload
+
+
+def safe_build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = None) -> dict[str, Any]:
+    """Nunca propaga exceção: em falha devolve snapshot vazio com alerta."""
+    try:
+        snapshot = build_ops_wallboard(db, user, queue_id=queue_id)
+        snapshot["revision"] = build_revision()
+        return snapshot
+    except Exception as exc:  # noqa: BLE001
+        LOG.exception(
+            "ops_wallboard_total_failed user_id=%s queue=%s",
+            getattr(user, "id", None),
+            queue_id,
+        )
+        return empty_ops_snapshot(
+            error="Falha interna ao carregar métricas. Detalhes no log do servidor.",
+            queue_id=queue_id,
+        )
+
+
 def _empty_payload(now, day_start) -> dict[str, Any]:
     return {
         "generated_at": now.isoformat(),
         "day_start": day_start.isoformat(),
         "refresh_seconds": 20,
+        "revision": build_revision(),
         "kpis": {
             "open": 0,
             "started_today": 0,
