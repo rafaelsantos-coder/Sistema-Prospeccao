@@ -119,7 +119,7 @@ class FakeSession:
         pass
 
     def pull_pcm(self, size):
-        return bytes(size)
+        return bytes([1]) * size
 
     def clear_pcm(self):
         self.cleared = True
@@ -303,3 +303,41 @@ def test_invite_setup_failure_never_hangups_unallocated_call(monkeypatch):
     assert "Falha na etapa: INVITE" in outcome.message
     assert driver.invites == 0 and driver.hangups == 0
     assert "sensitive debug data" not in outcome.message
+
+
+def test_same_route_native_probe_no_realtime():
+    driver = FakeDriver()
+    received = []
+    def perform(phone, **kwargs):
+        received.append((phone, kwargs))
+        kwargs["on_status"]("TOCANDO", 180)
+        kwargs["on_status"]("ATENDIDA", 200)
+        return SimpleNamespace(status="ATENDIDA", sip_code=200,
+                               answered=True, media_active=True)
+    driver.perform_call = perform
+    result = lia_voz_call.perform_native_probe(
+        driver, "5555999990000", "8003", should_abort=lambda: False)
+    assert len(received) == 1
+    phone, options = received[0]
+    assert phone == "5555999990000" and options["native_techprefix"] == "8003"
+    assert options["mode"] == "PROBE" and options["probe_hold_seconds"] == 12
+    assert options["timeout"] == 40
+    assert result.status == "LIA_PROBE_FINALIZADO"
+    assert "180=sim" in result.message
+    assert "Confirme o toque" in result.message
+
+
+def test_silence_is_not_successful_ai_conversation(monkeypatch):
+    driver = FakeDriver()
+    session = FakeSession()
+    session.pull_pcm = lambda size: bytes(size)
+    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
+
+    async def run():
+        return await lia_voz_call.perform_lia_test(
+            driver, "5555999990000", "8003", "test-key",
+            should_abort=lambda: False, session_factory=factory_for(session))
+
+    result = asyncio.run(run())
+    assert result.status == "LIA_FALHOU"
+    assert "TX nao silencioso=0" in result.message

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% set test_active = tests and tests[0].status in ['LIA_PENDENTE', 'LIA_EXECUTANDO'] %}
+{% set test_active = tests and tests[0].status in ['LIA_PENDENTE', 'LIA_EXECUTANDO', 'LIA_PROBE_PENDENTE', 'LIA_PROBE_EXECUTANDO'] %}
 {% block content %}
 <div class="page-lead split">
   <div><span class="eyebrow">PROSPECTA VOZ · SDRIA</span><h2>Lia Voz</h2>
@@ -34,7 +34,9 @@
       <label class="field"><span>Telefone de teste com DDD</span><input type="tel" name="phone" maxlength="24" autocomplete="off" required {% if not configured or not engine_ready or test_active %}disabled{% endif %}></label>
     </div>
     <label class="voice-test-confirm"><input type="checkbox" name="authorized" value="sim" required {% if not configured or not engine_ready or test_active %}disabled{% endif %}>Confirmo que o número é meu ou está autorizado para este teste individual.</label>
-    <div class="voice-actions"><button class="button button-primary" type="submit" {% if not configured or not engine_ready or not accounts or test_active %}disabled{% endif %}>Conversar com Lia Voz</button>
+    <p class="voice-help">Para verificar se a operadora entrega a chamada, use "Testar ligação sem IA": mesma rota e número autorizado, sem fala, por até 40 segundos. Confirme se o aparelho tocou.</p>
+    <div class="voice-actions"><button class="button button-primary" type="submit" name="mode" value="ia" {% if not configured or not engine_ready or not accounts or test_active %}disabled{% endif %}>Conversar com Lia Voz</button>
+      <button class="button button-secondary" type="submit" name="mode" value="sip" {% if not configured or not engine_ready or not accounts or test_active %}disabled{% endif %}>Testar ligação sem IA</button>
       <a class="button button-secondary" href="/voice/lia-voz">Atualizar resultado</a></div>
   </form>
 </section>

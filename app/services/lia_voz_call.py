@@ -96,7 +96,8 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
             return ("SIP " + codes + "; 180=" + ("sim" if 180 in call.sip_codes else "nao")
                     + "; confirmado=" + elapsed + "; audio=" + states
                     + "; quadros RX/TX=" + str(counters.get("received_frames", 0))
-                    + "/" + str(counters.get("requested_frames", 0)) + ".")
+                    + "/" + str(counters.get("requested_frames", 0))
+                    + "; TX nao silencioso=" + str(counters.get("non_silent_rendered_frames", 0)) + ".")
 
         def result(status, message):
             nonlocal last_outcome
@@ -109,7 +110,9 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
             if bridge is None or bridge.failure:
                 return False
             counters = bridge.snapshot()
-            return counters["received_frames"] > 0 and counters["requested_frames"] > 0
+            # Requested frames may consist solely of silence before the model
+            # produces its first sample. Do not treat those as a validated voice.
+            return counters["received_frames"] > 0 and counters["non_silent_rendered_frames"] > 0
 
         try:
             target = make_dial_uri(driver.account_model, phone,
@@ -174,6 +177,7 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
                                 context = attach_pj_media(
                                     pj, call.getAudioMedia(int(getattr(media, "index", index))),
                                     bridge, enabled=True,
+                                    remote_ended=lambda: call.disconnected,
                                 )
                                 context.__enter__()
                                 media_context = context
@@ -230,3 +234,53 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
                             call.sip_code if call is not None else None)
                 # Never report success if native cleanup could not be confirmed.
                 raise LiaVoiceError("Native cleanup failed")
+
+
+def perform_native_probe(driver, phone, prefix, *, should_abort,
+                         on_progress=lambda _message, _sip_code: None):
+    """One manually authorized comparison call on the identical Native route.
+
+    No API session, speech, recording, transfer, retry, or customer lookup.
+    The shared worker has already validated the number, account, and SIP slot.
+    Central confirmation is not evidence that the handset actually rang.
+    """
+    if driver._registration != 200 or should_abort():
+        raise LiaVoiceError("SIP probe not authorized")
+    codes = []
+    last_check = 0.0
+    aborted = False
+
+    def guard():
+        nonlocal last_check, aborted
+        now = time.monotonic()
+        if not aborted and now - last_check >= 1:
+            last_check = now
+            aborted = should_abort()
+        return aborted
+
+    def observe(status, code):
+        if isinstance(code, int) and 100 <= code <= 699 and code not in codes:
+            codes.append(code)
+        on_progress("Teste SIP sem IA: " + status + "; SIP " +
+                    ("/".join(map(str, codes)) or "-"), code)
+
+    on_progress("Teste SIP sem IA; usando a mesma rota Native da Lia.", None)
+    outcome = driver.perform_call(
+        phone, mode="PROBE", native_techprefix=prefix, native_local_ddd="55",
+        timeout=40, probe_hold_seconds=12, should_abort=guard, on_status=observe,
+    )
+    if outcome.sip_code and outcome.sip_code not in codes:
+        codes.append(outcome.sip_code)
+    message = ("Teste sem IA. SIP " + ("/".join(map(str, codes)) or "-")
+               + "; 180=" + ("sim" if 180 in codes else "nao")
+               + "; central confirmou=" + ("sim" if outcome.answered else "nao")
+               + "; midia negociada=" + ("sim" if outcome.media_active else "nao")
+               + ". Confirme o toque no aparelho.")
+    if outcome.status == "INTERROMPIDA":
+        status = "LIA_PROBE_INTERROMPIDA"
+    elif outcome.answered:
+        status = "LIA_PROBE_FINALIZADO"
+    else:
+        status = "LIA_PROBE_SEM_ATENDIMENTO"
+    on_progress(message, outcome.sip_code)
+    return PilotOutcome(status, outcome.sip_code, message[:230])

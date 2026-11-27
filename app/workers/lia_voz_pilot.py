@@ -10,9 +10,12 @@ from sqlalchemy import select
 
 from app.database import SessionLocal, engine as database_engine
 from app.models import User, VoiceDialerEngine, VoiceSipAccount, VoiceTestCall
-from app.services.lia_voz_call import perform_lia_test
+from app.services.lia_voz_call import perform_lia_test, perform_native_probe
 from app.services.lia_voz_realtime import LiaVoiceError
-from app.services.lia_voz_pilot import ACTIVE, PENDING, RUNNING, PilotConfig, PilotDenied, ensure_idle
+from app.services.lia_voz_pilot import (
+    ACTIVE, PENDING_STATES, RUNNING_STATES, PROBE_PENDING, PROBE_RUNNING,
+    RUNNING, PilotConfig, PilotDenied, ensure_idle,
+)
 from app.services.voice_execution_slot import slot_healthy
 from app.services.secret_store import decrypt_secret
 from app.services.voice_pjsua2 import PjSession
@@ -37,7 +40,7 @@ def runtime_ready():
 def _finish(test_id, status, message, sip_code=None, register_code=None):
     with SessionLocal() as db:
         row = db.get(VoiceTestCall, test_id)
-        if row is None or row.status != RUNNING:
+        if row is None or row.status not in RUNNING_STATES:
             return
         row.status = status
         row.message = message[:230]
@@ -54,10 +57,10 @@ def expire_stale():
             VoiceTestCall.status.in_(ACTIVE)
         ).with_for_update(skip_locked=True))
         for row in rows:
-            base = row.started_at if row.status == RUNNING else row.created_at
-            limit = 240 if row.status == RUNNING else PilotConfig.from_env().request_seconds
+            base = row.started_at if row.status in RUNNING_STATES else row.created_at
+            limit = 240 if row.status in RUNNING_STATES else PilotConfig.from_env().request_seconds
             if base and _now() - aware(base) > timedelta(seconds=limit):
-                row.status = "LIA_INDETERMINADO" if row.status == RUNNING else "LIA_EXPIRADO"
+                row.status = "LIA_INDETERMINADO" if row.status in RUNNING_STATES else "LIA_EXPIRADO"
                 row.finished_at = _now()
                 row.message = "Teste expirado; nao repetir automaticamente."
         db.commit()
@@ -73,7 +76,7 @@ def claim():
         if not engine or not engine.enabled:
             return None
         row = db.scalar(select(VoiceTestCall).where(
-            VoiceTestCall.status == PENDING
+            VoiceTestCall.status.in_(PENDING_STATES)
         ).order_by(VoiceTestCall.id).with_for_update(skip_locked=True).limit(1))
         if row is None:
             return None
@@ -94,8 +97,10 @@ def claim():
                 row.message = message
                 db.commit()
             return None
-        row.status = RUNNING
-        row.message = "Motor reservado; iniciando homologacao SIP/Realtime."
+        probe = row.status == PROBE_PENDING
+        row.status = PROBE_RUNNING if probe else RUNNING
+        row.message = ("Motor reservado; iniciando teste da rota sem IA." if probe
+                       else "Motor reservado; iniciando homologacao SIP/Realtime.")
         row.started_at = _now()
         db.commit()
         return row.id
@@ -111,7 +116,7 @@ def _guard(test_id, phone, account_id):
             test = db.get(VoiceTestCall, test_id)
             actor = db.get(User, test.initiator_user_id) if test and test.initiator_user_id else None
             if not (engine and engine.enabled and account and account.active
-                    and test and test.status == RUNNING and actor and actor.active
+                    and test and test.status in RUNNING_STATES and actor and actor.active
                     and actor.role == "ADMIN" and test.account_id == account_id
                     and test.target_phone == phone):
                 return False
@@ -153,7 +158,7 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
         try:
             with SessionLocal() as db:
                 row = db.get(VoiceTestCall, test_id)
-                if row is not None and row.status == RUNNING:
+                if row is not None and row.status in RUNNING_STATES:
                     row.message = last_stage
                     row.sip_register_code = register_code
                     row.sip_invite_code = last_code
@@ -164,8 +169,9 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
     try:
         with SessionLocal() as db:
             test = db.get(VoiceTestCall, test_id)
-            if not test or test.status != RUNNING or not test.account_id:
+            if not test or test.status not in RUNNING_STATES or not test.account_id:
                 return
+            probe = test.status == PROBE_RUNNING
             account = db.get(VoiceSipAccount, test.account_id)
             phone = test.target_phone
             account_id = test.account_id
@@ -187,10 +193,14 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
                 refresh_heartbeat()
                 return not _guard(test_id, phone, account_id)
 
-            outcome = asyncio.run(perform_lia_test(
-                driver, phone, config.prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
-                should_abort=abort, on_progress=progress,
-            ))
+            if probe:
+                outcome = perform_native_probe(driver, phone, config.prefix,
+                                               should_abort=abort, on_progress=progress)
+            else:
+                outcome = asyncio.run(perform_lia_test(
+                    driver, phone, config.prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
+                    should_abort=abort, on_progress=progress,
+                ))
         logging.getLogger(__name__).info("Lia Voz teste %d: %s | %s",
                                          test_id, outcome.status, outcome.message)
         _finish(test_id, outcome.status, outcome.message, outcome.sip_code, register_code)

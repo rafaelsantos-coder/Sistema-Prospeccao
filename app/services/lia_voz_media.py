@@ -35,6 +35,7 @@ class MediaBridge:
         self._failure = None
         self._received = 0
         self._rendered = 0
+        self._non_silent_rendered = 0
 
     @property
     def closed(self) -> bool:
@@ -52,6 +53,7 @@ class MediaBridge:
             return {
                 "received_frames": self._received,
                 "requested_frames": self._rendered,
+                "non_silent_rendered_frames": self._non_silent_rendered,
                 "queued_frames": len(self._queue),
                 "closed": self._closed,
                 "failed": self._failure is not None,
@@ -106,6 +108,8 @@ class MediaBridge:
                 self._close_locked()
                 return SILENCE
             self._rendered += 1
+            if any(pcm):
+                self._non_silent_rendered += 1
             return pcm
 
 
@@ -160,7 +164,8 @@ def create_pj_port(pj, bridge: MediaBridge):
 
 
 @contextmanager
-def attach_pj_media(pj, call_audio, bridge: MediaBridge, *, enabled: bool = False):
+def attach_pj_media(pj, call_audio, bridge: MediaBridge, *, enabled: bool = False,
+                    remote_ended=lambda: False):
     """Wire an already-established authorized test call; never originate one.
 
     Enter/exit on the PJSUA2 owner thread. Keep bridge and port alive until
@@ -189,7 +194,11 @@ def attach_pj_media(pj, call_audio, bridge: MediaBridge, *, enabled: bool = Fals
                 call_audio.stopTransmit(port)
             except Exception:
                 failed = True
-        if failed:
+        # The SIP stack may already have removed the remote conference port
+        # on BYE. In that case its links are gone; retain the original call
+        # outcome and let the locally owned port be destroyed normally.
+        # Do not hide disconnect failures while the remote leg is active.
+        if failed and not remote_ended():
             raise LiaVoiceError("Native audio disconnect failed")
 
 
