@@ -12,7 +12,7 @@ import logging
 import os
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -161,6 +161,14 @@ def ai_allowed_for_conversation(
     queue = db.get(ServiceQueue, queue_id) if queue_id and hasattr(db, "get") else None
     if manual_ai_handoff_authorized(db, conversation_id):
         return True
+    # Na Geral Comercial, uma resposta humana recente mantém a prioridade
+    # mesmo com posse antiga da IA, recuperação ou job previamente agendado.
+    if is_general_commercial_queue(queue):
+        from app.services.ai_sdr import human_stepped_in
+
+        conversation = db.get(Conversation, conversation_id)
+        if conversation is not None and human_stepped_in(db, conversation, window=timedelta(hours=24)):
+            return False
     if not manual_queue_control_enabled() and exclusive_ai_queue_id() is None:
         return True
     return ai_queue_enabled(db, queue_id) if manual_queue_control_enabled() else ai_allowed_for_queue(queue_id)

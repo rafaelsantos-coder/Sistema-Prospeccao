@@ -60,6 +60,7 @@ from app.services.ai_sdr_policies import (  # noqa: F401 — reexport para teste
     _asks_existing_customer,
     _city_from_sales_context,
     _confirmed_facts_from_history,
+    no_fiber_coverage_decision,
     _customer_asked_direct_question,
     _customer_inbound_text,
     _customer_type_from_context,
@@ -1158,9 +1159,13 @@ def _contextual_service_reply(context: dict) -> AIDecision | None:
 
 
 def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
+    service = _contextual_service_reply(context)
+    coverage = no_fiber_coverage_decision(context)
+    if coverage is not None and service is None:
+        return coverage
     if not (context.get("guardian_feedback") or context.get("integrity_guard")):
         direct_answer = (
-            _contextual_service_reply(context)
+            service
             or priority_reply(context)
             or (None if context.get("dispatch_offer_id") else contextual_catalog_reply(context))
         )
@@ -1197,7 +1202,7 @@ def run_ai_decision(agent: AIAgentProfile, context: dict) -> AIDecision:
         "Quando informar o preco atual e o orcamento maximo, compare a oferta de maneira verdadeira sem inventar descontos. "
         "Analise esta interação comercial do WhatsApp da Sulnet. "
         "Use o histórico e a base de conhecimento abaixo, respeitando rigorosamente a origem de cada dado. "
-        "REGRA DE EVIDÊNCIA: mensagens INBOUND são falas do cliente; mensagens OUTBOUND são falas do próprio SulIA. "
+        "REGRA DE EVIDÊNCIA: mensagens INBOUND são falas do cliente; mensagens OUTBOUND podem ser de vendedores humanos ou da SulIA. Leia a conversa corrente inteira e continue do ponto em que o vendedor parou. "
         "Nunca transforme uma frase OUTBOUND em fato sobre o cliente. Nunca conclua provedor, preço atual, velocidade atual, "
         "uso, satisfação, residência ou empresa apenas porque o SulIA mencionou isso antes. A seção customer_evidence contém "
         "somente falas reais do cliente e é a fonte principal para esses fatos. Dados de memória/CRM gerados pela IA não devem "
@@ -1779,7 +1784,7 @@ def _ai_recovery_reply(context: dict) -> tuple[str, list[QuickReply]]:
     silêncio), a IA responde o cumprimento e puxa a próxima informação que
     ainda falta para vender, sem repetir a última mensagem enviada.
     """
-    priority = priority_reply(context)
+    priority = no_fiber_coverage_decision(context) or priority_reply(context)
     if priority is not None:
         return priority.reply_text, priority.quick_replies
     latest = _fold_sales_text(str(context.get("latest_customer_message") or ""))
@@ -1879,13 +1884,15 @@ def _send_ai_recovery(
     nunca fica sem resposta e a conversa continua com a IA (AI_ACTIVE). O
     motivo vai para a auditoria, que alimenta a supervisão e o analista.
     """
-    priority = priority_reply(context)
+    coverage = no_fiber_coverage_decision(context)
+    priority = coverage or priority_reply(context)
     recovery = priority if priority is not None else decision.model_copy(deep=True)
     if priority is None:
         recovery.reply_text, recovery.quick_replies = _ai_recovery_reply(context)
-    _keep_decision_with_ai(recovery)
+    if coverage is None:
+        _keep_decision_with_ai(recovery)
     recovery.customer_commitment = False
-    recovery.followup_needed = not recovery.service_redirect
+    recovery.followup_needed = coverage is None and not recovery.service_redirect
 
     state = db.scalar(
         select(AIConversationState).where(
@@ -2439,7 +2446,8 @@ def process_ai_job(db: Session, job: AIJob) -> str:
     db.flush()
 
     direct_service = _contextual_service_reply(context) if effective_mode == "AUTO" else None
-    if effective_mode == "AUTO" and direct_service is None:
+    coverage_decision = no_fiber_coverage_decision(context) if direct_service is None else None
+    if effective_mode == "AUTO" and direct_service is None and coverage_decision is None:
         recall_outcome = None if context.get("dispatch_offer_id") else _try_recall_path(
             db,
             agent=agent,
@@ -2460,7 +2468,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             return fast_outcome
 
     try:
-        decision = direct_service or run_ai_decision(agent, context)
+        decision = direct_service or coverage_decision or run_ai_decision(agent, context)
         if direct_service is not None:
             decision._timing = {"model_ms": 0, "contextual_reply": "central"}
         integrity_issues = _journey_integrity_issues(decision, context)
@@ -2492,7 +2500,7 @@ def process_ai_job(db: Session, job: AIJob) -> str:
             decision = run_ai_decision(agent, retry_context)
             integrity_issues = _journey_integrity_issues(decision, context)
 
-        if context.get("dispatch_offer_id") and _is_closer_handoff(decision):
+        if coverage_decision is None and context.get("dispatch_offer_id") and _is_closer_handoff(decision):
             # A resposta livre do modelo também passa por confirmação dos termos
             # antes de encaminhar ao vendedor e selecionar o contrato.
             confirmation = dispatch_offer.offer_decision(
@@ -2663,6 +2671,9 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                     for item in guardian.buttons
                 ]
 
+            # Revisões do Guardião nunca podem reabrir uma oferta fora da cobertura.
+            if coverage_decision is not None:
+                decision = no_fiber_coverage_decision(context) or coverage_decision
             post_guard_issues = _journey_integrity_issues(decision, context)
             if post_guard_issues:
                 return _send_ai_recovery(
@@ -2783,6 +2794,9 @@ def process_ai_job(db: Session, job: AIJob) -> str:
                 # Número errado / opt-out: sai da fila imediatamente (antes ficava EM FILA).
                 conversation.status = "ENCERRADO"
                 conversation.closed_at = utcnow()
+            elif decision._timing.get("coverage_gate") == "CITY_OUTSIDE_FIBER_AREA":
+                from app.services.ai_followups import cancel_pending_followups
+                cancel_pending_followups(db, job.conversation_id, reason="CIDADE_SEM_COBERTURA")
             elif (
                 not closer_started
                 and sent_message is not None
