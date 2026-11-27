@@ -8,11 +8,14 @@ gestores e supervisores. Não inventa domínio novo: só consolida.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
+
+LOG = logging.getLogger("sulnet_ops_wallboard")
 
 from app.models import (
     AIAgentProfile,
@@ -78,17 +81,21 @@ def _naive(value):
     return value.replace(tzinfo=None) if getattr(value, "tzinfo", None) else value
 
 
+def _parse_collected(raw: str | None) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _won_today(state: AIClosingState, day_start) -> bool:
     if state.step != "COMPLETED" or not state.completed_at:
         return False
     completed = _naive(state.completed_at)
     if completed is None or completed < day_start:
         return False
-    try:
-        collected = json.loads(state.collected_json or "{}")
-    except ValueError:
-        collected = {}
-    return bool(collected.get("_won_after_signature"))
+    return bool(_parse_collected(state.collected_json).get("_won_after_signature"))
 
 
 def build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = None) -> dict[str, Any]:
@@ -134,7 +141,7 @@ def build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = None)
         # Sem filas visíveis: não inventar universo global.
         open_stmt = open_stmt.where(False)
 
-    open_conversations = list(db.scalars(open_stmt.distinct()))
+    open_conversations = list(db.scalars(open_stmt).unique())
     open_ids = [item.id for item in open_conversations]
 
     filter_queue_ids = queue_ids if (queue_ids or queue_id is not None) else None
@@ -147,34 +154,48 @@ def build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = None)
         ):
             ai_states[state.conversation_id] = state.state
 
-    closing_states = list(
-        db.scalars(
-            select(AIClosingState).where(
-                AIClosingState.completed_at.is_(None),
-                AIClosingState.updated_at >= max(now - STUCK_SALE_WINDOW, day_start - timedelta(days=1)),
-            )
+    closing_cutoff = max(now - STUCK_SALE_WINDOW, day_start - timedelta(days=1))
+    closing_stmt = (
+        select(AIClosingState)
+        .where(
+            AIClosingState.completed_at.is_(None),
+            AIClosingState.updated_at >= closing_cutoff,
         )
+        .order_by(AIClosingState.updated_at.desc())
+        .limit(250)
     )
     if filter_queue_ids is not None:
-        closing_ids = {
-            cid
-            for (cid,) in db.execute(
-                select(ConversationQueueLink.conversation_id).where(
-                    ConversationQueueLink.queue_id.in_(filter_queue_ids or [-1]),
-                    ConversationQueueLink.conversation_id.in_(
-                        [item.conversation_id for item in closing_states] or [-1]
-                    ),
-                )
-            )
-        }
-        closing_states = [item for item in closing_states if item.conversation_id in closing_ids]
+        closing_stmt = closing_stmt.join(
+            ConversationQueueLink,
+            ConversationQueueLink.conversation_id == AIClosingState.conversation_id,
+        ).where(ConversationQueueLink.queue_id.in_(filter_queue_ids or [-1]))
+    closing_states = list(db.scalars(closing_stmt).unique())
 
-    won_today = resolve_won_today(db, day_start, filter_queue_ids)
-
-    failed_jobs = _failed_ai_jobs(db, now, filter_queue_ids)
-    stuck_sales = _stuck_sales(db, now, closing_states)
-    silent_closings = _silent_closing_ids(db, closing_states)
-    risk_tags = _risk_tag_counts(db, open_ids)
+    won_today = _safe_call(
+        "won_today",
+        lambda: resolve_won_today(db, day_start, filter_queue_ids),
+        default=0,
+    )
+    failed_jobs = _safe_call(
+        "failed_jobs",
+        lambda: _failed_ai_jobs(db, now, filter_queue_ids),
+        default=[],
+    )
+    stuck_sales = _safe_call(
+        "stuck_sales",
+        lambda: _stuck_sales(db, now, closing_states),
+        default=[],
+    )
+    silent_closings = _safe_call(
+        "silent_closings",
+        lambda: _silent_closing_ids(db, closing_states),
+        default=set(),
+    )
+    risk_tags = _safe_call(
+        "risk_tags",
+        lambda: _risk_tag_counts(db, open_ids),
+        default={"conversation_ids": [], "by_code": []},
+    )
 
     pending_reply = 0
     waiting_queue = 0
@@ -199,9 +220,28 @@ def build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = None)
         | set(risk_tags["conversation_ids"])
     )
 
-    sellers = _seller_rows(db, user, online, ai_user_ids, open_conversations, queue_ids)
-    queue_rows = _queue_rows(db, queues, open_conversations, ai_states, online, ai_user_ids)
-    funnel = _today_funnel(db, day_start, now, filter_queue_ids, won_today)
+    sellers = _safe_call(
+        "sellers",
+        lambda: _seller_rows(db, user, online, ai_user_ids, open_conversations, queue_ids),
+        default=[],
+    )
+    queue_rows = _safe_call(
+        "queues",
+        lambda: _queue_rows(db, queues, open_conversations, ai_states, online, ai_user_ids),
+        default=[],
+    )
+    funnel = _safe_call(
+        "funnel",
+        lambda: _today_funnel(db, day_start, now, filter_queue_ids, won_today),
+        default={
+            "attended": 0,
+            "closing_started": 0,
+            "contract_sent": 0,
+            "won": won_today,
+            "credit_rejected": 0,
+            "opt_out": 0,
+        },
+    )
     alerts = _build_alerts(
         failed_jobs=failed_jobs,
         stuck_sales=stuck_sales,
@@ -209,16 +249,20 @@ def build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = None)
         pending_reply=pending_reply,
         waiting_queue=waiting_queue,
         risk_count=len(risk_tags["conversation_ids"]),
-        recent_ops= _recent_ops_alerts(db),
+        recent_ops=_safe_call("ops_alerts", lambda: _recent_ops_alerts(db), default=[]),
     )
-    attention = _attention_list(
-        db,
-        open_conversations,
-        stuck_sales=stuck_sales,
-        silent_closings=silent_closings,
-        failed_jobs=failed_jobs,
-        risk_ids=set(risk_tags["conversation_ids"]),
-        ai_states=ai_states,
+    attention = _safe_call(
+        "attention",
+        lambda: _attention_list(
+            db,
+            open_conversations,
+            stuck_sales=stuck_sales,
+            silent_closings=silent_closings,
+            failed_jobs=failed_jobs,
+            risk_ids=set(risk_tags["conversation_ids"]),
+            ai_states=ai_states,
+        ),
+        default=[],
     )
 
     return {
@@ -253,6 +297,14 @@ def build_ops_wallboard(db: Session, user: User, *, queue_id: int | None = None)
             "queues": [{"id": item.id, "name": item.name} for item in all_queues],
         },
     }
+
+
+def _safe_call(label: str, fn, *, default):
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001 - painel gerencial não pode cair por um bloco
+        LOG.exception("ops_wallboard_block_failed block=%s", label)
+        return default
 
 
 def _empty_payload(now, day_start) -> dict[str, Any]:
@@ -406,25 +458,34 @@ def _failed_ai_jobs(db: Session, now, queue_ids: list[int] | None) -> list[dict[
 
 
 def _stuck_sales(db: Session, now, closing_states: list[AIClosingState]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+    candidates = []
     for state in closing_states:
         error = (state.last_error or "").strip()
         if state.step in _SALE_DONE or not (error or state.step == "WAITING_CRM_READY"):
             continue
-        recent = db.scalar(
-            select(Message.id)
+        candidates.append(state)
+    if not candidates:
+        return []
+
+    candidate_ids = [state.conversation_id for state in candidates]
+    recent_ids = {
+        cid
+        for (cid,) in db.execute(
+            select(Message.conversation_id)
             .where(
-                Message.conversation_id == state.conversation_id,
+                Message.conversation_id.in_(candidate_ids),
                 Message.created_at >= now - STUCK_SALE_AFTER,
             )
-            .limit(1)
+            .distinct()
         )
-        if recent is not None:
+    }
+
+    rows: list[dict[str, Any]] = []
+    for state in candidates:
+        if state.conversation_id in recent_ids:
             continue
-        try:
-            collected = json.loads(state.collected_json or "{}")
-        except ValueError:
-            collected = {}
+        collected = _parse_collected(state.collected_json)
+        error = (state.last_error or "").strip()
         rows.append(
             {
                 "conversation_id": state.conversation_id,
@@ -446,20 +507,26 @@ def _silent_closing_ids(db: Session, closing_states: list[AIClosingState]) -> se
     from app.models import AIFollowupJob  # noqa: PLC0415
 
     silent: set[int] = set()
+    # Limita o N+1: só avalia os primeiros candidatos elegíveis.
+    checked = 0
     for state in closing_states:
         if state.step in _SALE_DONE:
             continue
+        if checked >= 80:
+            break
+        checked += 1
         if not closing_awaits_customer(db, state.conversation_id):
             continue
-        reminders = list(
-            db.scalars(
-                select(AIFollowupJob.sent_at).where(
+        reminder_count = int(
+            db.scalar(
+                select(func.count(AIFollowupJob.id)).where(
                     AIFollowupJob.conversation_id == state.conversation_id,
                     AIFollowupJob.sent_at.is_not(None),
                 )
             )
+            or 0
         )
-        if len(reminders) < MAX_UNANSWERED_CLOSING_FOLLOWUPS:
+        if reminder_count < MAX_UNANSWERED_CLOSING_FOLLOWUPS:
             continue
         silent.add(state.conversation_id)
     return silent
