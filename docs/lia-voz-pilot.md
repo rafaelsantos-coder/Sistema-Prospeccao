@@ -54,3 +54,39 @@ O adaptador ainda nao e chamado por nenhum worker de producao.
 Testes offline com SWIG simulado: python -m pytest -q tests/test_lia_voz_media.py.
 Proximo: testar com wheel PJSUA2 2.15.1.post1 e RTP real de bancada,
 validar cancelamento, desconexao e autorizacao antes de ligar pela Native.
+
+
+## Fase 3: tela e orquestracao de teste individual
+
+Tela administrativa /voice/lia-voz, acessivel pelo dashboard de voz.
+POST com CSRF, ADMIN, confirmacao explicita, destino unico permitido,
+blacklist, conta Native 1804, janela de solicitacao de 90 s e limites de
+3 testes/hora e intervalo de 3 minutos. A fila usa estados LIA_ distintos
+em voice_test_calls, sem nova migracao, sem campanhas ou chamadas automaticas.
+
+Apenas o motor isolado processa o teste quando todas as flags abaixo estiverem
+configuradas. O handshake Realtime ocorre antes do SIP INVITE. A ponte de
+audio conecta somente apos SIP confirmado e RTP ativo; limite 90 s de conversa.
+O encerramento cancela tarefas de rede, desconecta a porta nativa e encerra SIP.
+Sem CRM, transferencia, transcricao persistida, memoria permanente ou ferramenta
+de opt-out nesta fase: somente teste interno autorizado, nao clientes.
+
+**Nao ativar em producao.** A mesma conta SIP pode estar em uso por outros
+workers, projetos Railway ou aparelhos. O flag de exclusividade e uma
+confirmacao operacional, nao uma trava distribuida entre PABXs/projetos.
+Usar ambiente de homologacao sem campanhas e sem outro dispositivo/worker
+registrado nessa conta; validar a janela com a operacao/telefonia.
+Apenas depois dos testes nativos, configurar explicitamente no web e no
+motor isolado:
+- LIA_VOZ_TEST_ENABLED=true
+- LIA_VOZ_TEST_EXCLUSIVE_SIP=true
+- LIA_VOZ_TEST_PHONE (numero interno autorizado, nao colocar no GitHub)
+- LIA_VOZ_TEST_NATIVE_PREFIX (uma das cinco linhas)
+No motor, usar docker/lia-voz-pilot.Dockerfile, uma replica, habilitar
+VOICE_ENGINE_WORKER_ENABLED, manter VOICE_CAMPAIGN_OUTBOUND_ENABLED e
+VOICE_TRANSFER_TESTS_ENABLED desabilitados, configurar LIA_VOZ_OPENAI_API_KEY
+via segredo separado e liberar a trava geral apenas no ambiente de teste.
+
+Nenhum segredo ou flag de ativacao foi configurado neste PR. Os contadores de
+quadros e SIP 200 nao comprovam que a pessoa ouviu e respondeu; validar no
+aparelho. Se houver falha de rede ou midia, nao repetir automaticamente.

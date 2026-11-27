@@ -1444,3 +1444,83 @@ def request_native_sip_test(account_id: int, request: Request,
     db.commit()
     flash(request, "Teste SIP/RTP solicitado. Acompanhe o resultado real nesta pagina.")
     return RedirectResponse(f"/voice/accounts/{account_id}/test", status_code=303)
+
+
+@router.get("/lia-voz")
+def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
+    from app.services.lia_voz_pilot import PilotConfig
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    require_roles(actor, "ADMIN")
+    config = PilotConfig.from_env()
+    accounts = list(db.scalars(select(VoiceSipAccount).where(
+        VoiceSipAccount.username == "1804", VoiceSipAccount.active.is_(True)
+    )))
+    tests = list(db.scalars(select(VoiceTestCall).where(
+        VoiceTestCall.status.startswith("LIA_")
+    ).order_by(VoiceTestCall.id.desc()).limit(20)))
+    engine = db.get(VoiceDialerEngine, 1)
+    online = bool(engine and engine.enabled and engine.heartbeat_at
+                  and datetime.now(timezone.utc) - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX
+                  and not engine.campaign_runtime_enabled and not engine.test_runtime_enabled)
+    return render(
+        request, "voice/lia_voz.html", user=actor, active_nav="voice",
+        page_title="Lia Voz · Ambiente de testes", accounts=accounts, tests=tests,
+        configured=config.configured, engine_ready=online,
+    )
+
+
+@router.post("/lia-voz/test")
+def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
+                         account_id: int = Form(...), phone: str = Form(...),
+                         authorized: str = Form(""), db: Session = Depends(get_db)):
+    from app.services.lia_voz_pilot import PENDING, PilotConfig, ensure_idle
+    actor, redirect = _actor(request, db)
+    if redirect:
+        return redirect
+    require_roles(actor, "ADMIN")
+    validate_csrf(request, csrf_token)
+    destination = "/voice/lia-voz"
+    if authorized != "sim":
+        return _error(request, "Confirme a autorizacao do numero de teste.", destination)
+    # Serialize Lia Voz submissions on the same engine and account.
+    engine = db.scalar(select(VoiceDialerEngine).where(
+        VoiceDialerEngine.id == 1
+    ).with_for_update())
+    now = datetime.now(timezone.utc)
+    if not (engine and engine.enabled and engine.heartbeat_at
+            and now - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX
+            and not engine.campaign_runtime_enabled and not engine.test_runtime_enabled):
+        return _error(request, "Motor isolado indisponivel ou campanhas/testes legados habilitados.", destination)
+    account = db.scalar(select(VoiceSipAccount).where(
+        VoiceSipAccount.id == account_id
+    ).with_for_update())
+    if not account or not account.active:
+        return _error(request, "Conta SIP indisponivel.", destination)
+    try:
+        clean = PilotConfig.from_env().authorize(phone, account.username)
+        ensure_idle(db)
+        outbound_guard(db, clean)
+    except ValueError as exc:
+        return _error(request, str(exc), destination)
+    recent = list(db.scalars(select(VoiceTestCall).where(
+        VoiceTestCall.account_id == account.id,
+        VoiceTestCall.created_at >= now - timedelta(hours=1),
+        VoiceTestCall.status != "SIP_VALIDADO",
+    )))
+    if len(recent) >= 3 or any(now - aware(t.created_at) < timedelta(minutes=3) for t in recent):
+        return _error(request, "Aguarde o intervalo minimo de tres minutos; limite de tres testes por hora.", destination)
+    test = VoiceTestCall(
+        account_id=account.id, account_label=account.name, target_phone=clean,
+        status=PENDING, message="Teste individual Lia Voz autorizado; aguardando motor isolado.",
+        initiator_user_id=actor.id, created_at=now,
+    )
+    db.add(test)
+    db.flush()
+    write_audit(db, user=actor, action="LIA_VOZ_TEST_REQUESTED",
+                entity_type="voice_test_call", entity_id=test.id,
+                payload={"account_id": account.id, "target_last4": clean[-4:]})
+    db.commit()
+    flash(request, "Teste individual solicitado. Nenhuma campanha foi iniciada.")
+    return RedirectResponse(destination, status_code=303)
