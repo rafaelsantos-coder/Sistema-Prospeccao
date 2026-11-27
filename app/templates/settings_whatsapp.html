@@ -6,7 +6,7 @@
   <div>
     <span class="eyebrow">CONFIGURAÇÕES · WHATSAPP</span>
     <h2>Números e conexões</h2>
-    <p>Cadastre números via Z-API ou pela API oficial do Meta e vincule-os às filas de atendimento.</p>
+    <p>Cadastre números via Z-API ou pela API oficial do Meta e vincule-os às filas de atendimento. OpenWA está disponível apenas para homologação isolada.</p>
   </div>
   <a class="button button-secondary" href="/settings">← Configurações</a>
 </div>
@@ -206,5 +206,10 @@
       </form>
     </div>
   </article>
+  <article class="panel panel-span-12">
+    <div class="panel-header"><div><span class="eyebrow">PROVEDOR EXPERIMENTAL</span><h3>OpenWA · Teste de segurança</h3></div></div>
+    <p class="panel-note">Integração mantida fora das filas e do envio de mensagens até passar na auditoria.</p>
+    <a class="button button-secondary" href="/settings/openwa">Abrir homologação OpenWA</a>
+  </article>
 </div>
-{% endblock %}
+{% endblock %>

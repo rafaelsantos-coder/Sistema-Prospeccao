@@ -24,6 +24,7 @@ from app.services.access_control import (
 )
 from app.services.origin_campaigns import list_campaigns, validate_campaign_fields
 from app.services.legacy_adapter import legacy_modules_available, rate_status
+from app.services.openwa import OpenWAConfig
 from app.services.queue_routing import queue_summary
 from app.services.zapi import ZApiError
 from app.timeutils import utcnow
@@ -494,6 +495,8 @@ def settings_integrations_page(request: Request, db: Session = Depends(get_db)):
 
     integrations = dict(settings.integrations)
     integrations["zapi"] = bool(list_zapi_instances(db))
+    openwa_config = OpenWAConfig.from_env()
+    integrations["openwa"] = openwa_config.enabled and openwa_config.is_configured
     return render(
         request,
         "settings_integrations.html",
