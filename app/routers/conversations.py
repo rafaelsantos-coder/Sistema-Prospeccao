@@ -75,6 +75,7 @@ from app.services.crm_credit_contestation import (
 from app.services.crm_manual_credit import (
     consult_registered_cpf,
     credit_status as manual_credit_status,
+    refresh_credit_status_from_crm,
 )
 from app.services import crm_prospect_sync
 from app.services.crm_sulnet import CRMIntegrationError
@@ -2546,6 +2547,36 @@ def consult_cpf_manually(
             "success",
         )
     return RedirectResponse(f"/conversations/{conversation_id}", status_code=303)
+
+
+@router.get("/conversations/{conversation_id}/refresh-credit-status")
+def refresh_credit_status(
+    conversation_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Atualiza o resultado local com credit-status do CRM (sem nova Serasa)."""
+    user, redirect = _user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    require_roles(user, "ADMIN", "GESTOR", "SUPERVISOR", "CONSULTOR")
+    conversation = _get_conversation(db, user, conversation_id)
+    if conversation is None:
+        return JSONResponse({"ok": False, "message": "Conversa indisponível."}, status_code=404)
+    try:
+        result = refresh_credit_status_from_crm(
+            db, conversation=conversation, actor=user,
+        )
+    except CRMManualError as exc:
+        return JSONResponse(
+            {"ok": False, "message": str(exc)},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        {"ok": True, **result},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/conversations/{conversation_id}/credit-contestation")

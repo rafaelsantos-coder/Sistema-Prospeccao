@@ -322,3 +322,144 @@ def test_new_santa_rosa_seller_credit_uses_registered_upgrade_funnel(
     assert audits[0]["action"] == credit.ACTION_CREDIT
     assert "cpf" not in str(audits[0]).lower()
 
+
+def test_refresh_credit_status_updates_without_new_serasa(monkeypatch):
+    """Após consulta registrada, Atualizar situação lê credit-status e grava novo resultado."""
+    monkeypatch.setattr(
+        credit, "settings",
+        replace(credit.settings, sulnet_crm_manual_credit_enabled=True),
+    )
+    seller = manual.CRMSeller("maria.peno", 24, 16, "Celeiro", 55)
+    previous = {
+        "state": credit.ACTION_CREDIT,
+        "opportunityId": 18428,
+        "sellerUsername": "maria.peno",
+        "funnelId": 16,
+        "status": "REPROVADO",
+        "statusLabel": "Reprovado",
+        "analysisId": 3731,
+        "protocol": "CRM-2026-18363",
+    }
+    calls = []
+    audits = []
+
+    class FakeCRM:
+        def seller_contestation_status(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "opportunityId": 18428,
+                "analysisId": 3731,
+                "sellerUsername": "maria.peno",
+                "assignedUserId": 24,
+                "funnelId": 16,
+                "status": "Aprovado",
+                "result": "Aprovado",
+                "canContest": False,
+                "managementDecision": "Liberado sem taxa",
+            }
+
+        def consult_seller_credit(self, **kwargs):  # pragma: no cover - não deve ser chamado
+            raise AssertionError("refresh não pode chamar /consult (Serasa)")
+
+    monkeypatch.setattr(credit, "_guard_contact_lock", lambda *_: None)
+    monkeypatch.setattr(credit, "seller_for_user", lambda *_: seller)
+    monkeypatch.setattr(
+        credit, "registration_status",
+        lambda *_: {
+            "state": manual.ACTION_REGISTERED,
+            "opportunityId": 18428,
+            "sellerUsername": "maria.peno",
+            "funnelId": 16,
+            "protocol": "CRM-2026-18363",
+        },
+    )
+    monkeypatch.setattr(credit, "credit_status", lambda *_: previous)
+    monkeypatch.setattr(credit, "_audit", lambda *args, **kwargs: audits.append(kwargs))
+    monkeypatch.setattr(
+        credit.SulnetCRMClient, "from_settings", classmethod(lambda cls: FakeCRM())
+    )
+    user = User(
+        name="Maria Gabriela Paim Peno",
+        email="maria@sulnet.local",
+        password_hash="x",
+        active=True,
+        role="CONSULTOR",
+    )
+    user.id = 7
+    conversation = SimpleNamespace(
+        id=99, contact_id=55, assigned_user=user, assigned_user_id=user.id,
+    )
+    result = credit.refresh_credit_status_from_crm(
+        None, conversation=conversation, actor=user,
+    )
+    assert result["status"] == "APROVADO"
+    assert result["statusLabel"] == "Aprovado"
+    assert result["analysisId"] == 3731
+    assert result["refreshed"] is True
+    assert result["canContest"] is False
+    assert calls == [{
+        "opportunity_id": 18428,
+        "analysis_id": 3731,
+        "seller_username": "maria.peno",
+    }]
+    assert audits[0]["action"] == credit.ACTION_CREDIT
+    assert "cpf" not in str(audits[0]).lower()
+
+
+def test_refresh_credit_accepts_status_without_funnel_id(monkeypatch):
+    monkeypatch.setattr(
+        credit, "settings",
+        replace(credit.settings, sulnet_crm_manual_credit_enabled=True),
+    )
+    seller = manual.CRMSeller("fabiano.braga", 36, 17, "Santa Rosa", 63)
+    previous = {
+        "state": credit.ACTION_CREDIT,
+        "opportunityId": 16976,
+        "sellerUsername": "fabiano.braga",
+        "funnelId": 17,
+        "status": "REPROVADO",
+        "statusLabel": "Reprovado",
+        "analysisId": 3501,
+    }
+
+    class FakeCRM:
+        def seller_contestation_status(self, **kwargs):
+            return {
+                "opportunityId": 16976,
+                "analysisId": 3501,
+                "sellerUsername": "fabiano.braga",
+                "status": "Reprovado",
+                "result": "Reprovado",
+                "canContest": True,
+            }
+
+    monkeypatch.setattr(credit, "_guard_contact_lock", lambda *_: None)
+    monkeypatch.setattr(credit, "seller_for_user", lambda *_: seller)
+    monkeypatch.setattr(
+        credit, "registration_status",
+        lambda *_: {
+            "state": manual.ACTION_REGISTERED,
+            "opportunityId": 16976,
+            "sellerUsername": "fabiano.braga",
+            "funnelId": 17,
+        },
+    )
+    monkeypatch.setattr(credit, "credit_status", lambda *_: previous)
+    monkeypatch.setattr(credit, "_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        credit.SulnetCRMClient, "from_settings", classmethod(lambda cls: FakeCRM())
+    )
+    user = User(
+        name="Fabiano Braga", email="fabiano@sulnet.local",
+        password_hash="x", active=True, role="CONSULTOR",
+    )
+    user.id = 6
+    conversation = SimpleNamespace(
+        id=8, contact_id=44, assigned_user=user, assigned_user_id=user.id,
+    )
+    result = credit.refresh_credit_status_from_crm(
+        None, conversation=conversation, actor=user,
+    )
+    assert result["status"] == "REPROVADO"
+    assert result["canContest"] is True
+

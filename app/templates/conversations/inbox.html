@@ -478,10 +478,24 @@
       <p>Oportunidade #{{ crm_manual_status.opportunityId }} · {{ crm_manual_seller.funnel_name }}</p>
       {% if crm_credit_status %}
         {% if crm_credit_status.state == "CRM_MANUAL_CREDIT" %}
-        <div class="crm-credit-result crm-credit-result-{{ crm_credit_status.status|lower }}" role="status">
-          <strong>{{ crm_credit_status.statusLabel }}</strong>
-          <small>Resultado retornado pelo CRM{% if crm_credit_status.analysisId %} · Análise #{{ crm_credit_status.analysisId }}{% endif %}</small>
+        <div class="crm-credit-result crm-credit-result-{{ crm_credit_status.status|lower }}"
+             role="status"
+             data-crm-credit-result
+             data-crm-credit-status="{{ crm_credit_status.status }}">
+          <strong data-crm-credit-label>{{ crm_credit_status.statusLabel }}</strong>
+          <small data-crm-credit-meta>Resultado retornado pelo CRM{% if crm_credit_status.analysisId %} · Análise #{{ crm_credit_status.analysisId }}{% endif %}</small>
         </div>
+        {% if crm_credit_enabled and crm_credit_status.analysisId %}
+        <button type="button"
+                class="button button-secondary full-width crm-credit-refresh"
+                data-crm-credit-refresh
+                data-crm-credit-refresh-url="/conversations/{{ conversation.id }}/refresh-credit-status">
+          Atualizar situação
+        </button>
+        <small class="crm-contest-muted" data-crm-credit-refresh-hint>
+          Busca no CRM a decisão atual (liberação, taxa ou contestação), sem nova consulta Serasa.
+        </small>
+        {% endif %}
         {% else %}
         <div class="crm-credit-alert" role="status">Consulta anterior sem confirmação. Confira a oportunidade no CRM antes de repetir.</div>
         {% endif %}
@@ -1078,11 +1092,16 @@
           message += ' · Decisão: ' + data.managementDecision;
         }
         if (data.reviewRequired) message += ' · Conferência necessária no CRM';
+        const canShowContest = Boolean(data.canContest) && Array.isArray(data.reasons) && data.reasons.length > 0;
+        if (!canShowContest && data.status === 'Reprovado' && !data.readOnly) {
+          message += ' · Contestação ainda não liberada pelo CRM';
+        }
+        if (data.readOnly) message += ' · Somente o responsável pode contestar';
         contestStatus.textContent = message;
         refreshPending = ['Contestação enviada', 'Em análise gerencial'].includes(data.status);
         reasons = Array.isArray(data.reasons) ? data.reasons : [];
         expectedBillMonth = typeof data.billMonthExpected === 'string' ? data.billMonthExpected : '';
-        contestDetails.hidden = !data.canContest || reasons.length === 0;
+        contestDetails.hidden = !canShowContest;
         if (contestDetails.hidden) contestDetails.open = false;
         reasonSelect.replaceChildren(new Option('Selecione um motivo', ''));
         for (const reason of reasons) {
@@ -1092,7 +1111,9 @@
       } catch (err) {
         contestDetails.hidden = true;
         contestDetails.open = false;
-        contestStatus.textContent = 'Não foi possível confirmar a situação da contestação no CRM.';
+        contestStatus.textContent = (err && err.message)
+          ? String(err.message)
+          : 'Não foi possível confirmar a situação da contestação no CRM.';
         refreshPending = false;
       } finally {
         checking = false;
@@ -1106,12 +1127,69 @@
         void refreshContestStatus();
       }
     }, 120000);
+    contestShell.refreshContestStatus = refreshContestStatus;
   }
   const creditSubmit = document.querySelector('[data-crm-credit-submit]');
   creditSubmit?.closest('form')?.addEventListener('submit', () => {
     if (creditSubmit) {
       creditSubmit.disabled = true;
       creditSubmit.textContent = 'Consultando...';
+    }
+  });
+  const creditRefresh = document.querySelector('[data-crm-credit-refresh]');
+  creditRefresh?.addEventListener('click', async () => {
+    const url = creditRefresh.dataset.crmCreditRefreshUrl;
+    const hint = document.querySelector('[data-crm-credit-refresh-hint]');
+    const resultBox = document.querySelector('[data-crm-credit-result]');
+    const labelEl = document.querySelector('[data-crm-credit-label]');
+    const metaEl = document.querySelector('[data-crm-credit-meta]');
+    if (!url) return;
+    creditRefresh.disabled = true;
+    creditRefresh.textContent = 'Atualizando...';
+    if (hint) hint.textContent = 'Consultando situação atual no CRM...';
+    try {
+      const response = await fetch(url, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' },
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message || 'Não foi possível atualizar a situação no CRM.');
+      }
+      const status = String(data.status || '').toLowerCase();
+      const label = String(data.statusLabel || 'Em análise');
+      if (resultBox) {
+        resultBox.className = 'crm-credit-result crm-credit-result-' + status;
+        resultBox.dataset.crmCreditStatus = String(data.status || '');
+      }
+      if (labelEl) labelEl.textContent = label;
+      if (metaEl) {
+        const analysis = data.analysisId ? (' · Análise #' + data.analysisId) : '';
+        metaEl.textContent = 'Resultado atualizado pelo CRM' + analysis;
+      }
+      if (hint) {
+        hint.textContent = data.canContest
+          ? 'Situação atualizada. Contestação liberada pelo CRM — use Contestar análise abaixo.'
+          : 'Situação atualizada. Se a decisão mudou no CRM, ela já aparece acima.';
+      }
+      const contestShellEl = document.querySelector('[data-contest-shell]');
+      if (contestShellEl && typeof contestShellEl.refreshContestStatus === 'function') {
+        await contestShellEl.refreshContestStatus();
+      } else if (data.canContest || status === 'reprovado') {
+        // Sem painel de contestação na página: recarrega para montar o bloco.
+        window.location.reload();
+        return;
+      }
+    } catch (err) {
+      if (hint) {
+        hint.textContent = (err && err.message)
+          ? String(err.message)
+          : 'Não foi possível atualizar a situação no CRM.';
+      }
+    } finally {
+      creditRefresh.disabled = false;
+      creditRefresh.textContent = 'Atualizar situação';
     }
   });
   const quickChatDialog = document.getElementById('inbox-quick-chat-dialog');
