@@ -810,7 +810,12 @@ def _validate_queue_filter(user: User, queue_id: int | None, queues: list[dict])
 def _manual_outbound_queues(db: Session, user: User) -> list[tuple[ServiceQueue, object]]:
     """Filas autorizadas, com um único provedor ativo e sem fallback."""
     rows = []
+    from app.services.sulnet_wa import queue_instance as own_queue_instance
     for queue in available_queues_for_user(db, user):
+        own = own_queue_instance(db, queue.id)
+        if own:
+            rows.append((queue, own))
+            continue
         meta = queue_meta_account(db, queue.id)
         instance = queue_instance(db, queue.id)
         if meta:
@@ -823,6 +828,9 @@ def _manual_outbound_queues(db: Session, user: User) -> list[tuple[ServiceQueue,
 
 
 def _manual_queue_channel(db: Session, queue_id: int) -> str:
+    from app.services.sulnet_wa import queue_instance as own_queue_instance
+    if own_queue_instance(db, queue_id):
+        return "SULNET_WA"
     return "META" if queue_meta_account(db, queue_id) else "ZAPI"
 
 
@@ -1335,6 +1343,55 @@ def _send_quick_template_message(
     return "SENT", None
 
 
+def _manual_sulnet_start(db, request, user, queue, instance, contact, lead, wants_json, fail):
+    """Abre conversa exclusivamente no motor Sulnet, sem reutilizar outro provedor."""
+    from app.models import ConversationSulnetWAInstance
+    db.scalar(select(Contact.id).where(Contact.id == contact.id).with_for_update())
+    existing = db.scalar(
+        select(Conversation)
+        .join(ConversationSulnetWAInstance,
+              ConversationSulnetWAInstance.conversation_id == Conversation.id)
+        .where(
+            Conversation.contact_id == contact.id,
+            Conversation.source == "SULNET_WA",
+            Conversation.status.in_(OPEN_CONVERSATION_STATUSES),
+            ConversationSulnetWAInstance.instance_id == instance.id,
+        ).order_by(Conversation.updated_at.desc()).limit(1)
+    )
+    if existing and existing.assigned_user_id not in (None, user.id):
+        db.rollback()
+        return fail("Conversa atribuída a outro atendente. Solicite transferência.", 409)
+    if existing:
+        current_queue = queue_for_conversation(db, existing.id)
+        if not current_queue or current_queue.id != queue.id:
+            db.rollback()
+            return fail("Conversa vinculada a outra fila. Envio bloqueado.", 409)
+        conversation = existing
+    else:
+        conversation = ensure_open_conversation(
+            db, contact, lead=lead, source="SULNET_WA",
+            queue_id=queue.id, queue_origin="MANUAL_OUTBOUND",
+            assign_if_unowned=False, sulnet_wa_instance_id=instance.id,
+            allow_unbound_reuse=False,
+        )
+    _assign_quick_start_owner(db, conversation, user)
+    write_audit(db, user=user, action="SULNET_WA_CONVERSATION_OPENED",
+                entity_type="conversation", entity_id=conversation.id,
+                payload={"queue_id": queue.id, "instance_id": instance.id,
+                         "reused": bool(existing)})
+    db.commit()
+    if wants_json:
+        return JSONResponse({
+            "ok": True, "conversation_id": conversation.id,
+            "reused": bool(existing), "phone": contact.phone,
+            "name": contact.business_name or contact.name or contact.phone,
+            "queue_name": queue.name, "owner": user.name,
+            "status": conversation.status, "draft": "",
+            "message_sent": False, "send_status": None,
+        })
+    return RedirectResponse(f"/conversations/{conversation.id}?quick=1", status_code=303)
+
+
 @router.post("/conversations/start")
 def quick_start_whatsapp_conversation(
     request: Request,
@@ -1399,11 +1456,16 @@ def quick_start_whatsapp_conversation(
         return fail("Selecione uma fila WhatsApp autorizada para iniciar a conversa.", 403)
     queue, instance = allowed[queue_id]
     desktop_json = wants_json and request.headers.get("X-Prospecta-Desktop") == "1"
-    is_meta = _manual_queue_channel(db, queue.id) == "META"
-    if not is_meta:
+    channel = _manual_queue_channel(db, queue.id)
+    is_meta = channel == "META"
+    is_own = channel == "SULNET_WA"
+    if not is_meta and not is_own:
         require_instance_access(user, instance)
         if meta_template_id or meta_parameters.strip() not in {"", "[]"} or meta_consent:
             return fail("Templates Meta não podem ser enviados pela Z-API.")
+    elif is_own:
+        if meta_template_id or meta_parameters.strip() not in {"", "[]"} or meta_consent or template_id:
+            return fail("No motor Sulnet, abra a conversa e escreva sua mensagem. Templates ainda não homologados.")
     elif template_id:
         return fail("Templates internos não podem ser enviados pela Meta.")
 
@@ -1415,7 +1477,7 @@ def quick_start_whatsapp_conversation(
 
     # Match the alternate Brazilian mobile format only inside the selected
     # provider and queue. The existing owner check below remains mandatory.
-    alias_chat = find_scoped_whatsapp_alias(
+    alias_chat = None if is_own else find_scoped_whatsapp_alias(
         db, normalized, queue_id=queue.id,
         meta_account_id=instance.id if is_meta else None,
         zapi_instance_id=None if is_meta else instance.id,
@@ -1436,6 +1498,10 @@ def quick_start_whatsapp_conversation(
             return fail("Este cliente não autoriza contato por WhatsApp.", 403)
 
     contact = ensure_contact(db, normalized, lead=lead)
+    if is_own:
+        return _manual_sulnet_start(
+            db, request, user, queue, instance, contact, lead, wants_json, fail,
+        )
     if is_meta:
         return _manual_meta_start(db, request, user, queue, instance, contact, lead,
                                   meta_template_id, meta_parameters, meta_consent,
