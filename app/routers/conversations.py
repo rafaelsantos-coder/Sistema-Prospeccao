@@ -258,13 +258,19 @@ def _claim_on_human_reply(
     return True
 
 
-def _history_since(db: Session, user: User, conversation: Conversation):
-    """Apos transferencia, vendedor ve so a etapa atual do atendimento.
+def _may_read_full_conversation_history(user: User, conversation: Conversation) -> bool:
+    """Somente a gestao e o responsavel autorizado veem todo este atendimento."""
+    return user.role in {"ADMIN", "GESTOR"} or conversation.assigned_user_id == user.id
 
-    O historico integral fica reservado ao gestor/administrador nos relatorios.
+
+def _history_since(db: Session, user: User, conversation: Conversation):
+    """O responsavel recebe o historico deste atendimento ao assumir a conversa.
+
+    Chamadores devem aplicar o escopo de acesso antes de consultar mensagens.
     Nao utilizar contact_id ou telefone para ampliar o escopo do inbox.
+    Outros atendimentos e o historico global continuam restritos.
     """
-    if user.role in {"ADMIN", "GESTOR"}:
+    if _may_read_full_conversation_history(user, conversation):
         return None
     return db.scalar(
         select(ConversationAssignment.created_at)
@@ -1126,7 +1132,10 @@ def _render_inbox(
         page_title="Conversas",
         conversations=conversations,
         conversation_previews={
-            item.id: _private_preview(item, privacy_cutoffs.get(item.id))
+            item.id: _private_preview(
+                item, None if _may_read_full_conversation_history(user, item)
+                else privacy_cutoffs.get(item.id),
+            )
             for item in conversations
         },
         conversation=selected,
@@ -2371,7 +2380,10 @@ def conversation_inbox_api(
                     or item.contact.phone
                 ),
                 "phone": item.contact.phone,
-                "preview": _private_preview(item, privacy_cutoffs.get(item.id)),
+                "preview": _private_preview(
+                    item, None if _may_read_full_conversation_history(user, item)
+                    else privacy_cutoffs.get(item.id),
+                ),
                 "queue_id": queue_labels.get(item.id, {}).get("id"),
                 "queue_name": queue_labels.get(item.id, {}).get("name"),
                 "ai_reply_status": ai_reply_statuses.get(item.id),

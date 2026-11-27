@@ -126,7 +126,7 @@ def test_queue_member_can_be_added_and_removed_individually():
             db.close()
 
 
-def test_transferred_consultant_cannot_read_previous_seller_history(monkeypatch):
+def test_transferred_consultant_reads_current_history_but_not_other_conversations(monkeypatch):
     password = "SenhaFila@2026"
     monkeypatch.setattr(
         MediaStorage,
@@ -224,7 +224,7 @@ def test_transferred_consultant_cannot_read_previous_seller_history(monkeypatch)
             db.add(conversation)
             db.flush()
             bind_conversation_queue(db, conversation.id, queue.id, origin="TEST")
-            db.add(
+            db.add_all([
                 Message(
                     conversation_id=conversation.id,
                     contact_id=contact.id,
@@ -232,12 +232,51 @@ def test_transferred_consultant_cannot_read_previous_seller_history(monkeypatch)
                     message_type="TEXT",
                     body="Mensagem atual do cliente",
                     status="RECEIVED",
-                )
-            )
+                ),
+                Message(
+                    conversation_id=conversation.id,
+                    contact_id=contact.id,
+                    sender_user_id=owner.id,
+                    direction="OUTBOUND",
+                    message_type="TEXT",
+                    body="Proposta do vendedor de origem",
+                    status="SENT",
+                ),
+                Message(
+                    conversation_id=conversation.id,
+                    contact_id=contact.id,
+                    sender_user_id=owner.id,
+                    direction="INTERNAL",
+                    message_type="NOTE",
+                    body="Nota interna do atendimento atual",
+                    status="INTERNAL",
+                ),
+                Message(
+                    conversation_id=conversation.id,
+                    contact_id=contact.id,
+                    sender_user_id=owner.id,
+                    direction="OUTBOUND",
+                    message_type="IMAGE",
+                    body="Foto do atendimento atual",
+                    media_url="s3://conversationmedia/current/foto.jpg",
+                    mime_type="image/jpeg",
+                    status="SENT",
+                ),
+            ])
+            conversation.last_message_preview = "Foto do atendimento atual"
+            conversation.last_message_at = utcnow()
             join_whatsapp(db, target)
             db.commit()
             conversation_id = conversation.id
             target_id = target.id
+            old_conversation_id = old_conversation.id
+            contact_id = contact.id
+            current_media_id = db.scalar(
+                select(Message.id).where(
+                    Message.conversation_id == conversation.id,
+                    Message.message_type == "IMAGE",
+                )
+            )
             old_media_id = db.scalar(
                 select(Message.id).where(
                     Message.conversation_id == old_conversation.id,
@@ -275,8 +314,12 @@ def test_transferred_consultant_cannot_read_previous_seller_history(monkeypatch)
         assert history_page.status_code == 200
         assert "Mensagem antiga antes da transferência" not in history_page.text
         assert "Nota interna antiga importante" not in history_page.text
-        assert "Mensagem atual do cliente" not in history_page.text
+        assert "Mensagem atual do cliente" in history_page.text
+        assert "Proposta do vendedor de origem" in history_page.text
+        assert "Nota interna do atendimento atual" in history_page.text
         assert "Foto antiga" not in history_page.text
+        assert "Foto do atendimento atual" in history_page.text
+        assert "Transferência de atendimento" in history_page.text
         assert "Mensagens deste atendimento" in history_page.text
 
         api = target_client.get(
@@ -286,7 +329,36 @@ def test_transferred_consultant_cannot_read_previous_seller_history(monkeypatch)
         bodies = [item["body"] for item in api.json()["items"]]
         assert "Mensagem antiga antes da transferência" not in bodies
         assert "Nota interna antiga importante" not in bodies
-        assert "Mensagem atual do cliente" not in bodies
+        assert "Mensagem atual do cliente" in bodies
+        assert "Proposta do vendedor de origem" in bodies
+        assert "Nota interna do atendimento atual" in bodies
+        assert "Foto do atendimento atual" in bodies
+        assert "Foto antiga" not in bodies
+
+        inbox = target_client.get("/api/conversations/inbox")
+        assert inbox.status_code == 200
+        row = next(item for item in inbox.json()["items"] if item["id"] == conversation_id)
+        assert row["preview"] == "Foto do atendimento atual"
+
+        current_media = target_client.get(
+            f"/conversations/messages/{current_media_id}/media",
+            follow_redirects=False,
+        )
+        assert current_media.status_code == 307
+        assert current_media.headers["location"] == "https://signed.example/historico.jpg"
+
+        # Mesmo telefone, outro atendimento: continua inacessivel.
+        assert target_client.get(
+            f"/api/conversations/{old_conversation_id}/messages?after_id=0"
+        ).status_code == 404
+        # O vendedor de origem perdeu o acesso ao atendimento transferido.
+        assert owner_client.get(
+            f"/api/conversations/{conversation_id}/messages?after_id=0"
+        ).status_code == 404
+        assert owner_client.get(
+            f"/conversations/messages/{current_media_id}/media",
+            follow_redirects=False,
+        ).status_code == 404
 
         media = target_client.get(
             f"/conversations/messages/{old_media_id}/media",
@@ -294,12 +366,12 @@ def test_transferred_consultant_cannot_read_previous_seller_history(monkeypatch)
         )
         assert media.status_code == 404
 
-        # Novas mensagens da etapa recebida pelo vendedor continuam visiveis.
+        # Novas mensagens e o contexto recebido continuam visiveis.
         db = SessionLocal()
         try:
             db.add(Message(
                 conversation_id=conversation_id,
-                contact_id=contact.id,
+                contact_id=contact_id,
                 direction="INBOUND",
                 message_type="TEXT",
                 body="Nova mensagem destinada ao vendedor atual",
@@ -312,7 +384,9 @@ def test_transferred_consultant_cannot_read_previous_seller_history(monkeypatch)
         page_after = target_client.get(f"/conversations/{conversation_id}")
         assert page_after.status_code == 200
         assert "Nova mensagem destinada ao vendedor atual" in page_after.text
-        assert "Mensagem atual do cliente" not in page_after.text
+        assert "Mensagem atual do cliente" in page_after.text
+        assert "Proposta do vendedor de origem" in page_after.text
+        assert "Mensagem antiga antes da transferência" not in page_after.text
 
 
 def test_consultant_can_transfer_conversation_to_online_member_of_same_queue():
