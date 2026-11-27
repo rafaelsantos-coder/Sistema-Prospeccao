@@ -58,7 +58,7 @@
       <div><span class="eyebrow">INSTÂNCIAS WHATSAPP</span><h3>Números cadastrados</h3></div>
       <span class="count-badge">{{ zapi_instances|length }}</span>
     </div>
-    <p class="panel-note">Cada fila pode usar uma instância diferente. O número conectado é consultado automaticamente na própria Z-API.</p>
+    <p class="panel-note">Cada fila pode usar uma instância diferente. O número conectado é consultado automaticamente na própria Z-API. Antes de reconectar o celular, limpe a fila nativa se houver mensagens desatualizadas — a Z-API dispara essa fila sozinha ao voltar online.</p>
     {% if duplicate_instance_ids %}
     <div class="info-box top-space">
       <strong>Atenção: há instâncias conectadas ao mesmo número</strong>
@@ -70,7 +70,7 @@
     </div>
     <div class="data-table-wrap top-space">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>Número / identificação</th><th>Instância</th><th>Origem</th><th>Status</th><th>Ações</th></tr></thead>
+        <thead><tr><th>Nome</th><th>Número / identificação</th><th>Instância</th><th>Fila Z-API</th><th>Origem</th><th>Status</th><th>Ações</th></tr></thead>
         <tbody>
         {% for instance in zapi_instances %}
           {% set zi = zapi_instance_info.get(instance.id, {}) %}
@@ -81,6 +81,16 @@
               {% if zi.get('duplicate_phone') %}<span class="table-subline" style="color:#b45309;font-weight:800;">Mesmo número em outra instância</span>{% elif zi.get('error') %}<span class="table-subline">Não foi possível consultar agora</span>{% else %}<span class="table-subline">Obtido automaticamente da Z-API</span>{% endif %}
             </td>
             <td><span class="table-subline">…{{ instance.instance_id[-8:] }}</span></td>
+            <td>
+              {% if zi.get('native_queue_pending') is not none %}
+                <strong>{{ zi.get('native_queue_pending') }}{% if zi.get('native_queue_capped') %}+{% endif %}</strong>
+                <span class="table-subline">{% if zi.get('native_queue_pending') %}pendente(s) — limpe antes de reconectar se estiverem velhas{% else %}vazia{% endif %}</span>
+              {% elif zi.get('native_queue_error') %}
+                <span class="table-subline">Consulta indisponível</span>
+              {% else %}
+                <span class="table-subline">—</span>
+              {% endif %}
+            </td>
             <td>{{ 'Railway / atual' if instance.source_type == 'ENV' else 'Cadastro interno' }}</td>
             <td><span class="connection-status {% if zi.get('connected') is sameas true %}on{% endif %}">{% if not instance.active %}Inativa{% elif zi.get('connected') is sameas true %}Conectada{% elif zi.get('connected') is sameas false %}Desconectada{% else %}Não confirmado{% endif %}</span>{% if zi.get('status_source') == 'webhook' %}<span class="table-subline">Último evento Z-API (até 15 min)</span>{% elif zi.get('connected') is none %}<span class="table-subline">Consulta de status indisponível</span>{% endif %}</td>
             <td>
@@ -88,6 +98,11 @@
                 <form action="/settings/zapi/instances/{{ instance.id }}/configure-webhook" method="post">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <button class="button button-ghost" type="submit">Atualizar webhook</button>
+                </form>
+                <form action="/settings/zapi/instances/{{ instance.id }}/clear-queue" method="post" onsubmit="return confirm('Limpar a fila nativa da Z-API desta instância? Mensagens pendentes não serão enviadas.');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="confirm" value="sim">
+                  <button class="button button-danger" type="submit"{% if not zi.get('native_queue_pending') %} title="Fila aparentemente vazia"{% endif %}>Limpar fila Z-API</button>
                 </form>
                 {% if instance.source_type != 'ENV' %}
                   <a class="button button-secondary" href="/settings/zapi/instances/{{ instance.id }}/edit" aria-label="Editar a instância {{ instance.name }}">Editar</a>
@@ -99,7 +114,7 @@
             </td>
           </tr>
         {% else %}
-          <tr><td colspan="6"><div class="empty-state"><strong>Nenhuma instância cadastrada</strong><span>Cadastre uma instância para vinculá-la às filas.</span></div></td></tr>
+          <tr><td colspan="7"><div class="empty-state"><strong>Nenhuma instância cadastrada</strong><span>Cadastre uma instância para vinculá-la às filas.</span></div></td></tr>
         {% endfor %}
         </tbody>
       </table>

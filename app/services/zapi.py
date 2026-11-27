@@ -94,6 +94,44 @@ class ZApiService:
                 return str(message)[:240]
         return f"HTTP {response.status_code}"
 
+    @staticmethod
+    def _clamp_delay(value: int | None) -> int | None:
+        """Normaliza delay Z-API (1–15). None/0 = omitir o campo."""
+        if value is None:
+            return None
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ZApiError("O delay deve ser um número inteiro entre 1 e 15.") from exc
+        if seconds <= 0:
+            return None
+        if seconds > 15:
+            raise ZApiError("O delay deve ser entre 1 e 15 segundos.")
+        return seconds
+
+    def _apply_send_delays(
+        self,
+        payload: dict[str, Any],
+        *,
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
+    ) -> None:
+        """Injeta delayMessage/delayTyping (humano) no body do envio."""
+        message_delay = self._clamp_delay(
+            delay_message
+            if delay_message is not None
+            else settings.zapi_delay_message_seconds
+        )
+        typing_delay = self._clamp_delay(
+            delay_typing
+            if delay_typing is not None
+            else settings.zapi_delay_typing_seconds
+        )
+        if message_delay is not None:
+            payload["delayMessage"] = message_delay
+        if typing_delay is not None:
+            payload["delayTyping"] = typing_delay
+
     def status(self) -> dict[str, Any]:
         self._ensure_configured()
         try:
@@ -148,7 +186,14 @@ class ZApiService:
             ),
         }
 
-    def send_text(self, *, phone: str, message: str) -> dict[str, Any]:
+    def send_text(
+        self,
+        *,
+        phone: str,
+        message: str,
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
+    ) -> dict[str, Any]:
         normalized_phone = self.normalize_phone(phone)
         self._assert_recipient_not_blacklisted(normalized_phone)
         clean_message = message.strip()
@@ -156,12 +201,16 @@ class ZApiService:
             raise ZApiError("A mensagem nao pode ficar vazia.")
         if len(clean_message) > 4096:
             raise ZApiError("A mensagem deve ter no maximo 4.096 caracteres.")
+        body: dict[str, Any] = {"phone": normalized_phone, "message": clean_message}
+        self._apply_send_delays(
+            body, delay_message=delay_message, delay_typing=delay_typing
+        )
         try:
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(
                     self._url("send-text"),
                     headers=self._headers(json_request=True),
-                    json={"phone": normalized_phone, "message": clean_message},
+                    json=body,
                 )
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel enviar a mensagem pela Z-API.") from exc
@@ -179,6 +228,8 @@ class ZApiService:
         phone: str,
         message: str,
         buttons: list[dict[str, str]],
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
     ) -> dict[str, Any]:
         normalized_phone = self.normalize_phone(phone)
         self._assert_recipient_not_blacklisted(normalized_phone)
@@ -200,16 +251,20 @@ class ZApiService:
         if not clean_buttons:
             raise ZApiError("Informe ao menos um botao de resposta.")
 
+        body: dict[str, Any] = {
+            "phone": normalized_phone,
+            "message": clean_message,
+            "buttonList": {"buttons": clean_buttons},
+        }
+        self._apply_send_delays(
+            body, delay_message=delay_message, delay_typing=delay_typing
+        )
         try:
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(
                     self._url("send-button-list"),
                     headers=self._headers(json_request=True),
-                    json={
-                        "phone": normalized_phone,
-                        "message": clean_message,
-                        "buttonList": {"buttons": clean_buttons},
-                    },
+                    json=body,
                 )
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel enviar os botoes pela Z-API.") from exc
@@ -231,6 +286,8 @@ class ZApiService:
         message: str,
         label: str,
         url: str,
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
     ) -> dict[str, Any]:
         """Mensagem com botão que abre um link (ex.: wa.me da central)."""
         normalized_phone = self.normalize_phone(phone)
@@ -238,18 +295,22 @@ class ZApiService:
         clean_message = message.strip()
         if not clean_message:
             raise ZApiError("A mensagem nao pode ficar vazia.")
+        body: dict[str, Any] = {
+            "phone": normalized_phone,
+            "message": clean_message,
+            "buttonActions": [
+                {"id": "1", "type": "URL", "url": url, "label": label[:20]},
+            ],
+        }
+        self._apply_send_delays(
+            body, delay_message=delay_message, delay_typing=delay_typing
+        )
         try:
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(
                     self._url("send-button-actions"),
                     headers=self._headers(json_request=True),
-                    json={
-                        "phone": normalized_phone,
-                        "message": clean_message,
-                        "buttonActions": [
-                            {"id": "1", "type": "URL", "url": url, "label": label[:20]},
-                        ],
-                    },
+                    json=body,
                 )
         except httpx.HTTPError as exc:
             raise ZApiError("Nao foi possivel enviar o botao de link pela Z-API.") from exc
@@ -272,6 +333,8 @@ class ZApiService:
         media_field: str,
         media_url: str,
         extra: dict[str, Any] | None = None,
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
     ) -> dict[str, Any]:
         normalized_phone = self.normalize_phone(phone)
         self._assert_recipient_not_blacklisted(normalized_phone)
@@ -284,6 +347,9 @@ class ZApiService:
         }
         if extra:
             payload.update({key: value for key, value in extra.items() if value not in {None, ""}})
+        self._apply_send_delays(
+            payload, delay_message=delay_message, delay_typing=delay_typing
+        )
         try:
             with httpx.Client(timeout=90.0) as client:
                 response = client.post(
@@ -310,6 +376,8 @@ class ZApiService:
         phone: str,
         image_url: str,
         caption: str = "",
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
     ) -> dict[str, Any]:
         return self._send_media(
             endpoint="send-image",
@@ -317,6 +385,8 @@ class ZApiService:
             media_field="image",
             media_url=image_url,
             extra={"caption": caption.strip(), "viewOnce": False},
+            delay_message=delay_message,
+            delay_typing=delay_typing,
         )
 
     def send_video(
@@ -325,6 +395,8 @@ class ZApiService:
         phone: str,
         video_url: str,
         caption: str = "",
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
     ) -> dict[str, Any]:
         return self._send_media(
             endpoint="send-video",
@@ -332,6 +404,8 @@ class ZApiService:
             media_field="video",
             media_url=video_url,
             extra={"caption": caption.strip(), "viewOnce": False},
+            delay_message=delay_message,
+            delay_typing=delay_typing,
         )
 
     def send_audio(
@@ -339,6 +413,8 @@ class ZApiService:
         *,
         phone: str,
         audio_url: str,
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
     ) -> dict[str, Any]:
         return self._send_media(
             endpoint="send-audio",
@@ -346,6 +422,8 @@ class ZApiService:
             media_field="audio",
             media_url=audio_url,
             extra={"viewOnce": False, "waveform": True},
+            delay_message=delay_message,
+            delay_typing=delay_typing,
         )
 
     def send_document(
@@ -356,6 +434,8 @@ class ZApiService:
         extension: str,
         file_name: str,
         caption: str = "",
+        delay_message: int | None = None,
+        delay_typing: int | None = None,
     ) -> dict[str, Any]:
         clean_extension = re.sub(r"[^a-zA-Z0-9]", "", extension or "").lower()
         if not clean_extension or len(clean_extension) > 12:
@@ -369,7 +449,109 @@ class ZApiService:
                 "fileName": file_name.strip() or f"arquivo.{clean_extension}",
                 "caption": caption.strip(),
             },
+            delay_message=delay_message,
+            delay_typing=delay_typing,
         )
+
+    def list_queue(
+        self,
+        *,
+        page_size: int = 20,
+        paging_state: str | None = None,
+    ) -> dict[str, Any]:
+        """Lista mensagens pendentes na fila nativa da Z-API (POST /queue)."""
+        self._ensure_configured()
+        size = max(1, min(int(page_size or 20), 30))
+        body: dict[str, Any] = {"pageSize": size}
+        if paging_state:
+            body["pagingState"] = str(paging_state)
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                response = client.post(
+                    self._url("queue"),
+                    headers=self._headers(json_request=True),
+                    json=body,
+                )
+        except httpx.HTTPError as exc:
+            raise ZApiError("Nao foi possivel consultar a fila da Z-API.") from exc
+        if response.status_code >= 400:
+            raise ZApiError(
+                f"Falha ao consultar fila Z-API: {self._safe_error(response)}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ZApiError("A Z-API retornou dados invalidos da fila.") from exc
+        if not isinstance(payload, dict):
+            raise ZApiError("A Z-API retornou dados invalidos da fila.")
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            messages = []
+        return {
+            "messages": messages,
+            "paging_state": str(payload.get("pagingState") or "").strip() or None,
+            "has_more": bool(payload.get("hasMore")),
+            "count": len(messages),
+        }
+
+    def queue_pending_summary(self, *, max_pages: int = 5) -> dict[str, Any]:
+        """Conta pendências da fila Z-API com limite de páginas."""
+        total = 0
+        has_more = True
+        paging_state: str | None = None
+        samples: list[dict[str, Any]] = []
+        pages = 0
+        page_limit = max(1, min(int(max_pages or 5), 20))
+        while has_more and pages < page_limit:
+            page = self.list_queue(page_size=30, paging_state=paging_state)
+            messages = page["messages"]
+            total += len(messages)
+            if not samples:
+                for item in messages[:5]:
+                    if isinstance(item, dict):
+                        samples.append(
+                            {
+                                "zaap_id": str(
+                                    item.get("ZaapId") or item.get("_id") or ""
+                                ).strip(),
+                                "phone": str(item.get("Phone") or "").strip(),
+                                "created_at": str(item.get("CreatedAt") or "").strip(),
+                            }
+                        )
+            has_more = bool(page["has_more"])
+            paging_state = page["paging_state"]
+            pages += 1
+            if not messages:
+                break
+        return {
+            "count": total,
+            "has_more": has_more,
+            "capped": has_more,
+            "samples": samples,
+        }
+
+    def clear_queue(self) -> dict[str, Any]:
+        """Apaga todas as mensagens pendentes na fila nativa da Z-API."""
+        self._ensure_configured()
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.delete(
+                    self._url("queue"),
+                    headers=self._headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise ZApiError("Nao foi possivel limpar a fila da Z-API.") from exc
+        if response.status_code >= 400:
+            raise ZApiError(
+                f"Falha ao limpar fila Z-API: {self._safe_error(response)}"
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"ok": True}
+        if not isinstance(payload, dict):
+            payload = {"ok": True}
+        return payload
 
     def webhook_state(self) -> dict[str, Any]:
         self._ensure_configured()

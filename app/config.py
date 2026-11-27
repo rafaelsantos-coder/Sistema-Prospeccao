@@ -63,6 +63,9 @@ class Settings:
     zapi_instance_token: str = os.getenv("ZAPI_INSTANCE_TOKEN", "")
     zapi_client_token: str = os.getenv("ZAPI_CLIENT_TOKEN", "")
     zapi_webhook_secret: str = os.getenv("ZAPI_WEBHOOK_SECRET", "")
+    # Delay humano nos envios Z-API (1–15s). 0 = omitir o campo (Z-API usa o default nativo).
+    zapi_delay_message_seconds: int = int(os.getenv("ZAPI_DELAY_MESSAGE_SECONDS", "2"))
+    zapi_delay_typing_seconds: int = int(os.getenv("ZAPI_DELAY_TYPING_SECONDS", "3"))
     # Canal Telegram (bot oficial; o cliente precisa iniciar a conversa pelo link).
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_bot_username: str = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
@@ -308,6 +311,12 @@ def validate_production_settings() -> None:
             errors.append("APP_PUBLIC_URL deve usar HTTPS quando a Z-API estiver configurada")
         if len(settings.zapi_webhook_secret) < 24:
             errors.append("ZAPI_WEBHOOK_SECRET deve ter ao menos 24 caracteres")
+    for delay_name, delay_value in (
+        ("ZAPI_DELAY_MESSAGE_SECONDS", settings.zapi_delay_message_seconds),
+        ("ZAPI_DELAY_TYPING_SECONDS", settings.zapi_delay_typing_seconds),
+    ):
+        if delay_value < 0 or delay_value > 15:
+            errors.append(f"{delay_name} deve estar entre 0 e 15")
     if settings.ai_seller_enabled:
         if not settings.ai_autonomous_enabled:
             errors.append(
