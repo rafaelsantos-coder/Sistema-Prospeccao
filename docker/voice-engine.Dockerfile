@@ -12,8 +12,8 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 libgcc-s1 libasound2 \
     && rm -rf /var/lib/apt/lists/*
-COPY requirements-voice.txt .
-RUN pip install --no-cache-dir -r requirements-voice.txt \
+COPY requirements-voice.txt requirements-lia-voz.txt ./
+RUN pip install --no-cache-dir -r requirements-voice.txt -r requirements-lia-voz.txt \
     && python -c "import pjsua2; print('PJSUA2 native import OK')"
 COPY app/ ./app/
 RUN addgroup --system sulnetvoice && adduser --system --ingroup sulnetvoice sulnetvoice \
