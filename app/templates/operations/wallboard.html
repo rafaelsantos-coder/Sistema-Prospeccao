@@ -9,10 +9,10 @@
       <p>Visão consolidada de todas as filas: conversas, vendedores, funil do dia e alertas que pedem ação.</p>
     </div>
     <div class="ops-wallboard-actions">
-      <form method="get" action="/operations" class="ops-wallboard-filter">
+      <form method="get" action="/operations" class="ops-wallboard-filter" data-ops-queue-filter>
         <label>
           <span>Fila</span>
-          <select name="queue" onchange="this.form.submit()">
+          <select name="queue" data-ops-queue-select>
             <option value="">Todas as filas</option>
             {% for item in snapshot.filters.queues %}
             <option value="{{ item.id }}" {% if selected_queue == item.id %}selected{% endif %}>{{ item.name }}</option>
@@ -250,7 +250,7 @@
 @media(max-width:640px){.ops-funnel{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-status-row{grid-template-columns:100px 1fr 28px}}
 </style>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
   const root = document.querySelector("[data-ops-wallboard]");
   if (!root) return;
@@ -381,6 +381,13 @@
   const stamp = root.querySelector("[data-ops-generated]");
   if (stamp && stamp.getAttribute("datetime")) {
     stamp.textContent = stamp.getAttribute("datetime").replace("T", " ").slice(0, 19);
+  }
+  const filterForm = root.querySelector("[data-ops-queue-filter]");
+  const filterSelect = root.querySelector("[data-ops-queue-select]");
+  if (filterForm && filterSelect) {
+    filterSelect.addEventListener("change", function () {
+      filterForm.submit();
+    });
   }
   setInterval(tick, refreshMs);
 })();
