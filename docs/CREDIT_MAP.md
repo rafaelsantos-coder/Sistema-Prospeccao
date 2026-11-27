@@ -2,7 +2,7 @@
 
 Painel integrado ao sistema em `/reports/credit-map` com mapa OpenStreetMap (Leaflet), sem chave nem cadastro.
 
-## Instalação (repositório Sistema-Prospeccao)
+## Instalação (repositório SULNET-TELECOM/sulnet-prospecta)
 
 1. Copiar arquivos novos do módulo para `app/` e `alembic/versions/`.
 2. Aplicar as alterações indicadas no arquivo `INTEGRACAO.md`.
