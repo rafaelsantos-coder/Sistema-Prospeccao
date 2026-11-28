@@ -9,6 +9,10 @@ from app.services.lia_voz_media import MediaBridge, attach_pj_media, run_media_b
 from app.services.lia_voz_realtime import LiaVoiceError, open_realtime, safe_realtime_failure
 from app.services.voice_runtime import make_dial_uri
 
+# Match the proven manual SIP probe's pre-answer allowance. Some carrier
+# routes remain in 183 (early media) for more than 25 seconds before 200.
+RING_TIMEOUT_SECONDS = 40
+
 
 @dataclass(frozen=True)
 class PilotOutcome:
@@ -149,7 +153,7 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
             invite_started = True
             stage = "aguardando resposta SIP"
             on_progress("INVITE enviado; aguardando central.", None)
-            ring_deadline = time.monotonic() + 25
+            ring_deadline = time.monotonic() + RING_TIMEOUT_SECONDS
             answered_at = None
             next_guard = 0.0
             while True:
@@ -180,7 +184,7 @@ async def perform_lia_test(driver, phone, prefix, api_key, *,
                     raise LiaVoiceError("Media session ended before SIP call")
                 if not call.answered:
                     if now >= ring_deadline:
-                        return result("LIA_SEM_ATENDIMENTO", "Tempo de toque encerrado.")
+                        return result("LIA_SEM_ATENDIMENTO", "Central sem confirmacao em 40s; toque no aparelho nao verificado.")
                 else:
                     if answered_at is None:
                         answered_at = call.confirmed_at or now
@@ -291,7 +295,7 @@ def perform_native_probe(driver, phone, prefix, *, should_abort,
                 else "Teste SIP sem IA; usando o techprefix Native selecionado.", None)
     outcome = driver.perform_call(
         phone, mode="PROBE", **_route_options(prefix),
-        timeout=40, probe_hold_seconds=12, should_abort=guard, on_status=observe,
+        timeout=RING_TIMEOUT_SECONDS, probe_hold_seconds=12, should_abort=guard, on_status=observe,
     )
     if outcome.sip_code and outcome.sip_code not in codes:
         codes.append(outcome.sip_code)

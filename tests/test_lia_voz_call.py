@@ -409,3 +409,64 @@ def test_call_reports_sanitized_realtime_failure_and_turn_metrics(monkeypatch):
     assert any("Qualidade voz: fala inicio/fim=2/1" in m for m in progress)
     assert progress[-1] == outcome.message
     assert driver.invites == 1
+
+
+@pytest.mark.parametrize("answer_at,expected", [
+    (32, "LIA_FINALIZADA"),
+    (42, "LIA_SEM_ATENDIMENTO"),
+])
+def test_ai_waits_as_long_as_probe_for_delayed_sip_confirmation(monkeypatch, answer_at, expected):
+    """Regression: provisional 183 for 32s must not cause the old 25s cutoff."""
+    from types import SimpleNamespace
+    from app.services.lia_voz_media import FRAME_BYTES
+
+    driver = FakeDriver()
+    clock = [0.0]
+    # Patch this module's clock only, not asyncio's own monotonic clock.
+    monkeypatch.setattr(lia_voz_call, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
+
+    def pump(ms):
+        if ms != 10:
+            return
+        clock[0] += 1.0
+        call = driver.call
+        if clock[0] == 1:
+            call.info.state = 1
+            call.info.lastStatusCode = 183
+            call.onCallState(None)
+        elif clock[0] == answer_at:
+            call.info.state = 2
+            call.info.lastStatusCode = 200
+            call.onCallState(None)
+            call.onCallMediaState(None)
+        elif clock[0] == answer_at + 2 and driver.media.connections:
+            port = driver.media.connections[0]
+            port.onFrameReceived(SimpleNamespace(
+                type=1, size=FRAME_BYTES, buf=FakeVector([1] * FRAME_BYTES)))
+            port.onFrameRequested(SimpleNamespace(
+                type=0, size=FRAME_BYTES, buf=FakeVector()))
+        elif clock[0] == answer_at + 4:
+            call.info.state = 3
+            call.onCallState(None)
+
+    driver.pump = pump
+
+    async def run():
+        return await asyncio.wait_for(lia_voz_call.perform_lia_test(
+            driver, "5555999990000", None, "test-key",
+            should_abort=lambda: False, session_factory=factory_for(FakeSession()),
+        ), timeout=3)
+
+    outcome = asyncio.run(run())
+    assert outcome.status == expected
+    assert driver.invites == 1
+    if expected == "LIA_FINALIZADA":
+        assert outcome.sip_code == 200
+        assert "183/200" in outcome.message
+        assert driver.hangups == 0
+    else:
+        assert outcome.sip_code == 183
+        assert clock[0] == lia_voz_call.RING_TIMEOUT_SECONDS
+        assert driver.hangups == 1
+        assert "toque no aparelho nao verificado" in outcome.message
