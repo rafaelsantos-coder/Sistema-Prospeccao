@@ -130,7 +130,7 @@ def check_connection(settings: MetaAdsSettings | None = None, *, client: httpx.C
 
         try:
             account = _get(client, settings, settings.account_id, {
-                "fields": "name,account_status,currency,timezone_name,amount_spent,spend_cap,business{id,name}",
+                "fields": "name,account_status,currency,timezone_name,amount_spent,spend_cap",
             })
             report.account = account
             status = _ACCOUNT_STATUS.get(account.get("account_status"), "Desconhecido")
