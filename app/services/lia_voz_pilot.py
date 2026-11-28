@@ -1,4 +1,4 @@
-"""Explicit one-number Lia Voz pilot policy; not a campaign or CRM operation."""
+"""Explicit manual Lia Voz test policy; not a campaign or CRM operation."""
 from __future__ import annotations
 
 import os
@@ -8,7 +8,9 @@ from sqlalchemy import select
 
 from app.models import VoiceCampaign, VoiceRecipient, VoiceTestCall, VoiceTransferTest
 from app.services.global_blacklist import canonical_phone
-from app.services.voice_native_routing import NATIVE_ACCOUNT_USERNAME, native_dial_digits
+from app.services.voice_native_routing import (
+    NATIVE_ACCOUNT_USERNAME, NATIVE_TECHPREFIXES, native_dial_digits,
+)
 from app.services.voice_test import validate_test_phone
 
 PENDING = "LIA_PENDENTE"
@@ -63,7 +65,6 @@ class PilotDenied(ValueError):
 class PilotConfig:
     enabled: bool
     exclusive: bool
-    allowed_phone: str
     prefix: str
     shared: bool = False
 
@@ -72,7 +73,6 @@ class PilotConfig:
         return cls(
             enabled=os.getenv("LIA_VOZ_TEST_ENABLED", "").lower() == "true",
             exclusive=os.getenv("LIA_VOZ_TEST_EXCLUSIVE_SIP", "").lower() == "true",
-            allowed_phone=os.getenv("LIA_VOZ_TEST_PHONE", ""),
             prefix=os.getenv("LIA_VOZ_TEST_NATIVE_PREFIX", ""),
             shared=os.getenv("LIA_VOZ_TEST_SHARED_ENGINE", "").lower() == "true",
         )
@@ -91,31 +91,29 @@ class PilotConfig:
         if route == "native" and username != NATIVE_ACCOUNT_USERNAME:
             raise PilotDenied("A rota Native por techprefix exige a conta SIP 1804.")
         try:
-            expected = canonical_phone(validate_test_phone(self.allowed_phone))
-            actual = canonical_phone(validate_test_phone(phone))
+            digits = validate_test_phone(phone)
+            # An explicit international '+' must designate Brazil, not be
+            # silently reinterpreted as the first digit of a Brazilian DDD.
+            if (phone or "").strip().startswith("+") and not (
+                digits.startswith("55") and len(digits) in (12, 13)
+            ):
+                raise ValueError("Use DDI 55 para numeros brasileiros.")
+            actual = canonical_phone(digits)
             if route == "native":
                 native_dial_digits(actual, self.prefix)
         except ValueError:
             raise PilotDenied("Numero de teste ou rota de discagem invalida.") from None
-        if actual != expected:
-            raise PilotDenied("Destino nao autorizado para homologacao.")
+        # The explicit administrator confirmation and the persisted test
+        # authorize this single destination. No fixed phone allowlist.
         return actual
 
     @property
     def configured(self) -> bool:
-        try:
-            self.authorize(self.allowed_phone, NATIVE_ACCOUNT_USERNAME, route="account")
-            return True
-        except PilotDenied:
-            return False
+        return self.enabled and self.exclusive
 
     @property
     def native_configured(self) -> bool:
-        try:
-            self.authorize(self.allowed_phone, NATIVE_ACCOUNT_USERNAME, route="native")
-            return True
-        except PilotDenied:
-            return False
+        return self.configured and self.prefix in NATIVE_TECHPREFIXES
 
 
 def ensure_idle(db, *, own_test_id: int | None = None, shared: bool = False,

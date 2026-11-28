@@ -80,7 +80,6 @@ Apenas depois dos testes nativos, configurar explicitamente no web e no
 motor isolado:
 - LIA_VOZ_TEST_ENABLED=true
 - LIA_VOZ_TEST_EXCLUSIVE_SIP=true
-- LIA_VOZ_TEST_PHONE (numero interno autorizado, nao colocar no GitHub)
 - LIA_VOZ_TEST_NATIVE_PREFIX (uma das cinco linhas)
 No motor, usar docker/lia-voz-pilot.Dockerfile, uma replica, habilitar
 VOICE_ENGINE_WORKER_ENABLED, manter VOICE_CAMPAIGN_OUTBOUND_ENABLED e
@@ -129,3 +128,17 @@ em web e worker (habilitacao, compartilhado, exclusividade, destino
 autorizado e techprefix); a chave Realtime fica apenas no worker.
 O flag nao confirma por si so acesso real a API. Primeiro validar
 a saudacao sintetica no laboratorio. Nenhuma flag foi ativada neste PR.
+
+
+## Atualizacao: destino escolhido em cada teste manual
+
+A tela administrativa permite escolher um telefone brasileiro valido com
+DDD para cada teste com ou sem IA, sem cadastro previo de destino. A antiga
+variavel LIA_VOZ_TEST_PHONE deixou de ser utilizada. A confirmacao explicita
+do administrador continua obrigatoria: apenas numeros proprios ou autorizados
+para o teste. O worker confere o destino e a conta persistidos, usuario ativo
+ADMIN, blacklist global, estado do motor e trava de telefonia antes e durante
+a chamada. Os testes continuam individuais, sem rediscagem automatica.
+A rota por techprefix continua exclusiva da conta Native 1804; demais contas
+ativas usam a configuracao de discagem cadastrada. Os trechos historicos
+das fases anteriores sobre numero fixo nao se aplicam a esta versao.
