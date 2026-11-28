@@ -333,6 +333,9 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
             "device_name": "",
             "is_business": False,
             "duplicate_phone": False,
+            "native_queue_pending": None,
+            "native_queue_capped": False,
+            "native_queue_error": None,
         }
         service = service_for_instance(instance)
         try:
@@ -389,6 +392,18 @@ def settings_whatsapp_page(request: Request, db: Session = Depends(get_db)):
             info["device_error"] = str(exc)
             if first_error is None:
                 first_error = str(exc)
+
+        # Fila nativa Z-API (≠ fila de atendimento do Prospecta).
+        # Ao reconectar o celular, a Z-API dispara essas mensagens sozinhas.
+        # Só consulta quando a conexão está confirmada — evita timeout em
+        # instâncias offline ou credenciais de teste.
+        if info["connected"] is True:
+            try:
+                queue_summary = service.queue_pending_summary(max_pages=2)
+                info["native_queue_pending"] = int(queue_summary.get("count") or 0)
+                info["native_queue_capped"] = bool(queue_summary.get("capped"))
+            except ZApiError as exc:
+                info["native_queue_error"] = str(exc)
         phone_key = "".join(
             ch for ch in (info["phone_raw"] or info["phone_label"]) if ch.isdigit()
         )

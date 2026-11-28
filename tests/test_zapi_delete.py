@@ -88,6 +88,16 @@ def _fake_zapi(monkeypatch) -> None:
         "configure_webhooks",
         lambda self, url: {"ok": True},
     )
+    monkeypatch.setattr(
+        ZApiService,
+        "queue_pending_summary",
+        lambda self, *, max_pages=5: {
+            "count": 0,
+            "has_more": False,
+            "capped": False,
+            "samples": [],
+        },
+    )
 
 
 def test_excluir_instancia_sem_vinculos_e_sem_historico(monkeypatch):

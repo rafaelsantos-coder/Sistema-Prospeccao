@@ -166,6 +166,16 @@ def test_whatsapp_settings_detects_instances_on_same_connected_number(monkeypatc
 
     monkeypatch.setattr(ZApiService, "status", fake_status)
     monkeypatch.setattr(ZApiService, "device", fake_device)
+    monkeypatch.setattr(
+        ZApiService,
+        "queue_pending_summary",
+        lambda self, *, max_pages=5: {
+            "count": 0,
+            "has_more": False,
+            "capped": False,
+            "samples": [],
+        },
+    )
 
     with TestClient(app) as client:
         _login_admin(client)

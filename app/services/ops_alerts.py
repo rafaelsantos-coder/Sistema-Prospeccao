@@ -162,11 +162,27 @@ def check_instances(db: Session) -> int:
             continue
         stamp = utcnow().strftime("%Y%m%d%H%M")
         if now_connected:
-            text = f"✅ Sulnet Prospecta: o WhatsApp \"{instance.name}\" voltou a ficar conectado."
+            pending_note = ""
+            try:
+                summary = service_for_instance(instance).queue_pending_summary(max_pages=2)
+                pending = int(summary.get("count") or 0)
+                if pending:
+                    suffix = "+" if summary.get("capped") else ""
+                    pending_note = (
+                        f" Há {pending}{suffix} mensagem(ns) na fila nativa da Z-API "
+                        "(serão enviadas automaticamente; limpe em Configurações se estiverem velhas)."
+                    )
+            except Exception:  # noqa: BLE001 - alerta de conexao nao depende da fila
+                pending_note = ""
+            text = (
+                f"✅ Sulnet Prospecta: o WhatsApp \"{instance.name}\" voltou a ficar conectado."
+                f"{pending_note}"
+            )
         else:
             text = (
                 f"⚠️ Sulnet Prospecta: o WhatsApp \"{instance.name}\" DESCONECTOU. "
-                "Atendimentos e disparos por esse número estão parados até reconectar no painel da Z-API."
+                "Atendimentos e disparos por esse número estão parados até reconectar no painel da Z-API. "
+                "Antes de religar, revise a fila nativa da Z-API em Configurações → Números WhatsApp."
             )
         if send_ops_alert(
             db,

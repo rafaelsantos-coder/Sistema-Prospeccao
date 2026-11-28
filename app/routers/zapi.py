@@ -250,22 +250,69 @@ def _process_zapi_payload(
             digits = "".join(ch for ch in str(payload.get("phone") or "") if ch.isdigit())
             if digits.startswith("55") and len(digits) in {12, 13}:
                 instance.phone_label = format_device_phone(digits)
+        # Ao reconectar, a Z-API dispara sozinha a fila nativa. Registrar
+        # pendencias ajuda o operador a limpar msgs velhas antes do envio.
+        pending_count = 0
+        pending_capped = False
+        if connected:
+            try:
+                summary = service_for_instance(instance).queue_pending_summary(max_pages=3)
+                pending_count = int(summary.get("count") or 0)
+                pending_capped = bool(summary.get("capped"))
+            except ZApiError as exc:
+                LOG.warning(
+                    "zapi_callback queue_peek_failed instance_db=%s error=%s",
+                    zapi_instance_id,
+                    exc,
+                )
         write_audit(
             db,
             user=None,
             action="ZAPI_CONNECTION_EVENT",
             entity_type="zapi_instance",
             entity_id=instance.id,
-            payload={"connected": connected},
+            payload={
+                "connected": connected,
+                "native_queue_pending": pending_count,
+                "native_queue_capped": pending_capped,
+            },
         )
         db.commit()
+        if connected and pending_count > 0:
+            try:
+                from app.services.ops_alerts import send_ops_alert
+
+                suffix = "+" if pending_capped else ""
+                send_ops_alert(
+                    db,
+                    key=f"zapi-queue-pending:{instance.id}:{pending_count}{suffix}",
+                    text=(
+                        f"⚠️ WhatsApp \"{instance.name}\" reconectou com "
+                        f"{pending_count}{suffix} mensagem(ns) na fila nativa da Z-API. "
+                        "Elas serão enviadas automaticamente. "
+                        "Se estiverem desatualizadas, limpe a fila em "
+                        "Configurações → Números WhatsApp."
+                    ),
+                    exclude_instance_ids={instance.id},
+                )
+            except Exception:  # noqa: BLE001 - alerta nao pode derrubar o webhook
+                LOG.exception(
+                    "zapi_callback queue_alert_failed instance_db=%s",
+                    zapi_instance_id,
+                )
         LOG.info(
-            "zapi_callback connection_event instance_db=%s queue=%s connected=%s",
+            "zapi_callback connection_event instance_db=%s queue=%s connected=%s pending=%s",
             zapi_instance_id,
             queue_id,
             connected,
+            pending_count,
         )
-        return {"ok": True, "connection_updated": True, "connected": connected}
+        return {
+            "ok": True,
+            "connection_updated": True,
+            "connected": connected,
+            "native_queue_pending": pending_count,
+        }
 
     if payload.get("type") == "MessageStatusCallback" or payload.get("ids"):
         updated = update_message_statuses(db, payload)
@@ -985,6 +1032,59 @@ def configure_instance_webhook(
         flash(request, str(exc), "error")
     else:
         flash(request, f"Webhook da instância {instance.name} atualizado.")
+    return RedirectResponse("/settings/whatsapp", status_code=303)
+
+
+@router.post("/settings/zapi/instances/{instance_db_id}/clear-queue")
+def clear_instance_native_queue(
+    instance_db_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    confirm: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Limpa a fila nativa da Z-API antes de um reconnect com msgs desatualizadas."""
+    user, redirect = _current_user_or_redirect(request, db)
+    if redirect:
+        return redirect
+    validate_csrf(request, csrf_token)
+    require_roles(user, "ADMIN", "GESTOR")
+    instance = get_zapi_instance(db, instance_db_id)
+    if not instance or not instance.active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if confirm.strip().lower() not in {"1", "true", "yes", "sim", "on"}:
+        flash(
+            request,
+            "Confirme a limpeza da fila nativa da Z-API antes de continuar.",
+            "warning",
+        )
+        return RedirectResponse("/settings/whatsapp", status_code=303)
+
+    service = service_for_instance(instance)
+    pending_before = 0
+    try:
+        pending_before = int(service.queue_pending_summary(max_pages=3).get("count") or 0)
+        service.clear_queue()
+    except ZApiError as exc:
+        flash(request, str(exc), "error")
+        return RedirectResponse("/settings/whatsapp", status_code=303)
+
+    write_audit(
+        db,
+        user=user,
+        action="ZAPI_NATIVE_QUEUE_CLEARED",
+        entity_type="zapi_instance",
+        entity_id=instance.id,
+        payload={"pending_before": pending_before},
+    )
+    db.commit()
+    flash(
+        request,
+        (
+            f"Fila nativa da Z-API limpa na instância {instance.name}"
+            + (f" ({pending_before} pendência(s) removida(s))." if pending_before else ".")
+        ),
+    )
     return RedirectResponse("/settings/whatsapp", status_code=303)
 
 

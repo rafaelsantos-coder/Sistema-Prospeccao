@@ -41,9 +41,14 @@ def _device_unavailable(self):
     raise ZApiError("Nao foi possivel consultar o dispositivo da Z-API.")
 
 
+def _empty_native_queue(self, *, max_pages: int = 5):
+    return {"count": 0, "has_more": False, "capped": False, "samples": []}
+
+
 def test_connected_callback_updates_device_label_and_status_fallback(monkeypatch):
     monkeypatch.setattr(ZApiService, "status", _api_unavailable)
     monkeypatch.setattr(ZApiService, "device", _device_unavailable)
+    monkeypatch.setattr(ZApiService, "queue_pending_summary", _empty_native_queue)
     with TestClient(app) as client:
         db = SessionLocal()
         try:
@@ -74,6 +79,7 @@ def test_connected_callback_updates_device_label_and_status_fallback(monkeypatch
 def test_stale_callback_does_not_mask_unavailable_status(monkeypatch):
     monkeypatch.setattr(ZApiService, "status", _api_unavailable)
     monkeypatch.setattr(ZApiService, "device", _device_unavailable)
+    monkeypatch.setattr(ZApiService, "queue_pending_summary", _empty_native_queue)
     with TestClient(app) as client:
         db = SessionLocal()
         try:
@@ -105,6 +111,7 @@ def test_stale_callback_does_not_mask_unavailable_status(monkeypatch):
 def test_disconnected_callback_updates_recent_event(monkeypatch):
     monkeypatch.setattr(ZApiService, "status", _api_unavailable)
     monkeypatch.setattr(ZApiService, "device", _device_unavailable)
+    monkeypatch.setattr(ZApiService, "queue_pending_summary", _empty_native_queue)
     with TestClient(app) as client:
         db = SessionLocal()
         try:
