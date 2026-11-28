@@ -5,24 +5,23 @@ from app.services.lia_voz_pilot import PilotConfig, PilotDenied
 
 
 def config(**changes):
-    values = dict(enabled=True, exclusive=True,
-                  allowed_phone="(55) 99999-0000", prefix="8003")
+    values = dict(enabled=True, exclusive=True, prefix="8003")
     values.update(changes)
     return PilotConfig(**values)
 
 
-def test_exact_canonical_destination_and_account():
+def test_any_valid_brazilian_destination_and_native_account():
     assert config().authorize("+55 55 99999-0000", "1804") == "5555999990000"
     assert config().configured
-    with pytest.raises(PilotDenied):
-        config().authorize("55 99999-0001", "1804")
+    assert config().authorize("55 99999-0001", "1804") == "5555999990001"
+    assert config().authorize("(11) 99999-0000", "1804") == "5511999990000"
+    assert config().authorize("(55) 3333-0000", "1804") == "555533330000"
     with pytest.raises(PilotDenied):
         config().authorize("55 99999-0000", "1805")
 
 
 @pytest.mark.parametrize("changes", [
-    {"enabled": False}, {"exclusive": False}, {"allowed_phone": ""},
-    {"allowed_phone": "190"},
+    {"enabled": False}, {"exclusive": False},
 ])
 def test_missing_or_invalid_config_fails_closed(changes):
     c = config(**changes)
@@ -42,8 +41,7 @@ def test_shared_config_does_not_change_number_authorization():
     shared = config(shared=True)
     assert shared.request_seconds == 600
     assert shared.authorize("55 99999-0000", "1804") == "5555999990000"
-    with pytest.raises(PilotDenied):
-        shared.authorize("55 99999-0001", "1804")
+    assert shared.authorize("55 99999-0001", "1804") == "5555999990001"
 
 
 def test_shared_admission_only_checks_duplicate_lia_request():
@@ -118,8 +116,7 @@ def test_explicit_account_route_has_own_persisted_states_and_same_guard():
     for route in ("", "8004", "auto", "fallback"):
         with pytest.raises(PilotDenied):
             requested_state("sip", route)
-    with pytest.raises(PilotDenied):
-        config().authorize("55 99999-0001", "1804")
+    assert config().authorize("55 99999-0001", "1804") == "5555999990001"
 
 
 def test_manual_lia_test_has_no_hourly_quota_and_still_rejects_overlap(monkeypatch):
@@ -140,7 +137,7 @@ def test_manual_lia_test_has_no_hourly_quota_and_still_rejects_overlap(monkeypat
     actor = SimpleNamespace(id=1, role="ADMIN", active=True)
     monkeypatch.setenv("LIA_VOZ_TEST_ENABLED", "true")
     monkeypatch.setenv("LIA_VOZ_TEST_EXCLUSIVE_SIP", "true")
-    monkeypatch.setenv("LIA_VOZ_TEST_PHONE", "5555999990000")
+    monkeypatch.delenv("LIA_VOZ_TEST_PHONE", raising=False)
     monkeypatch.setenv("LIA_VOZ_TEST_NATIVE_PREFIX", "8003")
     monkeypatch.setenv("LIA_VOZ_TEST_SHARED_ENGINE", "true")
     monkeypatch.setattr(voice, "_actor", lambda *_args: (actor, None))
@@ -183,11 +180,12 @@ def test_manual_lia_test_has_no_hourly_quota_and_still_rejects_overlap(monkeypat
                 ))
             db.commit()
 
-            def request(mode="ia", selected=None, route="account"):
+            def request(mode="ia", selected=None, route="account",
+                        phone="5555999990000", authorized="sim"):
                 return voice.request_lia_voz_test(
                     request=SimpleNamespace(), csrf_token="test",
                     account_id=account_id if selected is None else selected,
-                    phone="5555999990000", authorized="sim", mode=mode, route=route, db=db,
+                    phone=phone, authorized=authorized, mode=mode, route=route, db=db,
                 )
 
             for mode in ("ia", "sip", "ia"):
@@ -211,14 +209,19 @@ def test_manual_lia_test_has_no_hourly_quota_and_still_rejects_overlap(monkeypat
             )).all()) == 15
             assert "1804" in request("sip", secondary.id, "native")
             assert "indisponivel" in request("sip", inactive.id)
-            for mode in ("sip", "ia"):
-                assert request(mode, secondary.id).status_code == 303
+            # A different number is accepted for either SIP account and mode,
+            # but authorization is always checked before queueing the call.
+            assert "Confirme" in request("sip", secondary.id, phone="11999990001", authorized="")
+            assert "invalida" in request("sip", secondary.id, phone="190")
+            for mode, phone in (("sip", "11999990001"), ("ia", "21999990002")):
+                assert request(mode, secondary.id, phone=phone).status_code == 303
                 pending = db.scalar(select(VoiceTestCall).where(
                     VoiceTestCall.status.in_(ACTIVE),
                     VoiceTestCall.account_id == secondary.id,
                 ))
                 assert pending is not None and pending.account_label == secondary.name
                 assert pending.message.startswith("CONTA |")
+                assert pending.target_phone == "55" + phone
                 assert "outro teste" in request("ia", account_id)
                 pending.status = "LIA_FINALIZADA"
                 pending.finished_at = now
@@ -227,11 +230,10 @@ def test_manual_lia_test_has_no_hourly_quota_and_still_rejects_overlap(monkeypat
         engine.dispose()
 
 
-def test_secondary_account_normal_route_only_and_same_destination():
+def test_secondary_account_normal_route_with_multiple_destinations():
     c = config()
     assert c.authorize("55 99999-0000", "1805", route="account") == "5555999990000"
-    with pytest.raises(PilotDenied):
-        c.authorize("55 99999-0001", "1805", route="account")
+    assert c.authorize("55 99999-0001", "1805", route="account") == "5555999990001"
     with pytest.raises(PilotDenied):
         c.authorize("55 99999-0000", "1805", route="native")
     with pytest.raises(PilotDenied):
@@ -243,3 +245,76 @@ def test_secondary_account_normal_route_only_and_same_destination():
     assert c.authorize("55 99999-0000", "1805", route="account") == "5555999990000"
     with pytest.raises(PilotDenied):
         c.authorize("55 99999-0000", "1804", route="native")
+
+
+@pytest.mark.parametrize("phone", ["", "190", "08001234567", "00999990000", "abc", "+1 2125550100"])
+@pytest.mark.parametrize("route", ["account", "native"])
+def test_invalid_or_non_brazilian_destinations_still_rejected(phone, route):
+    with pytest.raises(PilotDenied):
+        config().authorize(phone, "1804", route=route)
+
+
+def test_no_fixed_destination_environment_configuration(monkeypatch):
+    monkeypatch.setenv("LIA_VOZ_TEST_ENABLED", "true")
+    monkeypatch.setenv("LIA_VOZ_TEST_EXCLUSIVE_SIP", "true")
+    monkeypatch.setenv("LIA_VOZ_TEST_NATIVE_PREFIX", "8003")
+    # A leftover variable from the old rollout must not affect admission.
+    monkeypatch.setenv("LIA_VOZ_TEST_PHONE", "5555999990000")
+    c = PilotConfig.from_env()
+    assert c.configured and c.native_configured
+    assert c.authorize("21999990002", "1805", route="account") == "5521999990002"
+    monkeypatch.delenv("LIA_VOZ_TEST_PHONE")
+    assert PilotConfig.from_env().configured
+    assert PilotConfig.from_env().native_configured
+
+
+def test_worker_revalidates_persisted_destination_and_blacklist(monkeypatch):
+    from types import SimpleNamespace as NS
+    from app.models import User, VoiceDialerEngine, VoiceSipAccount, VoiceTestCall
+    from app.services.lia_voz_pilot import ACCOUNT_RUNNING, ACCOUNT_PROBE_RUNNING
+    from app.workers import lia_voz_pilot as worker
+
+    monkeypatch.setenv("LIA_VOZ_TEST_ENABLED", "true")
+    monkeypatch.setenv("LIA_VOZ_TEST_EXCLUSIVE_SIP", "true")
+    monkeypatch.delenv("LIA_VOZ_TEST_PHONE", raising=False)
+    monkeypatch.setattr(worker, "runtime_ready", lambda: True)
+    monkeypatch.setattr(worker, "slot_healthy", lambda **_: True)
+    monkeypatch.setattr(worker, "ensure_idle", lambda *_args, **_kwargs: None)
+    checked = []
+    monkeypatch.setattr(worker, "outbound_guard", lambda _db, phone: checked.append(phone))
+    number = "5511999990001"
+    row = NS(status=ACCOUNT_RUNNING, initiator_user_id=1, account_id=2, target_phone=number)
+    actor = NS(active=True, role="ADMIN")
+    account = NS(active=True, username="1805")
+    rows = {VoiceDialerEngine: NS(enabled=True), VoiceSipAccount: account,
+            VoiceTestCall: row, User: actor}
+
+    class DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def get(self, model, _id):
+            return rows[model]
+
+    monkeypatch.setattr(worker, "SessionLocal", DB)
+    for status in (ACCOUNT_RUNNING, ACCOUNT_PROBE_RUNNING):
+        row.status = status
+        assert worker._guard(7, number, 2)
+        assert checked[-1] == number
+        assert not worker._guard(7, "5511999990002", 2)
+        assert not worker._guard(7, number, 3)
+    actor.active = False
+    assert not worker._guard(7, number, 2)
+    actor.active = True
+    account.active = False
+    assert not worker._guard(7, number, 2)
+    account.active = True
+
+    def blocked(_db, _number):
+        raise ValueError("blacklist")
+
+    monkeypatch.setattr(worker, "outbound_guard", blocked)
+    assert not worker._guard(7, number, 2)
