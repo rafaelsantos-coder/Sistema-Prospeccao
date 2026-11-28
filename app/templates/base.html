@@ -71,7 +71,7 @@
       <div class="nav-submenu" aria-label="Navegação do Prospecta VOZ">
         <a href="/voice" class="{% if voice_section == 'dashboard' %}active{% endif %}">Dashboard VOZ</a>
         {% if current_user.role == 'ADMIN' %}
-        <a href="/voice/lia-voz" class="{% if voice_section == 'lia_voz' %}active{% endif %}">Lia Voz — SDRIA</a>
+        <a href="/voice/lia-voz" class="{% if voice_section == 'lia_voz' %}active{% endif %}">Eduarda Voz — SDRIA</a>
         {% endif %}
         {% if 'voice.accounts.manage' in current_user.permissions %}
         <a href="/voice/accounts" class="{% if voice_section == 'accounts' %}active{% endif %}">Contas do discador</a>

@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-lead split">
-  <div><span class="eyebrow">PROSPECTA VOZ · SDRIA</span><h2>Lia Voz</h2>
+  <div><span class="eyebrow">PROSPECTA VOZ · SDRIA</span><h2>Eduarda Voz</h2>
     <p>Ambiente de testes de conversação em tempo real. Nenhuma campanha comercial é iniciada aqui.</p></div>
   <a class="button button-secondary" href="/voice">Voltar ao Prospecta VOZ</a>
 </div>
 <section class="panel voice-panel">
-  <div class="panel-header"><div><span class="eyebrow">HOMOLOGAÇÃO INDIVIDUAL</span><h3>Conversar com Lia Voz</h3></div>
+  <div class="panel-header"><div><span class="eyebrow">HOMOLOGAÇÃO INDIVIDUAL</span><h3>Conversar com Eduarda Voz</h3></div>
     <span class="voice-pill {{ 'is-ready' if configured and engine_ready else 'is-paused' }}">
       {{ 'Ambiente configurado' if configured and engine_ready else 'Homologação bloqueada' }}</span></div>
   <p class="voice-help">Qualquer telefone brasileiro válido com DDD, autorizado para o teste individual. Escolha uma conta SIP ativa; até 90 segundos após atendimento. Não há transferência, consulta de CPF, gravação ou CRM neste piloto.</p>
@@ -14,7 +14,7 @@
   <div class="voice-notice"><strong>Teste indisponível</strong>
     {% if not config_enabled %}<p>Homologação ainda não habilitada.</p>{% endif %}
     {% if not external_sip_confirmed %}<p>Exclusividade externa do ramal ainda não confirmada.</p>{% endif %}
-    {% if not runtime_ready %}<p>Motor ainda não confirmou configuração da Lia Voz e credencial Realtime.</p>{% elif not engine_ready %}<p>Motor de voz offline, pausado ou indisponível para teste.</p>{% endif %}
+    {% if not runtime_ready %}<p>Motor ainda não confirmou configuração da Eduarda Voz e credencial Realtime.</p>{% elif not engine_ready %}<p>Motor de voz offline, pausado ou indisponível para teste.</p>{% endif %}
   </div>
   {% endif %}
   {% if shared_engine %}<p class="voice-help">Fila compartilhada: o teste aguarda a ligação atual terminar e as campanhas retomam em seguida. Se não iniciar em até 10 minutos, o teste expira sem rediscagem.</p>{% endif %}
@@ -38,19 +38,19 @@
       </select>
     </label>
     <label class="voice-test-confirm"><input type="checkbox" name="authorized" value="sim" required {% if not configured or not engine_ready or test_active %}disabled{% endif %}>Confirmo que o número é meu ou está autorizado e que a conta SIP escolhida está disponível exclusivamente para este teste.</label>
-    <p class="voice-help">Para verificar a entrega da chamada, selecione a rota padrão da conta (na 1804, DDD + número; nas demais, conforme o cadastro), e use "Testar ligação sem IA". Um único teste autorizado, sem fala, por até 40 segundos. Confirme se o aparelho tocou antes de testar com Lia Voz. Não há alternância automática de rotas.</p>
-    <div class="voice-actions"><button class="button button-primary" type="submit" name="mode" value="ia" {% if not configured or not engine_ready or not accounts or test_active %}disabled{% endif %}>Conversar com Lia Voz</button>
+    <p class="voice-help">Para verificar a entrega da chamada, selecione a rota padrão da conta (na 1804, DDD + número; nas demais, conforme o cadastro), e use "Testar ligação sem IA". Um único teste autorizado, sem fala, por até 40 segundos. Confirme se o aparelho tocou antes de testar com Eduarda Voz. Não há alternância automática de rotas.</p>
+    <div class="voice-actions"><button class="button button-primary" type="submit" name="mode" value="ia" {% if not configured or not engine_ready or not accounts or test_active %}disabled{% endif %}>Conversar com Eduarda Voz</button>
       <button class="button button-secondary" type="submit" name="mode" value="sip" {% if not configured or not engine_ready or not accounts or test_active %}disabled{% endif %}>Testar ligação sem IA</button>
       <a class="button button-secondary" href="/voice/lia-voz">Atualizar resultado</a></div>
   </form>
 </section>
 <section class="panel voice-panel">
-  <span class="eyebrow">TESTES DA LIA VOZ</span><h3>Histórico de homologação</h3>
+  <span class="eyebrow">TESTES DA EDUARDA VOZ</span><h3>Histórico de homologação</h3>
   {% if tests %}
   <div class="voice-table-wrap"><table class="voice-table"><thead><tr><th>Teste</th><th>Conta SIP</th><th>Estado</th><th>Registro SIP</th><th>Discagem SIP</th><th>Detalhes</th></tr></thead><tbody>
     {% for item in tests %}<tr><td>#{{ item.id }} · final {{ item.target_phone[-4:] }}</td><td>{{ item.account_label }}</td><td>{{ item.status }}</td><td>{{ item.sip_register_code if item.sip_register_code is not none else '—' }}</td><td>{{ item.sip_invite_code if item.sip_invite_code is not none else '—' }}</td><td>{{ item.message }}</td></tr>{% endfor %}
   </tbody></table></div>
-  {% else %}<div class="voice-empty">Nenhum teste da Lia Voz realizado.</div>{% endif %}
+  {% else %}<div class="voice-empty">Nenhum teste da Eduarda Voz realizado.</div>{% endif %}
 </section>
 {% endblock %}
 

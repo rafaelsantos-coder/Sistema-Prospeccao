@@ -34,7 +34,9 @@ def test_session_is_voice_only_and_no_tools_or_chat_context():
     assert config["output_modalities"] == ["audio"]
     assert config["max_output_tokens"] == MAX_RESPONSE_TOKENS
     assert config["tools"] == []
-    assert "Lia Voz" in config["instructions"]
+    assert "Eduarda Voz" in config["instructions"]
+    assert "Você é Eduarda, assistente virtual comercial" in config["instructions"]
+    assert "Você é Lia" not in config["instructions"]
     assert config["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
     assert config["audio"]["input"]["turn_detection"]["interrupt_response"] is True
 
@@ -162,6 +164,7 @@ def test_socket_handshake_greeting_audio_and_barge_in():
             "session.update", "response.create", "input_audio_buffer.append",
             "conversation.item.truncate",
         ]
+        assert "Apresente-se como Eduarda" in socket.sent[1]["response"]["instructions"]
         assert socket.sent[-1]["audio_end_ms"] == 20
     asyncio.run(run())
 

@@ -1,4 +1,8 @@
-# Lia Voz - piloto isolado (fase 1)
+# Eduarda Voz - piloto isolado (fase 1)
+
+Identidade pública: Eduarda (treinamento comercial V2.2 preservado). Os caminhos,
+variáveis, estados de fila e identificadores técnicos `lia_voz`, `LIA_VOZ_*` e
+`/voice/lia-voz` permanecem compatíveis com a instalação existente.
 
 SDRIA de ligacoes da Sulnet. O modulo novo nao altera WhatsApp, campanhas,
 banco de dados, SIP, rotas HTTP, credenciais ou deploys existentes.
@@ -113,7 +117,7 @@ A saida PASS nao equivale a homologacao de uma ligacao real.
 A nova opcao LIA_VOZ_TEST_SHARED_ENGINE=true permite enfileirar um teste
 individual sem alterar o status das campanhas. Os workers nativo e legado
 adquirem a mesma trava advisory PostgreSQL antes de reservar e executar
-qualquer chamada/registro. A Lia Voz tem prioridade na proxima vaga,
+qualquer chamada/registro. A Eduarda Voz tem prioridade na proxima vaga,
 sem interromper a chamada atual. O teste expira em 10 minutos e permanece
 limitado a 90 segundos apos atendimento, sem rediscagem. O heartbeat
 informa readiness do worker sem enviar chave para o web.

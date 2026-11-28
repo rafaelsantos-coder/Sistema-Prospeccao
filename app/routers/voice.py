@@ -1467,7 +1467,7 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
                   and (config.shared or (not engine.campaign_runtime_enabled and not engine.test_runtime_enabled)))
     return render(
         request, "voice/lia_voz.html", user=actor, active_nav="voice", voice_section="lia_voz",
-        page_title="Lia Voz · Ambiente de testes", accounts=accounts, tests=tests,
+        page_title="Eduarda Voz · Ambiente de testes", accounts=accounts, tests=tests,
         configured=config.configured, engine_ready=online, shared_engine=config.shared,
         test_active=any(item.status in ACTIVE for item in tests),
         native_prefix=config.prefix if config.native_configured else "",
@@ -1491,7 +1491,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
     destination = "/voice/lia-voz"
     if authorized != "sim":
         return _error(request, "Confirme a autorizacao do numero de teste.", destination)
-    # Serialize Lia Voz submissions on the same engine and account.
+    # Serialize Eduarda Voz submissions on the same engine and account.
     engine = db.scalar(select(VoiceDialerEngine).where(
         VoiceDialerEngine.id == 1
     ).with_for_update())
@@ -1501,7 +1501,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
             and now - aware(engine.heartbeat_at) <= ENGINE_HEARTBEAT_MAX
             and engine.lia_runtime_enabled
             and (config.shared or (not engine.campaign_runtime_enabled and not engine.test_runtime_enabled))):
-        return _error(request, "Motor Lia Voz indisponivel ou ainda nao configurado.", destination)
+        return _error(request, "Motor Eduarda Voz indisponivel ou ainda nao configurado.", destination)
     account = db.scalar(select(VoiceSipAccount).where(
         VoiceSipAccount.id == account_id
     ).with_for_update())
@@ -1522,7 +1522,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
         message=((("NATIONAL" if account.username == "1804" else "CONTA")
                   if route == "account" else config.prefix) + " | "
                  + ("Teste SIP sem IA autorizado; aguardando vez no motor." if mode == "sip"
-                    else "Teste individual Lia Voz autorizado; aguardando vez no motor.")),
+                    else "Teste individual Eduarda Voz autorizado; aguardando vez no motor.")),
         initiator_user_id=actor.id, created_at=now,
     )
     db.add(test)
