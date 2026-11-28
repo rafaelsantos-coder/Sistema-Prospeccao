@@ -1,0 +1,3 @@
+# Origens no registro manual de CRM
+
+O CRM é a única fonte das opções. O código de referência CRM_PHP implementa GET /api/catalog/reference com autenticação JWT e origins [{id, name, active}]. O Prospecta deve validar que a rota está publicada e liberada no gateway do servidor 204 antes de ativar a alteração em produção. Não expor token ao navegador. O POST /webhook/leads continua usando a chave comercial e o campo origin (nome canônico). A seleção por ID é revalidada imediatamente antes da criação. Uma oportunidade existente não terá sua origem sobrescrita. A automação de IA mantém o fluxo separado. A origem sugerida pela campanha é apenas um padrão editável. Testes não devem criar oportunidades reais.

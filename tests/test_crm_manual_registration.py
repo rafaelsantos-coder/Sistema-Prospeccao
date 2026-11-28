@@ -207,6 +207,9 @@ def test_manual_registration_uses_correct_seller_and_does_not_duplicate(monkeypa
     class FakeCRM:
         bearer_token = "read-only-credential"
 
+        def list_active_origins(self):
+            return [{"id": 51, "name": "Sulnet Prospecta"}, {"id": 52, "name": "Origem de teste"}]
+
         def find_opportunities_by_phone(self, phone):
             calls.append(("lookup", phone))
             return {"items": [{"id": 1001, "clientPhone": phone, "assignedUserId": 25}]}
@@ -257,23 +260,34 @@ def test_manual_registration_uses_correct_seller_and_does_not_duplicate(monkeypa
         detail = client.get(path)
         assert detail.status_code == 200
         assert 'data-crm-manual-open' in detail.text
-        assert "Sulnet Prospecta" in detail.text
+        assert 'id="crm-manual-origin"' in detail.text
+        catalog = client.get(path + "/crm-origins")
+        assert catalog.status_code == 200
+        assert catalog.json()["defaultId"] == 51
+        assert catalog.json()["origins"][1]["name"] == "Origem de teste"
+        invalid = client.post(
+            path + "/register-crm",
+            data={"csrf_token": _csrf(detail.text), "client_name": "Joao da Silva", "origin_id": "999"},
+            follow_redirects=False,
+        )
+        assert invalid.status_code == 303
+        assert not [c for c in calls if c[0] == "create"]
 
         first = client.post(
             path + "/register-crm",
-            data={"csrf_token": _csrf(detail.text), "client_name": "Joao da Silva"},
+            data={"csrf_token": _csrf(detail.text), "client_name": "Joao da Silva", "origin_id": "52"},
             follow_redirects=False,
         )
         assert first.status_code == 303
         assert len([c for c in calls if c[0] == "create"]) == 1
         assert calls[-1][1]["seller_username"] == "fabiano.braga"
-        assert calls[-1][1]["origin"] == "Sulnet Prospecta"
+        assert calls[-1][1]["origin"] == "Origem de teste"
 
         detail_after = client.get(path)
         assert "Registrado no CRM" in detail_after.text
         second = client.post(
             path + "/register-crm",
-            data={"csrf_token": _csrf(detail_after.text), "client_name": "Joao da Silva"},
+            data={"csrf_token": _csrf(detail_after.text), "client_name": "Joao da Silva", "origin_id": "51"},
             follow_redirects=False,
         )
         assert second.status_code == 303
@@ -293,6 +307,9 @@ def test_reassigned_conversation_keeps_each_sellers_registration(monkeypatch):
 
     class ExistingCRM:
         bearer_token = "read-only-credential"
+
+        def list_active_origins(self):
+            return [{"id": 51, "name": "Sulnet Prospecta"}, {"id": 52, "name": "Origem de teste"}]
 
         def find_opportunities_by_phone(self, phone):
             return {
@@ -345,7 +362,7 @@ def test_reassigned_conversation_keeps_each_sellers_registration(monkeypatch):
         path = f"/conversations/{cid}"
         register_path = path + "/register-crm"
         first = client.post(register_path, data={
-            "csrf_token": _csrf(client.get(path).text), "client_name": "Joao da Silva",
+            "csrf_token": _csrf(client.get(path).text), "client_name": "Joao da Silva", "origin_id": "51",
         })
         assert first.status_code == 200
         assert "CRM-NATINE-1001" in first.text
@@ -359,7 +376,7 @@ def test_reassigned_conversation_keeps_each_sellers_registration(monkeypatch):
         assert f'action="{register_path}"' in second_page
         assert "CRM-NATINE-1001" not in second_page
         second = client.post(register_path, data={
-            "csrf_token": _csrf(second_page), "client_name": "Joao da Silva",
+            "csrf_token": _csrf(second_page), "client_name": "Joao da Silva", "origin_id": "51",
         })
         assert second.status_code == 200
         assert "Oportunidade registrada no CRM." in second.text

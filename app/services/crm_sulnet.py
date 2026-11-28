@@ -725,6 +725,35 @@ class SulnetCRMClient:
             auth_mode="bearer",
         )
 
+    def list_active_origins(self) -> list[dict[str, Any]]:
+        """Catálogo de referência do CRM; leitura autenticada, sem criação de leads."""
+        payload = self._request(
+            "GET", "/api/catalog/reference", auth_mode="bearer", timeout=12.0,
+        )
+        if isinstance(payload, dict):
+            payload = payload.get("data", payload)
+        rows = payload.get("origins") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise CRMIntegrationError("O CRM não retornou um catálogo de origens válido.")
+        origins = []
+        ids, names = set(), set()
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("active"), bool):
+                raise CRMIntegrationError("O catálogo de origens do CRM está incompleto.")
+            if not row["active"]:
+                continue
+            origin_id, name = row.get("id"), row.get("name")
+            if (
+                not isinstance(origin_id, int) or isinstance(origin_id, bool)
+                or origin_id <= 0 or not isinstance(name, str) or not name.strip()
+                or origin_id in ids or name.strip().casefold() in names
+            ):
+                raise CRMIntegrationError("O catálogo de origens do CRM contém dados inválidos ou duplicados.")
+            ids.add(origin_id)
+            names.add(name.strip().casefold())
+            origins.append({"id": origin_id, "name": name})
+        return origins
+
     def create_seller_lead(
         self,
         *,

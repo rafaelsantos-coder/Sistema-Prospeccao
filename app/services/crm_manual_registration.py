@@ -269,7 +269,8 @@ def _guard_contact_lock(db: Session, contact_id: int) -> None:
 
 
 def register_conversation(
-    db: Session, *, conversation: Conversation, actor: User, client_name: str
+    db: Session, *, conversation: Conversation, actor: User, client_name: str,
+    origin_id: str = "",
 ) -> dict[str, Any]:
     seller = seller_for_user(conversation.assigned_user)
     if seller is None:
@@ -355,9 +356,26 @@ def register_conversation(
         _log_result(db, conversation, actor, ACTION_REGISTERED, result)
         return {"already": True, **result}
 
-    crm_origin, origin_match = resolve_conversation_origin(db, conversation.id)
+    # Revalida a escolha no catálogo oficial antes de criar uma oportunidade.
+    # O webhook comercial atual recebe o nome canônico, não um ID arbitrário.
+    selected_id = _as_int(origin_id)
+    if selected_id is None or selected_id <= 0:
+        raise CRMManualError("Selecione uma origem cadastrada no CRM.")
+    try:
+        origins = crm.list_active_origins()
+    except CRMIntegrationError as exc:
+        raise CRMManualError(
+            "Não foi possível consultar as origens do CRM. Nenhum registro foi enviado."
+        ) from exc
+    selected = next((item for item in origins if item["id"] == selected_id), None)
+    if selected is None:
+        raise CRMManualError("Origem indisponível no CRM. Abra o formulário e selecione novamente.")
+    crm_origin = selected["name"]
+    suggested_origin, origin_match = resolve_conversation_origin(db, conversation.id)
     origin_payload = {
         "origin": crm_origin,
+        "originId": selected_id,
+        "suggestedOrigin": suggested_origin,
         "originCampaignId": origin_match.campaign_id if origin_match else None,
         "originCampaignName": origin_match.campaign_name if origin_match else None,
     }

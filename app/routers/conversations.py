@@ -84,7 +84,7 @@ from app.services.crm_manual_credit import (
     refresh_credit_status_from_crm,
 )
 from app.services import crm_prospect_sync
-from app.services.crm_sulnet import CRMIntegrationError
+from app.services.crm_sulnet import CRMIntegrationError, SulnetCRMClient
 from app.services.origin_campaigns import resolve_conversation_origin
 from app.services.crm_manual_registration import (
     ACTION_REGISTERED,
@@ -2562,12 +2562,41 @@ def conversation_messages_api(
 
 
 
+@router.get("/conversations/{conversation_id}/crm-origins")
+def crm_registration_origins(
+    conversation_id: int, request: Request, db: Session = Depends(get_db),
+):
+    headers = {"Cache-Control": "no-store"}
+    user, redirect = _user_or_redirect(request, db)
+    if redirect or not has_permission(user, "crm.register"):
+        return JSONResponse({"error": "Acesso não autorizado."}, status_code=403, headers=headers)
+    conversation = _get_conversation(db, user, conversation_id)
+    if conversation is None:
+        return JSONResponse({"error": "Conversa indisponível."}, status_code=404, headers=headers)
+    seller = seller_for_user(conversation.assigned_user)
+    if seller is None or (user.role == "CONSULTOR" and conversation.assigned_user_id != user.id):
+        return JSONResponse({"error": "Vendedor não autorizado."}, status_code=403, headers=headers)
+    try:
+        origins = SulnetCRMClient.from_settings().list_active_origins()
+    except CRMIntegrationError:
+        return JSONResponse(
+            {"error": "Não foi possível carregar as origens do CRM. Tente novamente."},
+            status_code=503, headers=headers,
+        )
+    suggested, _ = resolve_conversation_origin(db, conversation.id)
+    default = next((row["id"] for row in origins if row["name"] == suggested), None)
+    if default is None:
+        default = next((row["id"] for row in origins if row["name"] == "Sulnet Prospecta"), None)
+    return JSONResponse({"origins": origins, "defaultId": default}, headers=headers)
+
+
 @router.post("/conversations/{conversation_id}/register-crm")
 def register_crm_manually(
     conversation_id: int,
     request: Request,
     csrf_token: str = Form(...),
     client_name: str = Form(...),
+    origin_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Registro humano e explícito; não executa IA nem envia WhatsApp."""
@@ -2609,6 +2638,7 @@ def register_crm_manually(
                 conversation=conversation,
                 actor=user,
                 client_name=client_name,
+                origin_id=origin_id,
             )
     except (CRMManualError, CRMIntegrationError) as exc:
         db.rollback()

@@ -3200,7 +3200,7 @@ h1, h2, h3, .topbar h1, .page-lead h2, .metric-card > strong, .pipeline-item str
 .crm-manual-form h3 { font-size: 21px; margin: 2px 0; }
 .crm-manual-form p { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0 0 6px; }
 .crm-manual-form label { font-size: 11px; font-weight: 800; margin-top: 3px; }
-.crm-manual-form input {
+.crm-manual-form input, .crm-manual-form select {
   border: 1px solid #d5dce5; border-radius: 8px; padding: 11px;
   width: 100%; font: inherit;
 }
