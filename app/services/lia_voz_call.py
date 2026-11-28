@@ -167,7 +167,10 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
             + "; interrupcoes=" + str(q["interruptions"])
             + "; respostas=" + str(q["audio_responses"])
             + "; geracao ms media/max=" + str(q["generation_avg_ms"]) + "/" + str(q["generation_max_ms"])
-            + "; amostras=" + str(q["generation_samples"]) + ".",
+            + "; amostras=" + str(q["generation_samples"])
+            + "; recuperacoes buffer=" + str(q.get("buffer_recoveries", 0))
+            + "; turnos limitados=" + str(q.get("token_limited_responses", 0))
+            + "; pico fila ms=" + str(q.get("peak_pending_ms", 0)) + ".",
             call.sip_code,
         )
     exchanged = bool(last_rtp and min(last_rtp) > 0 and rx > 0 and tx > 0)
