@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 import socket
 import time
 import wave
@@ -203,14 +204,24 @@ class PjSession:
         probe_hold_seconds: int = 1,
         on_status: Callable[[str, int | None], None] | None = None,
         should_abort: Callable[[], bool] | None = None,
+        on_connected: Callable | None = None,
+        on_trace: Callable[[str, int | None], None] | None = None,
     ) -> VoiceCallResult:
         if self._registration != 200:
             raise VoiceEngineError("Conta SIP nao esta autenticada para originar chamada.")
         pj = self.pj
         session = self
         call_mode = mode.upper()
-        if call_mode not in {"DIRECT", "AUDIO", "PROBE"}:
+        if call_mode not in {"DIRECT", "AUDIO", "PROBE", "LIA"}:
             raise VoiceEngineError("Modo de chamada invalido.")
+        pilot = call_mode == "LIA"
+        if pilot != (on_connected is not None):
+            raise VoiceEngineError("Handler de conversacao exclusivo do modo LIA.")
+        if on_trace is not None and call_mode not in {"PROBE", "LIA"}:
+            raise VoiceEngineError("Diagnostico exclusivo de homologacao.")
+        if pilot and should_abort and should_abort():
+            return VoiceCallResult("INTERROMPIDA", None, False,
+                                   "Autorizacao revogada antes da discagem.", False, False)
         if call_mode == "PROBE" and not 1 <= probe_hold_seconds <= 15:
             raise VoiceEngineError("Duracao do teste SIP invalida.")
         if call_mode == "DIRECT" and group is None:
@@ -246,6 +257,42 @@ class PjSession:
                 self.transfer_code = None
                 self._audio_connected = False
                 self.audio_started_at = None
+                self.confirmed_at = None
+                self.callback_failed = False
+                self.call_id = None
+                self.sip_codes = []
+                self.invited_at = time.monotonic()
+                self.last_trace = None
+                self.trace_queue = []
+
+            def observe_trace(self, info):
+                if on_trace is None:
+                    return
+                # Only an opaque, bounded Call-ID and numeric signaling data.
+                # Never store SIP packets, headers, credentials, SDP or audio.
+                cid = getattr(info, "callIdString", "")
+                if isinstance(cid, str) and re.fullmatch(r"[A-Za-z0-9_.@+%=-]{1,160}", cid):
+                    self.call_id = cid
+                code = self.sip_code
+                if isinstance(code, int) and 100 <= code <= 699 and code not in self.sip_codes:
+                    self.sip_codes.append(code)
+                entry = (code, int(info.state))
+                if entry != self.last_trace:
+                    self.last_trace = entry
+                    # No DB/log I/O inside this native callback.
+                    if len(self.trace_queue) < 32:
+                        self.trace_queue.append((
+                            "SIP trace: Call-ID=" + (self.call_id or "indisponivel")
+                            + "; codigo=" + str(code) + "; estado=" + str(entry[1])
+                            + "; desde INVITE ms=" + str(round((time.monotonic() - self.invited_at) * 1000)),
+                            code,
+                        ))
+
+            def flush_trace(self):
+                if on_trace is not None:
+                    while self.trace_queue:
+                        message, code = self.trace_queue.pop(0)
+                        on_trace(message, code)
 
             def _start_audio_if_ready(self):
                 if call_mode != "AUDIO" or self._audio_connected or not self.answered:
@@ -268,10 +315,13 @@ class PjSession:
                 try:
                     info = self.getInfo()
                     self.sip_code = int(info.lastStatusCode)
+                    self.observe_trace(info)
                     if self.sip_code == 180:
                         self.ringing = True
                     if info.state == pj.PJSIP_INV_STATE_CONFIRMED:
                         self.answered = True
+                        if self.confirmed_at is None:
+                            self.confirmed_at = time.monotonic()
                         if on_status:
                             on_status("ATENDIDA", self.sip_code)
                         self._start_audio_if_ready()
@@ -280,7 +330,11 @@ class PjSession:
                     elif on_status and self.sip_code in {180, 183}:
                         on_status("TOCANDO", self.sip_code)
                 except Exception:
-                    LOG.exception("Falha ao interpretar estado de chamada SIP")
+                    if pilot:
+                        self.callback_failed = True
+                        LOG.warning("Lia: falha no callback de estado SIP")
+                    else:
+                        LOG.exception("Falha ao interpretar estado de chamada SIP")
 
             def onCallMediaState(self, prm):
                 try:
@@ -292,7 +346,11 @@ class PjSession:
                             self.media_active = True
                     self._start_audio_if_ready()
                 except Exception:
-                    LOG.exception("Audio RTP indisponivel em chamada SIP")
+                    if pilot:
+                        self.callback_failed = True
+                        LOG.warning("Lia: falha no callback de midia SIP")
+                    else:
+                        LOG.exception("Audio RTP indisponivel em chamada SIP")
 
             def onDtmfDigit(self, prm):
                 if group is None:
@@ -313,7 +371,9 @@ class PjSession:
         call = ManagedCall(self.acc)
         self._call = call
         try:
+            # Identical INVITE path for PROBE and LIA. No WebSocket setup here.
             prm = pj.CallOpParam(True)
+            call.invited_at = time.monotonic()
             call.makeCall(target_uri, prm)
             if on_status:
                 on_status("CHAMANDO", None)
@@ -325,6 +385,11 @@ class PjSession:
             transfer_at = None
             while time.monotonic() < deadline:
                 self.pump(150)
+                call.flush_trace()
+                if pilot and call.callback_failed:
+                    return VoiceCallResult("LIA_FALHOU", call.sip_code, False,
+                                           "Falha no callback SIP antes da conversacao.",
+                                           call.answered, call.media_active)
                 if should_abort and should_abort():
                     return VoiceCallResult("INTERROMPIDA", call.sip_code, False,
                                            "Chamada interrompida pelo administrador.", call.answered,
@@ -355,6 +420,10 @@ class PjSession:
                 if call.answered:
                     if answered_at is None:
                         answered_at = time.monotonic()
+                    if pilot:
+                        # Same owner thread, same native Call. The surrounding
+                        # finally owns hangup and the SIP dialog lifetime.
+                        return on_connected(call)
                     if call_mode == "PROBE" and time.monotonic() - answered_at >= probe_hold_seconds:
                         return VoiceCallResult("ATENDIDA", call.sip_code, False,
                                                "Chamada atendida, sem transferencia.",
@@ -421,11 +490,17 @@ class PjSession:
                     end.statusCode = 200
                     call.hangup(end)
             except Exception:
-                pass
-            for _ in range(4):
-                self.pump(100)
-            self._player = None
-            self._call = None
+                if pilot:
+                    LOG.warning("Lia: falha ao encerrar dialogo SIP")
+                    raise VoiceEngineError("Falha ao encerrar dialogo SIP Lia.") from None
+            finally:
+                try:
+                    for _ in range(4):
+                        self.pump(100)
+                    call.flush_trace()
+                finally:
+                    self._player = None
+                    self._call = None
 
     def __exit__(self, _typ, _val, _tb):
         if self.acc:

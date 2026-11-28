@@ -1,4 +1,4 @@
-"""Single-call SIP orchestration for the isolated, opt-in Lia Voz pilot."""
+"""Lia Voz: one native dialer; connect AI only to an answered call."""
 from __future__ import annotations
 
 import asyncio
@@ -7,11 +7,10 @@ from dataclasses import dataclass
 
 from app.services.lia_voz_media import MediaBridge, attach_pj_media, run_media_bridge
 from app.services.lia_voz_realtime import LiaVoiceError, open_realtime, safe_realtime_failure
-from app.services.voice_runtime import make_dial_uri
+from app.services.voice_pjsua2 import VoiceCallResult
 
-# Match the proven manual SIP probe's pre-answer allowance. Some carrier
-# routes remain in 183 (early media) for more than 25 seconds before 200.
 RING_TIMEOUT_SECONDS = 40
+CONVERSATION_TIMEOUT_SECONDS = 90
 
 
 @dataclass(frozen=True)
@@ -22,245 +21,211 @@ class PilotOutcome:
 
 
 def _route_options(prefix):
-    # Match the previous production campaign dial format exactly when the
-    # administrator explicitly selects ACCOUNT. No DDI, no added techprefix.
     if prefix is None:
         return {"dial_format": "NATIONAL"}
     return {"native_techprefix": prefix, "native_local_ddd": "55"}
 
 
-async def perform_lia_test(driver, phone, prefix, api_key, *,
-                           should_abort, session_factory=open_realtime,
-                           on_progress=lambda _message, _sip_code: None):
-    """Call only after explicit worker authorization and a ready Realtime session.
+def _rtp_stats(call, pj):
+    """Read actual network RTP counters, not local PCM callback counters."""
+    if call.disconnected:
+        return None
+    try:
+        for index, media in enumerate(call.getInfo().media):
+            if (media.type == pj.PJMEDIA_TYPE_AUDIO
+                    and media.status == pj.PJSUA_CALL_MEDIA_ACTIVE):
+                rtcp = call.getStreamStat(int(getattr(media, "index", index))).rtcp
+                return int(rtcp.rxStat.pkt), int(rtcp.txStat.pkt)
+    except Exception:
+        pass
+    return None
 
-    Own the native endpoint on this thread; no automatic retry/transfer.
-    SIP 200 or RTP alone is not proof of a successful conversation.
-    """
-    if not api_key or driver._registration != 200 or should_abort():
-        raise LiaVoiceError("Lia Voz pilot not authorized")
+
+async def _converse_connected(driver, call, api_key, *, should_abort,
+                              session_factory, on_progress):
+    """Same native owner thread; process SIP during handshake and voice."""
     pj = driver.pj
-    call = None
     bridge = None
-    media_context = None
-    task = None
+    realtime = None
+    last_rtp = None
+    stage = "conexao Realtime apos atendimento"
+    deadline = (call.confirmed_at if call.confirmed_at is not None else time.monotonic()
+                ) + CONVERSATION_TIMEOUT_SECONDS
 
-    on_progress("Conectando ao OpenAI Realtime.", None)
-    async with session_factory(enabled=True, api_key=api_key, max_seconds=155) as session:
-        on_progress("Realtime conectado; preparando INVITE SIP.", None)
-        # Realtime handshake precedes the only INVITE.
-        if not session.ready or should_abort():
-            raise LiaVoiceError("Lia Voz pilot authorization revoked or session unavailable")
+    def sample_rtp():
+        nonlocal last_rtp
+        current = _rtp_stats(call, pj)
+        if current is not None:
+            last_rtp = current
 
-        class PilotCall(pj.Call):
-            def __init__(self, account):
-                super().__init__(account)
-                self.answered = False
-                self.disconnected = False
-                self.sip_code = None
-                self.callback_failed = False
-                self.sip_codes = []
-                self.confirmed_at = None
-                self.media_states = []
+    async def pump_sip():
+        next_guard = next_sample = 0.0
+        while True:
+            now = time.monotonic()
+            if now >= next_sample:
+                sample_rtp()
+                next_sample = now + 0.25
+            driver.pump(10)
+            call.flush_trace()
+            now = time.monotonic()
+            if call.disconnected:
+                return "remote"
+            if call.callback_failed:
+                return "callback"
+            if now >= deadline:
+                return "timeout"
+            if now >= next_guard:
+                if should_abort():
+                    return "abort"
+                next_guard = now + 1.0
+            await asyncio.sleep(0.01)
 
-            def observe_media(self, info):
-                for media in info.media:
-                    if media.type == pj.PJMEDIA_TYPE_AUDIO:
-                        state = int(media.status)
-                        if state not in self.media_states and len(self.media_states) < 8:
-                            self.media_states.append(state)
+    async def converse():
+        nonlocal bridge, realtime, stage
+        on_progress("SIP 200 confirmado; conectando Realtime.", call.sip_code)
+        async with session_factory(enabled=True, api_key=api_key, max_seconds=105) as session:
+            realtime = session
+            if call.disconnected or should_abort():
+                return "remote" if call.disconnected else "abort"
+            if not session.ready:
+                raise LiaVoiceError("Realtime session not ready")
+            stage = "negociacao RTP"
+            media_deadline = min(deadline, time.monotonic() + 12)
+            while not call.disconnected:
+                for index, media in enumerate(call.getInfo().media):
+                    if (media.type == pj.PJMEDIA_TYPE_AUDIO
+                            and media.status == pj.PJSUA_CALL_MEDIA_ACTIVE):
+                        bridge = MediaBridge(session)
+                        stage = "ponte RTP"
+                        with attach_pj_media(
+                            pj, call.getAudioMedia(int(getattr(media, "index", index))),
+                            bridge, enabled=True, remote_ended=lambda: call.disconnected,
+                        ):
+                            stage = "transporte Realtime"
+                            on_progress("Ponte RTP conectada apos atendimento; iniciando voz.", call.sip_code)
+                            await run_media_bridge(session, bridge)
+                        return "bridge_ended"
+                if time.monotonic() >= media_deadline:
+                    return "no_media"
+                await asyncio.sleep(0.02)
+            return "remote"
 
-            def onCallMediaState(self, _prm):
-                try:
-                    self.observe_media(self.getInfo())
-                except Exception:
-                    self.callback_failed = True
+    # Both tasks execute on the original PJSUA2 thread. No asyncio.to_thread
+    # and no blocking network handshake before the SIP dialog is confirmed.
+    pump_task = asyncio.create_task(pump_sip())
+    voice_task = asyncio.create_task(converse())
+    stop = "failure"
+    failure = None
+    try:
+        done, _ = await asyncio.wait((pump_task, voice_task), return_when=asyncio.FIRST_COMPLETED)
+        if voice_task in done and not voice_task.cancelled() and voice_task.exception() is not None:
+            failure = safe_realtime_failure(voice_task.exception())
+        elif pump_task in done:
+            stop = pump_task.result()
+        else:
+            stop = voice_task.result()
+    except Exception as exc:
+        failure = safe_realtime_failure(exc)
+    finally:
+        sample_rtp()
+        # Remove the conference links before the shared dialer hangs up.
+        # Continue pumping while an ordinary WebSocket close is in flight.
+        voice_task.cancel()
+        voice_results = await asyncio.gather(voice_task, return_exceptions=True)
+        if isinstance(voice_results[0], Exception):
+            failure = safe_realtime_failure(voice_results[0])
+        pump_task.cancel()
+        await asyncio.gather(pump_task, return_exceptions=True)
+        if bridge is not None:
+            bridge.close()
 
-            def onCallState(self, _prm):
-                try:
-                    info = self.getInfo()
-                    self.sip_code = int(info.lastStatusCode)
-                    if self.sip_code and self.sip_code not in self.sip_codes and len(self.sip_codes) < 8:
-                        self.sip_codes.append(self.sip_code)
-                    if info.state == pj.PJSIP_INV_STATE_CONFIRMED:
-                        self.answered = True
-                        if self.confirmed_at is None:
-                            self.confirmed_at = time.monotonic()
-                    elif info.state == pj.PJSIP_INV_STATE_DISCONNECTED:
-                        self.disconnected = True
-                    self.observe_media(info)
-                except Exception:
-                    self.callback_failed = True
+    counters = bridge.snapshot() if bridge is not None else {}
+    rx = counters.get("received_frames", 0)
+    tx = counters.get("non_silent_rendered_frames", 0)
+    rtp = "?" if last_rtp is None else str(last_rtp[0]) + "/" + str(last_rtp[1])
+    diagnostic = ("SIP " + "/".join(map(str, call.sip_codes or [call.sip_code]))
+                  + "; RTP pacotes RX/TX=" + rtp
+                  + "; PCM RX/TX voz=" + str(rx) + "/" + str(tx) + ".")
+    if realtime is not None and callable(getattr(realtime, "quality_snapshot", None)):
+        q = realtime.quality_snapshot()
+        on_progress(
+            "Qualidade voz: fala inicio/fim=" + str(q["speech_starts"]) + "/" + str(q["speech_ends"])
+            + "; interrupcoes=" + str(q["interruptions"])
+            + "; respostas=" + str(q["audio_responses"])
+            + "; geracao ms media/max=" + str(q["generation_avg_ms"]) + "/" + str(q["generation_max_ms"])
+            + "; amostras=" + str(q["generation_samples"]) + ".",
+            call.sip_code,
+        )
+    exchanged = bool(last_rtp and min(last_rtp) > 0 and rx > 0 and tx > 0)
+    if failure:
+        status, message = "LIA_FALHOU", "Falha: " + stage + " [" + failure + "]."
+    elif stop == "abort":
+        status, message = "LIA_INTERROMPIDA", "Teste interrompido por seguranca."
+    elif stop in {"remote", "timeout"} and exchanged:
+        status, message = "LIA_FINALIZADA", "Audio RTP e PCM validados; confirmar conversa no aparelho."
+    elif stop == "no_media":
+        status, message = "LIA_FALHOU", "SIP confirmou sem midia RTP ativa."
+    elif stop in {"remote", "timeout"}:
+        status, message = "LIA_FALHOU", "Encerrado sem audio RTP/PCM bidirecional comprovado."
+    else:
+        status, message = "LIA_FALHOU", "Falha na conversacao (" + stop + ")."
+    on_progress((message + " " + diagnostic)[:230], call.sip_code)
+    return VoiceCallResult(status, call.sip_code, False, (message + " " + diagnostic)[:230],
+                           True, bool(call.media_active))
 
-        stage = "preparacao SIP"
-        invite_started = False
-        last_outcome = None
-        last_reported_code = None
 
-        def diagnostic():
-            if call is None:
-                return "INVITE nao iniciado."
-            codes = "/".join(str(c) for c in call.sip_codes) or "-"
-            states = "/".join(str(s) for s in call.media_states) or "-"
-            elapsed = (str(round(time.monotonic() - call.confirmed_at, 1)) + "s"
-                       if call.confirmed_at is not None else "nao")
-            counters = bridge.snapshot() if bridge is not None else {}
-            return ("SIP " + codes + "; 180=" + ("sim" if 180 in call.sip_codes else "nao")
-                    + "; confirmado=" + elapsed + "; audio=" + states
-                    + "; quadros RX/TX=" + str(counters.get("received_frames", 0))
-                    + "/" + str(counters.get("requested_frames", 0))
-                    + "; TX nao silencioso=" + str(counters.get("non_silent_rendered_frames", 0)) + ".")
+def perform_lia_test(driver, phone, prefix, api_key, *,
+                     should_abort, session_factory=open_realtime,
+                     on_progress=lambda _message, _sip_code: None):
+    """Use exactly the native originate/ring/answer path of the SIP-only probe."""
+    if not api_key or not api_key.strip() or driver._registration != 200 or should_abort():
+        raise LiaVoiceError("Lia Voz pilot not authorized")
+    codes = []
+    last_event = None
+    last_guard = float("-inf")
+    aborted = False
 
-        def result(status, message):
-            nonlocal last_outcome
-            last_outcome = PilotOutcome(status, call.sip_code if call else None,
-                                        (message + " " + diagnostic())[:230])
-            # Metrics only, without recording, transcript or personal details.
-            # Keep the final status/diagnostic as the last progress message.
-            snapshot = getattr(session, "quality_snapshot", None)
-            if bridge is not None and callable(snapshot):
-                q = snapshot()
-                on_progress(
-                    "Qualidade voz: fala inicio/fim=" + str(q["speech_starts"]) + "/" + str(q["speech_ends"])
-                    + "; interrupcoes=" + str(q["interruptions"])
-                    + "; respostas com audio=" + str(q["audio_responses"])
-                    + "; concluidas=" + str(q["completed_responses"])
-                    + "; geracao ms media/max=" + str(q["generation_avg_ms"]) + "/" + str(q["generation_max_ms"])
-                    + "; amostras=" + str(q["generation_samples"]) + ".",
-                    last_outcome.sip_code,
-                )
-            on_progress(last_outcome.message, last_outcome.sip_code)
-            return last_outcome
+    def guard():
+        nonlocal last_guard, aborted
+        now = time.monotonic()
+        if not aborted and now - last_guard >= 1:
+            last_guard = now
+            aborted = should_abort()
+        return aborted
 
-        def media_exchanged():
-            if bridge is None or bridge.failure:
-                return False
-            counters = bridge.snapshot()
-            # Requested frames may consist solely of silence before the model
-            # produces its first sample. Do not treat those as a validated voice.
-            return counters["received_frames"] > 0 and counters["non_silent_rendered_frames"] > 0
+    def observe(status, code):
+        nonlocal last_event
+        if isinstance(code, int) and 100 <= code <= 699 and code not in codes:
+            codes.append(code)
+        if (status, code) != last_event:
+            last_event = (status, code)
+            on_progress("Discagem SIP: " + status + "; SIP " + ("/".join(map(str, codes)) or "-"), code)
 
-        try:
-            target = make_dial_uri(driver.account_model, phone, **_route_options(prefix))
-            call = PilotCall(driver.acc)
-            # Use an explicit audio-only offer, preserving the authorized Native route.
-            params = pj.CallOpParam(True)
-            params.opt.audioCount = 1
-            params.opt.videoCount = 0
-            stage = "INVITE"
-            on_progress("Enviando INVITE SIP (somente audio).", None)
-            call.makeCall(target, params)
-            invite_started = True
-            stage = "aguardando resposta SIP"
-            on_progress("INVITE enviado; aguardando central.", None)
-            ring_deadline = time.monotonic() + RING_TIMEOUT_SECONDS
-            answered_at = None
-            next_guard = 0.0
-            while True:
-                # Same event pump used by the native audio bench, without blocking
-                # the asynchronous Realtime bridge for long intervals.
-                driver.pump(10)
-                now = time.monotonic()
-                if call.sip_code is not None and call.sip_code != last_reported_code:
-                    last_reported_code = call.sip_code
-                    on_progress("Resposta SIP " + str(call.sip_code) + ". " + diagnostic(),
-                                call.sip_code)
-                if call.callback_failed:
-                    stage = "callback SIP"
-                    raise LiaVoiceError("SIP callback failed")
-                if now >= next_guard:
-                    if should_abort():
-                        return result("LIA_INTERROMPIDA", "Teste interrompido por seguranca.")
-                    next_guard = now + 1
-                if call.disconnected:
-                    if media_exchanged():
-                        return result("LIA_FINALIZADA", "SIP encerrado. Validar a conversa no aparelho.")
-                    if not call.answered:
-                        return result("LIA_SEM_ATENDIMENTO", "Central encerrou antes da confirmacao.")
-                    return result("LIA_FALHOU", "SIP confirmou; encerrou sem audio bidirecional.")
-                if task is not None and task.done():
-                    stage = "transporte Realtime"
-                    task.result()
-                    raise LiaVoiceError("Media session ended before SIP call")
-                if not call.answered:
-                    if now >= ring_deadline:
-                        return result("LIA_SEM_ATENDIMENTO", "Central sem confirmacao em 40s; toque no aparelho nao verificado.")
-                else:
-                    if answered_at is None:
-                        answered_at = call.confirmed_at or now
-                        on_progress("SIP confirmado; aguardando midia RTP. " + diagnostic(),
-                                    call.sip_code)
-                    if bridge is None:
-                        stage = "negociacao RTP"
-                        info = call.getInfo()
-                        call.observe_media(info)
-                        for index, media in enumerate(info.media):
-                            if (media.type == pj.PJMEDIA_TYPE_AUDIO
-                                    and media.status == pj.PJSUA_CALL_MEDIA_ACTIVE):
-                                stage = "conexao ponte de audio"
-                                bridge = MediaBridge(session)
-                                context = attach_pj_media(
-                                    pj, call.getAudioMedia(int(getattr(media, "index", index))),
-                                    bridge, enabled=True,
-                                    remote_ended=lambda: call.disconnected,
-                                )
-                                context.__enter__()
-                                media_context = context
-                                task = asyncio.create_task(run_media_bridge(session, bridge))
-                                stage = "audio Realtime"
-                                on_progress("Ponte RTP conectada; iniciando audio Realtime. " + diagnostic(),
-                                            call.sip_code)
-                                break
-                        if bridge is None and now - answered_at >= 12:
-                            return result("LIA_FALHOU", "SIP confirmou sem midia RTP ativa.")
-                    if bridge and bridge.failure:
-                        return result("LIA_FALHOU", "Ponte de audio interrompida.")
-                    if now - answered_at >= 90:
-                        if not media_exchanged():
-                            return result("LIA_FALHOU", "Limite atingido sem quadros bidirecionais.")
-                        return result("LIA_FINALIZADA", "Limite atingido; validar voz no aparelho.")
-                await asyncio.sleep(0.01)
-        except Exception as exc:
-            # Stage names, fixed failure categories and numeric counters only.
-            # Never expose raw exceptions, SDP, SIP URIs or conversation content.
-            detail = (" [" + safe_realtime_failure(exc) + "]"
-                      if stage in {"transporte Realtime", "audio Realtime"} else "")
-            return result("LIA_FALHOU", "Falha na etapa: " + stage + detail + ".")
-        finally:
-            # Do not erase SIP diagnostics when a native cleanup operation races
-            # with remote BYE or an unsuccessful makeCall. Endpoint destruction in
-            # PjSession still runs after this coroutine exits.
-            if bridge is not None:
-                bridge.close()
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            cleanup_failed = False
-            try:
-                if media_context is not None:
-                    media_context.__exit__(None, None, None)
-            except Exception:
-                cleanup_failed = True
-            if call is not None:
-                try:
-                    if not call.disconnected and (invite_started or call.isActive()):
-                        end = pj.CallOpParam()
-                        end.statusCode = 200
-                        call.hangup(end)
-                except Exception:
-                    cleanup_failed = True
-                finally:
-                    try:
-                        for _ in range(4):
-                            driver.pump(100)
-                    except Exception:
-                        cleanup_failed = True
-            if cleanup_failed:
-                previous = last_outcome.message if last_outcome else diagnostic()
-                on_progress(("Falha ao encerrar SIP/midia. " + previous)[:230],
-                            call.sip_code if call is not None else None)
-                # Never report success if native cleanup could not be confirmed.
-                raise LiaVoiceError("Native cleanup failed")
+    def connected(call):
+        return asyncio.run(_converse_connected(
+            driver, call, api_key, should_abort=should_abort,
+            session_factory=session_factory, on_progress=on_progress,
+        ))
+
+    on_progress("Iniciando discagem pelo mesmo motor do teste SIP sem IA.", None)
+    outcome = driver.perform_call(
+        phone, mode="LIA", **_route_options(prefix), timeout=RING_TIMEOUT_SECONDS,
+        should_abort=guard, on_status=observe, on_trace=on_progress,
+        on_connected=connected,
+    )
+    if outcome.status.startswith("LIA_"):
+        return PilotOutcome(outcome.status, outcome.sip_code, outcome.message)
+    if outcome.status == "INTERROMPIDA":
+        status = "LIA_INTERROMPIDA"
+    elif not outcome.answered:
+        status = "LIA_SEM_ATENDIMENTO"
+    else:
+        status = "LIA_FALHOU"
+    if outcome.sip_code and outcome.sip_code not in codes:
+        codes.append(outcome.sip_code)
+    message = ("SIP " + ("/".join(map(str, codes)) or "-")
+               + "; sem confirmacao do aparelho. " + outcome.message)
+    return PilotOutcome(status, outcome.sip_code, message[:230])
 
 
 def perform_native_probe(driver, phone, prefix, *, should_abort,
@@ -296,6 +261,7 @@ def perform_native_probe(driver, phone, prefix, *, should_abort,
     outcome = driver.perform_call(
         phone, mode="PROBE", **_route_options(prefix),
         timeout=RING_TIMEOUT_SECONDS, probe_hold_seconds=12, should_abort=guard, on_status=observe,
+        on_trace=on_progress,
     )
     if outcome.sip_code and outcome.sip_code not in codes:
         codes.append(outcome.sip_code)

@@ -1,7 +1,6 @@
 """Lia Voz single test queue, consumed only by an explicitly isolated voice engine."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -203,10 +202,10 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
                 outcome = perform_native_probe(driver, phone, prefix,
                                                should_abort=abort, on_progress=progress)
             else:
-                outcome = asyncio.run(perform_lia_test(
+                outcome = perform_lia_test(
                     driver, phone, prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
                     should_abort=abort, on_progress=progress,
-                ))
+                )
         logging.getLogger(__name__).info("Lia Voz teste %d: %s | %s",
                                          test_id, outcome.status, outcome.message)
         _finish(test_id, outcome.status, (route_label + " | " + outcome.message)[:230],

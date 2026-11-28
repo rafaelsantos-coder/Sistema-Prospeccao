@@ -1,12 +1,13 @@
-"""Offline SIP + Realtime orchestration tests. No network or phone calls."""
+"""Regression exercises the real shared PjSession path with fake native I/O."""
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
-from app.services import lia_voz_call
+from app.services import lia_voz_call, voice_pjsua2
 from app.services.lia_voz_realtime import LiaVoiceError
+from app.services.lia_voz_media import FRAME_BYTES
 
 
 class FakeVector(list):
@@ -30,18 +31,22 @@ class FakePort(FakeMedia):
         pass
 
 
-class FakeDriver:
-    def __init__(self):
+class FakeDriver(voice_pjsua2.PjSession):
+    def __init__(self, *, answer_at=3, remote_after=5, emit_pcm=True, rtp=(10, 10)):
         self._registration = 200
         self.acc = object()
         self.account_model = object()
-        self.invites = 0
+        self.invites = []
         self.hangups = 0
         self.steps = 0
+        self.clock = 0.0
         self.call = None
-        self.audio_status = 1
-        self.emit_pcm = True
-        self.invite_params = None
+        self._call = None
+        self._player = None
+        self.answer_at = answer_at
+        self.remote_after = remote_after
+        self.emit_pcm = emit_pcm
+        self.rtp = rtp
         self.media = FakeMedia()
         driver = self
 
@@ -49,26 +54,27 @@ class FakeDriver:
             def __init__(self, _account):
                 driver.call = self
                 self.info = SimpleNamespace(
-                    state=0, lastStatusCode=100,
-                    media=[SimpleNamespace(type=1, status=driver.audio_status, index=4)],
+                    state=0, lastStatusCode=100, callIdString="local-lab-123@loopback",
+                    media=[SimpleNamespace(type=1, status=1, index=0)],
                 )
 
             def getInfo(self):
                 return self.info
 
-            def makeCall(self, _target, _params):
-                driver.invites += 1
-                driver.invite_params = _params
+            def makeCall(self, target, params):
+                driver.invites.append((target, params))
 
             def getAudioMedia(self, index):
-                assert index == 4
+                assert index == 0
                 return driver.media
+
+            def getStreamStat(self, _index):
+                return SimpleNamespace(rtcp=SimpleNamespace(
+                    rxStat=SimpleNamespace(pkt=driver.rtp[0]),
+                    txStat=SimpleNamespace(pkt=driver.rtp[1])))
 
             def hangup(self, _params):
                 driver.hangups += 1
-
-            def isActive(self):
-                return self.info.state in (1, 2)
 
         self.pj = SimpleNamespace(
             Call=FakeCall, CallOpParam=lambda *_args: SimpleNamespace(opt=SimpleNamespace()),
@@ -79,25 +85,26 @@ class FakeDriver:
             PJMEDIA_FRAME_TYPE_AUDIO=1, PJMEDIA_FRAME_TYPE_NONE=0,
         )
 
-    def pump(self, _ms):
+    def pump(self, ms):
+        if ms == 100:
+            return
         self.steps += 1
+        self.clock += 1 if ms == 150 else 0.2
         if self.call and self.steps == 1:
             self.call.info.state = 1
-            self.call.info.lastStatusCode = 180
+            self.call.info.lastStatusCode = 183
             self.call.onCallState(None)
-        elif self.call and self.steps == 2:
+        if self.call and self.steps == self.answer_at:
             self.call.info.state = 2
             self.call.info.lastStatusCode = 200
             self.call.onCallState(None)
             self.call.onCallMediaState(None)
-        elif self.call and self.steps == 4 and self.emit_pcm and self.media.connections:
+        if self.call and self.emit_pcm and self.media.connections:
             port = self.media.connections[0]
-            from app.services.lia_voz_media import FRAME_BYTES
             port.onFrameReceived(SimpleNamespace(type=1, size=FRAME_BYTES,
                                                 buf=FakeVector([1] * FRAME_BYTES)))
-            frame = SimpleNamespace(size=FRAME_BYTES, buf=FakeVector(), type=0)
-            port.onFrameRequested(frame)
-        elif self.call and self.steps == 7:
+            port.onFrameRequested(SimpleNamespace(size=FRAME_BYTES, buf=FakeVector(), type=0))
+        if self.call and self.steps == self.answer_at + self.remote_after:
             self.call.info.state = 3
             self.call.onCallState(None)
 
@@ -105,9 +112,10 @@ class FakeDriver:
 class FakeSession:
     ready = True
 
-    def __init__(self):
+    def __init__(self, *, silent=False):
         self.greeted = False
         self.cleared = False
+        self.silent = silent
 
     async def greet(self):
         self.greeted = True
@@ -119,354 +127,148 @@ class FakeSession:
         pass
 
     def pull_pcm(self, size):
-        return bytes([1]) * size
+        return bytes(size) if self.silent else bytes([1]) * size
 
     def clear_pcm(self):
         self.cleared = True
 
 
-def factory_for(session):
+def install_driver(monkeypatch, **kw):
+    driver = FakeDriver(**kw)
+    monkeypatch.setattr(voice_pjsua2, "time", SimpleNamespace(monotonic=lambda: driver.clock))
+    monkeypatch.setattr(lia_voz_call, "time", SimpleNamespace(monotonic=lambda: driver.clock))
+    routes = []
+    def uri(_account, phone, **options):
+        routes.append((phone, options))
+        return "sip:lab.invalid"
+    monkeypatch.setattr(voice_pjsua2, "make_dial_uri", uri)
+    return driver, routes
+
+
+def run_lia(driver, session=None, *, prefix=None, should_abort=lambda: False, progress=None):
     @asynccontextmanager
     async def factory(**_kwargs):
-        yield session
-    return factory
+        assert driver.call.answered
+        assert len(driver.invites) == 1
+        yield session or FakeSession()
+    return lia_voz_call.perform_lia_test(
+        driver, "5555999990000", prefix, "test-key",
+        should_abort=should_abort, session_factory=factory,
+        on_progress=lambda message, code: progress.append((message, code)) if progress is not None else None,
+    )
 
 
-def test_no_invite_when_realtime_handshake_fails():
-    driver = FakeDriver()
-
-    @asynccontextmanager
-    async def unavailable(**_kwargs):
-        raise LiaVoiceError("Handshake failed")
-        yield  # pragma: no cover
-
-    async def run():
-        with pytest.raises(LiaVoiceError, match="Handshake failed"):
-            await lia_voz_call.perform_lia_test(
-                driver, "5555999990000", "8003", "test-key",
-                should_abort=lambda: False, session_factory=unavailable,
-            )
-    asyncio.run(run())
-    assert driver.invites == 0
+@pytest.mark.parametrize("registration,key,aborted", [(403, "key", False), (200, "", False), (200, "key", True)])
+def test_preflight_denial_never_invites(monkeypatch, registration, key, aborted):
+    driver, _ = install_driver(monkeypatch)
+    driver._registration = registration
+    with pytest.raises(LiaVoiceError, match="not authorized"):
+        lia_voz_call.perform_lia_test(driver, "5555999990000", None, key,
+                                      should_abort=lambda: aborted)
+    assert not driver.invites
 
 
-def test_no_invite_if_permission_revoked_after_handshake():
-    driver = FakeDriver()
-    decisions = iter([False, True])
-
-    async def run():
-        with pytest.raises(LiaVoiceError, match="authorization revoked"):
-            await lia_voz_call.perform_lia_test(
-                driver, "5555999990000", "8003", "test-key",
-                should_abort=lambda: next(decisions),
-                session_factory=factory_for(FakeSession()),
-            )
-    asyncio.run(run())
-    assert driver.invites == 0
-
-
-def test_unregistered_account_fails_before_invite():
-    driver = FakeDriver()
-    driver._registration = 403
-
-    async def run():
-        with pytest.raises(LiaVoiceError, match="not authorized"):
-            await lia_voz_call.perform_lia_test(
-                driver, "5555999990000", "8003", "test-key",
-                should_abort=lambda: False, session_factory=factory_for(FakeSession()),
-            )
-    asyncio.run(run())
-    assert driver.invites == 0
-
-
-def test_confirmed_sip_media_and_remote_hangup(monkeypatch):
-    driver = FakeDriver()
+def test_same_native_dialer_and_parameters_for_probe_and_lia(monkeypatch):
+    driver, probe_routes = install_driver(monkeypatch)
+    probe = lia_voz_call.perform_native_probe(driver, "5555999990000", None, should_abort=lambda: False)
+    assert probe.status == "LIA_PROBE_FINALIZADO"
+    assert len(driver.invites) == 1
+    driver, routes = install_driver(monkeypatch)
     session = FakeSession()
-    targets = []
-
-    def uri(_account, phone, **options):
-        targets.append((phone, options))
-        return "sip:fake.invalid"
-
-    monkeypatch.setattr(lia_voz_call, "make_dial_uri", uri)
-
-    async def run():
-        return await asyncio.wait_for(lia_voz_call.perform_lia_test(
-            driver, "5555999990000", "8003", "test-key",
-            should_abort=lambda: False, session_factory=factory_for(session),
-        ), timeout=2)
-
-    outcome = asyncio.run(run())
-    assert outcome.status == "LIA_FINALIZADA"
-    assert outcome.sip_code == 200
-    assert "Validar a conversa" in outcome.message
-    assert driver.invites == 1 and driver.hangups == 0
-    assert driver.invite_params.opt.audioCount == 1
-    assert driver.invite_params.opt.videoCount == 0
-    assert "SIP 180/200" in outcome.message
-    assert "quadros RX/TX=1/1" in outcome.message
-    assert targets[0][1]["native_techprefix"] == "8003"
+    progress = []
+    result = run_lia(driver, session, progress=progress)
+    assert result.status == "LIA_FINALIZADA"
+    assert result.sip_code == 200
+    assert "RTP pacotes RX/TX=10/10" in result.message
+    assert routes == probe_routes
+    assert routes[0][1]["dial_format"] == "NATIONAL"
+    assert len(driver.invites) == 1
+    assert driver.hangups == 0 and driver._call is None
     assert session.greeted and session.cleared
     assert not driver.media.connections
+    assert any("Call-ID=local-lab-123@loopback" in m for m, _ in progress)
 
 
-@pytest.mark.parametrize("audio_status,emit_pcm", [(0, False), (1, False)])
-def test_sip_200_without_bidirectional_audio_is_failure(monkeypatch, audio_status, emit_pcm):
-    driver = FakeDriver()
-    driver.audio_status = audio_status
-    driver.emit_pcm = emit_pcm
-    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *args, **kw: "sip:fake.invalid")
-
-    async def run():
-        return await asyncio.wait_for(lia_voz_call.perform_lia_test(
-            driver, "5555999990000", "8003", "test-key",
-            should_abort=lambda: False, session_factory=factory_for(FakeSession()),
-        ), timeout=2)
-
-    outcome = asyncio.run(run())
-    assert outcome.status == "LIA_FALHOU"
-    assert outcome.sip_code == 200
-    assert "SIP 180/200" in outcome.message
-    assert "quadros RX/TX=0/0" in outcome.message
-    assert "sem audio bidirecional" in outcome.message
-    assert driver.invites == 1
-    assert not driver.media.connections
-
-
-def test_progress_distinguishes_handshake_failure_before_invite():
-    driver = FakeDriver()
-    milestones = []
-
-    @asynccontextmanager
-    async def unavailable(**_kwargs):
-        raise TimeoutError()
-        yield  # pragma: no cover
-
-    async def run():
-        with pytest.raises(TimeoutError):
-            await lia_voz_call.perform_lia_test(
-                driver, "5555999990000", "8003", "test-key",
-                should_abort=lambda: False, session_factory=unavailable,
-                on_progress=lambda msg, code: milestones.append((msg, code)),
-            )
-
-    asyncio.run(run())
-    assert milestones == [("Conectando ao OpenAI Realtime.", None)]
-    assert driver.invites == 0
-
-
-def test_cleanup_error_reports_last_sip_code(monkeypatch):
-    driver = FakeDriver()
-    milestones = []
-    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
-    original_pump = driver.pump
-
-    def fail_cleanup(ms):
-        if ms == 100:
-            raise RuntimeError("sensitive debug data")
-        original_pump(ms)
-
-    driver.pump = fail_cleanup
-
-    async def run():
-        with pytest.raises(LiaVoiceError, match="Native cleanup failed"):
-            await lia_voz_call.perform_lia_test(
-                driver, "5555999990000", "8003", "test-key",
-                should_abort=lambda: False, session_factory=factory_for(FakeSession()),
-                on_progress=lambda msg, code: milestones.append((msg, code)),
-            )
-
-    asyncio.run(run())
-    assert driver.invites == 1
-    assert milestones[-1][1] == 200
-    assert "Falha ao encerrar SIP/midia" in milestones[-1][0]
-    assert "sensitive debug data" not in str(milestones)
-
-
-def test_invite_setup_failure_never_hangups_unallocated_call(monkeypatch):
-    driver = FakeDriver()
-    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
-
-    def fail_invite(*args, **kwargs):
-        raise RuntimeError("sensitive debug data")
-
-    monkeypatch.setattr(driver.pj.Call, "makeCall", fail_invite)
-
-    async def run():
-        return await lia_voz_call.perform_lia_test(
-            driver, "5555999990000", "8003", "test-key",
-            should_abort=lambda: False, session_factory=factory_for(FakeSession()),
-        )
-
-    outcome = asyncio.run(run())
-    assert outcome.status == "LIA_FALHOU"
-    assert "Falha na etapa: INVITE" in outcome.message
-    assert driver.invites == 0 and driver.hangups == 0
-    assert "sensitive debug data" not in outcome.message
-
-
-def test_same_route_native_probe_no_realtime():
-    driver = FakeDriver()
-    received = []
-    def perform(phone, **kwargs):
-        received.append((phone, kwargs))
-        kwargs["on_status"]("TOCANDO", 180)
-        kwargs["on_status"]("ATENDIDA", 200)
-        return SimpleNamespace(status="ATENDIDA", sip_code=200,
-                               answered=True, media_active=True)
-    driver.perform_call = perform
-    result = lia_voz_call.perform_native_probe(
-        driver, "5555999990000", "8003", should_abort=lambda: False)
-    assert len(received) == 1
-    phone, options = received[0]
-    assert phone == "5555999990000" and options["native_techprefix"] == "8003"
-    assert options["mode"] == "PROBE" and options["probe_hold_seconds"] == 12
-    assert options["timeout"] == 40
-    assert result.status == "LIA_PROBE_FINALIZADO"
-    assert "180=sim" in result.message
-    assert "Confirme o toque" in result.message
-
-
-def test_silence_is_not_successful_ai_conversation(monkeypatch):
-    driver = FakeDriver()
-    session = FakeSession()
-    session.pull_pcm = lambda size: bytes(size)
-    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
-
-    async def run():
-        return await lia_voz_call.perform_lia_test(
-            driver, "5555999990000", "8003", "test-key",
-            should_abort=lambda: False, session_factory=factory_for(session))
-
-    result = asyncio.run(run())
-    assert result.status == "LIA_FALHOU"
-    assert "TX nao silencioso=0" in result.message
-
-
-def test_account_probe_uses_previous_campaign_national_format():
-    driver = FakeDriver()
-    options = []
-    def perform(phone, **kwargs):
-        options.append((phone, kwargs))
-        return SimpleNamespace(status="SEM_ATENDIMENTO", sip_code=480,
-                               answered=False, media_active=False)
-    driver.perform_call = perform
-    result = lia_voz_call.perform_native_probe(
-        driver, "5555999990000", None, should_abort=lambda: False)
-    assert len(options) == 1
-    assert options[0][0] == "5555999990000"
-    assert options[0][1]["dial_format"] == "NATIONAL"
-    assert "native_techprefix" not in options[0][1]
-    assert result.status == "LIA_PROBE_SEM_ATENDIMENTO"
-
-
-def test_account_route_ai_also_uses_national_format(monkeypatch):
-    driver = FakeDriver()
-    options = []
-    def uri(_account, phone, **kwargs):
-        options.append((phone, kwargs))
-        return "sip:fake.invalid"
-    monkeypatch.setattr(lia_voz_call, "make_dial_uri", uri)
-
-    async def run():
-        return await lia_voz_call.perform_lia_test(
-            driver, "5555999990000", None, "test-key",
-            should_abort=lambda: False, session_factory=factory_for(FakeSession()))
-
-    asyncio.run(run())
-    assert options == [("5555999990000", {"dial_format": "NATIONAL"})]
-    assert driver.invites == 1
-
-
-def test_call_reports_sanitized_realtime_failure_and_turn_metrics(monkeypatch):
-    driver = FakeDriver()
-    progress = []
-    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
-
-    class FailedSession(FakeSession):
-        async def receive_once(self):
-            raise LiaVoiceError("private raw content", diagnostic="provider:rate_limit_exceeded")
-
-        def quality_snapshot(self):
-            return {
-                "speech_starts": 2, "speech_ends": 1, "interruptions": 1,
-                "audio_responses": 1, "completed_responses": 0,
-                "generation_samples": 1, "generation_avg_ms": 450,
-                "generation_max_ms": 450,
-            }
-
-    async def run():
-        return await lia_voz_call.perform_lia_test(
-            driver, "5555999990000", None, "test-key",
-            should_abort=lambda: False, session_factory=factory_for(FailedSession()),
-            on_progress=lambda message, code: progress.append(message),
-        )
-
-    outcome = asyncio.run(run())
-    assert outcome.status == "LIA_FALHOU"
-    assert "provider:rate_limit_exceeded" in outcome.message
-    assert "private raw content" not in str(progress)
-    assert any("Qualidade voz: fala inicio/fim=2/1" in m for m in progress)
-    assert progress[-1] == outcome.message
-    assert driver.invites == 1
-
-
-@pytest.mark.parametrize("answer_at,expected", [
-    (32, "LIA_FINALIZADA"),
-    (42, "LIA_SEM_ATENDIMENTO"),
-])
-def test_ai_waits_as_long_as_probe_for_delayed_sip_confirmation(monkeypatch, answer_at, expected):
-    """Regression: provisional 183 for 32s must not cause the old 25s cutoff."""
-    from types import SimpleNamespace
-    from app.services.lia_voz_media import FRAME_BYTES
-
-    driver = FakeDriver()
-    clock = [0.0]
-    # Patch this module's clock only, not asyncio's own monotonic clock.
-    monkeypatch.setattr(lia_voz_call, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-    monkeypatch.setattr(lia_voz_call, "make_dial_uri", lambda *a, **kw: "sip:fake.invalid")
-
-    def pump(ms):
-        if ms != 10:
-            return
-        clock[0] += 1.0
-        call = driver.call
-        if clock[0] == 1:
-            call.info.state = 1
-            call.info.lastStatusCode = 183
-            call.onCallState(None)
-        elif clock[0] == answer_at:
-            call.info.state = 2
-            call.info.lastStatusCode = 200
-            call.onCallState(None)
-            call.onCallMediaState(None)
-        elif clock[0] == answer_at + 2 and driver.media.connections:
-            port = driver.media.connections[0]
-            port.onFrameReceived(SimpleNamespace(
-                type=1, size=FRAME_BYTES, buf=FakeVector([1] * FRAME_BYTES)))
-            port.onFrameRequested(SimpleNamespace(
-                type=0, size=FRAME_BYTES, buf=FakeVector()))
-        elif clock[0] == answer_at + 4:
-            call.info.state = 3
-            call.onCallState(None)
-
-    driver.pump = pump
-
-    async def run():
-        return await asyncio.wait_for(lia_voz_call.perform_lia_test(
-            driver, "5555999990000", None, "test-key",
-            should_abort=lambda: False, session_factory=factory_for(FakeSession()),
-        ), timeout=3)
-
-    outcome = asyncio.run(run())
-    assert outcome.status == expected
-    assert driver.invites == 1
-    if expected == "LIA_FINALIZADA":
-        assert outcome.sip_code == 200
-        assert "183/200" in outcome.message
-        assert driver.hangups == 0
-    else:
-        assert outcome.sip_code == 183
-        assert clock[0] == lia_voz_call.RING_TIMEOUT_SECONDS
+@pytest.mark.parametrize("answer_at,expected", [(32, "LIA_FINALIZADA"), (42, "LIA_SEM_ATENDIMENTO")])
+def test_delayed_answer_or_timeout(monkeypatch, answer_at, expected):
+    driver, _ = install_driver(monkeypatch, answer_at=answer_at)
+    result = run_lia(driver)
+    assert result.status == expected
+    assert len(driver.invites) == 1
+    if expected == "LIA_SEM_ATENDIMENTO":
+        assert result.sip_code == 183
         assert driver.hangups == 1
-        assert "toque no aparelho nao verificado" in outcome.message
+        assert driver.clock == 40
+
+
+@pytest.mark.parametrize("emit_pcm,rtp,silent", [(False, (10, 10), False), (True, (0, 10), False), (True, (10, 10), True)])
+def test_no_success_on_silent_or_missing_network_audio(monkeypatch, emit_pcm, rtp, silent):
+    driver, _ = install_driver(monkeypatch, emit_pcm=emit_pcm, rtp=rtp)
+    result = run_lia(driver, FakeSession(silent=silent))
+    assert result.status == "LIA_FALHOU"
+    assert len(driver.invites) == 1
+
+
+def test_native_pump_continues_during_handshake(monkeypatch):
+    driver, _ = install_driver(monkeypatch, remote_after=20)
+    @asynccontextmanager
+    async def delayed(**_kwargs):
+        assert driver.call.answered
+        before = driver.steps
+        await asyncio.sleep(0.04)
+        assert driver.steps > before
+        yield FakeSession()
+    result = lia_voz_call.perform_lia_test(
+        driver, "5555999990000", None, "test-key", should_abort=lambda: False,
+        session_factory=delayed)
+    assert result.status == "LIA_FINALIZADA"
+    assert len(driver.invites) == 1
+
+
+def test_realtime_failure_after_answer_hangs_up(monkeypatch):
+    driver, _ = install_driver(monkeypatch, remote_after=20)
+    @asynccontextmanager
+    async def failed(**_kwargs):
+        assert driver.call.answered
+        raise LiaVoiceError("private content", diagnostic="provider:rate_limit_exceeded")
+        yield
+    result = lia_voz_call.perform_lia_test(
+        driver, "5555999990000", None, "test-key", should_abort=lambda: False,
+        session_factory=failed)
+    assert result.status == "LIA_FALHOU"
+    assert "provider:rate_limit_exceeded" in result.message
+    assert "private content" not in result.message
+    assert len(driver.invites) == 1 and driver.hangups == 1
+
+
+def test_remote_hangup_during_handshake_cancels_connection(monkeypatch):
+    driver, _ = install_driver(monkeypatch, remote_after=2)
+    cancelled = []
+    @asynccontextmanager
+    async def waiting(**_kwargs):
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.append(True)
+        yield
+    result = lia_voz_call.perform_lia_test(
+        driver, "5555999990000", None, "test-key", should_abort=lambda: False,
+        session_factory=waiting)
+    assert result.status == "LIA_FALHOU"
+    assert cancelled == [True]
+    assert len(driver.invites) == 1 and driver.hangups == 0
+
+
+def test_guard_revocation_before_answer_does_not_open_realtime(monkeypatch):
+    driver, _ = install_driver(monkeypatch, answer_at=10)
+    result = run_lia(driver, should_abort=lambda: driver.steps >= 2)
+    assert result.status == "LIA_INTERROMPIDA"
+    assert len(driver.invites) == 1 and driver.hangups == 1
+
+
+def test_native_route_still_uses_authorized_prefix(monkeypatch):
+    driver, routes = install_driver(monkeypatch)
+    result = run_lia(driver, prefix="8003")
+    assert result.status == "LIA_FINALIZADA"
+    assert routes[0][1]["native_techprefix"] == "8003"
+    assert len(driver.invites) == 1
