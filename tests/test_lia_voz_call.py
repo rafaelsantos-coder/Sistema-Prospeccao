@@ -389,5 +389,27 @@ def test_alternate_account_preserves_configured_dial_format_in_both_modes(monkey
     )
     assert result.status == "LIA_FINALIZADA"
     assert probe_routes == lia_routes
-    assert lia_routes[0][1] == {"dial_format": None}
+    # Native driver forwards its default keyword arguments too. Assert
+    # the complete effective route, including the absence of a techprefix.
+    assert lia_routes[0][1] == {
+        "dial_format": None, "native_techprefix": None, "native_local_ddd": "55",
+    }
     assert len(driver.invites) == 1
+
+
+def test_secondary_account_uses_its_actual_prefix_and_ddi_settings():
+    from app.services.voice_runtime import make_dial_uri
+
+    account = SimpleNamespace(
+        domain="sip.example.invalid", dial_domain="out.example.invalid",
+        sip_port=5060, transport="UDP", dial_prefix="9",
+        strip_brazil_ddi=False,
+    )
+    opts = lia_voz_call._route_options(None, None)
+    assert make_dial_uri(account, "5555999990000", **opts) == (
+        "sip:95555999990000@out.example.invalid:5060;transport=udp"
+    )
+    account.strip_brazil_ddi = True
+    assert make_dial_uri(account, "5555999990000", **opts) == (
+        "sip:955999990000@out.example.invalid:5060;transport=udp"
+    )
