@@ -888,6 +888,9 @@ class RealtimeProtocol:
         self.playback = Playback()
         self.active_response: str | None = None
         self.discarded_responses: set[str] = set()
+        self.discarded_items: set[AudioItem] = set()
+        self.latest_response: str | None = None
+        self.overlap_recoveries = 0
         self.speech_starts = 0
         self.speech_ends = 0
         self.interruptions = 0
@@ -914,6 +917,7 @@ class RealtimeProtocol:
             "generation_avg_ms": round(sum(samples) / len(samples)) if samples else None,
             "generation_max_ms": max(samples) if samples else None,
             "buffer_recoveries": self.buffer_recoveries,
+            "overlap_recoveries": self.overlap_recoveries,
             "token_limited_responses": self.token_limited_responses,
             "peak_pending_ms": self.peak_pending_bytes * 1000 // PCM_BYTES_PER_SECOND,
         }
@@ -968,7 +972,13 @@ class RealtimeProtocol:
             self.playback.clear()
             raise LiaVoiceError("Realtime reported an error", diagnostic=diagnostic)
         if kind == "response.created":
-            self.active_response = event["response"]["id"]
+            response_id = event["response"]["id"]
+            # Realtime can start a new response while the previous response
+            # still has queued audio on the phone. Never revive an older turn.
+            if self.latest_response and self.latest_response != response_id:
+                self.discarded_responses.add(self.latest_response)
+            self.latest_response = response_id
+            self.active_response = response_id
         elif kind == "response.done":
             response = event["response"]
             if response.get("id") == self.active_response:
@@ -997,13 +1007,32 @@ class RealtimeProtocol:
             except (ValueError, binascii.Error):
                 raise LiaVoiceError("Invalid audio encoding", diagnostic="invalid_audio_encoding") from None
             item = AudioItem(response_id, event["item_id"], event["content_index"])
+            if item in self.discarded_items:
+                return []
+            if not pcm or len(pcm) % 2:
+                raise LiaVoiceError("Invalid PCM output", diagnostic="invalid_pcm")
             outgoing = []
+            previous = self.playback.item
+            if previous is not None and previous != item:
+                # One audible item at a time. The newer turn supersedes old
+                # queued speech; truncate only the unplayed portion. For
+                # multiple items in the same response, discard only the old
+                # item, not the rest of that response.
+                if previous.response_id != item.response_id:
+                    self.discarded_responses.add(previous.response_id)
+                else:
+                    self.discarded_items.add(previous)
+                if self.playback.pending:
+                    truncate = self.playback.interrupt()
+                    if truncate:
+                        outgoing.append(truncate)
+                    self.overlap_recoveries += 1
             try:
                 self.playback.push(item, pcm)
             except LiaVoiceError as exc:
                 if exc.diagnostic != "output_buffer_exceeded":
                     raise
-                outgoing = self._cap_output(item, pcm)
+                outgoing.extend(self._cap_output(item, pcm))
             self.peak_pending_bytes = max(self.peak_pending_bytes, len(self.playback.pending))
             if response_id not in self.audio_responses:
                 self.audio_responses.add(response_id)

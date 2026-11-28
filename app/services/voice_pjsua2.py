@@ -36,6 +36,44 @@ class VoiceEngineError(RuntimeError):
     pass
 
 
+def sip_transaction_evidence(prm, pj):
+    """Bounded metadata only; never return raw SIP, numbers or credentials.
+
+    A final response to CANCEL/BYE is not a final response to INVITE.
+    Keep the native SWIG owner objects alive while inspecting child members.
+    """
+    event = prm.e
+    body = event.body
+    tx_event = body.tsxState
+    tx = tx_event.tsx
+    method = str(tx.method).upper()
+    if method not in {"INVITE", "PRACK", "CANCEL", "BYE", "UPDATE", "ACK"}:
+        return None
+    code = int(tx.statusCode)
+    if code != 0 and not 100 <= code <= 699:
+        return None
+    source = {
+        int(pj.PJSIP_EVENT_RX_MSG): "RX",
+        int(pj.PJSIP_EVENT_TX_MSG): "TX",
+        int(pj.PJSIP_EVENT_TIMER): "TIMER",
+        int(pj.PJSIP_EVENT_TRANSPORT_ERROR): "TRANSPORT",
+    }.get(int(tx_event.type), "OTHER")
+    cause = None
+    if source == "RX":
+        # Read only Reason header's standardized numeric Q.850 cause.
+        # No message body, headers, addresses or authentication are retained.
+        src = tx_event.src
+        data = src.rdata
+        header = str(data.wholeMsg or "")[:16384].split("\r\n\r\n", 1)[0]
+        match = re.search(
+            r"(?im)^Reason:[^\r\n]*?\bQ\.850\s*;\s*cause\s*=\s*(\d{1,3})\b",
+            header,
+        )
+        if match and 0 <= int(match.group(1)) <= 127:
+            cause = int(match.group(1))
+    return method, code, int(tx.role), source, int(tx.state), cause
+
+
 @dataclass
 class VoiceCallResult:
     status: str
@@ -264,6 +302,43 @@ class PjSession:
                 self.invited_at = time.monotonic()
                 self.last_trace = None
                 self.trace_queue = []
+                self.status_queue = []
+                self.last_status = None
+                self.tx_seen = set()
+
+            def notify_status(self, status, code):
+                if on_status is None:
+                    return
+                if on_trace is None:
+                    on_status(status, code)
+                    return
+                entry = (status, code)
+                if entry != self.last_status and len(self.status_queue) < 16:
+                    self.last_status = entry
+                    self.status_queue.append(entry)
+
+            def onCallTsxState(self, prm):
+                if on_trace is None:
+                    return
+                try:
+                    evidence = sip_transaction_evidence(prm, pj)
+                    if evidence is None or evidence in self.tx_seen or len(self.tx_seen) >= 48:
+                        return
+                    self.tx_seen.add(evidence)
+                    method, code, role, source, state, cause = evidence
+                    if len(self.trace_queue) < 32:
+                        self.trace_queue.append((
+                            "SIP transacao: " + method + "; origem=" + source
+                            + "; codigo=" + str(code) + "; papel=" + str(role)
+                            + "; estado=" + str(state)
+                            + ("; Q850=" + str(cause) if cause is not None else "")
+                            + "; ms=" + str(round((time.monotonic() - self.invited_at) * 1000)),
+                            None,
+                        ))
+                except Exception:
+                    # Diagnostics must not break a live call, or leak a packet.
+                    if len(self.trace_queue) < 32:
+                        self.trace_queue.append(("SIP transacao: diagnostico indisponivel", None))
 
             def observe_trace(self, info):
                 if on_trace is None:
@@ -289,6 +364,10 @@ class PjSession:
                         ))
 
             def flush_trace(self):
+                if on_status is not None:
+                    while self.status_queue:
+                        status, code = self.status_queue.pop(0)
+                        on_status(status, code)
                 if on_trace is not None:
                     while self.trace_queue:
                         message, code = self.trace_queue.pop(0)
@@ -322,13 +401,17 @@ class PjSession:
                         self.answered = True
                         if self.confirmed_at is None:
                             self.confirmed_at = time.monotonic()
-                        if on_status:
-                            on_status("ATENDIDA", self.sip_code)
+                        self.notify_status("ATENDIDA", self.sip_code)
                         self._start_audio_if_ready()
                     elif info.state == pj.PJSIP_INV_STATE_DISCONNECTED:
                         self.disconnected = True
                     elif on_status and self.sip_code in {180, 183}:
-                        on_status("TOCANDO", self.sip_code)
+                        # 183 is provisional progress, not handset ringing.
+                        # Leave the established campaign status contract intact.
+                        self.notify_status(
+                            "PROGRESSO" if on_trace is not None and self.sip_code == 183 else "TOCANDO",
+                            self.sip_code,
+                        )
                 except Exception:
                     if pilot:
                         self.callback_failed = True

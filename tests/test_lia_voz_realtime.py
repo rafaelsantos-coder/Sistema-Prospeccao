@@ -222,6 +222,7 @@ def test_quality_metrics_for_turns_interruption_and_generation(monkeypatch):
         "generation_samples": 2, "generation_avg_ms": 425,
         "generation_max_ms": 500,
         "buffer_recoveries": 0,
+        "overlap_recoveries": 0,
         "token_limited_responses": 0,
         "peak_pending_ms": 40,
     }
@@ -371,4 +372,78 @@ def test_reproduce_three_turn_call_with_burst_and_recovery_over_websocket():
         assert session.quality_snapshot()["buffer_recoveries"] == 1
         assert session.quality_snapshot()["audio_responses"] == 3
         assert [e["type"] for e in socket.sent].count("response.cancel") == 1
+    asyncio.run(run())
+
+
+def test_new_response_preempts_unplayed_audio_without_dropping_session():
+    """Regression for production test #22: provider starts another audio item."""
+    p = RealtimeProtocol()
+    p.handle(created("r1"))
+    p.handle(delta("r1", "i1", b"\x01\x02" * 1440))
+    assert p.playback.pull(960) == b"\x01\x02" * 480
+    p.handle(created("r2"))
+    # Delayed deltas from the previous generation must not revive it.
+    assert p.handle(delta("r1", "i1", b"\x03\x04" * 480)) == []
+    assert p.handle(delta("r2", "i2", b"\x05\x06" * 960)) == [{
+        "type": "conversation.item.truncate", "item_id": "i1",
+        "content_index": 0, "audio_end_ms": 20,
+    }]
+    assert p.playback.pull(960) == b"\x05\x06" * 480
+    p.handle({"type": "response.done", "response": {"id": "r1", "status": "cancelled"}})
+    assert p.active_response == "r2"
+    assert p.handle(SPEECH) == [{
+        "type": "conversation.item.truncate", "item_id": "i2",
+        "content_index": 0, "audio_end_ms": 20,
+    }]
+    p.handle(created("r3"))
+    p.handle(delta("r3", "i3", b"\x07\x08" * 480))
+    assert p.playback.pull(960) == b"\x07\x08" * 480
+    assert p.quality_snapshot()["overlap_recoveries"] == 1
+
+
+def test_multiple_audio_items_in_one_response_keep_latest_without_mixing():
+    p = RealtimeProtocol()
+    p.handle(created())
+    p.handle(delta(item_id="i1", pcm=b"\x01\x02" * 960))
+    p.playback.pull(960)
+    assert p.handle(delta(item_id="i2", pcm=b"\x03\x04" * 960)) == [{
+        "type": "conversation.item.truncate", "item_id": "i1",
+        "content_index": 0, "audio_end_ms": 20,
+    }]
+    assert p.handle(delta(item_id="i1", pcm=b"\x05\x06" * 480)) == []
+    assert p.playback.pull(960) == b"\x03\x04" * 480
+    assert p.handle(delta(item_id="i2", pcm=b"\x07\x08" * 480)) == []
+    assert p.playback.pull(960) == b"\x03\x04" * 480
+    assert p.playback.pull(960) == b"\x07\x08" * 480
+    assert p.active_response == "r1"
+    assert p.quality_snapshot()["overlap_recoveries"] == 1
+
+
+def test_overlapping_turns_recover_through_websocket_adapter():
+    async def run():
+        socket = FakeSocket([
+            {"type": "session.updated"}, created(),
+            delta(pcm=b"\x01\x02" * 960),
+            {"type": "response.done", "response": {"id": "r1", "status": "completed"}},
+            created("r2"), delta("r2", "i2", b"\x03\x04" * 960),
+            SPEECH, {"type": "input_audio_buffer.speech_stopped"},
+            created("r3"), delta("r3", "i3", b"\x05\x06" * 480),
+        ])
+        session = RealtimeSession(socket)
+        await session.start()
+        for _ in range(3):
+            await session.receive_once()
+        session.pull_pcm(960)
+        for _ in range(2):
+            await session.receive_once()
+        assert session.pull_pcm(960) == b"\x03\x04" * 480
+        assert session.ready
+        await session.append_pcm(bytes(960))
+        for _ in range(4):
+            await session.receive_once()
+        assert session.pull_pcm(960) == b"\x05\x06" * 480
+        assert session.ready
+        assert session.quality_snapshot()["overlap_recoveries"] == 1
+        assert [e["audio_end_ms"] for e in socket.sent
+                if e["type"] == "conversation.item.truncate"] == [20, 20]
     asyncio.run(run())

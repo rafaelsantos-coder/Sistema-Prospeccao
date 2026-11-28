@@ -343,3 +343,28 @@ def test_native_audio_vector_and_rtcp_owner_lifetime():
     pj = SimpleNamespace(PJMEDIA_TYPE_AUDIO=1, PJSUA_CALL_MEDIA_ACTIVE=1)
     assert lia_voz_call._active_audio_index(call, pj) == 7
     assert lia_voz_call._rtp_stats(call, pj) == (21, 34)
+
+
+def test_sip_transaction_evidence_is_method_specific_and_redacted():
+    from types import SimpleNamespace as NS
+    pj = NS(PJSIP_EVENT_RX_MSG=1, PJSIP_EVENT_TX_MSG=2,
+            PJSIP_EVENT_TIMER=3, PJSIP_EVENT_TRANSPORT_ERROR=4)
+    tx = NS(method="INVITE", statusCode=183, role=0, state=3)
+    raw = ("SIP/2.0 183 Session Progress\r\n"
+           "Authorization: private-secret\r\n"
+           "To: <sip:5555999990000@example.test>\r\n"
+           "Reason: Q.850;cause=34;text=\"private customer data\"\r\n\r\n"
+           "Reason: Q.850;cause=17")
+    tsx_state = NS(tsx=tx, type=1, src=NS(rdata=NS(wholeMsg=raw)))
+    prm = NS(e=NS(body=NS(tsxState=tsx_state)))
+    evidence = voice_pjsua2.sip_transaction_evidence(prm, pj)
+    assert evidence == ("INVITE", 183, 0, "RX", 3, 34)
+    assert "private" not in str(evidence) and "5555" not in str(evidence)
+    tx.method = "CANCEL"
+    tx.statusCode = 200
+    tsx_state.src.rdata.wholeMsg = "SIP/2.0 200 OK\r\n\r\n"
+    assert voice_pjsua2.sip_transaction_evidence(prm, pj) == (
+        "CANCEL", 200, 0, "RX", 3, None,
+    )
+    tx.method = "INFO"
+    assert voice_pjsua2.sip_transaction_evidence(prm, pj) is None
