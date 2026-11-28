@@ -15,10 +15,45 @@ import struct
 import threading
 import time
 from contextlib import asynccontextmanager
+
+import pjsua2 as pj
 from types import SimpleNamespace
 
 from app.services import lia_voz_call
 from app.services.voice_pjsua2 import PjSession
+
+
+def configure_isolated_native_stack():
+    """Explicitly bind and advertise loopback in this isolated CI process.
+
+    Docker --network none has no non-loopback interface or default gateway.
+    Do not change production NAT, media, or SIP settings. Detailed native
+    traces are enabled only here with synthetic numbers and synthetic audio.
+    """
+    original_init = pj.Endpoint.libInit
+    original_transport = pj.TransportConfig
+    original_account = pj.AccountConfig
+
+    def init(self, cfg):
+        cfg.logConfig.level = 5
+        cfg.logConfig.consoleLevel = 5
+        return original_init(self, cfg)
+
+    def transport_config():
+        cfg = original_transport()
+        cfg.boundAddress = "127.0.0.1"
+        cfg.publicAddress = "127.0.0.1"
+        return cfg
+
+    def account_config():
+        cfg = original_account()
+        cfg.mediaConfig.transportConfig.boundAddress = "127.0.0.1"
+        cfg.mediaConfig.transportConfig.publicAddress = "127.0.0.1"
+        return cfg
+
+    pj.Endpoint.libInit = init
+    pj.TransportConfig = transport_config
+    pj.AccountConfig = account_config
 
 
 class LoopbackPeer:
@@ -26,8 +61,27 @@ class LoopbackPeer:
         self.sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rtcp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        for sock in (self.sip, self.rtp, self.rtcp):
-            sock.bind(("127.0.0.1", 0))
+        self.sip.bind(("127.0.0.1", 0))
+        # Use the standard even RTP / consecutive odd RTCP port pair.
+        # Retry only local ephemeral binds, never a real telephone call.
+        for _ in range(64):
+            try:
+                self.rtp.bind(("127.0.0.1", 0))
+                port = self.rtp.getsockname()[1]
+                if port % 2 or port >= 65535:
+                    raise OSError("Need an even local RTP port")
+                self.rtcp.bind(("127.0.0.1", port + 1))
+                break
+            except OSError:
+                self.rtp.close()
+                self.rtcp.close()
+                self.rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.rtcp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        else:
+            self.sip.close()
+            self.rtp.close()
+            self.rtcp.close()
+            raise RuntimeError("Unable to allocate loopback RTP/RTCP pair")
         self.port = self.sip.getsockname()[1]
         self.calls = {}
         self.failure = None
@@ -86,6 +140,8 @@ class LoopbackPeer:
         match = re.search(r"^m=audio (\d+) RTP/AVP ([0-9 ]+)\r?$", offer, re.M)
         if not match or "0" not in match.group(2).split():
             raise RuntimeError("Expected G.711 PCMU in loopback offer")
+        if "c=IN IP4 127.0.0.1" not in offer:
+            raise RuntimeError("Unexpected advertised media address in loopback-only lab")
         # Preserve the number/order of offered streams; reject non-audio streams.
         media = []
         for line in offer.splitlines():
@@ -202,6 +258,7 @@ class SyntheticRealtime:
 
 
 def main():
+    configure_isolated_native_stack()
     with LoopbackPeer() as peer:
         account = SimpleNamespace(
             username="lab", domain="127.0.0.1", sip_port=peer.port,
@@ -217,6 +274,7 @@ def main():
                 timeout=40, probe_hold_seconds=1,
             )
             assert probe.answered and probe.sip_code == 200, probe.status
+            assert probe.media_active, "SIP probe answered but negotiated no active media"
         fake = SyntheticRealtime()
 
         @asynccontextmanager
@@ -228,7 +286,7 @@ def main():
 
         # Keep the CI conversation short; production remains 90 seconds.
         original_timeout = lia_voz_call.CONVERSATION_TIMEOUT_SECONDS
-        lia_voz_call.CONVERSATION_TIMEOUT_SECONDS = 4
+        lia_voz_call.CONVERSATION_TIMEOUT_SECONDS = 8
         try:
             with PjSession(account, "loopback-only") as driver:
                 assert driver.wait_for_registration()[0] == 200
@@ -237,6 +295,11 @@ def main():
                     should_abort=lambda: False, session_factory=factory,
                     on_progress=lambda msg, _code: print(msg, flush=True),
                 )
+                if outcome.status != "LIA_FINALIZADA":
+                    print("Loopback RTP counters:", [
+                        (c["confirmed"], c["acked"], c["packets_rx"], c["packets_tx"])
+                        for c in peer.calls.values()
+                    ], flush=True)
                 assert outcome.status == "LIA_FINALIZADA", outcome.message
         finally:
             lia_voz_call.CONVERSATION_TIMEOUT_SECONDS = original_timeout
