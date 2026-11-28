@@ -142,6 +142,17 @@ def check_connection(settings: MetaAdsSettings | None = None, *, client: httpx.C
             report.checks.append(Check("Conta de anúncios acessível", False, str(exc)))
 
         try:
+            pages = _get(client, settings, f"{settings.account_id}/promote_pages", {"fields": "id,name", "limit": 25})
+            rows = [r for r in pages.get("data", []) if isinstance(r, dict)]
+            names = ", ".join(str(r.get("name", "—")) for r in rows)
+            report.checks.append(Check(
+                "Página disponível para anúncios", bool(rows),
+                names if rows else "Nenhuma Página liberada para esta conta de anúncios.",
+            ))
+        except MetaAdsError as exc:
+            report.checks.append(Check("Página disponível para anúncios", False, str(exc)))
+
+        try:
             listing = _get(client, settings, "me/adaccounts", {"fields": "id,name", "limit": 50})
             rows = [r for r in listing.get("data", []) if isinstance(r, dict)]
             report.accessible_accounts = [{"id": str(r.get("id", "")), "name": str(r.get("name", ""))} for r in rows]
@@ -156,3 +167,83 @@ def check_connection(settings: MetaAdsSettings | None = None, *, client: httpx.C
         if owns_client:
             client.close()
     return report
+
+
+PERIODS = {
+    "hoje": ("today", "Hoje"),
+    "ontem": ("yesterday", "Ontem"),
+    "7d": ("last_7d", "Últimos 7 dias"),
+    "14d": ("last_14d", "Últimos 14 dias"),
+    "30d": ("last_30d", "Últimos 30 dias"),
+    "total": ("maximum", "Desde o início"),
+}
+_CONVERSATION_ACTION = "onsite_conversion.messaging_conversation_started_7d"
+
+
+@dataclass
+class CampaignRow:
+    id: str
+    name: str
+    status: str
+    objective: str
+    daily_budget: float | None
+    spend: float
+    impressions: int
+    clicks: int
+    ctr: float
+    conversations: int
+    cost_per_conversation: float | None
+
+
+def _num(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def fetch_campaigns(
+    period: str = "7d", settings: MetaAdsSettings | None = None, *, client: httpx.Client | None = None
+) -> list[CampaignRow]:
+    """Campanhas da conta com gasto e conversas no WhatsApp no período. Só leitura."""
+    settings = settings or MetaAdsSettings.from_env()
+    if not settings.token or not _ACCOUNT_RE.match(settings.account_id) or not _VERSION_RE.match(settings.version):
+        raise MetaAdsError("Conexão com a Meta não configurada.")
+    preset = PERIODS.get(period, PERIODS["7d"])[0]
+    fields = (
+        "id,name,effective_status,objective,daily_budget,"
+        f"insights.date_preset({preset}){{spend,impressions,clicks,ctr,actions}}"
+    )
+    owns_client = client is None
+    client = client or httpx.Client(timeout=20, follow_redirects=False)
+    try:
+        data = _get(client, settings, f"{settings.account_id}/campaigns", {"fields": fields, "limit": 100})
+    finally:
+        if owns_client:
+            client.close()
+    rows: list[CampaignRow] = []
+    for item in data.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        insight = ((item.get("insights") or {}).get("data") or [{}])[0]
+        spend = _num(insight.get("spend"))
+        conversations = int(sum(
+            _num(a.get("value")) for a in insight.get("actions", [])
+            if isinstance(a, dict) and a.get("action_type") == _CONVERSATION_ACTION
+        ))
+        budget = _num(item.get("daily_budget"))
+        rows.append(CampaignRow(
+            id=str(item.get("id", "")),
+            name=str(item.get("name", "—")),
+            status=str(item.get("effective_status", "—")),
+            objective=str(item.get("objective", "—")),
+            daily_budget=budget / 100 if budget else None,
+            spend=spend,
+            impressions=int(_num(insight.get("impressions"))),
+            clicks=int(_num(insight.get("clicks"))),
+            ctr=_num(insight.get("ctr")),
+            conversations=conversations,
+            cost_per_conversation=(spend / conversations) if conversations else None,
+        ))
+    rows.sort(key=lambda r: r.spend, reverse=True)
+    return rows

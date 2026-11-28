@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">GESTOR DE TRÁFEGO PAGO · META</span>
+    <h2>Campanhas</h2>
+    <p>Conta Sulnet 03 - Sistema Próprio. Leitura direta da Meta; nada é alterado aqui.</p>
+  </div>
+</div>
+
+<section class="panel" style="padding:20px;margin-bottom:18px">
+  <span class="eyebrow">PERÍODO</span>
+  <p>
+    {% for key, label in periods %}
+    <a class="button {% if key == periodo %}button-primary{% else %}button-secondary{% endif %}" href="/traffic/campaigns?periodo={{ key }}">{{ label }}</a>
+    {% endfor %}
+  </p>
+</section>
+
+{% if error %}
+<section class="panel" style="padding:20px;margin-bottom:18px">
+  <p><strong>✗ Não foi possível ler as campanhas.</strong><br><span class="panel-note">{{ error }}</span></p>
+  <a class="button button-secondary" href="/traffic/connection">Ver conexão</a>
+</section>
+{% else %}
+<section class="panel" style="padding:20px;margin-bottom:18px">
+  <span class="eyebrow">RESUMO</span>
+  <p>
+    <strong>Gasto:</strong> R$ {{ "%.2f"|format(totals.spend) }} ·
+    <strong>Conversas no WhatsApp:</strong> {{ totals.conversations }} ·
+    <strong>Custo por conversa:</strong> {% if totals.cost is not none %}R$ {{ "%.2f"|format(totals.cost) }}{% else %}—{% endif %}
+  </p>
+</section>
+
+<section class="panel" style="padding:20px;margin-bottom:18px">
+  <span class="eyebrow">CAMPANHAS</span>
+  {% if rows %}
+  <table class="data-table" style="width:100%">
+    <thead><tr><th>Campanha</th><th>Status</th><th>Orçamento/dia</th><th>Gasto</th><th>Impressões</th><th>Cliques</th><th>CTR</th><th>Conversas</th><th>Custo/conversa</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.name }}<br><span class="panel-note">{{ r.id }}</span></td>
+      <td>{{ r.status }}</td>
+      <td>{% if r.daily_budget %}R$ {{ "%.2f"|format(r.daily_budget) }}{% else %}—{% endif %}</td>
+      <td>R$ {{ "%.2f"|format(r.spend) }}</td>
+      <td>{{ r.impressions }}</td>
+      <td>{{ r.clicks }}</td>
+      <td>{{ "%.2f"|format(r.ctr) }}%</td>
+      <td>{{ r.conversations }}</td>
+      <td>{% if r.cost_per_conversation is not none %}R$ {{ "%.2f"|format(r.cost_per_conversation) }}{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>Nenhuma campanha nesta conta ainda. As campanhas que criarmos aparecerão aqui.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<p><a class="button button-secondary" href="/traffic">Voltar</a></p>
+{% endblock %}

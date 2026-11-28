@@ -1,6 +1,6 @@
 import httpx
 
-from app.services.meta_ads import MetaAdsSettings, check_connection
+from app.services.meta_ads import MetaAdsError, MetaAdsSettings, check_connection, fetch_campaigns
 
 SETTINGS = MetaAdsSettings(token="secret-token", account_id="act_1156163656960382", app_id="1", version="v21.0")
 
@@ -21,6 +21,8 @@ def _ok_handler(accounts):
                 {"permission": "ads_management", "status": "granted"},
                 {"permission": "ads_read", "status": "granted"},
             ]})
+        if path.endswith("/promote_pages"):
+            return httpx.Response(200, json={"data": [{"id": "279511642170691", "name": "Sulnet Telecom"}]})
         if path.endswith("/me/adaccounts"):
             return httpx.Response(200, json={"data": accounts})
         return httpx.Response(200, json={
@@ -55,3 +57,30 @@ def test_expired_token_message_never_contains_token():
     report = check_connection(SETTINGS, client=_client(handler))
     assert not report.all_ok
     assert all("secret-token" not in c.detail for c in report.checks)
+
+
+def test_fetch_campaigns_computes_cost_per_conversation():
+    def handler(request):
+        assert request.url.path.endswith("/act_1156163656960382/campaigns")
+        assert "last_7d" in request.url.params["fields"]
+        return httpx.Response(200, json={"data": [
+            {"id": "1", "name": "A", "effective_status": "PAUSED", "objective": "OUTCOME_ENGAGEMENT",
+             "daily_budget": "5000", "insights": {"data": [{
+                 "spend": "44.12", "impressions": "1000", "clicks": "50", "ctr": "5.0",
+                 "actions": [{"action_type": "onsite_conversion.messaging_conversation_started_7d", "value": "2"}]}]}},
+            {"id": "2", "name": "B", "effective_status": "PAUSED", "objective": "X"},
+        ]})
+    rows = fetch_campaigns("7d", SETTINGS, client=_client(handler))
+    assert [r.id for r in rows] == ["1", "2"]
+    assert rows[0].conversations == 2 and rows[0].daily_budget == 50.0
+    assert round(rows[0].cost_per_conversation, 2) == 22.06
+    assert rows[1].cost_per_conversation is None and rows[1].spend == 0
+
+
+def test_fetch_campaigns_without_token_raises_safe_error():
+    try:
+        fetch_campaigns("7d", MetaAdsSettings(token="", account_id="act_1156163656960382", app_id="", version="v21.0"))
+    except MetaAdsError as exc:
+        assert "configurada" in str(exc)
+    else:
+        raise AssertionError("esperava MetaAdsError")
