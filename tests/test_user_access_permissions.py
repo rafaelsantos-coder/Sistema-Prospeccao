@@ -108,6 +108,7 @@ def test_permission_selection_rejects_escalation_and_missing_parent():
     ("/traffic", "GET", "traffic.view"),
     ("/traffic/connection", "GET", "traffic.view"),
     ("/traffic/campaigns", "GET", "traffic.view"),
+    ("/traffic/campaigns/new", "GET", "traffic.view"),
     ("/ai/knowledge", "GET", "ai.view"),
     ("/ai/queues/bind", "POST", "ai.manage"),
     ("/settings/users", "POST", "settings.users.manage"),
