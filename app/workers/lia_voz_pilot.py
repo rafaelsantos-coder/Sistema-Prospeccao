@@ -151,6 +151,13 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
 
     def progress(message, sip_code=None):
         nonlocal last_stage, last_code
+        if message.startswith(("SIP trace:", "SIP transacao:")):
+            # Transaction diagnostics are for technical correlation only.
+            # Do not overwrite INVITE result with CANCEL/BYE codes or perform
+            # a database write for each native SIP transaction.
+            logging.getLogger(__name__).info("Lia Voz teste %d: %s | %s",
+                                            test_id, route_label, message[:230])
+            return
         last_stage = ((route_label + " | " if route_label else "") + message)[:230]
         if sip_code is not None:
             last_code = sip_code

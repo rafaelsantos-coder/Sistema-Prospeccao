@@ -318,13 +318,19 @@ def main():
         # Keep the CI conversation short; production remains 90 seconds.
         original_timeout = lia_voz_call.CONVERSATION_TIMEOUT_SECONDS
         lia_voz_call.CONVERSATION_TIMEOUT_SECONDS = 8
+        traces = []
+
+        def trace(message, _code):
+            traces.append(message)
+            print(message, flush=True)
+
         try:
             with PjSession(account, "loopback-only") as driver:
                 assert driver.wait_for_registration()[0] == 200
                 outcome = lia_voz_call.perform_lia_test(
                     driver, "5555999990000", None, "synthetic",
                     should_abort=lambda: False, session_factory=factory,
-                    on_progress=lambda msg, _code: print(msg, flush=True),
+                    on_progress=trace,
                 )
                 if outcome.status != "LIA_FINALIZADA":
                     print("Loopback RTP counters:", [
@@ -336,6 +342,8 @@ def main():
             lia_voz_call.CONVERSATION_TIMEOUT_SECONDS = original_timeout
         calls = list(peer.calls.values())
         assert len(calls) == 2, "Exactly one native INVITE per requested test"
+        assert any("SIP transacao: INVITE" in msg and "origem=RX" in msg
+                   and "codigo=183" in msg for msg in traces), "Missing provisional INVITE trace"
         assert calls[0]["media_offer"] == calls[1]["media_offer"], "Different SDP media offers"
         assert all(c["acked"] and c["ended"] for c in calls), "SIP dialog not closed"
         print("Independent peer RTP counters:", [
