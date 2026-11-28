@@ -8,6 +8,7 @@ native G.711 RTP and the native conference bridge.
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import select
 import socket
@@ -166,6 +167,7 @@ class LoopbackPeer:
             "rtp_target": ("127.0.0.1", int(match.group(1))),
             "answer_at": time.monotonic() + 0.8, "confirmed": False,
             "acked": False, "ended": False, "packets_rx": 0, "packets_tx": 0,
+            "voice_packets_rx": 0,
             "next_rtp": 0.0, "seq": 0, "ts": 0,
         }
         self.response(headers, address, 183, "Session Progress", body=sdp, contact=True)
@@ -196,6 +198,11 @@ class LoopbackPeer:
         else:
             self.response(headers, address, 200, "OK")
 
+    @staticmethod
+    def mulaw_magnitude(value):
+        u = (~value) & 0xff
+        return (((u & 15) << 3) + 132) * (1 << ((u >> 4) & 7)) - 132
+
     def run(self):
         try:
             while not self.stop.is_set():
@@ -206,8 +213,18 @@ class LoopbackPeer:
                         self.handle(packet, address)
                     elif sock is self.rtp and len(packet) >= 12 and packet[0] >> 6 == 2:
                         for call in self.calls.values():
-                            if call["confirmed"] and not call["ended"]:
+                            if call["confirmed"] and call["acked"] and not call["ended"]:
                                 call["packets_rx"] += 1
+                                # Independently confirm non-silent G.711 PCMU payload,
+                                # not merely RTP headers or silence/comfort-noise.
+                                if packet[1] & 0x7f == 0:
+                                    offset = 12 + (packet[0] & 0x0f) * 4
+                                    if packet[0] & 0x10 and len(packet) >= offset + 4:
+                                        words = struct.unpack_from("!H", packet, offset + 2)[0]
+                                        offset += 4 + words * 4
+                                    payload = packet[offset:]
+                                    if sum(self.mulaw_magnitude(x) > 500 for x in payload) >= 20:
+                                        call["voice_packets_rx"] += 1
                 now = time.monotonic()
                 for call in self.calls.values():
                     if call["ended"]:
@@ -238,6 +255,7 @@ class SyntheticRealtime:
         self.received = 0
         self.non_silent = 0
         self.greeted = False
+        self.sample_offset = 0
 
     async def greet(self):
         self.greeted = True
@@ -251,7 +269,20 @@ class SyntheticRealtime:
             self.non_silent += 1
 
     def pull_pcm(self, size):
-        return (b"\x00\x10\x00\xf0" * ((size + 3) // 4))[:size]
+        # A 12 kHz alternating-sample signal is outside the 8 kHz
+        # telephone codec's Nyquist band; the resampler correctly removes it.
+        # Use speech-band tones with a changing amplitude instead. This tests
+        # actual audible transport without disabling the production SIP VAD.
+        samples = []
+        for i in range(size // 2):
+            t = (self.sample_offset + i) / 24000
+            envelope = 0.55 + 0.4 * math.sin(2 * math.pi * 3 * t)
+            samples.append(int(envelope * (
+                9000 * math.sin(2 * math.pi * 650 * t)
+                + 4000 * math.sin(2 * math.pi * 1100 * t)
+            )))
+        self.sample_offset += len(samples)
+        return struct.pack("<" + "h" * len(samples), *samples)
 
     def clear_pcm(self):
         pass
@@ -307,7 +338,12 @@ def main():
         assert len(calls) == 2, "Exactly one native INVITE per requested test"
         assert calls[0]["media_offer"] == calls[1]["media_offer"], "Different SDP media offers"
         assert all(c["acked"] and c["ended"] for c in calls), "SIP dialog not closed"
+        print("Independent peer RTP counters:", [
+            {"rx": c["packets_rx"], "tx": c["packets_tx"],
+             "voice_rx": c["voice_packets_rx"]} for c in calls
+        ], flush=True)
         assert calls[1]["packets_tx"] > 10 and calls[1]["packets_rx"] > 10
+        assert calls[1]["voice_packets_rx"] > 10, "Peer received no audible G.711 samples"
         assert fake.greeted and fake.received > 10 and fake.non_silent > 0
         print("SIP LOOPBACK PASS: same INVITE/SDP, 183/200/ACK/BYE, bidirectional RTP/PCM")
 
