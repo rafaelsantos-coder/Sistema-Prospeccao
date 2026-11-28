@@ -220,3 +220,43 @@ def test_quality_metrics_for_turns_interruption_and_generation(monkeypatch):
         "generation_samples": 2, "generation_avg_ms": 425,
         "generation_max_ms": 500,
     }
+
+
+def test_commercial_training_v22_keeps_all_nine_negotiation_steps():
+    from app.services.lia_voz_realtime import PILOT_TRAINING, PILOT_TRAINING_VERSION
+
+    assert PILOT_TRAINING_VERSION == "2.2"
+    assert all(f"## {i}. " in PILOT_TRAINING for i in range(1, 23))
+    for row in (
+        "| 1 | 800 mega | R$ 119,90 | Nenhuma |",
+        "| 2 | 800 mega | R$ 119,90 | 1 mês |",
+        "| 3 | 800 mega | R$ 119,90 | 2 meses |",
+        "| 4 | 800 mega | R$ 119,90 | 3 meses |",
+        "| 5 | 650 mega | R$ 99,90 | Nenhuma |",
+        "| 6 | 800 mega | R$ 99,90 | Nenhuma |",
+        "| 7 | 800 mega | R$ 99,90 | 1 mês |",
+        "| 8 | 800 mega | R$ 99,90 | 2 meses |",
+        "| 9 | 800 mega | R$ 99,90 | 3 meses |",
+    ):
+        assert row in PILOT_TRAINING
+    assert "Todas as mensalidades gratuitas são concedidas no início do contrato." in PILOT_TRAINING
+    assert "Todas as ofertas previstas possuem fidelidade de 12 meses." in PILOT_TRAINING
+
+
+def test_training_is_loaded_with_pilot_guard_and_local_date(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.services import lia_voz_realtime as lia
+
+    monkeypatch.setattr(lia, "_local_now", lambda: datetime(
+        2026, 11, 27, 21, 30, tzinfo=timezone(timedelta(hours=-3))
+    ))
+    config = lia.session_update()["session"]
+    instructions = config["instructions"]
+    assert instructions.startswith(lia.PILOT_GUARD)
+    assert lia.PILOT_TRAINING in instructions
+    assert instructions.count(lia.PILOT_GUARD) == 2
+    assert "Não solicite CPF" in instructions
+    assert "Não confirme cobertura" in instructions
+    assert "27/11/2026 21:30" in instructions
+    assert config["tools"] == []
+
