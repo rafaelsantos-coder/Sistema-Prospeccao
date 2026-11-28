@@ -373,3 +373,143 @@ def test_reassigned_conversation_keeps_each_sellers_registration(monkeypatch):
         first_page = client.get(path).text
         assert "CRM-NATINE-1001" in first_page
         assert "CRM-FABIANO-1002" not in first_page
+
+def test_closed_detects_stage_ganho_even_when_status_open():
+    assert manual._closed({"status": "open", "stageName": "GANHO"})
+    assert manual._closed({"status": "won", "stageName": "INÍCIO"})
+    assert not manual._closed({"status": "open", "stageName": "INÍCIO"})
+
+
+def test_seller_maps_by_crm_username_login():
+    seller = manual.seller_for_user(User(
+        name="Nome divergente na fila Meta",
+        email="jenifer.dutra@sulnet.com.br",
+        password_hash="x",
+        active=True,
+    ))
+    assert seller is not None
+    assert seller.username == "jenifer.dutra"
+    assert seller.funnel_id == 18
+    assert seller.stage_id == 71
+    assert seller.additional_funnel_ids == (23, 24)
+
+
+def test_active_registration_ignores_won_opportunity(monkeypatch):
+    class FakeCRM:
+        bearer_token = "read-only"
+
+        def get_opportunity(self, opportunity_id):
+            assert opportunity_id == 555
+            return {"id": 555, "status": "won", "stageName": "GANHO"}
+
+    with SessionLocal() as db:
+        contact = Contact(phone="5555987700999", name="Cliente Ganho Antigo")
+        seller = User(
+            name="Jenifer Garcia Dutra",
+            email="jenifer.active.status@sulnet.local",
+            password_hash="x",
+            role="CONSULTOR",
+            active=True,
+        )
+        db.add_all([contact, seller])
+        db.flush()
+        from app.services.audit import write_audit
+        write_audit(
+            db,
+            user=seller,
+            action=manual.ACTION_REGISTERED,
+            entity_type="contact",
+            entity_id=contact.id,
+            payload={
+                "opportunityId": 555,
+                "protocol": "CRM-OLD-555",
+                "sellerUsername": "jenifer.dutra",
+            },
+        )
+        db.commit()
+        contact_id = contact.id
+
+        assert manual.registration_status(db, contact_id, "jenifer.dutra") is not None
+        active = manual.active_registration_status(
+            db, contact_id, "jenifer.dutra", crm=FakeCRM(),
+        )
+        assert active is None
+        reason = manual.register_block_reason(
+            seller=manual.seller_for_user(seller),
+            registration=None,
+            assigned=True,
+        )
+        assert reason is None
+
+
+def test_register_conversation_allows_new_after_won(monkeypatch):
+    created = []
+
+    class FakeCRM:
+        bearer_token = "read-only"
+
+        def get_opportunity(self, opportunity_id):
+            return {"id": opportunity_id, "status": "won", "stageName": "GANHO"}
+
+        def find_opportunities_by_phone(self, phone):
+            return {
+                "items": [
+                    {
+                        "id": 555,
+                        "clientPhone": phone,
+                        "assignedUserId": 8,
+                        "status": "won",
+                        "stageName": "GANHO",
+                    }
+                ]
+            }
+
+        def create_seller_lead(self, **kwargs):
+            created.append(kwargs)
+            return {
+                "id": 9001,
+                "protocol": "CRM-NEW-9001",
+                "assignedUserId": 8,
+                "funnelId": 18,
+                "stageId": 71,
+            }
+
+    monkeypatch.setattr(
+        manual.SulnetCRMClient, "from_settings", classmethod(lambda cls: FakeCRM())
+    )
+
+    with SessionLocal() as db:
+        seller = User(
+            name="Jenifer Garcia Dutra",
+            email="jenifer.reregister@sulnet.local",
+            password_hash="x",
+            role="CONSULTOR",
+            active=True,
+        )
+        contact = Contact(phone="5555987700888", name="Cliente Retorno")
+        conversation = Conversation(contact=contact, assigned_user=seller)
+        db.add(conversation)
+        db.flush()
+        from app.services.audit import write_audit
+        write_audit(
+            db,
+            user=seller,
+            action=manual.ACTION_REGISTERED,
+            entity_type="contact",
+            entity_id=contact.id,
+            payload={
+                "opportunityId": 555,
+                "protocol": "CRM-OLD-555",
+                "sellerUsername": "jenifer.dutra",
+            },
+        )
+        db.commit()
+        result = manual.register_conversation(
+            db,
+            conversation=conversation,
+            actor=seller,
+            client_name="Cliente Retorno Meta",
+        )
+        assert result["opportunityId"] == 9001
+        assert result["outcome"] == "created"
+        assert created and created[0]["seller_username"] == "jenifer.dutra"

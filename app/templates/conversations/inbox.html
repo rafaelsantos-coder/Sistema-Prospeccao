@@ -311,13 +311,18 @@
         {% if crm_origin_match %}
         <p class="crm-manual-hint">Identificada pela campanha <strong>{{ crm_origin_match.campaign_name }}</strong> (texto padrão da mensagem inicial).</p>
         {% endif %}
-        <p class="crm-manual-hint">{% if crm_ai_owner %}A IA usa a oportunidade da conversa, sem gerar outra consulta de crédito ou contato pelo WhatsApp.{% else %}O sistema busca uma oportunidade aberta deste vendedor pelo telefone antes de criar uma nova.{% endif %}</p>
+        {% if conversation.lead and conversation.lead.stage in ['GANHO', 'PERDIDO', 'NAO_CONTATAR'] %}
+        <p class="crm-manual-hint">O lead interno do Prospecta está em <strong>{{ constants.stages.get(conversation.lead.stage, conversation.lead.stage) }}</strong>. Isso não impede um novo registro no CRM Comercial para este atendimento.</p>
+        {% endif %}
+        <p class="crm-manual-hint">{% if crm_ai_owner %}A IA usa a oportunidade da conversa, sem gerar outra consulta de crédito ou contato pelo WhatsApp.{% else %}O sistema busca uma oportunidade <strong>aberta</strong> deste vendedor pelo telefone antes de criar uma nova. Oportunidades já ganhas/perdidas não bloqueiam novo registro.{% endif %}</p>
         <div class="crm-manual-dialog-actions">
           <button type="button" class="button button-secondary" data-crm-manual-close>Cancelar</button>
           <button type="submit" class="button button-primary" data-crm-manual-submit>Confirmar registro</button>
         </div>
       </form>
     </dialog>
+    {% elif crm_register_block_reason %}
+    <div class="crm-manual-alert" role="alert" data-crm-manual-block-banner>{{ crm_register_block_reason }}</div>
     {% elif crm_manual_status and crm_manual_status.state != "CRM_MANUAL_REGISTERED" %}
     <div class="crm-manual-alert" role="status">O registro no CRM requer conferência manual. Não envie novamente antes de verificar no CRM Comercial.</div>
     {% elif crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
@@ -559,7 +564,7 @@
     <div class="context-section">
       <div class="context-title">Oportunidade</div>
       <dl class="context-list">
-        <div><dt>Etapa CRM</dt><dd><span class="stage-badge stage-{{ conversation.lead.stage|lower }}">{{ constants.stages.get(conversation.lead.stage, conversation.lead.stage) }}</span></dd></div>
+        <div><dt>Etapa do lead (Prospecta)</dt><dd><span class="stage-badge stage-{{ conversation.lead.stage|lower }}">{{ constants.stages.get(conversation.lead.stage, conversation.lead.stage) }}</span></dd></div>
         <div><dt>Score</dt><dd>{{ '%.1f'|format(conversation.lead.score) }} · {{ constants.temperatures.get(conversation.lead.temperature, conversation.lead.temperature) }}</dd></div>
         <div><dt>Segmento</dt><dd>{{ conversation.lead.segment }}</dd></div>
         <div><dt>Cidade</dt><dd>{{ conversation.lead.city }}</dd></div>
@@ -1296,9 +1301,32 @@
   }
   const crmDialog = document.getElementById('crm-manual-dialog');
   const crmOpen = document.querySelector('[data-crm-manual-open]');
+  const crmBlocked = document.querySelector('[data-crm-manual-blocked]');
   const crmClose = document.querySelector('[data-crm-manual-close]');
   const crmSubmit = document.querySelector('[data-crm-manual-submit]');
-  crmOpen?.addEventListener('click', () => crmDialog?.showModal());
+  const crmBlockMessage = (el) => (
+    el?.getAttribute('data-crm-manual-block-reason')
+    || document.querySelector('[data-crm-manual-block-banner]')?.textContent?.trim()
+    || 'Não foi possível abrir o formulário de registro no CRM. Confira o responsável da conversa e o status no CRM Comercial.'
+  );
+  const showCrmRegisterIssue = (message) => {
+    console.error('[crm-manual]', message);
+    window.alert(message);
+  };
+  crmOpen?.addEventListener('click', () => {
+    if (!crmDialog || typeof crmDialog.showModal !== 'function') {
+      showCrmRegisterIssue(
+        'Formulário de registro CRM não está disponível nesta conversa. '
+        + 'Se o cliente já teve oportunidade ganha/perdida, atualize a página; '
+        + 'caso persista, acione a supervisão com o horário e o telefone do atendimento.'
+      );
+      return;
+    }
+    crmDialog.showModal();
+  });
+  crmBlocked?.addEventListener('click', () => {
+    showCrmRegisterIssue(crmBlockMessage(crmBlocked));
+  });
   crmClose?.addEventListener('click', () => crmDialog?.close());
   crmDialog?.querySelector('form')?.addEventListener('submit', () => {
     if (crmSubmit) {

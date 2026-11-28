@@ -90,6 +90,8 @@ from app.services.crm_manual_registration import (
     ACTION_REGISTERED,
     CRMManualError,
     _as_int,
+    active_registration_status,
+    register_block_reason,
     register_conversation,
     registration_status,
     seller_for_user,
@@ -1113,10 +1115,28 @@ def _render_inbox(
         crm_prospect_sync.ai_crm_opportunity_id(db, selected.id)
         if selected and crm_ai_owner else None
     )
-    crm_registration = (
-        registration_status(db, selected.contact_id, crm_seller.username)
-        if selected and crm_seller else None
-    )
+    crm_registration = None
+    if selected and crm_seller:
+        try:
+            crm_registration = active_registration_status(
+                db, selected.contact_id, crm_seller.username,
+            )
+        except Exception:
+            # Falha de consulta ao CRM não pode derrubar a inbox; usa status local.
+            logging.getLogger(__name__).exception(
+                "crm_manual_active_status_failed conversation=%s contact=%s seller=%s",
+                selected.id,
+                selected.contact_id,
+                crm_seller.username,
+            )
+            crm_registration = registration_status(
+                db, selected.contact_id, crm_seller.username,
+            )
+    crm_register_block_reason = register_block_reason(
+        seller=crm_seller,
+        registration=crm_registration,
+        assigned=bool(selected and selected.assigned_user_id),
+    ) if selected and has_permission(user, "crm.register") else None
     crm_opportunity_id = (
         _as_int(crm_registration.get("opportunityId"))
         if crm_registration and crm_registration["state"] == ACTION_REGISTERED else None
@@ -1185,6 +1205,7 @@ def _render_inbox(
         globally_blacklisted=is_globally_blocked(db, selected.contact.phone) if selected else False,
         crm_manual_seller=crm_seller,
         crm_manual_status=crm_registration,
+        crm_register_block_reason=crm_register_block_reason,
         crm_ai_owner=crm_ai_owner,
         crm_ai_opportunity_id=crm_ai_opportunity_id,
         crm_origin_label=crm_origin_label,

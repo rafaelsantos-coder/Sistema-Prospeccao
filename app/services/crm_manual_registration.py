@@ -74,6 +74,11 @@ _PROSPECTA_ACCOUNT_SELLERS = {
     "rafael.vendedor": _SELLERS["rafael trennepohl"],
 }
 
+# Login do e-mail Prospecta igual ao username CRM (ex.: jenifer.dutra@...).
+_SELLERS_BY_CRM_USERNAME = {
+    seller.username.casefold(): seller for seller in {*_SELLERS.values()}
+}
+
 
 def _fold(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value or "")
@@ -87,11 +92,16 @@ def seller_for_user(user: User | None) -> CRMSeller | None:
     by_name = _SELLERS.get(_fold(user.name))
     login = (user.email or "").strip().casefold().partition("@")[0]
     by_login = _PROSPECTA_ACCOUNT_SELLERS.get(login)
+    by_crm_username = _SELLERS_BY_CRM_USERNAME.get(login)
     # Se um login dedicado estiver atrelado a outro vendedor conhecido, não
     # permitir registrar oportunidades em um proprietário ambíguo.
-    if by_login is not None and by_name is not None and by_login != by_name:
+    candidates = [item for item in (by_login, by_name, by_crm_username) if item is not None]
+    if not candidates:
         return None
-    return by_login or by_name
+    first = candidates[0]
+    if any(item != first for item in candidates[1:]):
+        return None
+    return first
 
 
 def seller_accepts_funnel(seller: CRMSeller, funnel_id: int | None) -> bool:
@@ -192,12 +202,38 @@ def _record_id(record: dict[str, Any]) -> int | None:
     return _as_int(record.get("id") or record.get("opportunityId") or record.get("leadId"))
 
 
+_CLOSED_TOKENS = {
+    "ganho", "perdido", "cancelado", "encerrado", "concluido",
+    "won", "lost", "closed", "cancelled", "canceled",
+}
+
+
+def _token_closed(value: str | None) -> bool:
+    folded = _fold(str(value or ""))
+    if not folded:
+        return False
+    if folded in _CLOSED_TOKENS:
+        return True
+    # Etapas do CRM: "GANHO", "PÓS VENDAS" não bloqueiam novo ciclo comercial.
+    return folded.startswith("ganho") or folded.startswith("perdid")
+
+
 def _closed(record: dict[str, Any]) -> bool:
-    status = _fold(str(record.get("status") or record.get("stageName") or ""))
-    return status in {
-        "ganho", "perdido", "cancelado", "encerrado", "concluido",
-        "won", "lost", "closed", "cancelled", "canceled",
-    }
+    """Oportunidade encerrada no CRM (status ou etapa), independente do lead Prospecta."""
+    stage = (
+        record.get("stageName")
+        or record.get("stage_name")
+        or _as_dict(record.get("stage")).get("name")
+    )
+    status = record.get("status")
+    return _token_closed(str(status or "")) or _token_closed(str(stage or ""))
+
+
+def opportunity_registration_is_stale(record: dict[str, Any] | None) -> bool:
+    """Registro auditado deixa de valer quando a oportunidade CRM já fechou ou sumiu."""
+    if not record:
+        return True
+    return _closed(record)
 
 
 def _audit_data(row: AuditLog) -> dict[str, Any]:
@@ -245,6 +281,121 @@ def registration_status(db: Session, contact_id: int, seller_username: str) -> d
     )
 
 
+def _fetch_registration_opportunity(
+    crm: SulnetCRMClient | None, opportunity_id: int | None,
+) -> dict[str, Any] | None:
+    if crm is None or opportunity_id is None:
+        return None
+    try:
+        record = crm.get_opportunity(opportunity_id)
+        return record if isinstance(record, dict) and record else None
+    except CRMIntegrationError as exc:
+        # 404 = oportunidade removida → tratar como stale e liberar novo registro.
+        if exc.status_code == 404:
+            return None
+        LOG.warning(
+            "crm_manual_status_lookup_failed opportunity=%s status=%s",
+            opportunity_id,
+            exc.status_code,
+        )
+        raise
+
+
+def active_registration_status(
+    db: Session,
+    contact_id: int,
+    seller_username: str,
+    *,
+    crm: SulnetCRMClient | None = None,
+) -> dict[str, Any] | None:
+    """Igual a registration_status, mas ignora vínculos CRM já ganhos/perdidos.
+
+    Isso evita que um cliente antigo em etapa Ganho trave o botão Registrar CRM
+    para um novo atendimento legítimo do mesmo telefone/vendedor.
+    """
+    previous = registration_status(db, contact_id, seller_username)
+    if previous is None:
+        return None
+
+    state = str(previous.get("state") or "")
+    opportunity_id = _as_int(previous.get("opportunityId"))
+
+    if state in {ACTION_UNCERTAIN, ACTION_REVIEW}:
+        # Sem opportunityId confirmado: exige conferência humana.
+        if opportunity_id is None:
+            return previous
+        try:
+            record = _fetch_registration_opportunity(crm, opportunity_id)
+        except CRMIntegrationError:
+            return previous
+        if opportunity_registration_is_stale(record):
+            LOG.info(
+                "crm_manual_stale_uncertain contact=%s seller=%s opportunity=%s",
+                contact_id,
+                seller_username,
+                opportunity_id,
+            )
+            return None
+        return previous
+
+    if state != ACTION_REGISTERED:
+        return previous
+
+    # REGISTERED sem id: manter bloqueio (estado inconsistente → conferência).
+    if opportunity_id is None:
+        return previous
+
+    try:
+        # Preferir cliente informado; senão criar um só para leitura.
+        client = crm or SulnetCRMClient.from_settings()
+        record = _fetch_registration_opportunity(client, opportunity_id)
+    except CRMIntegrationError:
+        # Sem confirmação do CRM, não libera automaticamente (segurança).
+        return previous
+
+    if opportunity_registration_is_stale(record):
+        LOG.info(
+            "crm_manual_stale_registered contact=%s seller=%s opportunity=%s status=%s stage=%s",
+            contact_id,
+            seller_username,
+            opportunity_id,
+            (record or {}).get("status"),
+            (record or {}).get("stageName") or (record or {}).get("stage_name"),
+        )
+        return None
+    return previous
+
+
+def register_block_reason(
+    *,
+    seller: CRMSeller | None,
+    registration: dict[str, Any] | None,
+    assigned: bool,
+) -> str | None:
+    """Mensagem clara para a UI quando o formulário não pode abrir."""
+    if not assigned:
+        return "Atribua a conversa a um vendedor cadastrado no CRM para liberar o registro."
+    if seller is None:
+        return (
+            "O responsável desta conversa não está mapeado no CRM Comercial. "
+            "Confira o cadastro do vendedor (nome/login) com a supervisão."
+        )
+    if registration is None:
+        return None
+    state = str(registration.get("state") or "")
+    protocol = str(registration.get("protocol") or "").strip()
+    opp = registration.get("opportunityId")
+    if state == ACTION_REGISTERED:
+        suffix = f" Protocolo {protocol}." if protocol else (f" Oportunidade #{opp}." if opp else "")
+        return f"Já existe um registro ativo no CRM para este contato e vendedor.{suffix}"
+    if state in {ACTION_UNCERTAIN, ACTION_REVIEW}:
+        return (
+            "Há um registro anterior pendente de conferência no CRM. "
+            "Confira no CRM Comercial antes de tentar novamente."
+        )
+    return "Registro CRM indisponível no momento. Acione a supervisão com o log técnico."
+
+
 def _log_result(
     db: Session, conversation: Conversation, actor: User, action: str, payload: dict[str, Any]
 ) -> None:
@@ -287,13 +438,6 @@ def register_conversation(
         raise CRMManualError("Telefone inválido para registrar no CRM.")
 
     _guard_contact_lock(db, conversation.contact_id)
-    previous = registration_status(db, conversation.contact_id, seller.username)
-    if previous is not None:
-        if previous["state"] == ACTION_REGISTERED:
-            return {"already": True, **previous}
-        raise CRMManualError(
-            "Registro anterior precisa de conferência no CRM. Não é seguro enviar novamente."
-        )
 
     try:
         crm = SulnetCRMClient.from_settings()
@@ -304,6 +448,16 @@ def register_conversation(
     if not crm.bearer_token:
         raise CRMManualError(
             "Consulta de duplicidades do CRM não configurada. Registro bloqueado por segurança."
+        )
+
+    previous = active_registration_status(
+        db, conversation.contact_id, seller.username, crm=crm,
+    )
+    if previous is not None:
+        if previous["state"] == ACTION_REGISTERED:
+            return {"already": True, **previous}
+        raise CRMManualError(
+            "Registro anterior precisa de conferência no CRM. Não é seguro enviar novamente."
         )
 
     # Reutiliza oportunidades abertas do vendedor quando a busca confirma o vínculo.

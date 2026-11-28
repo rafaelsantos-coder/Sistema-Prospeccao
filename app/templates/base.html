@@ -199,14 +199,18 @@
           <span class="button button-secondary crm-manual-topbar-state" title="Oportunidade da SulIA confirmada no CRM Comercial">✓ Registrado no CRM #{{ crm_ai_opportunity_id }}</span>
           {% elif crm_manual_status is defined and crm_manual_status and crm_manual_status.state == "CRM_MANUAL_REGISTERED" %}
           <span class="button button-secondary crm-manual-topbar-state" title="Oportunidade já vinculada ao CRM">✓ Registrado no CRM</span>
-          {% elif crm_manual_seller is defined and crm_manual_seller %}
-          <button type="button" class="button button-primary crm-manual-topbar-button" data-crm-manual-open
-             {% if crm_manual_status is defined and crm_manual_status %}disabled title="Registro pendente de conferência no CRM"{% endif %}>Registrar CRM</button>
+          {% elif crm_manual_seller is defined and crm_manual_seller and not (crm_manual_status is defined and crm_manual_status) %}
+          <button type="button" class="button button-primary crm-manual-topbar-button" data-crm-manual-open>Registrar CRM</button>
           {% elif crm_ai_owner is defined and crm_ai_owner and current_user.role in ['ADMIN','GESTOR','SUPERVISOR'] %}
           <button type="button" class="button button-primary crm-manual-topbar-button" data-crm-manual-open
              title="Confirmar registro da oportunidade da SulIA no CRM">Registrar CRM</button>
           {% else %}
-          <button type="button" class="button button-secondary crm-manual-topbar-button" disabled title="Atribua a conversa a um vendedor cadastrado no CRM">Registrar CRM</button>
+          <span class="crm-manual-topbar-wrap"
+                data-crm-manual-blocked
+                data-crm-manual-block-reason="{{ (crm_register_block_reason if crm_register_block_reason is defined and crm_register_block_reason else 'Registro CRM indisponível. Confira o responsável da conversa e o status no CRM.')|e }}"
+                title="{{ (crm_register_block_reason if crm_register_block_reason is defined and crm_register_block_reason else 'Registro CRM indisponível')|e }}">
+            <button type="button" class="button button-secondary crm-manual-topbar-button" disabled tabindex="-1">Registrar CRM</button>
+          </span>
           {% endif %}
         {% endif %}
         {% if 'conversations.view' in current_user.permissions and active_nav != 'instagram' %}
