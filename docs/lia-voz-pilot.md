@@ -142,3 +142,43 @@ a chamada. Os testes continuam individuais, sem rediscagem automatica.
 A rota por techprefix continua exclusiva da conta Native 1804; demais contas
 ativas usam a configuracao de discagem cadastrada. Os trechos historicos
 das fases anteriores sobre numero fixo nao se aplicam a esta versao.
+
+
+## Eduarda Voz - engenharia de performance, fase 1 (28/11/2026)
+
+Baseline do teste 44: GPT-Realtime-2.1 medium, semantic_vad low, prebuffer
+160 ms; geracao 794 ms em media apos o evento de fim de fala, 7 interrupcoes,
+pico de audio gerado aguardando reproducao 13370 ms, perdas RX 103, RTP RX
+5275, jitter RX reportado 3814.2 ms, guard max 122 ms. O pico da fila NAO
+e a latencia percebida pelo ouvinte: a API gera audio acima da velocidade
+de reproducao. A amostra RTCP inclui possivel midia anterior ao atendimento;
+nao atribuir a perda a um provedor ou a uma regiao sem medicao comparavel.
+
+Fase 1: pump SIP sem espera bloqueante, envio cooperativo de PCM, descarte
+correlacionado de resposta que chega durante fala e truncamento de itens
+que nunca foram ouvidos, prioridade de identificacao e permissao no turno.
+Mantem a V3.0, modelo, VAD e buffer de seguranca. Nenhuma integracao CRM,
+mudanca de credenciais, regiao ou banco. Medir handshake, SIP confirmado ate
+primeiro PCM nao silencioso entregue ao bridge, fim VAD ate PCM local,
+fila de entrada, espera dos frames, intervalo callbacks, envio WebSocket,
+intervalo pump, jitter buffer nativo e triagem objetiva. Nenhuma metrica
+local comprova audio recebido no telefone. Logs nao armazenam voz, texto,
+telefone, CPF, IDs de itens ou chaves.
+
+Os guards de autorizacao e da trava advisory continuam fail-closed e
+sincronos nesta fase; nao mover a conexao SQLAlchemy proprietaria da trava
+para outra thread. Investigar separacao segura dos checks de banco em fase 2,
+com testes de revogacao, latencia e cancelamento. Nao aumentar o jitter buffer
+arbitrariamente. O estado LIA_FINALIZADA indica termino do teste; a triagem
+de qualidade e o aceite humano sao distintos.
+
+Homologar antes de merge/publicacao definitiva: CI, loopback SIP/RTP e PCM
+isolados, teste sintetico Realtime com chave exclusiva, comparacao de ao menos
+cinco ligacoes manuais autorizadas em cada ambiente com mesma rota, codec,
+modelo, VAD e cenarios. Medir resposta ponta a ponta no aparelho (maioria
+< 1500 ms), perda < 1%, jitter < 30 ms, cortes indevidos e contexto;
+confirmar identidade antes da oferta, espera por permissao, recuperacao
+breve de hesitacao, recusa respeitada e negociacao V3.0. Registrar regiao e
+commit de cada teste, separar metrica do bridge da percepcao no aparelho.
+A infraestrutura Huawei e de responsabilidade do usuario; nao migrar
+ou alterar producao antes de validar o ambiente isolado.

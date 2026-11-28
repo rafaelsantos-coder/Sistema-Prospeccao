@@ -87,6 +87,7 @@ def test_interruption_cuts_pending_audio_and_drops_late_deltas():
     assert protocol.playback.pull(960) == bytes(960)
     protocol.handle(delta(pcm=b"\x33\x44" * 480))
     assert protocol.playback.pull(960) == bytes(960)
+    protocol.handle({"type": "input_audio_buffer.speech_stopped"})
     protocol.handle(created("r2"))
     protocol.handle(delta("r2", "i2", b"\x55\x66" * 480))
     assert protocol.playback.pull(960) == b"\x55\x66" * 480
@@ -236,6 +237,8 @@ def test_quality_metrics_for_turns_interruption_and_generation(monkeypatch):
         "peak_pending_ms": 40,
         "playback_underruns": 0,
         "playback_rebuffer_ms": 0,
+        "playback_samples": 0, "playback_avg_ms": None, "playback_max_ms": None,
+        "playback_under_1500": 0, "speech_cancel_count": 0, "unheard_truncations": 0,
     }
 
 
@@ -346,6 +349,7 @@ def test_overflow_limits_only_response_and_keeps_phone_playback():
         "content_index": 0, "audio_end_ms": 40,
     }]
     assert p.playback.pull(960) == bytes(960)
+    p.handle({"type": "input_audio_buffer.speech_stopped"})
     p.handle(created("r2"))
     p.handle(delta("r2", "i2", b"\x05\x06" * 480))
     assert p.playback.pull(960) == b"\x05\x06" * 480
@@ -425,6 +429,7 @@ def test_new_response_preempts_unplayed_audio_without_dropping_session():
         "type": "conversation.item.truncate", "item_id": "i2",
         "content_index": 0, "audio_end_ms": 20,
     }]
+    p.handle({"type": "input_audio_buffer.speech_stopped"})
     p.handle(created("r3"))
     p.handle(delta("r3", "i3", b"\x07\x08" * 480))
     assert p.playback.pull(960) == b"\x07\x08" * 480
@@ -527,3 +532,55 @@ def test_session_profile_confirmation_and_configurable_model():
         session_update("unapproved-model")
     with pytest.raises(ValueError):
         session_update(reasoning_effort="unapproved")
+
+
+def test_response_racing_with_active_speech_is_cancelled_and_unheard_item_truncated_once():
+    p = RealtimeProtocol()
+    p.handle(SPEECH)
+    events = p.handle(created())
+    assert events == [{"type": "response.cancel", "response_id": "r1",
+                       "event_id": "lia-speech-cancel-1"}]
+    assert p.handle(delta()) == [{"type": "conversation.item.truncate", "item_id": "i1",
+                                  "content_index": 0, "audio_end_ms": 0}]
+    assert p.handle(delta()) == []
+    assert p.playback.pull(960) == bytes(960)
+    assert p.handle({"type": "error", "error": {"code": "response_cancel_not_active",
+                    "event_id": "lia-speech-cancel-1"}}) == []
+    p.handle({"type": "response.done", "response": {"id": "r1", "status": "cancelled"}})
+    p.handle({"type": "input_audio_buffer.speech_stopped"})
+    assert p.handle(created("r2")) == []
+    p.handle(delta("r2", "i2", b"\x01\x02" * 480))
+    assert p.playback.pull(960) == b"\x01\x02" * 480
+
+
+def test_first_local_playback_latency_excludes_generated_but_unplayed_audio(monkeypatch):
+    from app.services import lia_voz_realtime as realtime
+    clock = [10.0]
+    monkeypatch.setattr(realtime.time, "monotonic", lambda: clock[0])
+    session = RealtimeSession(None, prebuffer_ms=160)
+    p = session.protocol
+    p.handle({"type": "input_audio_buffer.speech_stopped"})
+    clock[0] = 10.6
+    p.handle(created())
+    frame = b"\x01\x02" * 480
+    p.handle(delta(pcm=frame))
+    assert session.pull_pcm(960) == bytes(960)
+    assert p.quality_snapshot()["playback_samples"] == 0
+    clock[0] = 10.9
+    p.handle(delta(pcm=frame * 7))
+    assert session.pull_pcm(960) == frame
+    assert session.pull_pcm(960) == frame
+    q = p.quality_snapshot()
+    assert q["generation_avg_ms"] == 600
+    assert q["playback_samples"] == 1
+    assert q["playback_avg_ms"] == 900
+    assert q["playback_under_1500"] == 1
+
+
+def test_permission_and_identity_priority_preserve_v3():
+    from app.services.lia_voz_realtime import PILOT_TRAINING, session_update
+    instructions = session_update()["session"]["instructions"]
+    assert PILOT_TRAINING in instructions
+    assert "Se perguntarem quem fala" in instructions
+    assert "não significam permissão" in instructions
+    assert "uma resposta afirmativa antes de apresentar a oferta" in instructions

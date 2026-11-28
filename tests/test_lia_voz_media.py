@@ -240,3 +240,25 @@ def test_transport_failure_preserves_safe_category():
         assert "never log" not in str(raised.value)
         assert bridge.closed
     asyncio.run(run())
+
+
+def test_media_latency_metrics_are_local_and_do_not_retain_audio():
+    clock = [100.0]
+    bridge = MediaBridge(Session(), clock=lambda: clock[0])
+    bridge.ingest(FRAME)
+    clock[0] += 0.02
+    bridge.ingest(FRAME)
+    clock[0] += 0.03
+    assert bridge.next_input() == FRAME
+    assert bridge.render() == FRAME
+    clock[0] += 0.04
+    bridge.render()
+    bridge.record_send(12)
+    snap = bridge.snapshot()
+    assert snap["input_peak_ms"] == 40
+    assert snap["input_wait_max_ms"] == 50
+    assert snap["input_gap_max_ms"] == 20
+    assert snap["render_gap_max_ms"] == 40
+    assert snap["first_voice_ms"] == 50
+    assert snap["send_max_ms"] == 12
+    assert not any(isinstance(v, bytes) for v in snap.values())

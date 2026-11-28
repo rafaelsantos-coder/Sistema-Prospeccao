@@ -7,6 +7,7 @@ The existing PJSUA2 worker does not import or activate this adapter.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 from contextlib import contextmanager
 from threading import Lock
@@ -22,7 +23,7 @@ SILENCE = bytes(FRAME_BYTES)
 class MediaBridge:
     """One call's native-thread input queue and synchronized output consumer."""
 
-    def __init__(self, session, *, input_capacity: int = INPUT_CAPACITY):
+    def __init__(self, session, *, input_capacity: int = INPUT_CAPACITY, clock=None):
         if not session.ready:
             raise LiaVoiceError("Realtime session not ready")
         if not 1 <= input_capacity <= INPUT_CAPACITY:
@@ -36,6 +37,15 @@ class MediaBridge:
         self._received = 0
         self._rendered = 0
         self._non_silent_rendered = 0
+        self._clock = clock or time.monotonic
+        self._started_at = self._clock()
+        self._last_input_at = self._last_render_at = None
+        self._first_voice_ms = None
+        self._input_peak_frames = 0
+        self._input_wait_max_ms = 0
+        self._input_gap_max_ms = 0
+        self._render_gap_max_ms = 0
+        self._send_max_ms = 0
 
     @property
     def closed(self) -> bool:
@@ -55,6 +65,12 @@ class MediaBridge:
                 "requested_frames": self._rendered,
                 "non_silent_rendered_frames": self._non_silent_rendered,
                 "queued_frames": len(self._queue),
+                "input_peak_ms": self._input_peak_frames * FRAME_MS,
+                "input_wait_max_ms": self._input_wait_max_ms,
+                "input_gap_max_ms": self._input_gap_max_ms,
+                "render_gap_max_ms": self._render_gap_max_ms,
+                "send_max_ms": self._send_max_ms,
+                "first_voice_ms": self._first_voice_ms,
                 "closed": self._closed,
                 "failed": self._failure is not None,
             }
@@ -86,12 +102,27 @@ class MediaBridge:
                 self._failure = "Native audio input overrun"
                 self._close_locked()
                 return
-            self._queue.append(pcm)
+            now = self._clock()
+            if self._last_input_at is not None:
+                self._input_gap_max_ms = max(self._input_gap_max_ms,
+                                             round((now - self._last_input_at) * 1000))
+            self._last_input_at = now
+            self._queue.append((now, pcm))
+            self._input_peak_frames = max(self._input_peak_frames, len(self._queue))
             self._received += 1
 
     def next_input(self) -> bytes | None:
         with self._lock:
-            return self._queue.popleft() if self._queue and not self._closed else None
+            if not self._queue or self._closed:
+                return None
+            received_at, pcm = self._queue.popleft()
+            self._input_wait_max_ms = max(self._input_wait_max_ms,
+                                          round((self._clock() - received_at) * 1000))
+            return pcm
+
+    def record_send(self, duration_ms: int) -> None:
+        with self._lock:
+            self._send_max_ms = max(self._send_max_ms, duration_ms)
 
     def render(self) -> bytes:
         # Lock order: media bridge -> RealtimeSession playback lock.
@@ -107,9 +138,16 @@ class MediaBridge:
                 self._failure = "Native audio output failed"
                 self._close_locked()
                 return SILENCE
+            now = self._clock()
+            if self._last_render_at is not None:
+                self._render_gap_max_ms = max(self._render_gap_max_ms,
+                                              round((now - self._last_render_at) * 1000))
+            self._last_render_at = now
             self._rendered += 1
             if any(pcm):
                 self._non_silent_rendered += 1
+                if self._first_voice_ms is None:
+                    self._first_voice_ms = round((now - self._started_at) * 1000)
             return pcm
 
 
@@ -217,7 +255,12 @@ async def run_media_bridge(session, bridge: MediaBridge, *, greet: bool = True):
             if frame is None:
                 await asyncio.sleep(0.005)
             else:
+                started = time.monotonic()
                 await session.append_pcm(frame)
+                bridge.record_send(round((time.monotonic() - started) * 1000))
+                # A ready WebSocket send can complete without yielding. Avoid
+                # starving the receive task when native frames arrive in bursts.
+                await asyncio.sleep(0)
 
     async def receive_audio():
         while not bridge.closed:
