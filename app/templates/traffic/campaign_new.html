@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead">
+  <div>
+    <span class="eyebrow">GESTOR DE TRÁFEGO PAGO · META</span>
+    <h2>Nova campanha de teste (pausada)</h2>
+    <p>Cria na conta Sulnet 03 - Sistema Próprio: campanha, conjunto e 4 anúncios, tudo <strong>PAUSADO</strong>. Nada vai ao ar e nada é gasto até você ativar no Gerenciador de Anúncios.</p>
+  </div>
+</div>
+
+{% if error %}
+<section class="panel" style="padding:20px;margin-bottom:18px">
+  <p><strong>✗ Não foi possível concluir.</strong><br><span class="panel-note">{{ error }}</span></p>
+</section>
+{% endif %}
+
+{% if result %}
+<section class="panel" style="padding:20px;margin-bottom:18px">
+  <span class="eyebrow">CRIADO · TUDO PAUSADO</span>
+  {% for step in result.steps %}<p>✓ {{ step }}</p>{% endfor %}
+  <p>Campanha: <strong>{{ result.campaign_id }}</strong></p>
+  <p><a class="button button-secondary" href="https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=1156163656960382&campaign_ids={{ result.campaign_id }}" target="_blank" rel="noopener">Abrir no Gerenciador de Anúncios</a>
+     <a class="button button-secondary" href="/traffic/campaigns">Ver campanhas</a></p>
+</section>
+{% else %}
+<form method="post" action="/traffic/campaigns/new" enctype="multipart/form-data" class="panel" style="padding:20px;margin-bottom:18px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <p><label>Nome da campanha<br><input name="name" required maxlength="120" value="[SISTEMA PRÓPRIO] WhatsApp - Santo Ângelo" style="width:100%"></label></p>
+  <p><label>Orçamento diário (R$)<br><input name="daily_budget" type="number" step="0.01" min="5" max="1000" required value="10"></label></p>
+  <p><label>WhatsApp (com 55)<br><input name="phone" required value="555535118003"></label></p>
+  <p><label>Mensagem que já vem escrita no WhatsApp<br><input name="welcome" maxlength="300" value="{{ welcome }}" style="width:100%"></label></p>
+  <p><label>Arte (imagem) — usada nos anúncios A1 e A2<br><input type="file" name="image" accept="image/*" required></label></p>
+  <p><label>Vídeo — usado nos anúncios V1 e V2<br><input type="file" name="video" accept="video/*" required></label></p>
+  <span class="eyebrow">ANÚNCIOS QUE SERÃO CRIADOS</span>
+  {% for ad in ads %}<p><strong>{{ ad.name }}</strong><br><span class="panel-note">{{ ad.headline }} · {{ ad.text }}</span></p>{% endfor %}
+  <button class="button button-primary" type="submit">Criar campanha pausada</button>
+  <p class="panel-note">O envio do vídeo e o processamento pela Meta podem levar 1 a 3 minutos. Não feche a página.</p>
+</form>
+{% endif %}
+
+<p><a class="button button-secondary" href="/traffic/campaigns">Voltar</a></p>
+{% endblock %}
