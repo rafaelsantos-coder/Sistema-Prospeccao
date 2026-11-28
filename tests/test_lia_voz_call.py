@@ -368,3 +368,48 @@ def test_sip_transaction_evidence_is_method_specific_and_redacted():
     )
     tx.method = "INFO"
     assert voice_pjsua2.sip_transaction_evidence(prm, pj) is None
+
+
+def test_alternate_account_preserves_configured_dial_format_in_both_modes(monkeypatch):
+    driver, probe_routes = install_driver(monkeypatch)
+    result = lia_voz_call.perform_native_probe(
+        driver, "5555999990000", None, should_abort=lambda: False, dial_format=None,
+    )
+    assert result.status == "LIA_PROBE_FINALIZADO"
+    driver, lia_routes = install_driver(monkeypatch)
+
+    @asynccontextmanager
+    async def factory(**_kwargs):
+        assert driver.call.answered
+        yield FakeSession()
+
+    result = lia_voz_call.perform_lia_test(
+        driver, "5555999990000", None, "test-key",
+        should_abort=lambda: False, dial_format=None, session_factory=factory,
+    )
+    assert result.status == "LIA_FINALIZADA"
+    assert probe_routes == lia_routes
+    # Native driver forwards its default keyword arguments too. Assert
+    # the complete effective route, including the absence of a techprefix.
+    assert lia_routes[0][1] == {
+        "dial_format": None, "native_techprefix": None, "native_local_ddd": "55",
+    }
+    assert len(driver.invites) == 1
+
+
+def test_secondary_account_uses_its_actual_prefix_and_ddi_settings():
+    from app.services.voice_runtime import make_dial_uri
+
+    account = SimpleNamespace(
+        domain="sip.example.invalid", dial_domain="out.example.invalid",
+        sip_port=5060, transport="UDP", dial_prefix="9",
+        strip_brazil_ddi=False,
+    )
+    opts = lia_voz_call._route_options(None, None)
+    assert make_dial_uri(account, "5555999990000", **opts) == (
+        "sip:95555999990000@out.example.invalid:5060;transport=udp"
+    )
+    account.strip_brazil_ddi = True
+    assert make_dial_uri(account, "5555999990000", **opts) == (
+        "sip:955999990000@out.example.invalid:5060;transport=udp"
+    )

@@ -81,17 +81,22 @@ class PilotConfig:
     def request_seconds(self) -> int:
         return 600 if self.shared else 90
 
-    def authorize(self, phone: str, username: str) -> str:
+    def authorize(self, phone: str, username: str, *, route: str = "native") -> str:
         if not self.enabled or not self.exclusive:
             raise PilotDenied("Homologacao Lia Voz bloqueada: exclusividade externa do ramal SIP nao confirmada.")
-        if username != NATIVE_ACCOUNT_USERNAME:
-            raise PilotDenied("O piloto exige a conta Native 1804 autorizada.")
+        if route not in {"account", "native"} or not (username or "").strip():
+            raise PilotDenied("Conta SIP ou rota de homologacao invalida.")
+        # The administrator selects an active registered account. Its record
+        # is checked at submission and execution; Native prefixes are not portable.
+        if route == "native" and username != NATIVE_ACCOUNT_USERNAME:
+            raise PilotDenied("A rota Native por techprefix exige a conta SIP 1804.")
         try:
             expected = canonical_phone(validate_test_phone(self.allowed_phone))
             actual = canonical_phone(validate_test_phone(phone))
-            native_dial_digits(actual, self.prefix)
+            if route == "native":
+                native_dial_digits(actual, self.prefix)
         except ValueError:
-            raise PilotDenied("Numero de teste ou rota Native invalida.") from None
+            raise PilotDenied("Numero de teste ou rota de discagem invalida.") from None
         if actual != expected:
             raise PilotDenied("Destino nao autorizado para homologacao.")
         return actual
@@ -99,7 +104,15 @@ class PilotConfig:
     @property
     def configured(self) -> bool:
         try:
-            self.authorize(self.allowed_phone, NATIVE_ACCOUNT_USERNAME)
+            self.authorize(self.allowed_phone, NATIVE_ACCOUNT_USERNAME, route="account")
+            return True
+        except PilotDenied:
+            return False
+
+    @property
+    def native_configured(self) -> bool:
+        try:
+            self.authorize(self.allowed_phone, NATIVE_ACCOUNT_USERNAME, route="native")
             return True
         except PilotDenied:
             return False
