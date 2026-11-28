@@ -1,4 +1,4 @@
-"""Explicit manual Lia Voz test policy; not a campaign or CRM operation."""
+"""Explicit manual Eduarda Voz test policy; not a campaign or CRM operation."""
 from __future__ import annotations
 
 import os
@@ -83,7 +83,7 @@ class PilotConfig:
 
     def authorize(self, phone: str, username: str, *, route: str = "native") -> str:
         if not self.enabled or not self.exclusive:
-            raise PilotDenied("Homologacao Lia Voz bloqueada: exclusividade externa do ramal SIP nao confirmada.")
+            raise PilotDenied("Homologacao Eduarda Voz bloqueada: exclusividade externa do ramal SIP nao confirmada.")
         if route not in {"account", "native"} or not (username or "").strip():
             raise PilotDenied("Conta SIP ou rota de homologacao invalida.")
         # The administrator selects an active registered account. Its record
@@ -124,7 +124,7 @@ def ensure_idle(db, *, own_test_id: int | None = None, shared: bool = False,
     across Railway projects or external devices. Explicit staging isolation
     remains a prerequisite before enabling the pilot.
     """
-    # Submission can wait behind existing calls; only duplicate Lia tests block it.
+    # Submission can wait behind existing calls; only duplicate Eduarda tests block it.
     # Execution happens inside the global SIP slot, and rejects stale active rows.
     other = OTHER_TESTS
     if shared:
