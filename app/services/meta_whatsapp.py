@@ -44,7 +44,8 @@ def is_official_digital(account: MetaWhatsAppAccount) -> bool:
 def is_digital_queue(queue: ServiceQueue) -> bool:
     return queue.team == "DIGITAL" and (
         queue.name.strip().casefold() in {"digital", "fila digital"}
-        or queue.code.strip().upper() in {"DIGITAL", "FILA-DIGITAL", "FILA_DIGITAL"}
+        # Queue code is immutable; the official Digital queue may be renamed.
+        or queue.code.strip().upper() in {"009", "DIGITAL", "FILA-DIGITAL", "FILA_DIGITAL"}
     )
 
 
