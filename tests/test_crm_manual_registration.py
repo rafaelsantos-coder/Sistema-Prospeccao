@@ -374,10 +374,11 @@ def test_reassigned_conversation_keeps_each_sellers_registration(monkeypatch):
         assert "CRM-NATINE-1001" in first_page
         assert "CRM-FABIANO-1002" not in first_page
 
+
 def test_closed_detects_stage_ganho_even_when_status_open():
     assert manual._closed({"status": "open", "stageName": "GANHO"})
-    assert manual._closed({"status": "won", "stageName": "INÕCIO"})
-    assert not manual._closed({"status": "open", "stageName": "INÕCIO"})
+    assert manual._closed({"status": "won", "stageName": "IN√çCIO"})
+    assert not manual._closed({"status": "open", "stageName": "IN√çCIO"})
 
 
 def test_seller_maps_by_crm_username_login():
