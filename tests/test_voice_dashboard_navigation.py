@@ -44,10 +44,10 @@ def test_admin_dashboard_and_all_submenus():
             assert 'class="nav-submenu"' in response.text
         assert "Não verificado" in dashboard.text or "Nenhuma conta SIP" in dashboard.text
         assert "HOMOLOGAÇÃO SIP PENDENTE" in dashboard.text
-        assert re.search(r'<a href="/voice/lia-voz" class="[^"]*">Lia Voz — SDRIA</a>', dashboard.text)
+        assert re.search(r'<a href="/voice/lia-voz" class="[^"]*">Eduarda Voz — SDRIA</a>', dashboard.text)
         lia = client.get("/voice/lia-voz", follow_redirects=False)
         assert lia.status_code == 200
-        assert '<a href="/voice/lia-voz" class="active">Lia Voz — SDRIA</a>' in lia.text
+        assert '<a href="/voice/lia-voz" class="active">Eduarda Voz — SDRIA</a>' in lia.text
 
 
 def test_account_and_group_edit_pause_resume_and_safe_delete():

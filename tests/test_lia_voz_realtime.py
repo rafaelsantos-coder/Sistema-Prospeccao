@@ -34,7 +34,9 @@ def test_session_is_voice_only_and_no_tools_or_chat_context():
     assert config["output_modalities"] == ["audio"]
     assert config["max_output_tokens"] == MAX_RESPONSE_TOKENS
     assert config["tools"] == []
-    assert "Lia Voz" in config["instructions"]
+    assert "Eduarda Voz" in config["instructions"]
+    assert "Você é Eduarda, assistente virtual comercial da Sulnet" in config["instructions"]
+    assert "Você é Lia," not in config["instructions"]
     assert config["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
     assert config["model"] == "gpt-realtime-2.1"
     assert config["reasoning"] == {"effort": "medium"}
@@ -159,6 +161,7 @@ def test_socket_handshake_greeting_audio_and_barge_in():
             await session.greet()
         await session.start()
         await session.greet()
+        assert "Apresente-se como Eduarda, assistente virtual da Sulnet" in socket.sent[-1]["response"]["instructions"]
         await session.append_pcm(bytes(960))
         await session.receive_once()
         await session.receive_once()
