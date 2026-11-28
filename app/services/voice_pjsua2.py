@@ -370,11 +370,13 @@ class PjSession:
 
         call = ManagedCall(self.acc)
         self._call = call
+        invite_started = False
         try:
             # Identical INVITE path for PROBE and LIA. No WebSocket setup here.
             prm = pj.CallOpParam(True)
             call.invited_at = time.monotonic()
             call.makeCall(target_uri, prm)
+            invite_started = True
             if on_status:
                 on_status("CHAMANDO", None)
             # Aguarda toque, arquivo inteiro e eventual confirmacao/transferencia.
@@ -485,7 +487,8 @@ class PjSession:
                                    "Limite de duracao da chamada atingido.", call.answered, call.media_active)
         finally:
             try:
-                if not call.disconnected and not call.transfer_confirmed:
+                if (not call.disconnected and not call.transfer_confirmed
+                        and (not pilot or invite_started or call.isActive())):
                     end = pj.CallOpParam()
                     end.statusCode = 200
                     call.hangup(end)

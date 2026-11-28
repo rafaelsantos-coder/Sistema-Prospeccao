@@ -272,3 +272,29 @@ def test_native_route_still_uses_authorized_prefix(monkeypatch):
     assert result.status == "LIA_FINALIZADA"
     assert routes[0][1]["native_techprefix"] == "8003"
     assert len(driver.invites) == 1
+
+
+def test_unanswered_never_opens_realtime(monkeypatch):
+    driver, _ = install_driver(monkeypatch, answer_at=42)
+    @asynccontextmanager
+    async def forbidden(**_kwargs):
+        pytest.fail("Realtime must not open before confirmed SIP")
+        yield
+    outcome = lia_voz_call.perform_lia_test(
+        driver, "5555999990000", None, "test-key",
+        should_abort=lambda: False, session_factory=forbidden,
+    )
+    assert outcome.status == "LIA_SEM_ATENDIMENTO"
+    assert len(driver.invites) == 1 and driver.hangups == 1
+
+
+def test_invite_failure_does_not_attempt_hangup_of_unallocated_call(monkeypatch):
+    driver, _ = install_driver(monkeypatch)
+    def fail(*_args):
+        raise RuntimeError("native invite setup failed")
+    monkeypatch.setattr(driver.pj.Call, "makeCall", fail)
+    monkeypatch.setattr(driver.pj.Call, "isActive", lambda self: False, raising=False)
+    with pytest.raises(RuntimeError, match="native invite setup failed"):
+        run_lia(driver)
+    assert not driver.invites and driver.hangups == 0
+    assert driver._call is None

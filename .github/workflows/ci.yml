@@ -133,6 +133,8 @@ jobs:
         run: docker run --rm --entrypoint python sulnet-prospecta-voice:ci -c "import pjsua2; import app.workers.voice_engine_worker; print('SIP+RTP+REFER worker imports OK')"
       - name: Homologação de áudio Lia Voz sem SIP ou rede externa
         run: docker run --rm --network none -v "$PWD/scripts/lia_voz_native_bench.py:/tmp/lia_voz_native_bench.py:ro" -e PYTHONPATH=/app --entrypoint python sulnet-prospecta-voice:ci /tmp/lia_voz_native_bench.py
+      - name: Homologar discagem SIP e RTP reais em loopback isolado
+        run: docker run --rm --network none -v "$PWD/scripts/lia_voz_sip_bench.py:/tmp/lia_voz_sip_bench.py:ro" -e PYTHONPATH=/app --entrypoint python sulnet-prospecta-voice:ci /tmp/lia_voz_sip_bench.py
       - name: Trivy - imagem nativa sem vulnerabilidades criticas conhecidas
         uses: aquasecurity/trivy-action@v0.36.0
         with:
