@@ -7,7 +7,8 @@ from collections import deque
 import pytest
 
 from app.services.lia_voz_realtime import (
-    AudioItem, LiaVoiceError, MAX_BUFFER_BYTES, MODEL, Playback,
+    AudioItem, LiaVoiceError, MAX_BUFFER_BYTES, MAX_RESPONSE_TOKENS, MODEL,
+    PCM_BYTES_PER_SECOND, Playback,
     RealtimeProtocol, RealtimeSession, audio_append, open_realtime, session_update,
 )
 
@@ -31,6 +32,7 @@ def test_session_is_voice_only_and_no_tools_or_chat_context():
     config = session_update()["session"]
     assert config["model"] == MODEL
     assert config["output_modalities"] == ["audio"]
+    assert config["max_output_tokens"] == MAX_RESPONSE_TOKENS
     assert config["tools"] == []
     assert "Lia Voz" in config["instructions"]
     assert config["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
@@ -192,9 +194,9 @@ def test_provider_errors_are_diagnostic_but_never_expose_raw_payload():
         RealtimeProtocol().handle({
             "type": "response.done",
             "response": {"id": "r1", "status": "incomplete",
-                         "status_details": {"reason": "max_output_tokens"}},
+                         "status_details": {"reason": "content_filter"}},
         })
-    assert safe_realtime_failure(raised.value) == "provider:max_output_tokens"
+    assert safe_realtime_failure(raised.value) == "provider:content_filter"
 
 
 def test_quality_metrics_for_turns_interruption_and_generation(monkeypatch):
@@ -219,6 +221,9 @@ def test_quality_metrics_for_turns_interruption_and_generation(monkeypatch):
         "completed_responses": 1, "audio_responses": 2,
         "generation_samples": 2, "generation_avg_ms": 425,
         "generation_max_ms": 500,
+        "buffer_recoveries": 0,
+        "token_limited_responses": 0,
+        "peak_pending_ms": 40,
     }
 
 
@@ -260,3 +265,110 @@ def test_training_is_loaded_with_pilot_guard_and_local_date(monkeypatch):
     assert "27/11/2026 21:30" in instructions
     assert config["tools"] == []
 
+
+
+def test_token_limit_is_normal_and_queued_audio_is_preserved():
+    p = RealtimeProtocol()
+    p.handle(created())
+    pcm = b"\x11\x22" * 480
+    p.handle(delta(pcm=pcm))
+    assert p.handle({
+        "type": "response.done",
+        "response": {"id": "r1", "status": "incomplete",
+                     "status_details": {"reason": "max_output_tokens"}},
+    }) == []
+    assert p.active_response is None
+    assert p.playback.pull(960) == pcm
+    assert p.quality_snapshot()["token_limited_responses"] == 1
+    p.handle(created("r2"))
+    p.handle(delta("r2", "i2", pcm))
+    assert p.playback.pull(960) == pcm
+
+
+def test_overflow_limits_only_response_and_keeps_phone_playback():
+    p = RealtimeProtocol()
+    p.handle(created())
+    pcm = b"\x01\x02"
+    p.handle(delta(pcm=pcm * ((MAX_BUFFER_BYTES - 960) // 2)))
+    assert p.playback.pull(960) == pcm * 480
+    events = p.handle(delta(pcm=pcm * 1440))
+    assert events == [
+        {"type": "response.cancel", "response_id": "r1", "event_id": "lia-buffer-cancel-1"},
+        {"type": "conversation.item.truncate", "item_id": "i1", "content_index": 0,
+         "audio_end_ms": (MAX_BUFFER_BYTES + 960) * 1000 // PCM_BYTES_PER_SECOND},
+    ]
+    assert len(p.playback.pending) == MAX_BUFFER_BYTES
+    # Late deltas after cancellation cannot fill memory or trigger another error.
+    for _ in range(20):
+        assert p.handle(delta(pcm=pcm * 480)) == []
+    assert p.quality_snapshot()["buffer_recoveries"] == 1
+    assert p.quality_snapshot()["peak_pending_ms"] == 30000
+    assert p.playback.pull(960) == pcm * 480
+    # Server completed first: only the correlated cancel race is recoverable.
+    assert p.handle({
+        "type": "error", "error": {"code": "response_cancel_not_active",
+                                  "event_id": events[0]["event_id"]},
+    }) == []
+    p.handle({"type": "response.done", "response": {"id": "r1", "status": "cancelled"}})
+    assert p.handle(SPEECH) == [{
+        "type": "conversation.item.truncate", "item_id": "i1",
+        "content_index": 0, "audio_end_ms": 40,
+    }]
+    assert p.playback.pull(960) == bytes(960)
+    p.handle(created("r2"))
+    p.handle(delta("r2", "i2", b"\x05\x06" * 480))
+    assert p.playback.pull(960) == b"\x05\x06" * 480
+
+
+def test_oversized_first_delta_has_bounded_prefix_and_no_disconnect():
+    p = RealtimeProtocol()
+    p.handle(created())
+    events = p.handle(delta(pcm=b"\x01\x02" * (MAX_BUFFER_BYTES // 2 + 480)))
+    assert len(p.playback.pending) == MAX_BUFFER_BYTES
+    assert events[0]["response_id"] == "r1"
+    assert events[1]["audio_end_ms"] == 30000
+
+
+def test_uncorrelated_cancel_error_is_not_silently_ignored():
+    with pytest.raises(LiaVoiceError) as raised:
+        RealtimeProtocol().handle({
+            "type": "error",
+            "error": {"code": "response_cancel_not_active", "event_id": "unrelated"},
+        })
+    assert raised.value.diagnostic == "provider:response_cancel_not_active"
+
+
+def test_reproduce_three_turn_call_with_burst_and_recovery_over_websocket():
+    """Reproduce production test #20 using synthetic provider events only."""
+    async def run():
+        socket = FakeSocket([
+            {"type": "session.updated"},
+            created(), delta(pcm=b"\x01\x02" * 480),
+            {"type": "response.done", "response": {"id": "r1", "status": "completed"}},
+            SPEECH, {"type": "input_audio_buffer.speech_stopped"},
+            created("r2"),
+            delta("r2", "i2", b"\x03\x04" * (MAX_BUFFER_BYTES // 2)),
+            delta("r2", "i2", b"\x03\x04" * 480),
+            {"type": "response.done", "response": {"id": "r2", "status": "cancelled"}},
+            SPEECH, {"type": "input_audio_buffer.speech_stopped"},
+            created("r3"), delta("r3", "i3", b"\x05\x06" * 480),
+            {"type": "response.done", "response": {"id": "r3", "status": "completed"}},
+        ])
+        session = RealtimeSession(socket)
+        await session.start()
+        for _ in range(3):
+            await session.receive_once()
+        assert session.pull_pcm(960) == b"\x01\x02" * 480
+        for _ in range(6):
+            await session.receive_once()
+        assert session.ready
+        assert session.pull_pcm(960) == b"\x03\x04" * 480
+        await session.append_pcm(bytes(960))
+        for _ in range(5):
+            await session.receive_once()
+        assert session.ready
+        assert session.pull_pcm(960) == b"\x05\x06" * 480
+        assert session.quality_snapshot()["buffer_recoveries"] == 1
+        assert session.quality_snapshot()["audio_responses"] == 3
+        assert [e["type"] for e in socket.sent].count("response.cancel") == 1
+    asyncio.run(run())

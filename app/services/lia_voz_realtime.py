@@ -21,7 +21,11 @@ from urllib.parse import urlencode
 PCM_RATE = 24000
 PCM_BYTES_PER_SECOND = PCM_RATE * 2
 MAX_INPUT_BYTES = PCM_BYTES_PER_SECOND // 5  # 200 ms
-MAX_BUFFER_BYTES = PCM_BYTES_PER_SECOND * 15
+# Realtime emits audio faster than a telephone can play it. Bound memory,
+# not the lifetime of the SIP call. The token limit is the first guard;
+# response-level cancellation is the backstop, not a fatal media error.
+MAX_BUFFER_BYTES = PCM_BYTES_PER_SECOND * 30
+MAX_RESPONSE_TOKENS = 512
 MODEL = "gpt-realtime-2.1-mini"
 VOICE = "marin"
 
@@ -711,6 +715,10 @@ def _session_instructions() -> str:
         + "\nData e hora local da ligação (RS): "
         + _local_now().strftime("%d/%m/%Y %H:%M")
         + ". Não apresente sorteios passados como futuros."
+        + " Em cada turno, responda objetivamente em uma ou duas frases curtas. "
+        "Não recite o treinamento nem enumere várias ofertas de uma vez. "
+        "Explique apenas o ponto perguntado, apresente uma condição por vez "
+        "e aguarde o cliente antes de continuar."
     )
 
 class LiaVoiceError(RuntimeError):
@@ -782,6 +790,7 @@ def session_update(model: str = MODEL, voice: str = VOICE) -> dict:
             "type": "realtime",
             "model": model,
             "output_modalities": ["audio"],
+            "max_output_tokens": MAX_RESPONSE_TOKENS,
             "instructions": _session_instructions(),
             "tools": [],
             "audio": {
@@ -886,6 +895,12 @@ class RealtimeProtocol:
         self.audio_responses: set[str] = set()
         self.speech_ended_at = None
         self.generation_latencies_ms: list[int] = []
+        self.buffer_recoveries = 0
+        self.token_limited_responses = 0
+        self.peak_pending_bytes = 0
+        # Correlate only errors caused by our own best-effort cancellation.
+        # Keep the ID, never provider payloads or customer audio in diagnostics.
+        self.buffer_cancel_ids: set[str] = set()
 
     def quality_snapshot(self) -> dict:
         samples = self.generation_latencies_ms
@@ -898,15 +913,60 @@ class RealtimeProtocol:
             "generation_samples": len(samples),
             "generation_avg_ms": round(sum(samples) / len(samples)) if samples else None,
             "generation_max_ms": max(samples) if samples else None,
+            "buffer_recoveries": self.buffer_recoveries,
+            "token_limited_responses": self.token_limited_responses,
+            "peak_pending_ms": self.peak_pending_bytes * 1000 // PCM_BYTES_PER_SECOND,
         }
+
+    def _cap_output(self, item: AudioItem, pcm: bytes) -> list[dict]:
+        """Retain the bounded prefix and stop only the oversized response.
+
+        Cancellation and truncation keep the server's conversation consistent
+        with the retained prefix. A subsequent barge-in still truncates it to
+        the actually consumed duration. No redial, reconnect or extra response.
+        """
+        room = MAX_BUFFER_BYTES - len(self.playback.pending)
+        if room:
+            self.playback.push(item, pcm[:room])
+        self.peak_pending_bytes = max(self.peak_pending_bytes, len(self.playback.pending))
+        self.discarded_responses.add(item.response_id)
+        self.buffer_recoveries += 1
+        outgoing = []
+        if self.active_response == item.response_id:
+            cancel_id = "lia-buffer-cancel-" + str(self.buffer_recoveries)
+            self.buffer_cancel_ids.add(cancel_id)
+            outgoing.append({
+                "type": "response.cancel",
+                "response_id": item.response_id,
+                "event_id": cancel_id,
+            })
+        # Server already generated this prefix; no unreceived samples claimed.
+        # Unlike interrupt(), do not clear the accepted audio waiting to play.
+        outgoing.append({
+            "type": "conversation.item.truncate",
+            "item_id": item.item_id,
+            "content_index": item.content_index,
+            "audio_end_ms": (
+                self.playback.played_bytes + len(self.playback.pending)
+            ) * 1000 // PCM_BYTES_PER_SECOND,
+        })
+        return outgoing
 
     def handle(self, event: dict) -> list[dict]:
         kind = event.get("type")
         if kind == "error":
+            error = event.get("error")
+            diagnostic = _provider_diagnostic(error, "provider_error")
+            if (diagnostic == "provider:response_cancel_not_active"
+                    and isinstance(error, dict)
+                    and isinstance(error.get("event_id"), str)
+                    and error["event_id"] in self.buffer_cancel_ids):
+                # The model finished before our cancellation arrived. The API
+                # documents this race as non-fatal; don't terminate SIP.
+                self.buffer_cancel_ids.discard(error["event_id"])
+                return []
             self.playback.clear()
-            raise LiaVoiceError("Realtime reported an error", diagnostic=_provider_diagnostic(
-                event.get("error"), "provider_error"
-            ))
+            raise LiaVoiceError("Realtime reported an error", diagnostic=diagnostic)
         if kind == "response.created":
             self.active_response = event["response"]["id"]
         elif kind == "response.done":
@@ -917,11 +977,16 @@ class RealtimeProtocol:
             if status == "completed":
                 self.completed_responses += 1
             if status in {"failed", "incomplete"}:
-                self.playback.clear()
                 details = response.get("status_details")
                 details = details if isinstance(details, dict) else {}
                 fallback = "response_failed" if status == "failed" else "response_incomplete"
                 code = _provider_diagnostic(details.get("error"), _provider_diagnostic(details, fallback))
+                if status == "incomplete" and code in {"provider:max_output_tokens", "provider:max_tokens"}:
+                    # The deliberately configured response cap is normal turn
+                    # completion. Keep the generated audio, keep listening.
+                    self.token_limited_responses += 1
+                    return []
+                self.playback.clear()
                 raise LiaVoiceError("Realtime response did not complete", diagnostic=code)
         elif kind == "response.output_audio.delta":
             response_id = event["response_id"]
@@ -931,9 +996,15 @@ class RealtimeProtocol:
                 pcm = base64.b64decode(event["delta"], validate=True)
             except (ValueError, binascii.Error):
                 raise LiaVoiceError("Invalid audio encoding", diagnostic="invalid_audio_encoding") from None
-            self.playback.push(
-                AudioItem(response_id, event["item_id"], event["content_index"]), pcm
-            )
+            item = AudioItem(response_id, event["item_id"], event["content_index"])
+            outgoing = []
+            try:
+                self.playback.push(item, pcm)
+            except LiaVoiceError as exc:
+                if exc.diagnostic != "output_buffer_exceeded":
+                    raise
+                outgoing = self._cap_output(item, pcm)
+            self.peak_pending_bytes = max(self.peak_pending_bytes, len(self.playback.pending))
             if response_id not in self.audio_responses:
                 self.audio_responses.add(response_id)
                 if self.speech_ended_at is not None:
@@ -941,6 +1012,7 @@ class RealtimeProtocol:
                         (time.monotonic() - self.speech_ended_at) * 1000
                     )))
                     self.speech_ended_at = None
+            return outgoing
         elif kind == "input_audio_buffer.speech_stopped":
             self.speech_ends += 1
             self.speech_ended_at = time.monotonic()
@@ -1008,6 +1080,7 @@ class RealtimeSession:
         await self._send({
             "type": "response.create",
             "response": {
+                "max_output_tokens": MAX_RESPONSE_TOKENS,
                 "instructions": (
                     "Cumprimente conforme a hora local em RS: "
                     + _local_now().strftime("%H:%M")
