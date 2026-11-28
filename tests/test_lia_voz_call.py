@@ -298,3 +298,48 @@ def test_invite_failure_does_not_attempt_hangup_of_unallocated_call(monkeypatch)
         run_lia(driver)
     assert not driver.invites and driver.hangups == 0
     assert driver._call is None
+
+
+
+def test_native_audio_vector_and_rtcp_owner_lifetime():
+    """Emulate SWIG member proxies that do not retain their C++ parent."""
+    import weakref
+
+    class Info:
+        @property
+        def media(self):
+            ref = weakref.ref(self)
+
+            class BorrowedVector:
+                def __iter__(self):
+                    assert ref() is not None, "CallInfo owner destroyed before media access"
+                    yield SimpleNamespace(type=1, status=1, index=7)
+
+            return BorrowedVector()
+
+    class StreamStat:
+        @property
+        def rtcp(self):
+            ref = weakref.ref(self)
+
+            class BorrowedRtcp:
+                @property
+                def rxStat(self):
+                    assert ref() is not None, "StreamStat owner destroyed before RX access"
+                    return SimpleNamespace(pkt=21)
+
+                @property
+                def txStat(self):
+                    assert ref() is not None, "StreamStat owner destroyed before TX access"
+                    return SimpleNamespace(pkt=34)
+
+            return BorrowedRtcp()
+
+    def get_stat(index):
+        assert index == 7
+        return StreamStat()
+
+    call = SimpleNamespace(disconnected=False, getInfo=Info, getStreamStat=get_stat)
+    pj = SimpleNamespace(PJMEDIA_TYPE_AUDIO=1, PJSUA_CALL_MEDIA_ACTIVE=1)
+    assert lia_voz_call._active_audio_index(call, pj) == 7
+    assert lia_voz_call._rtp_stats(call, pj) == (21, 34)

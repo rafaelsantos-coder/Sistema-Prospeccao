@@ -26,16 +26,31 @@ def _route_options(prefix):
     return {"native_techprefix": prefix, "native_local_ddd": "55"}
 
 
+def _active_audio_index(call, pj):
+    """Keep SWIG's native owner alive while reading its borrowed media vector.
+
+    Call.getInfo().media may refer to a member of a temporary C++ CallInfo.
+    Return only the copied stream index, never a borrowed SWIG object.
+    """
+    info = call.getInfo()
+    for index, media in enumerate(info.media):
+        if (media.type == pj.PJMEDIA_TYPE_AUDIO
+                and media.status == pj.PJSUA_CALL_MEDIA_ACTIVE):
+            return int(getattr(media, "index", index))
+    return None
+
+
 def _rtp_stats(call, pj):
     """Read actual network RTP counters, not local PCM callback counters."""
     if call.disconnected:
         return None
     try:
-        for index, media in enumerate(call.getInfo().media):
-            if (media.type == pj.PJMEDIA_TYPE_AUDIO
-                    and media.status == pj.PJSUA_CALL_MEDIA_ACTIVE):
-                rtcp = call.getStreamStat(int(getattr(media, "index", index))).rtcp
-                return int(rtcp.rxStat.pkt), int(rtcp.txStat.pkt)
+        index = _active_audio_index(call, pj)
+        if index is not None:
+            # The RTCP stats are also nested members of a native owner.
+            stats = call.getStreamStat(index)
+            rtcp = stats.rtcp
+            return int(rtcp.rxStat.pkt), int(rtcp.txStat.pkt)
     except Exception:
         pass
     return None
@@ -92,19 +107,18 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
             stage = "negociacao RTP"
             media_deadline = min(deadline, time.monotonic() + 12)
             while not call.disconnected:
-                for index, media in enumerate(call.getInfo().media):
-                    if (media.type == pj.PJMEDIA_TYPE_AUDIO
-                            and media.status == pj.PJSUA_CALL_MEDIA_ACTIVE):
-                        bridge = MediaBridge(session)
-                        stage = "ponte RTP"
-                        with attach_pj_media(
-                            pj, call.getAudioMedia(int(getattr(media, "index", index))),
-                            bridge, enabled=True, remote_ended=lambda: call.disconnected,
-                        ):
-                            stage = "transporte Realtime"
-                            on_progress("Ponte RTP conectada apos atendimento; iniciando voz.", call.sip_code)
-                            await run_media_bridge(session, bridge)
-                        return "bridge_ended"
+                index = _active_audio_index(call, pj)
+                if index is not None:
+                    bridge = MediaBridge(session)
+                    stage = "ponte RTP"
+                    with attach_pj_media(
+                        pj, call.getAudioMedia(index),
+                        bridge, enabled=True, remote_ended=lambda: call.disconnected,
+                    ):
+                        stage = "transporte Realtime"
+                        on_progress("Ponte RTP conectada apos atendimento; iniciando voz.", call.sip_code)
+                        await run_media_bridge(session, bridge)
+                    return "bridge_ended"
                 if time.monotonic() >= media_deadline:
                     return "no_media"
                 await asyncio.sleep(0.02)
