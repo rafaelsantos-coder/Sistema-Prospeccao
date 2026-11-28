@@ -413,3 +413,16 @@ def test_secondary_account_uses_its_actual_prefix_and_ddi_settings():
     assert make_dial_uri(account, "5555999990000", **opts) == (
         "sip:955999990000@out.example.invalid:5060;transport=udp"
     )
+
+
+def test_rtp_quality_counters_without_raw_audio_or_identifiers():
+    rx = SimpleNamespace(pkt=21, loss=2, discard=1, jitterUsec=SimpleNamespace(mean=2500))
+    tx = SimpleNamespace(pkt=34, loss=0, discard=0, jitterUsec=SimpleNamespace(mean=1200))
+    call = SimpleNamespace(disconnected=False,
+                           getInfo=lambda: SimpleNamespace(media=[SimpleNamespace(type=1, status=1, index=0)]),
+                           getStreamStat=lambda _index: SimpleNamespace(rtcp=SimpleNamespace(rxStat=rx, txStat=tx)))
+    pj = SimpleNamespace(PJMEDIA_TYPE_AUDIO=1, PJSUA_CALL_MEDIA_ACTIVE=1)
+    quality = {}
+    assert lia_voz_call._rtp_stats(call, pj, quality=quality) == (21, 34)
+    assert quality == dict(rx_loss=2, tx_loss=0, rx_discard=1, tx_discard=0,
+                           rx_jitter_ms=2.5, tx_jitter_ms=1.2)

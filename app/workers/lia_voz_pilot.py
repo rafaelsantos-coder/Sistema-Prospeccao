@@ -154,7 +154,8 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
 
     def progress(message, sip_code=None):
         nonlocal last_stage, last_code
-        if message.startswith(("SIP trace:", "SIP transacao:")):
+        if message.startswith(("SIP trace:", "SIP transacao:", "Perfil Realtime:",
+                               "Qualidade voz:", "Qualidade reproducao:", "Qualidade RTP:")):
             # Transaction diagnostics are for technical correlation only.
             # Do not overwrite INVITE result with CANCEL/BYE codes or perform
             # a database write for each native SIP transaction.
