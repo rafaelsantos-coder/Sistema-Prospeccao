@@ -69,6 +69,11 @@ PERMISSION_GROUPS: tuple[dict[str, Any], ...] = (
          ("voice.campaigns.manage", "Criar, editar e controlar campanhas VOZ", ALL_HUMAN_ROLES),
          ("voice.accounts.manage", "Gerenciar contas SIP, ramais e grupos", ADMIN_ROLE),
      ]},
+    {"key": "traffic", "title": "Gestor de Tráfego Pago",
+     "description": "Anúncios Meta/Google, leads e resultado até a venda",
+     "items": [
+         ("traffic.view", "Visualizar o Gestor de Tráfego Pago", MANAGEMENT_ROLES),
+     ]},
     {"key": "ai", "title": "IA",
      "description": "Visibilidade não ativa atendimento automático da IA",
      "items": [
@@ -358,6 +363,8 @@ def permission_for_request(path: str, method: str) -> str | None:
         if write:
             return "voice.accounts.manage"
         return "voice.view"
+    if path == "/traffic" or path.startswith("/traffic/"):
+        return "traffic.view"
     if path == "/ai" or path.startswith("/ai/"):
         return "ai.manage" if write else "ai.view"
     if path == "/blacklist" or path.startswith("/blacklist/"):
@@ -405,6 +412,7 @@ _HOME_ROUTES = (
     ("campaigns.view", "/campaigns"),
     ("dispatches.view", "/dispatches"),
     ("voice.view", "/voice"),
+    ("traffic.view", "/traffic"),
     ("reports.view", "/reports/whatsapp"),
     ("credit_map.view", "/reports/credit-map"),
     ("blacklist.view", "/blacklist"),

@@ -84,6 +84,11 @@
       </div>
       {% endif %}
       {% endif %}
+      {% if 'traffic.view' in current_user.permissions %}
+      <a href="/traffic" class="nav-item {% if active_nav == 'traffic' %}active{% endif %}">
+        <span class="nav-icon">◎</span><span>Gestor de Tráfego Pago</span>
+      </a>
+      {% endif %}
       {% if 'campaigns.view' in current_user.permissions %}
       <a href="/campaigns" class="nav-item {% if active_nav == 'campaigns' %}active{% endif %}">
         <span class="nav-icon">◈</span><span>Campanhas Z-API</span>
