@@ -268,6 +268,45 @@ def test_training_is_loaded_with_pilot_guard_and_local_date(monkeypatch):
 
 
 
+def test_natural_voice_style_preserves_training_and_allows_thinking_pauses():
+    from app.services import lia_voz_realtime as lia
+
+    config = lia.session_update()["session"]
+    instructions = config["instructions"]
+    style = lia.PILOT_CONVERSATION_STYLE
+    assert instructions.index(style) < instructions.index(lia.PILOT_TRAINING)
+    assert instructions.rindex(style) > instructions.index(lia.PILOT_TRAINING)
+    for rule in (
+        "A conversa vem antes do roteiro",
+        "Responda primeiro",
+        "não uma lista obrigatória",
+        "Nem toda fala precisa terminar em pergunta",
+        "recusa clara",
+        "fidelidade de 12 meses",
+        "não há contratação efetiva",
+    ):
+        assert rule in style
+    vad = config["audio"]["input"]["turn_detection"]
+    assert vad["silence_duration_ms"] == 850
+    assert vad["create_response"] is True
+    assert vad["interrupt_response"] is True
+    assert config["tools"] == []
+
+
+def test_initial_greeting_explicitly_requests_calm_spontaneous_delivery():
+    async def run():
+        socket = FakeSocket([{"type": "session.updated"}])
+        session = RealtimeSession(socket)
+        await session.start()
+        await session.greet()
+        greeting = socket.sent[-1]["response"]["instructions"]
+        assert "assistente virtual da Sulnet" in greeting
+        assert "calma" in greeting
+        assert "espontânea" in greeting
+        assert "aguarde a resposta" in greeting
+    asyncio.run(run())
+
+
 def test_token_limit_is_normal_and_queued_audio_is_preserved():
     p = RealtimeProtocol()
     p.handle(created())
