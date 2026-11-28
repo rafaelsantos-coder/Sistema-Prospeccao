@@ -207,6 +207,16 @@ def test_manual_registration_uses_correct_seller_and_does_not_duplicate(monkeypa
     class FakeCRM:
         bearer_token = "read-only-credential"
 
+        def get_opportunity(self, opportunity_id):
+            assert opportunity_id == 17234
+            assert len([c for c in calls if c[0] == "create"]) == 1
+            calls.append(("get_opportunity", opportunity_id))
+            return {
+                "id": 17234, "protocol": "CRM-2026-17234",
+                "assignedUserId": 36, "funnelId": 17, "stageId": 63,
+                "status": "open", "stageName": "IN√çCIO",
+            }
+
         def find_opportunities_by_phone(self, phone):
             calls.append(("lookup", phone))
             return {"items": [{"id": 1001, "clientPhone": phone, "assignedUserId": 25}]}
@@ -278,6 +288,7 @@ def test_manual_registration_uses_correct_seller_and_does_not_duplicate(monkeypa
         )
         assert second.status_code == 303
         assert len([c for c in calls if c[0] == "create"]) == 1
+        assert ("get_opportunity", 17234) in calls
 
         with SessionLocal() as db:
             registered = list(db.scalars(select(AuditLog).where(
@@ -374,10 +385,11 @@ def test_reassigned_conversation_keeps_each_sellers_registration(monkeypatch):
         assert "CRM-NATINE-1001" in first_page
         assert "CRM-FABIANO-1002" not in first_page
 
+
 def test_closed_detects_stage_ganho_even_when_status_open():
     assert manual._closed({"status": "open", "stageName": "GANHO"})
-    assert manual._closed({"status": "won", "stageName": "INÕCIO"})
-    assert not manual._closed({"status": "open", "stageName": "INÕCIO"})
+    assert manual._closed({"status": "won", "stageName": "IN√çCIO"})
+    assert not manual._closed({"status": "open", "stageName": "IN√çCIO"})
 
 
 def test_seller_maps_by_crm_username_login():

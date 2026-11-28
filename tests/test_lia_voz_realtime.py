@@ -239,10 +239,10 @@ def test_quality_metrics_for_turns_interruption_and_generation(monkeypatch):
     }
 
 
-def test_commercial_training_v22_keeps_all_nine_negotiation_steps():
+def test_commercial_training_v3_keeps_all_nine_negotiation_steps():
     from app.services.lia_voz_realtime import PILOT_TRAINING, PILOT_TRAINING_VERSION
 
-    assert PILOT_TRAINING_VERSION == "2.2"
+    assert PILOT_TRAINING_VERSION == "3.0"
     assert all(f"## {i}. " in PILOT_TRAINING for i in range(1, 23))
     for row in (
         "| 1 | 800 mega | R$ 119,90 | Nenhuma |",
@@ -271,12 +271,31 @@ def test_training_is_loaded_with_pilot_guard_and_local_date(monkeypatch):
     instructions = config["instructions"]
     assert instructions.startswith(lia.PILOT_GUARD)
     assert lia.PILOT_TRAINING in instructions
-    assert instructions.count(lia.PILOT_GUARD) == 2
+    assert instructions.count(lia.PILOT_GUARD) == 1
+    assert instructions.count(lia.PILOT_TRAINING) == 1
+    assert "Versão 3.0" in instructions
+    assert "Versão 2.2" not in instructions
     assert "Não solicite CPF" in instructions
     assert "Não confirme cobertura" in instructions
     assert "27/11/2026 21:30" in instructions
     assert config["tools"] == []
 
+
+
+def test_training_v3_has_one_consistent_permission_based_recovery():
+    from app.services import lia_voz_realtime as lia
+
+    instructions = lia.session_update()["session"]["instructions"]
+    assert "não gostaria agora" in lia.PILOT_GUARD
+    assert "não é recusa definitiva" in lia.PILOT_GUARD
+    assert "nova negativa após a única tentativa" in lia.PILOT_GUARD
+    assert "Faça UMA tentativa breve de recuperação" in lia.PILOT_TRAINING
+    assert "Recusa inequívoca" in lia.PILOT_TRAINING
+    assert "segunda negativa à tentativa de recuperação" in lia.PILOT_TRAINING
+    assert "Áudio ou frase incompleta" in lia.PILOT_TRAINING
+    assert "não encerre por falha de comunicação" in instructions
+    assert "Não solicite CPF" in instructions
+    assert "não afirme que gravou o opt-out" in instructions
 
 
 def test_token_limit_is_normal_and_queued_audio_is_preserved():
