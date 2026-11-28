@@ -63,10 +63,35 @@ def _rtp_stats(call, pj, *, quality=None):
                                    tx_jitter_ms=round(tx_jitter.mean / 1000, 1))
                 except (AttributeError, TypeError, ValueError):
                     pass
+                try:
+                    jb = stats.jbuf
+                    quality.update(jb_avg_ms=int(jb.avgDelayMsec), jb_max_ms=int(jb.maxDelayMsec),
+                                   jb_lost=int(jb.lost), jb_discard=int(jb.discard))
+                except (AttributeError, TypeError, ValueError):
+                    pass
             return packets
     except Exception:
         pass
     return None
+
+
+def _assess_quality(packets, rtp, voice):
+    """Technical screening only; never assert the listener heard good speech."""
+    loss, jitter = rtp.get("rx_loss"), rtp.get("rx_jitter_ms")
+    if packets and loss is not None and packets[0] + loss > 0:
+        if loss / (packets[0] + loss) >= 0.01:
+            return "ABAIXO_DA_META"
+    if jitter is not None and jitter >= 30:
+        return "ABAIXO_DA_META"
+    samples = voice.get("playback_samples", 0)
+    if samples and voice.get("playback_under_1500", 0) * 2 <= samples:
+        return "ABAIXO_DA_META"
+    if (voice.get("overlap_recoveries", 0) or voice.get("buffer_recoveries", 0)
+            or voice.get("playback_underruns", 0)):
+        return "ABAIXO_DA_META"
+    if not packets or min(packets) <= 0 or loss is None or jitter is None or samples < 3:
+        return "INCONCLUSIVA"
+    return "METRICAS_LOCAIS_OK"
 
 
 async def _converse_connected(driver, call, api_key, *, should_abort,
@@ -79,6 +104,8 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
     rtp_quality = {}
     guard_max_ms = 0
     guard_slow = 0
+    pump_gap_max_ms = 0
+    handshake_ms = bridge_start_ms = None
     stage = "conexao Realtime apos atendimento"
     deadline = (call.confirmed_at if call.confirmed_at is not None else time.monotonic()
                 ) + CONVERSATION_TIMEOUT_SECONDS
@@ -90,14 +117,20 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
             last_rtp = current
 
     async def pump_sip():
-        nonlocal guard_max_ms, guard_slow
+        nonlocal guard_max_ms, guard_slow, pump_gap_max_ms
         next_guard = next_sample = 0.0
+        previous_pump = None
         while True:
             now = time.monotonic()
             if now >= next_sample:
                 sample_rtp()
                 next_sample = now + 0.25
-            driver.pump(10)
+            if previous_pump is not None:
+                pump_gap_max_ms = max(pump_gap_max_ms, round((now - previous_pump) * 1000))
+            previous_pump = now
+            # Native event processing stays on its owner thread. Do not block
+            # the WebSocket event loop waiting for SIP events.
+            driver.pump(0)
             call.flush_trace()
             now = time.monotonic()
             if call.disconnected:
@@ -118,11 +151,13 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
             await asyncio.sleep(0.01)
 
     async def converse():
-        nonlocal bridge, realtime, stage
+        nonlocal bridge, realtime, stage, handshake_ms, bridge_start_ms
         on_progress("SIP 200 confirmado; conectando Realtime.", call.sip_code)
+        handshake_start = time.monotonic()
         async with session_factory(enabled=True, api_key=api_key, max_seconds=105,
                                    prebuffer_ms=PLAYBACK_PREBUFFER_MS) as session:
             realtime = session
+            handshake_ms = round((time.monotonic() - handshake_start) * 1000)
             if callable(getattr(session, "profile", None)):
                 p = session.profile()
                 on_progress("Perfil Realtime: " + p["model"] + "; raciocinio=" + p["reasoning"]
@@ -138,6 +173,7 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
             while not call.disconnected:
                 index = _active_audio_index(call, pj)
                 if index is not None:
+                    bridge_start_ms = round((time.monotonic() - (deadline - CONVERSATION_TIMEOUT_SECONDS)) * 1000)
                     bridge = MediaBridge(session)
                     stage = "ponte RTP"
                     with attach_pj_media(
@@ -189,6 +225,7 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
     diagnostic = ("SIP " + "/".join(map(str, call.sip_codes or [call.sip_code]))
                   + "; RTP pacotes RX/TX=" + rtp
                   + "; PCM RX/TX voz=" + str(rx) + "/" + str(tx) + ".")
+    q = {}
     if realtime is not None and callable(getattr(realtime, "quality_snapshot", None)):
         q = realtime.quality_snapshot()
         on_progress(
@@ -211,18 +248,44 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
         )
     if rtp_quality:
         on_progress(
-            "Qualidade RTP: perdas RX/TX=" + str(rtp_quality["rx_loss"]) + "/" + str(rtp_quality["tx_loss"])
-            + "; descartes RX/TX=" + str(rtp_quality["rx_discard"]) + "/" + str(rtp_quality["tx_discard"])
-            + "; jitter ms RX/TX=" + str(rtp_quality["rx_jitter_ms"]) + "/" + str(rtp_quality["tx_jitter_ms"]) + ".",
+            "Qualidade RTP: perdas RX/TX=" + str(rtp_quality.get("rx_loss")) + "/" + str(rtp_quality.get("tx_loss"))
+            + "; descartes RX/TX=" + str(rtp_quality.get("rx_discard")) + "/" + str(rtp_quality.get("tx_discard"))
+            + "; jitter ms RX/TX=" + str(rtp_quality.get("rx_jitter_ms")) + "/" + str(rtp_quality.get("tx_jitter_ms"))
+            + "; JB media/max ms=" + str(rtp_quality.get("jb_avg_ms")) + "/" + str(rtp_quality.get("jb_max_ms"))
+            + "; JB perdidos/descartados=" + str(rtp_quality.get("jb_lost")) + "/" + str(rtp_quality.get("jb_discard")) + ".",
             call.sip_code,
         )
+    first_voice_ms = counters.get("first_voice_ms")
+    first_local_ms = (bridge_start_ms + first_voice_ms
+                      if bridge_start_ms is not None and first_voice_ms is not None else None)
+    on_progress(
+        "Qualidade latencia: handshake ms=" + str(handshake_ms)
+        + "; atendimento/PCM ms=" + str(first_local_ms)
+        + "; fim VAD/PCM media/max ms=" + str(q.get("playback_avg_ms"))
+        + "/" + str(q.get("playback_max_ms"))
+        + "; amostras=" + str(q.get("playback_samples", 0))
+        + "; <1500 ms=" + str(q.get("playback_under_1500", 0))
+        + "; intervalo pump max ms=" + str(pump_gap_max_ms) + ".", call.sip_code)
+    on_progress(
+        "Qualidade ponte: fila entrada pico/espera ms=" + str(counters.get("input_peak_ms"))
+        + "/" + str(counters.get("input_wait_max_ms"))
+        + "; intervalo RX/TX max ms=" + str(counters.get("input_gap_max_ms"))
+        + "/" + str(counters.get("render_gap_max_ms"))
+        + "; envio WS max ms=" + str(counters.get("send_max_ms"))
+        + "; cancelamentos durante fala=" + str(q.get("speech_cancel_count", 0))
+        + "; itens nao ouvidos=" + str(q.get("unheard_truncations", 0)) + ".", call.sip_code)
     exchanged = bool(last_rtp and min(last_rtp) > 0 and rx > 0 and tx > 0)
+    quality = _assess_quality(last_rtp, rtp_quality, q)
+    on_progress("Qualidade homologacao: " + quality + "; validar no aparelho.", call.sip_code)
     if failure:
         status, message = "LIA_FALHOU", "Falha: " + stage + " [" + failure + "]."
     elif stop == "abort":
         status, message = "LIA_INTERROMPIDA", "Teste interrompido por seguranca."
     elif stop in {"remote", "timeout"} and exchanged:
-        status, message = "LIA_FINALIZADA", "Audio RTP e PCM validados; confirmar conversa no aparelho."
+        status = "LIA_FINALIZADA"
+        message = ("Audio bidirecional; qualidade abaixo da meta; validar no aparelho."
+                   if quality == "ABAIXO_DA_META" else
+                   "Audio bidirecional; qualidade da conversa nao homologada; validar no aparelho.")
     elif stop == "no_media":
         status, message = "LIA_FALHOU", "SIP confirmou sem midia RTP ativa."
     elif stop in {"remote", "timeout"}:

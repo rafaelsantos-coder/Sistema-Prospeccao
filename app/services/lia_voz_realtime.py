@@ -751,7 +751,13 @@ def _session_instructions() -> str:
         "a decisão da seção 5. Se ouvir alô ou pedido para repetir, confirme presença "
         "e retome a última ideia relevante; não encerre por falha de comunicação. "
         "Não fale enquanto a pessoa estiver complementando uma informação. "
-        "Se for interrompida, retome somente o ponto relevante após ouvir o cliente."
+        "Se for interrompida, retome somente o ponto relevante após ouvir o cliente. "
+        "Se perguntarem quem fala, responda primeiro que é Eduarda, assistente virtual "
+        "da Sulnet, mesmo que já tenha se apresentado. Não ofereça plano enquanto "
+        "a permissão para conversar estiver pendente. Um alô, um pedido de identificação "
+        "ou uma frase incompleta não significam permissão. Após pedir permissão, aguarde "
+        "uma resposta afirmativa antes de apresentar a oferta. Não narre instruções "
+        "internas, limites técnicos ou a lógica dos degraus de negociação."
     )
 
 class LiaVoiceError(RuntimeError):
@@ -959,6 +965,13 @@ class RealtimeProtocol:
         self.completed_responses = 0
         self.audio_responses: set[str] = set()
         self.speech_ended_at = None
+        self.speech_active = False
+        self.interrupted_responses: set[str] = set()
+        self.accepted_items: set[AudioItem] = set()
+        self.speech_cancel_count = 0
+        self.unheard_truncations = 0
+        self.turn_origins: dict[str, float] = {}
+        self.playback_latencies_ms: list[int] = []
         self.generation_latencies_ms: list[int] = []
         self.buffer_recoveries = 0
         self.token_limited_responses = 0
@@ -969,7 +982,14 @@ class RealtimeProtocol:
 
     def quality_snapshot(self) -> dict:
         samples = self.generation_latencies_ms
+        playback = self.playback_latencies_ms
         return {
+            "playback_samples": len(playback),
+            "playback_avg_ms": round(sum(playback) / len(playback)) if playback else None,
+            "playback_max_ms": max(playback) if playback else None,
+            "playback_under_1500": sum(ms < 1500 for ms in playback),
+            "speech_cancel_count": self.speech_cancel_count,
+            "unheard_truncations": self.unheard_truncations,
             "speech_starts": self.speech_starts,
             "speech_ends": self.speech_ends,
             "interruptions": self.interruptions,
@@ -985,6 +1005,13 @@ class RealtimeProtocol:
             "playback_underruns": self.playback.underruns,
             "playback_rebuffer_ms": self.playback.rebuffer_bytes * 1000 // PCM_BYTES_PER_SECOND,
         }
+
+    def record_playback(self, item: AudioItem, pcm: bytes) -> None:
+        """First non-silent PCM handed to native media, not handset playout."""
+        origin = self.turn_origins.get(item.response_id)
+        if origin is not None and any(pcm):
+            self.playback_latencies_ms.append(max(0, round((time.monotonic() - origin) * 1000)))
+            self.turn_origins.pop(item.response_id, None)
 
     def _cap_output(self, item: AudioItem, pcm: bytes) -> list[dict]:
         """Retain the bounded prefix and stop only the oversized response.
@@ -1043,6 +1070,16 @@ class RealtimeProtocol:
                 self.discarded_responses.add(self.latest_response)
             self.latest_response = response_id
             self.active_response = response_id
+            if self.speech_active:
+                # A response can race with a VAD start (including the greeting).
+                # Do not play it over the current user turn; correlate only our cancel.
+                self.discarded_responses.add(response_id)
+                self.interrupted_responses.add(response_id)
+                self.speech_cancel_count += 1
+                cancel_id = "lia-speech-cancel-" + str(self.speech_cancel_count)
+                self.buffer_cancel_ids.add(cancel_id)
+                return [{"type": "response.cancel", "response_id": response_id,
+                         "event_id": cancel_id}]
         elif kind == "response.done":
             response = event["response"]
             if response.get("id") == self.active_response:
@@ -1065,6 +1102,16 @@ class RealtimeProtocol:
         elif kind == "response.output_audio.delta":
             response_id = event["response_id"]
             if response_id in self.discarded_responses:
+                # Remove a late, wholly unheard item from an interrupted
+                # response once. Never truncate previously played audio to zero.
+                if response_id in self.interrupted_responses:
+                    late_item = AudioItem(response_id, event["item_id"], event["content_index"])
+                    if late_item not in self.accepted_items and late_item not in self.discarded_items:
+                        self.discarded_items.add(late_item)
+                        self.unheard_truncations += 1
+                        return [{"type": "conversation.item.truncate",
+                                 "item_id": late_item.item_id,
+                                 "content_index": late_item.content_index, "audio_end_ms": 0}]
                 return []
             try:
                 pcm = base64.b64decode(event["delta"], validate=True)
@@ -1075,6 +1122,7 @@ class RealtimeProtocol:
                 return []
             if not pcm or len(pcm) % 2:
                 raise LiaVoiceError("Invalid PCM output", diagnostic="invalid_pcm")
+            self.accepted_items.add(item)
             outgoing = []
             previous = self.playback.item
             if previous is not None and previous != item:
@@ -1101,6 +1149,7 @@ class RealtimeProtocol:
             if response_id not in self.audio_responses:
                 self.audio_responses.add(response_id)
                 if self.speech_ended_at is not None:
+                    self.turn_origins[response_id] = self.speech_ended_at
                     self.generation_latencies_ms.append(max(0, round(
                         (time.monotonic() - self.speech_ended_at) * 1000
                     )))
@@ -1108,16 +1157,21 @@ class RealtimeProtocol:
             return outgoing
         elif kind == "input_audio_buffer.speech_stopped":
             self.speech_ends += 1
+            self.speech_active = False
             self.speech_ended_at = time.monotonic()
         elif kind == "input_audio_buffer.speech_started":
             self.speech_starts += 1
+            self.speech_active = True
             self.speech_ended_at = None
+            self.turn_origins.clear()
             if self.active_response or self.playback.pending:
                 self.interruptions += 1
             if self.active_response:
                 self.discarded_responses.add(self.active_response)
+                self.interrupted_responses.add(self.active_response)
             if self.playback.item:
                 self.discarded_responses.add(self.playback.item.response_id)
+                self.interrupted_responses.add(self.playback.item.response_id)
             # A completed and fully played item needs no truncation.
             if not self.playback.pending and self.active_response is None:
                 self.playback.clear()
@@ -1221,7 +1275,11 @@ class RealtimeSession:
             streaming = bool(playback.item and
                              playback.item.response_id == self.protocol.active_response and
                              playback.item.response_id not in self.protocol.discarded_responses)
-            return playback.pull(size, streaming=streaming)
+            before = playback.played_bytes
+            pcm = playback.pull(size, streaming=streaming)
+            if playback.item is not None and playback.played_bytes > before:
+                self.protocol.record_playback(playback.item, pcm)
+            return pcm
 
     def clear_pcm(self) -> None:
         with self._playback_lock:

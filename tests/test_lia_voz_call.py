@@ -426,3 +426,13 @@ def test_rtp_quality_counters_without_raw_audio_or_identifiers():
     assert lia_voz_call._rtp_stats(call, pj, quality=quality) == (21, 34)
     assert quality == dict(rx_loss=2, tx_loss=0, rx_discard=1, tx_discard=0,
                            rx_jitter_ms=2.5, tx_jitter_ms=1.2)
+
+
+def test_quality_screen_never_equates_bidirectional_audio_to_homologation():
+    assess = lia_voz_call._assess_quality
+    assert assess((5275, 2111), {"rx_loss": 103, "rx_jitter_ms": 3814.2}, {}) == "ABAIXO_DA_META"
+    assert assess((1000, 1000), {"rx_loss": 0, "rx_jitter_ms": 12}, {}) == "INCONCLUSIVA"
+    assert assess((1000, 1000), {"rx_loss": 0, "rx_jitter_ms": 12},
+                  {"playback_samples": 4, "playback_under_1500": 3}) == "METRICAS_LOCAIS_OK"
+    assert assess((1000, 1000), {"rx_loss": 0, "rx_jitter_ms": 12},
+                  {"playback_samples": 4, "playback_under_1500": 2}) == "ABAIXO_DA_META"
