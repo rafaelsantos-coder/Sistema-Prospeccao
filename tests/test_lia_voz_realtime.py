@@ -34,9 +34,17 @@ def test_session_is_voice_only_and_no_tools_or_chat_context():
     assert config["output_modalities"] == ["audio"]
     assert config["max_output_tokens"] == MAX_RESPONSE_TOKENS
     assert config["tools"] == []
-    assert "Lia Voz" in config["instructions"]
+    assert "Eduarda Voz" in config["instructions"]
+    assert "Você é Eduarda, assistente virtual comercial da Sulnet" in config["instructions"]
+    assert "Você é Lia," not in config["instructions"]
     assert config["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
-    assert config["audio"]["input"]["turn_detection"]["interrupt_response"] is True
+    assert config["model"] == "gpt-realtime-2.1"
+    assert config["reasoning"] == {"effort": "medium"}
+    assert config["audio"]["input"]["noise_reduction"] == {"type": "near_field", "strength": 0.6}
+    assert config["audio"]["input"]["turn_detection"] == {
+        "type": "semantic_vad", "eagerness": "low",
+        "create_response": True, "interrupt_response": True,
+    }
 
 
 @pytest.mark.parametrize("pcm", [b"", b"x", bytes(9602), "invalid"])
@@ -153,6 +161,7 @@ def test_socket_handshake_greeting_audio_and_barge_in():
             await session.greet()
         await session.start()
         await session.greet()
+        assert "Apresente-se como Eduarda, assistente virtual da Sulnet" in socket.sent[-1]["response"]["instructions"]
         await session.append_pcm(bytes(960))
         await session.receive_once()
         await session.receive_once()
@@ -225,6 +234,8 @@ def test_quality_metrics_for_turns_interruption_and_generation(monkeypatch):
         "overlap_recoveries": 0,
         "token_limited_responses": 0,
         "peak_pending_ms": 40,
+        "playback_underruns": 0,
+        "playback_rebuffer_ms": 0,
     }
 
 
@@ -447,3 +458,53 @@ def test_overlapping_turns_recover_through_websocket_adapter():
         assert [e["audio_end_ms"] for e in socket.sent
                 if e["type"] == "conversation.item.truncate"] == [20, 20]
     asyncio.run(run())
+
+
+def test_streamed_playback_prebuffers_rebuffers_and_drains_without_losing_samples():
+    p = Playback(prebuffer_ms=160)
+    item = AudioItem("r", "i", 0)
+    frame = b"\x01\x02" * 480
+    p.push(item, frame * 7)
+    assert p.pull(960, streaming=True) == bytes(960)
+    assert p.played_bytes == 0
+    p.push(item, frame)
+    for _ in range(8):
+        assert p.pull(960, streaming=True) == frame
+    assert p.pull(960, streaming=True) == bytes(960)
+    assert p.underruns == 1
+    p.push(item, frame * 2)
+    assert p.pull(960, streaming=True) == bytes(960)
+    assert p.rebuffer_bytes == 1920
+    # Completed turn drains its short tail immediately, without another threshold.
+    assert p.pull(960, streaming=False) == frame
+    assert p.pull(960, streaming=False) == frame
+    assert p.interrupt()["audio_end_ms"] == 200
+
+
+def test_true_interruption_still_discards_buffered_and_late_audio():
+    p = RealtimeProtocol(prebuffer_ms=160)
+    p.handle(created())
+    frame = b"\x01\x02" * 480
+    p.handle(delta(pcm=frame * 10))
+    assert p.playback.pull(960, streaming=True) == frame
+    assert p.handle(SPEECH)[0]["audio_end_ms"] == 20
+    assert not p.playback.pending
+    assert p.handle(delta(pcm=frame)) == []
+    assert p.playback.pull(960, streaming=True) == bytes(960)
+
+
+def test_session_profile_confirmation_and_configurable_model():
+    async def run():
+        cfg = session_update("gpt-realtime-2.1-mini", reasoning_effort="high")["session"]
+        socket = FakeSocket([{"type": "session.updated", "session": cfg}])
+        session = RealtimeSession(socket, "gpt-realtime-2.1-mini", reasoning_effort="high")
+        await session.start()
+        assert session.profile()["confirmed"]
+        assert session.profile()["reasoning"] == "high"
+        assert session.profile()["model"] == "gpt-realtime-2.1-mini"
+        assert socket.sent[0]["session"]["reasoning"] == {"effort": "high"}
+    asyncio.run(run())
+    with pytest.raises(ValueError):
+        session_update("unapproved-model")
+    with pytest.raises(ValueError):
+        session_update(reasoning_effort="unapproved")

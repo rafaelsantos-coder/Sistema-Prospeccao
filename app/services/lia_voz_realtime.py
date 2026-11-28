@@ -1,4 +1,4 @@
-"""Isolated Lia Voz pilot. No SIP, CRM or WhatsApp side effects.
+"""Isolated Eduarda Voz pilot. No SIP, CRM or WhatsApp side effects.
 
 PCM contract: mono signed 16-bit little endian, 24000 Hz.
 Protocol events run on one asyncio event loop. Playback reads from a native
@@ -11,6 +11,7 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import time
 from threading import Lock
 from contextlib import asynccontextmanager
@@ -25,20 +26,25 @@ MAX_INPUT_BYTES = PCM_BYTES_PER_SECOND // 5  # 200 ms
 # not the lifetime of the SIP call. The token limit is the first guard;
 # response-level cancellation is the backstop, not a fatal media error.
 MAX_BUFFER_BYTES = PCM_BYTES_PER_SECOND * 30
-MAX_RESPONSE_TOKENS = 512
-MODEL = "gpt-realtime-2.1-mini"
+MAX_RESPONSE_TOKENS = 1024
+MODEL = "gpt-realtime-2.1"
+SUPPORTED_MODELS = frozenset({MODEL, "gpt-realtime-2.1-mini"})
+REASONING_EFFORT = "medium"
+SUPPORTED_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
+VAD_EAGERNESS = "low"
+PLAYBACK_PREBUFFER_MS = 160
 VOICE = "marin"
 
 # Approved commercial training, independent of the WhatsApp SDR.
 # Keep the original training intact; the pilot guard overrides live operations.
 PILOT_TRAINING_VERSION = "2.2"
-PILOT_TRAINING = """# LIA — INTELIGÊNCIA ARTIFICIAL COMERCIAL SULNET
+PILOT_TRAINING = """# EDUARDA — INTELIGÊNCIA ARTIFICIAL COMERCIAL SULNET
 **Versão 2.2 — Treinamento Comercial Oficial**
 **Data: 27/11/2026**
 
 ## 1. Identidade e missão
 
-Você é Lia, assistente virtual comercial da Sulnet Telecom, especializada em prospecção ativa por voz, negociação, quebra de objeções e fechamento de vendas.
+Você é Eduarda, assistente virtual comercial da Sulnet Telecom, especializada em prospecção ativa por voz, negociação, quebra de objeções e fechamento de vendas.
 
 Sua missão é conquistar novos clientes, gerar oportunidades comerciais e efetivamente vender.
 
@@ -144,7 +150,7 @@ Utilize a saudação correspondente ao horário local.
 
 Exemplo:
 
-“Boa tarde! Tudo bem? Aqui é a Lia, assistente virtual da Sulnet. Estou entrando em contato porque temos condições especiais de internet fibra na tua região. Tu tens um minutinho pra conversar comigo?”
+“Boa tarde! Tudo bem? Aqui é a Eduarda, assistente virtual da Sulnet. Estou entrando em contato porque temos condições especiais de internet fibra na tua região. Tu tens um minutinho pra conversar comigo?”
 
 Aguarde a resposta do cliente.
 
@@ -405,13 +411,13 @@ Cliente:
 
 “Hoje tenho 600 mega da BR Fonia e pago R$ 99,90.”
 
-Lia:
+Eduarda:
 
 “Entendi! E além da internet, quais benefícios teu plano oferece hoje?”
 
 Aguarde a resposta.
 
-Lia:
+Eduarda:
 
 “A Sulnet é uma empresa aqui da região, com 20 anos de história e uma estrutura própria de atendimento. Temos opções de internet com tecnologia Wi-Fi 6, entretenimento e Clube de Descontos. Também estamos com nossa campanha de aniversário, em que novos clientes de fibra podem receber dez números da sorte após a ativação.”
 
@@ -489,7 +495,7 @@ Cliente:
 
 “Já tenho 600 mega e pago R$ 99,90. Não quero pagar mais.”
 
-Lia:
+Eduarda:
 
 “Eu entendo! Mas me conta uma coisa: além da internet, quais benefícios teu provedor oferece hoje?”
 
@@ -497,7 +503,7 @@ Cliente:
 
 “Só internet mesmo.”
 
-Lia:
+Eduarda:
 
 “Então temos um diferencial interessante. A Sulnet tem 20 anos de história aqui na região, com atendimento próprio e opções de benefícios como entretenimento e Clube de Descontos. E estamos comemorando nosso aniversário com uma campanha de mais de 35 mil reais em prêmios.”
 
@@ -505,7 +511,7 @@ Cliente:
 
 “Mas quanto custa?”
 
-Lia:
+Eduarda:
 
 “Temos 650 mega pelos mesmos R$ 99,90 que tu pagas hoje, com instalação gratuita e roteador incluso.”
 
@@ -513,7 +519,7 @@ Cliente:
 
 “Teria que ser algo melhor pra mim.”
 
-Lia:
+Eduarda:
 
 “Então tenho uma condição especial. Consigo te oferecer 800 mega pelos mesmos R$ 99,90. São 200 mega a mais, sem aumentar tua mensalidade.”
 
@@ -521,7 +527,7 @@ Cliente:
 
 “Mas vou ter que pagar mais um mês para meu provedor atual.”
 
-Lia:
+Eduarda:
 
 “Consigo te ajudar nisso. Além dos 800 mega por R$ 99,90, posso liberar o primeiro mês grátis na Sulnet. Com essa condição, podemos avançar?”
 
@@ -529,7 +535,7 @@ Cliente:
 
 “Podemos.”
 
-Lia:
+Eduarda:
 
 “Excelente! Então estamos combinando 800 mega por R$ 99,90, com o primeiro mês grátis, instalação gratuita, roteador incluso e fidelidade de 12 meses. Agora vamos encaminhar teu cadastro e verificar a disponibilidade no teu endereço.”
 
@@ -660,7 +666,7 @@ Utilize os treinamentos aprovados pela gestão comercial para melhorar:
 
 Não altere autonomamente preços, limites de concessão ou políticas comerciais.
 
-## 22. Mandamentos comerciais da Lia
+## 22. Mandamentos comerciais da Eduarda
 
 1. Conheça a Sulnet.
 2. Conheça o cliente.
@@ -675,12 +681,12 @@ Não altere autonomamente preços, limites de concessão ou políticas comerciai
 11. Cumpra as condições autorizadas.
 12. Respeite o cliente.
 
-**Você é Lia, a inteligência comercial da Sulnet. Sua missão é conquistar clientes e transformar oportunidades em vendas.**
+**Você é Eduarda, a inteligência comercial da Sulnet. Sua missão é conquistar clientes e transformar oportunidades em vendas.**
 
 **Quem tem Sulnet, tem tudo!**"""
 
 PILOT_GUARD = (
-    "Você é Lia Voz, em uma homologação interna de conversação comercial. "
+    "Você é Eduarda Voz, em uma homologação interna de conversação comercial. "
     "As regras de segurança deste piloto prevalecem sobre o treinamento abaixo. "
     "Simule diagnóstico, ofertas, negociação e aceite sem efetivar contratação. "
     "Não solicite CPF, nome completo, endereço exato, CEP, senhas, dados financeiros "
@@ -718,7 +724,13 @@ def _session_instructions() -> str:
         + " Em cada turno, responda objetivamente em uma ou duas frases curtas. "
         "Não recite o treinamento nem enumere várias ofertas de uma vez. "
         "Explique apenas o ponto perguntado, apresente uma condição por vez "
-        "e aguarde o cliente antes de continuar."
+        "e aguarde o cliente antes de continuar. "
+        "Ouça o turno completo antes de responder. Use as informações de todos "
+        "os turnos anteriores desta ligação e mantenha a condição negociada. "
+        "Se houver uma frase incompleta, ambígua ou uma hesitação, aguarde "
+        "ou faça uma pergunta curta para esclarecer, sem adivinhar. "
+        "Não fale enquanto a pessoa estiver complementando uma informação. "
+        "Se for interrompida, retome somente o ponto relevante após ouvir o cliente."
     )
 
 class LiaVoiceError(RuntimeError):
@@ -782,8 +794,11 @@ def safe_realtime_failure(exc):
     return "transport_other"
 
 
-def session_update(model: str = MODEL, voice: str = VOICE) -> dict:
-    """GA Realtime session schema; no tools during the isolated pilot."""
+def session_update(model: str = MODEL, voice: str = VOICE,
+                   reasoning_effort: str = REASONING_EFFORT) -> dict:
+    """Reasoning Realtime session; no tools during the isolated pilot."""
+    if model not in SUPPORTED_MODELS or reasoning_effort not in SUPPORTED_EFFORTS:
+        raise ValueError("Invalid Eduarda Voz realtime profile")
     return {
         "type": "session.update",
         "session": {
@@ -791,16 +806,16 @@ def session_update(model: str = MODEL, voice: str = VOICE) -> dict:
             "model": model,
             "output_modalities": ["audio"],
             "max_output_tokens": MAX_RESPONSE_TOKENS,
+            "reasoning": {"effort": reasoning_effort},
             "instructions": _session_instructions(),
             "tools": [],
             "audio": {
                 "input": {
                     "format": {"type": "audio/pcm", "rate": PCM_RATE},
+                    "noise_reduction": {"type": "near_field", "strength": 0.6},
                     "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 550,
+                        "type": "semantic_vad",
+                        "eagerness": VAD_EAGERNESS,
                         "create_response": True,
                         "interrupt_response": True,
                     },
@@ -833,10 +848,17 @@ class AudioItem:
 class Playback:
     """Bounded output queue; distinguish generated audio from played samples."""
 
-    def __init__(self) -> None:
+    def __init__(self, prebuffer_ms: int = 0) -> None:
+        if not 0 <= prebuffer_ms <= 500:
+            raise ValueError("Invalid playback prebuffer")
         self.item: AudioItem | None = None
         self.pending = bytearray()
         self.played_bytes = 0
+        self.prebuffer_bytes = PCM_BYTES_PER_SECOND * prebuffer_ms // 1000
+        self.primed = False
+        self.underruns = 0
+        self.rebuffer_bytes = 0
+        self.rebuffering = False
 
     def push(self, item: AudioItem, pcm: bytes) -> None:
         if not pcm or len(pcm) % 2:
@@ -846,14 +868,32 @@ class Playback:
                 raise LiaVoiceError("Overlapping output audio items", diagnostic="overlapping_audio_items")
             self.item = item
             self.played_bytes = 0
+            self.primed = self.rebuffering = False
         if len(self.pending) + len(pcm) > MAX_BUFFER_BYTES:
             raise LiaVoiceError("Output audio buffer exceeded", diagnostic="output_buffer_exceeded")
         self.pending.extend(pcm)
 
-    def pull(self, size: int) -> bytes:
-        """Return PCM with silence padding; count only generated samples consumed."""
+    def pull(self, size: int, *, streaming: bool = False) -> bytes:
+        """Smooth streamed playback without inventing or dropping played samples."""
         if size <= 0 or size % 2 or size > MAX_INPUT_BYTES:
             raise ValueError("Invalid playback frame size")
+        if self.prebuffer_bytes and self.item is not None and streaming:
+            # Wait for a small reserve before starting or resuming audio.
+            # Do not count ordinary thinking/initial buffering as underruns.
+            if not self.primed:
+                if len(self.pending) < max(size, self.prebuffer_bytes):
+                    if self.rebuffering:
+                        self.rebuffer_bytes += size
+                    return bytes(size)
+                self.primed = True
+                self.rebuffering = False
+            if len(self.pending) < size:
+                self.underruns += 1
+                self.rebuffer_bytes += size
+                self.primed = False
+                self.rebuffering = True
+                return bytes(size)
+        # A finished response must drain even if its final piece is short.
         n = min(size, len(self.pending))
         result = bytes(self.pending[:n])
         del self.pending[:n]
@@ -864,6 +904,7 @@ class Playback:
         self.pending.clear()
         self.item = None
         self.played_bytes = 0
+        self.primed = self.rebuffering = False
 
     def interrupt(self) -> dict | None:
         item = self.item
@@ -884,8 +925,8 @@ class Playback:
 class RealtimeProtocol:
     """Per-call state machine. Server VAD cancels generation; we clear playback."""
 
-    def __init__(self) -> None:
-        self.playback = Playback()
+    def __init__(self, prebuffer_ms: int = 0) -> None:
+        self.playback = Playback(prebuffer_ms)
         self.active_response: str | None = None
         self.discarded_responses: set[str] = set()
         self.discarded_items: set[AudioItem] = set()
@@ -920,6 +961,8 @@ class RealtimeProtocol:
             "overlap_recoveries": self.overlap_recoveries,
             "token_limited_responses": self.token_limited_responses,
             "peak_pending_ms": self.peak_pending_bytes * 1000 // PCM_BYTES_PER_SECOND,
+            "playback_underruns": self.playback.underruns,
+            "playback_rebuffer_ms": self.playback.rebuffer_bytes * 1000 // PCM_BYTES_PER_SECOND,
         }
 
     def _cap_output(self, item: AudioItem, pcm: bytes) -> list[dict]:
@@ -1066,13 +1109,17 @@ class RealtimeProtocol:
 class RealtimeSession:
     """Async WebSocket adapter; use a single reader and one media producer."""
 
-    def __init__(self, socket, model: str = MODEL, voice: str = VOICE) -> None:
+    def __init__(self, socket, model: str = MODEL, voice: str = VOICE,
+                 reasoning_effort: str = REASONING_EFFORT, prebuffer_ms: int = 0) -> None:
         self._socket = socket
         self._model = model
         self._voice = voice
+        self._reasoning_effort = reasoning_effort
+        self._prebuffer_ms = prebuffer_ms
+        self._profile_confirmed = False
         self._send_lock = asyncio.Lock()
         self._playback_lock = Lock()
-        self.protocol = RealtimeProtocol()
+        self.protocol = RealtimeProtocol(prebuffer_ms)
         self.ready = False
 
     async def _send(self, event: dict) -> None:
@@ -1089,14 +1136,28 @@ class RealtimeSession:
         if self.ready:
             raise LiaVoiceError("Session already started")
         async with asyncio.timeout(15):
-            await self._send(session_update(self._model, self._voice))
+            await self._send(session_update(self._model, self._voice, self._reasoning_effort))
             while True:
                 event = await self._receive()
                 with self._playback_lock:
                     self.protocol.handle(event)
                 if event.get("type") == "session.updated":
+                    reported = event.get("session") or {}
+                    vad = ((reported.get("audio") or {}).get("input") or {}).get("turn_detection") or {}
+                    self._profile_confirmed = (
+                        reported.get("model") == self._model
+                        and (reported.get("reasoning") or {}).get("effort") == self._reasoning_effort
+                        and vad.get("type") == "semantic_vad"
+                        and vad.get("eagerness") == VAD_EAGERNESS
+                    )
                     self.ready = True
                     return
+
+    def profile(self) -> dict:
+        # Only locally validated enum values and a boolean, never a raw API payload.
+        return {"model": self._model, "reasoning": self._reasoning_effort,
+                "vad": "semantic_vad", "eagerness": VAD_EAGERNESS,
+                "prebuffer_ms": self._prebuffer_ms, "confirmed": self._profile_confirmed}
 
     async def append_pcm(self, pcm: bytes) -> None:
         if not self.ready:
@@ -1113,10 +1174,10 @@ class RealtimeSession:
                 "instructions": (
                     "Cumprimente conforme a hora local em RS: "
                     + _local_now().strftime("%H:%M")
-                    + ". Apresente-se como Lia, assistente virtual da Sulnet. "
-                    "Diga brevemente que há condições especiais de internet fibra "
-                    "e pergunte se a pessoa tem um minutinho para conversar. "
-                    "Não apresente preços ou planos ainda; aguarde a resposta."
+                    + ". Apresente-se como Eduarda, assistente virtual da Sulnet. "
+                    "Em até 18 palavras, diga que há uma condição especial de fibra "
+                    "e pergunte se pode conversar. Não apresente preços ou planos "
+                    "nem repita informações; aguarde a resposta."
                 )
             },
         })
@@ -1133,7 +1194,11 @@ class RealtimeSession:
 
     def pull_pcm(self, size: int) -> bytes:
         with self._playback_lock:
-            return self.protocol.playback.pull(size)
+            playback = self.protocol.playback
+            streaming = bool(playback.item and
+                             playback.item.response_id == self.protocol.active_response and
+                             playback.item.response_id not in self.protocol.discarded_responses)
+            return playback.pull(size, streaming=streaming)
 
     def clear_pcm(self) -> None:
         with self._playback_lock:
@@ -1146,7 +1211,8 @@ class RealtimeSession:
 
 @asynccontextmanager
 async def open_realtime(*, enabled: bool = False, api_key: str = "",
-                        model: str = MODEL, voice: str = VOICE,
+                        model: str | None = None, voice: str = VOICE,
+                        reasoning_effort: str | None = None, prebuffer_ms: int = 0,
                         max_seconds: int = 180):
     """Explicit opt-in, bounded connection; never falls back to the chat agent.
 
@@ -1154,11 +1220,17 @@ async def open_realtime(*, enabled: bool = False, api_key: str = "",
     before exiting. No automatic reconnect or redial.
     """
     if not enabled:
-        raise LiaVoiceError("Lia Voz pilot disabled")
+        raise LiaVoiceError("Eduarda Voz pilot disabled")
     if not api_key.strip():
-        raise LiaVoiceError("Lia Voz API key not configured")
+        raise LiaVoiceError("Eduarda Voz API key not configured")
     if not 15 <= max_seconds <= 300:
         raise ValueError("Pilot duration must be 15-300 seconds")
+    model = model or os.getenv("LIA_VOZ_REALTIME_MODEL", MODEL)
+    reasoning_effort = reasoning_effort or os.getenv("LIA_VOZ_REASONING_EFFORT", REASONING_EFFORT)
+    if model not in SUPPORTED_MODELS or reasoning_effort not in SUPPORTED_EFFORTS:
+        raise ValueError("Invalid Eduarda Voz realtime profile")
+    if not 0 <= prebuffer_ms <= 500:
+        raise ValueError("Invalid playback prebuffer")
     # Optional dependency, imported only for explicitly enabled internal tests.
     from websockets.asyncio.client import connect
 
@@ -1169,7 +1241,7 @@ async def open_realtime(*, enabled: bool = False, api_key: str = "",
             open_timeout=10, close_timeout=3, max_size=2 * 1024 * 1024,
             max_queue=16, ping_interval=20, ping_timeout=10,
         ) as socket:
-            session = RealtimeSession(socket, model, voice)
+            session = RealtimeSession(socket, model, voice, reasoning_effort, prebuffer_ms)
             try:
                 await session.start()
                 yield session

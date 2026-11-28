@@ -35,7 +35,11 @@ async def probe_realtime(api_key: str, *, session_factory=open_realtime) -> dict
                 break
         if first_audio_ms is None or samples < 2400 or not non_silent:
             raise LiaVoiceError("Synthetic greeting did not return usable audio")
+        profile = session.profile() if callable(getattr(session, "profile", None)) else {}
+        if profile and not profile["confirmed"]:
+            raise LiaVoiceError("Realtime did not confirm requested model, reasoning and semantic VAD")
         return {
+            "profile": profile,
             "handshake_ms": handshake_ms,
             "first_audio_ms": first_audio_ms,
             "audio_samples": samples,

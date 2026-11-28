@@ -6,7 +6,9 @@ import time
 from dataclasses import dataclass
 
 from app.services.lia_voz_media import MediaBridge, attach_pj_media, run_media_bridge
-from app.services.lia_voz_realtime import LiaVoiceError, open_realtime, safe_realtime_failure
+from app.services.lia_voz_realtime import (
+    LiaVoiceError, PLAYBACK_PREBUFFER_MS, open_realtime, safe_realtime_failure,
+)
 from app.services.voice_pjsua2 import VoiceCallResult
 
 RING_TIMEOUT_SECONDS = 40
@@ -40,7 +42,7 @@ def _active_audio_index(call, pj):
     return None
 
 
-def _rtp_stats(call, pj):
+def _rtp_stats(call, pj, *, quality=None):
     """Read actual network RTP counters, not local PCM callback counters."""
     if call.disconnected:
         return None
@@ -50,7 +52,18 @@ def _rtp_stats(call, pj):
             # The RTCP stats are also nested members of a native owner.
             stats = call.getStreamStat(index)
             rtcp = stats.rtcp
-            return int(rtcp.rxStat.pkt), int(rtcp.txStat.pkt)
+            rx, tx = rtcp.rxStat, rtcp.txStat
+            packets = int(rx.pkt), int(tx.pkt)
+            if quality is not None:
+                try:
+                    rx_jitter, tx_jitter = rx.jitterUsec, tx.jitterUsec
+                    quality.update(rx_loss=int(rx.loss), tx_loss=int(tx.loss),
+                                   rx_discard=int(rx.discard), tx_discard=int(tx.discard),
+                                   rx_jitter_ms=round(rx_jitter.mean / 1000, 1),
+                                   tx_jitter_ms=round(tx_jitter.mean / 1000, 1))
+                except (AttributeError, TypeError, ValueError):
+                    pass
+            return packets
     except Exception:
         pass
     return None
@@ -63,17 +76,21 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
     bridge = None
     realtime = None
     last_rtp = None
+    rtp_quality = {}
+    guard_max_ms = 0
+    guard_slow = 0
     stage = "conexao Realtime apos atendimento"
     deadline = (call.confirmed_at if call.confirmed_at is not None else time.monotonic()
                 ) + CONVERSATION_TIMEOUT_SECONDS
 
     def sample_rtp():
         nonlocal last_rtp
-        current = _rtp_stats(call, pj)
+        current = _rtp_stats(call, pj, quality=rtp_quality)
         if current is not None:
             last_rtp = current
 
     async def pump_sip():
+        nonlocal guard_max_ms, guard_slow
         next_guard = next_sample = 0.0
         while True:
             now = time.monotonic()
@@ -90,7 +107,12 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
             if now >= deadline:
                 return "timeout"
             if now >= next_guard:
-                if should_abort():
+                before_guard = time.monotonic()
+                abort = should_abort()
+                guard_ms = max(0, round((time.monotonic() - before_guard) * 1000))
+                guard_max_ms = max(guard_max_ms, guard_ms)
+                guard_slow += int(guard_ms >= 60)
+                if abort:
                     return "abort"
                 next_guard = now + 1.0
             await asyncio.sleep(0.01)
@@ -98,8 +120,15 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
     async def converse():
         nonlocal bridge, realtime, stage
         on_progress("SIP 200 confirmado; conectando Realtime.", call.sip_code)
-        async with session_factory(enabled=True, api_key=api_key, max_seconds=105) as session:
+        async with session_factory(enabled=True, api_key=api_key, max_seconds=105,
+                                   prebuffer_ms=PLAYBACK_PREBUFFER_MS) as session:
             realtime = session
+            if callable(getattr(session, "profile", None)):
+                p = session.profile()
+                on_progress("Perfil Realtime: " + p["model"] + "; raciocinio=" + p["reasoning"]
+                            + "; VAD=" + p["vad"] + "/" + p["eagerness"]
+                            + "; perfil confirmado=" + ("sim" if p["confirmed"] else "nao")
+                            + "; prebuffer ms=" + str(p["prebuffer_ms"]), call.sip_code)
             if call.disconnected or should_abort():
                 return "remote" if call.disconnected else "abort"
             if not session.ready:
@@ -172,6 +201,19 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
             + "; sobreposicoes=" + str(q.get("overlap_recoveries", 0))
             + "; turnos limitados=" + str(q.get("token_limited_responses", 0))
             + "; pico fila ms=" + str(q.get("peak_pending_ms", 0)) + ".",
+            call.sip_code,
+        )
+        on_progress(
+            "Qualidade reproducao: pausas buffer=" + str(q.get("playback_underruns", 0))
+            + "; rebuffer ms=" + str(q.get("playback_rebuffer_ms", 0))
+            + "; guard lento/max ms=" + str(guard_slow) + "/" + str(guard_max_ms) + ".",
+            call.sip_code,
+        )
+    if rtp_quality:
+        on_progress(
+            "Qualidade RTP: perdas RX/TX=" + str(rtp_quality["rx_loss"]) + "/" + str(rtp_quality["tx_loss"])
+            + "; descartes RX/TX=" + str(rtp_quality["rx_discard"]) + "/" + str(rtp_quality["tx_discard"])
+            + "; jitter ms RX/TX=" + str(rtp_quality["rx_jitter_ms"]) + "/" + str(rtp_quality["tx_jitter_ms"]) + ".",
             call.sip_code,
         )
     exchanged = bool(last_rtp and min(last_rtp) > 0 and rx > 0 and tx > 0)
