@@ -247,7 +247,10 @@ def test_secondary_account_normal_route_with_multiple_destinations():
         c.authorize("55 99999-0000", "1804", route="native")
 
 
-@pytest.mark.parametrize("phone", ["", "190", "08001234567", "00999990000", "abc", "+1 2125550100"])
+@pytest.mark.parametrize("phone", [
+    "", "190", "08001234567", "00999990000", "abc",
+    "+1 2125550100", "+55 99999-0000",
+])
 @pytest.mark.parametrize("route", ["account", "native"])
 def test_invalid_or_non_brazilian_destinations_still_rejected(phone, route):
     with pytest.raises(PilotDenied):
@@ -318,3 +321,11 @@ def test_worker_revalidates_persisted_destination_and_blacklist(monkeypatch):
 
     monkeypatch.setattr(worker, "outbound_guard", blocked)
     assert not worker._guard(7, number, 2)
+
+
+@pytest.mark.parametrize("route", ["account", "native"])
+@pytest.mark.parametrize("phone", [
+    "+55 55 99999-0000", "5555999990000", "(55) 99999-0000",
+])
+def test_explicit_brazilian_ddi_and_national_number_equivalent(phone, route):
+    assert config().authorize(phone, "1804", route=route) == "5555999990000"

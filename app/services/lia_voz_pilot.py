@@ -91,7 +91,14 @@ class PilotConfig:
         if route == "native" and username != NATIVE_ACCOUNT_USERNAME:
             raise PilotDenied("A rota Native por techprefix exige a conta SIP 1804.")
         try:
-            actual = canonical_phone(validate_test_phone(phone))
+            digits = validate_test_phone(phone)
+            # An explicit international '+' must designate Brazil, not be
+            # silently reinterpreted as the first digit of a Brazilian DDD.
+            if (phone or "").strip().startswith("+") and not (
+                digits.startswith("55") and len(digits) in (12, 13)
+            ):
+                raise ValueError("Use DDI 55 para numeros brasileiros.")
+            actual = canonical_phone(digits)
             if route == "native":
                 native_dial_digits(actual, self.prefix)
         except ValueError:
