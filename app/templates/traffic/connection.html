@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-lead split">
+  <div>
+    <span class="eyebrow">GESTOR DE TRÁFEGO PAGO · META</span>
+    <h2>Conexão com a Meta</h2>
+    <p>Teste somente de leitura. Nada é criado, alterado ou gasto.</p>
+  </div>
+  <span class="environment-badge">{% if report.all_ok %}CONEXÃO OK{% else %}REVISAR{% endif %}</span>
+</div>
+
+<section class="panel" style="padding:20px;margin-bottom:18px">
+  <span class="eyebrow">VERIFICAÇÕES</span>
+  {% for check in report.checks %}
+  <p><strong>{% if check.ok %}✓{% else %}✗{% endif %} {{ check.label }}</strong><br><span class="panel-note">{{ check.detail }}</span></p>
+  {% else %}
+  <p>Nenhuma verificação executada.</p>
+  {% endfor %}
+</section>
+
+{% if report.accessible_accounts %}
+<section class="panel" style="padding:20px;margin-bottom:18px">
+  <span class="eyebrow">CONTAS QUE O TOKEN ENXERGA</span>
+  {% for item in report.accessible_accounts %}
+  <p>{{ item.name }} · <span class="panel-note">{{ item.id }}</span></p>
+  {% endfor %}
+</section>
+{% endif %}
+
+<p><a class="button button-secondary" href="/traffic">Voltar</a></p>
+{% endblock %}
