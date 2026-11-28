@@ -368,3 +368,26 @@ def test_sip_transaction_evidence_is_method_specific_and_redacted():
     )
     tx.method = "INFO"
     assert voice_pjsua2.sip_transaction_evidence(prm, pj) is None
+
+
+def test_alternate_account_preserves_configured_dial_format_in_both_modes(monkeypatch):
+    driver, probe_routes = install_driver(monkeypatch)
+    result = lia_voz_call.perform_native_probe(
+        driver, "5555999990000", None, should_abort=lambda: False, dial_format=None,
+    )
+    assert result.status == "LIA_PROBE_FINALIZADO"
+    driver, lia_routes = install_driver(monkeypatch)
+
+    @asynccontextmanager
+    async def factory(**_kwargs):
+        assert driver.call.answered
+        yield FakeSession()
+
+    result = lia_voz_call.perform_lia_test(
+        driver, "5555999990000", None, "test-key",
+        should_abort=lambda: False, dial_format=None, session_factory=factory,
+    )
+    assert result.status == "LIA_FINALIZADA"
+    assert probe_routes == lia_routes
+    assert lia_routes[0][1] == {"dial_format": None}
+    assert len(driver.invites) == 1

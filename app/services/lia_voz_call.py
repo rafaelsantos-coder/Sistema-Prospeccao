@@ -20,9 +20,9 @@ class PilotOutcome:
     message: str
 
 
-def _route_options(prefix):
+def _route_options(prefix, dial_format="NATIONAL"):
     if prefix is None:
-        return {"dial_format": "NATIONAL"}
+        return {"dial_format": dial_format}
     return {"native_techprefix": prefix, "native_local_ddd": "55"}
 
 
@@ -194,6 +194,7 @@ async def _converse_connected(driver, call, api_key, *, should_abort,
 
 def perform_lia_test(driver, phone, prefix, api_key, *,
                      should_abort, session_factory=open_realtime,
+                     dial_format="NATIONAL",
                      on_progress=lambda _message, _sip_code: None):
     """Use exactly the native originate/ring/answer path of the SIP-only probe."""
     if not api_key or not api_key.strip() or driver._registration != 200 or should_abort():
@@ -227,7 +228,7 @@ def perform_lia_test(driver, phone, prefix, api_key, *,
 
     on_progress("Iniciando discagem pelo mesmo motor do teste SIP sem IA.", None)
     outcome = driver.perform_call(
-        phone, mode="LIA", **_route_options(prefix), timeout=RING_TIMEOUT_SECONDS,
+        phone, mode="LIA", **_route_options(prefix, dial_format), timeout=RING_TIMEOUT_SECONDS,
         should_abort=guard, on_status=observe, on_trace=on_progress,
         on_connected=connected,
     )
@@ -247,7 +248,7 @@ def perform_lia_test(driver, phone, prefix, api_key, *,
 
 
 def perform_native_probe(driver, phone, prefix, *, should_abort,
-                         on_progress=lambda _message, _sip_code: None):
+                         dial_format="NATIONAL", on_progress=lambda _message, _sip_code: None):
     """One manually authorized comparison call on the explicitly selected route.
 
     No API session, speech, recording, transfer, retry, or customer lookup.
@@ -274,10 +275,11 @@ def perform_native_probe(driver, phone, prefix, *, should_abort,
         on_progress("Teste SIP sem IA: " + status + "; SIP " +
                     ("/".join(map(str, codes)) or "-"), code)
 
-    on_progress("Teste SIP sem IA; rota padrao DDD+numero." if prefix is None
-                else "Teste SIP sem IA; usando o techprefix Native selecionado.", None)
+    on_progress(("Teste SIP sem IA; rota padrao DDD+numero." if dial_format == "NATIONAL"
+                 else "Teste SIP sem IA; seguindo configuracao da conta cadastrada.")
+                if prefix is None else "Teste SIP sem IA; usando o techprefix Native selecionado.", None)
     outcome = driver.perform_call(
-        phone, mode="PROBE", **_route_options(prefix),
+        phone, mode="PROBE", **_route_options(prefix, dial_format),
         timeout=RING_TIMEOUT_SECONDS, probe_hold_seconds=12, should_abort=guard, on_status=observe,
         on_trace=on_progress,
     )

@@ -1455,8 +1455,8 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
     require_roles(actor, "ADMIN")
     config = PilotConfig.from_env()
     accounts = list(db.scalars(select(VoiceSipAccount).where(
-        VoiceSipAccount.username == "1804", VoiceSipAccount.active.is_(True)
-    )))
+        VoiceSipAccount.active.is_(True)
+    ).order_by(VoiceSipAccount.username != "1804", VoiceSipAccount.name, VoiceSipAccount.id)))
     tests = list(db.scalars(select(VoiceTestCall).where(
         VoiceTestCall.status.startswith("LIA_", autoescape=True)
     ).order_by(VoiceTestCall.id.desc()).limit(20)))
@@ -1470,7 +1470,8 @@ def lia_voz_pilot_page(request: Request, db: Session = Depends(get_db)):
         page_title="Lia Voz · Ambiente de testes", accounts=accounts, tests=tests,
         configured=config.configured, engine_ready=online, shared_engine=config.shared,
         test_active=any(item.status in ACTIVE for item in tests),
-        native_prefix=config.prefix if config.configured else "",
+        native_prefix=config.prefix if config.native_configured else "",
+        native_configured=config.native_configured,
         runtime_ready=bool(engine and engine.lia_runtime_enabled),
         config_enabled=config.enabled, external_sip_confirmed=config.exclusive,
     )
@@ -1508,7 +1509,7 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
         return _error(request, "Conta SIP indisponivel.", destination)
     try:
         initial_state = requested_state(mode, route)
-        clean = config.authorize(phone, account.username)
+        clean = config.authorize(phone, account.username, route=route)
         ensure_idle(db, shared=config.shared, admission=True)
         outbound_guard(db, clean)
     except ValueError as exc:
@@ -1518,7 +1519,8 @@ def request_lia_voz_test(request: Request, csrf_token: str = Form(...),
     test = VoiceTestCall(
         account_id=account.id, account_label=account.name, target_phone=clean,
         status=initial_state,
-        message=(("NATIONAL" if route == "account" else config.prefix) + " | "
+        message=((("NATIONAL" if account.username == "1804" else "CONTA")
+                  if route == "account" else config.prefix) + " | "
                  + ("Teste SIP sem IA autorizado; aguardando vez no motor." if mode == "sip"
                     else "Teste individual Lia Voz autorizado; aguardando vez no motor.")),
         initiator_user_id=actor.id, created_at=now,

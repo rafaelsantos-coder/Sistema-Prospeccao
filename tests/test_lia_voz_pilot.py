@@ -22,7 +22,7 @@ def test_exact_canonical_destination_and_account():
 
 @pytest.mark.parametrize("changes", [
     {"enabled": False}, {"exclusive": False}, {"allowed_phone": ""},
-    {"prefix": "9999"}, {"allowed_phone": "190"},
+    {"allowed_phone": "190"},
 ])
 def test_missing_or_invalid_config_fails_closed(changes):
     c = config(**changes)
@@ -158,6 +158,15 @@ def test_manual_lia_test_has_no_hourly_quota_and_still_rejects_overlap(monkeypat
                 transport="UDP", password_encrypted="not-a-real-secret", active=True,
             )
             db.add(account)
+            secondary = VoiceSipAccount(
+                name="Secondary CI", domain="sip.example.invalid", username="1805",
+                transport="UDP", password_encrypted="not-a-real-secret", active=True,
+            )
+            inactive = VoiceSipAccount(
+                name="Inactive CI", domain="sip.example.invalid", username="1806",
+                transport="UDP", password_encrypted="not-a-real-secret", active=False,
+            )
+            db.add_all([secondary, inactive])
             db.add(VoiceDialerEngine(
                 id=1, enabled=True, heartbeat_at=now, lia_runtime_enabled=True,
                 campaign_runtime_enabled=True, test_runtime_enabled=True,
@@ -174,11 +183,11 @@ def test_manual_lia_test_has_no_hourly_quota_and_still_rejects_overlap(monkeypat
                 ))
             db.commit()
 
-            def request(mode="ia"):
+            def request(mode="ia", selected=None, route="account"):
                 return voice.request_lia_voz_test(
                     request=SimpleNamespace(), csrf_token="test",
-                    account_id=account_id, phone="5555999990000",
-                    authorized="sim", mode=mode, route="account", db=db,
+                    account_id=account_id if selected is None else selected,
+                    phone="5555999990000", authorized="sim", mode=mode, route=route, db=db,
                 )
 
             for mode in ("ia", "sip", "ia"):
@@ -200,5 +209,37 @@ def test_manual_lia_test_has_no_hourly_quota_and_still_rejects_overlap(monkeypat
             assert len(db.scalars(select(VoiceTestCall).where(
                 VoiceTestCall.account_id == account_id
             )).all()) == 15
+            assert "1804" in request("sip", secondary.id, "native")
+            assert "indisponivel" in request("sip", inactive.id)
+            for mode in ("sip", "ia"):
+                assert request(mode, secondary.id).status_code == 303
+                pending = db.scalar(select(VoiceTestCall).where(
+                    VoiceTestCall.status.in_(ACTIVE),
+                    VoiceTestCall.account_id == secondary.id,
+                ))
+                assert pending is not None and pending.account_label == secondary.name
+                assert pending.message.startswith("CONTA |")
+                assert "outro teste" in request("ia", account_id)
+                pending.status = "LIA_FINALIZADA"
+                pending.finished_at = now
+                db.commit()
     finally:
         engine.dispose()
+
+
+def test_secondary_account_normal_route_only_and_same_destination():
+    c = config()
+    assert c.authorize("55 99999-0000", "1805", route="account") == "5555999990000"
+    with pytest.raises(PilotDenied):
+        c.authorize("55 99999-0001", "1805", route="account")
+    with pytest.raises(PilotDenied):
+        c.authorize("55 99999-0000", "1805", route="native")
+    with pytest.raises(PilotDenied):
+        c.authorize("55 99999-0000", "", route="account")
+    with pytest.raises(PilotDenied):
+        config(exclusive=False).authorize("55 99999-0000", "1805", route="account")
+    c = config(prefix="9999")
+    assert c.configured and not c.native_configured
+    assert c.authorize("55 99999-0000", "1805", route="account") == "5555999990000"
+    with pytest.raises(PilotDenied):
+        c.authorize("55 99999-0000", "1804", route="native")

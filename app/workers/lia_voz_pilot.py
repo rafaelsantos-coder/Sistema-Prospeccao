@@ -97,7 +97,7 @@ def claim():
                 db.commit()
             return None
         row.status = CLAIM_STATES[row.status]
-        route_label = "NATIONAL" if row.status in ACCOUNT_STATES else config.prefix
+        route_label = "CONTA" if row.status in ACCOUNT_STATES else config.prefix
         row.message = (route_label + " | " +
                        ("Motor reservado; iniciando teste da rota sem IA."
                         if row.status in PROBE_STATES
@@ -121,7 +121,10 @@ def _guard(test_id, phone, account_id):
                     and actor.role == "ADMIN" and test.account_id == account_id
                     and test.target_phone == phone):
                 return False
-            PilotConfig.from_env().authorize(phone, account.username)
+            PilotConfig.from_env().authorize(
+                phone, account.username,
+                route="account" if test.status in ACCOUNT_STATES else "native",
+            )
             ensure_idle(db, own_test_id=test_id, shared=PilotConfig.from_env().shared)
             outbound_guard(db, phone)
         return True
@@ -191,7 +194,11 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
                 raise ValueError("Pilot blocked")
             config = PilotConfig.from_env()
             prefix = None if account_route else config.prefix
-            route_label = "NATIONAL" if account_route else config.prefix
+            # Preserve the already exercised 1804 national format; other
+            # accounts use their own existing DDI/prefix/domain configuration.
+            dial_format = "NATIONAL" if account.username == "1804" else None
+            route_label = (("NATIONAL" if dial_format == "NATIONAL" else "CONTA")
+                           if account_route else config.prefix)
             secret = decrypt_secret(account.password_encrypted)
             db.expunge(account)
         progress("Iniciando registro SIP.")
@@ -207,11 +214,12 @@ def run(test_id, *, refresh_heartbeat=lambda: None):
 
             if probe:
                 outcome = perform_native_probe(driver, phone, prefix,
-                                               should_abort=abort, on_progress=progress)
+                                               should_abort=abort, dial_format=dial_format,
+                                               on_progress=progress)
             else:
                 outcome = perform_lia_test(
                     driver, phone, prefix, os.getenv("LIA_VOZ_OPENAI_API_KEY", ""),
-                    should_abort=abort, on_progress=progress,
+                    should_abort=abort, dial_format=dial_format, on_progress=progress,
                 )
         logging.getLogger(__name__).info("Lia Voz teste %d: %s | %s",
                                          test_id, outcome.status, outcome.message)
